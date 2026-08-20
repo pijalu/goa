@@ -369,8 +369,8 @@ func TestCascadeNoFiles(t *testing.T) {
 	if cfg.FirstRun != true {
 		t.Error("FirstRun should be true when no home config exists")
 	}
-	if cfg.Execution.Mode != "solo" {
-		t.Errorf("Default mode = %q, want %q", cfg.Execution.Mode, "solo")
+	if cfg.Execution.Mode != "yolo" {
+		t.Errorf("Default mode = %q, want %q", cfg.Execution.Mode, "yolo")
 	}
 }
 

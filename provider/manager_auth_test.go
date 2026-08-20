@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/config"
+	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/auth"
 )
 
 func TestListModels_UsesAuthStoreAPIKey(t *testing.T) {
@@ -123,5 +125,95 @@ func TestRefreshAndPersist_KeepsRefreshTokenWhenOmitted(t *testing.T) {
 	}
 	if stored.AccessToken != "new-access" {
 		t.Errorf("access token = %q, want new-access", stored.AccessToken)
+	}
+}
+
+// --- W4: OpenAI Codex OAuth wiring ---
+
+func TestOAuthProviderFor_Codex(t *testing.T) {
+	for _, id := range []string{"openai", "codex"} {
+		if prov := oauthProviderFor(id); prov == nil {
+			t.Errorf("oauthProviderFor(%q) = nil, want codex provider", id)
+		}
+	}
+	if prov := oauthProviderFor("unknown"); prov != nil {
+		t.Errorf("oauthProviderFor(unknown) = %v, want nil", prov)
+	}
+}
+
+func TestApplyCodexAccountID(t *testing.T) {
+	mkStore := func(t *testing.T) *auth.Store {
+		t.Helper()
+		s, err := auth.NewStore(t.TempDir() + "/tokens.json")
+		if err != nil {
+			t.Fatalf("store: %v", err)
+		}
+		return s
+	}
+
+	tests := []struct {
+		name    string
+		setup   func(s *auth.Store)
+		pCfg    *config.ProviderConfig
+		wantAcc string
+	}{
+		{
+			name: "oauth credential sets account id",
+			setup: func(s *auth.Store) {
+				_ = s.SetOAuth("openai", &oauth.Tokens{AccessToken: "at", AccountID: "acct-7"})
+			},
+			pCfg:    &config.ProviderConfig{ID: "openai"},
+			wantAcc: "acct-7",
+		},
+		{
+			name: "explicit config api key suppresses account id",
+			setup: func(s *auth.Store) {
+				_ = s.SetOAuth("openai", &oauth.Tokens{AccessToken: "at", AccountID: "acct-7"})
+			},
+			pCfg:    &config.ProviderConfig{ID: "openai", APIKey: "sk-cfg"},
+			wantAcc: "",
+		},
+		{
+			name: "stored api key suppresses account id",
+			setup: func(s *auth.Store) {
+				_ = s.SetAPIKey("openai", "sk-stored")
+			},
+			pCfg:    &config.ProviderConfig{ID: "openai"},
+			wantAcc: "",
+		},
+		{
+			name:    "non-codex provider ignored",
+			setup:   func(s *auth.Store) {},
+			pCfg:    &config.ProviderConfig{ID: "github"},
+			wantAcc: "",
+		},
+		{
+			name: "oauth without account id stays empty",
+			setup: func(s *auth.Store) {
+				_ = s.SetOAuth("openai", &oauth.Tokens{AccessToken: "at"})
+			},
+			pCfg:    &config.ProviderConfig{ID: "openai"},
+			wantAcc: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := mkStore(t)
+			tt.setup(store)
+			opts := &agenticprovider.StreamOptions{}
+			applyCodexAccountID(opts, tt.pCfg, store)
+			if opts.CodexAccountID != tt.wantAcc {
+				t.Errorf("CodexAccountID = %q, want %q", opts.CodexAccountID, tt.wantAcc)
+			}
+		})
+	}
+}
+
+func TestApplyCodexAccountID_NilGuards(t *testing.T) {
+	opts := &agenticprovider.StreamOptions{}
+	applyCodexAccountID(opts, nil, nil)
+	applyCodexAccountID(opts, &config.ProviderConfig{ID: "openai"}, nil)
+	if opts.CodexAccountID != "" {
+		t.Errorf("nil guards must leave account id empty, got %q", opts.CodexAccountID)
 	}
 }

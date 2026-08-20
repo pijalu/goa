@@ -95,6 +95,7 @@ func aggregateByRole(rows []orchpanel.AgentEnhancedRow) []orchpanel.AgentEnhance
 		// Keep the latest context estimate when present.
 		if r.ContextMax > 0 {
 			a.row.ContextEstimate = r.ContextEstimate
+			a.row.ContextProjected = r.ContextProjected
 			a.row.ContextMax = r.ContextMax
 			a.row.ContextAutoMax = r.ContextAutoMax
 		}
@@ -121,9 +122,14 @@ func formatOrchAgentLine(r orchpanel.AgentEnhancedRow) string {
 		PredictedN:      r.TokensOut,
 		CacheReadTotal:  r.CacheRead,
 		CacheWriteTotal: r.CacheCreation,
-		ToolCalls:       r.ToolCalls,
-		ContextEstimate: r.ContextEstimate,
-		ContextMax:      r.ContextMax,
+		// A role row only has aggregate counters (no per-completion rate),
+		// so its cache-hit figure rides the LastCacheHit slot — the sole
+		// CH display in the footer since the cumulative CH was removed.
+		LastCacheHit:     cacheHitTrendFromTotals(r.CacheRead, r.CacheCreation, r.TokensIn),
+		ToolCalls:        r.ToolCalls,
+		ContextEstimate:  r.ContextEstimate,
+		ContextProjected: r.ContextProjected,
+		ContextMax:       r.ContextMax,
 	}
 	active := r.Status == "running"
 	busy := active

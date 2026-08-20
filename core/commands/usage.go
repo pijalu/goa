@@ -14,6 +14,7 @@ import (
 	"github.com/pijalu/goa/core/commands/help"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/metrics"
 	"github.com/pijalu/goa/internal/usage"
 )
 
@@ -45,6 +46,7 @@ type usageStore interface {
 	Sum(project string, since time.Time) (usage.Stat, error)
 	Busts(project string, since time.Time) (int, error)
 	DailyCounts(project string, days int) ([]usage.DayCount, error)
+	Rows(project string, since time.Time, limit int) ([]usage.Record, error)
 	Close() error
 }
 
@@ -185,7 +187,7 @@ func sectionTitle(dim usage.Dimension) string {
 }
 
 // writeVerbose renders the /stats:verbose view: for EVERY known project, the
-// per-provider and per-model split (bugs.md Issue 5). It enumerates projects via
+// per-provider and per-model split (Issue 5). It enumerates projects via
 // a global ByProject query, then reuses writeUsageSection scoped to each project
 // so formatting stays consistent with the other usage views.
 func (c *UsageCommand) writeVerbose(b *strings.Builder, st usageStore, req usageRequest) {
@@ -240,15 +242,17 @@ func writeUsageGlobal(b *strings.Builder, st usageStore, req usageRequest) {
 	}
 	// Cache-write is hidden when zero: OpenAI-style/local providers never
 	// report cache writes (only Anthropic does), so a permanent "0 write"
-	// is noise, not signal (bugs.md "Stats: cache write is always 0").
+	// is noise, not signal (Stats: cache write is always 0).
 	if sum.CacheWrite > 0 {
-		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read / %s write\n",
+		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read / %s write (%.1f%% hit)\n",
 			sum.Turns, humanTokens(sum.PromptN), humanTokens(sum.PredictedN), humanTokens(sum.Total()),
-			humanTokens(sum.CacheRead), humanTokens(sum.CacheWrite))
+			humanTokens(sum.CacheRead), humanTokens(sum.CacheWrite),
+			metrics.CacheHitPct(sum.CacheRead, sum.CacheWrite, sum.PromptN))
 	} else {
-		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read\n",
+		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read (%.1f%% hit)\n",
 			sum.Turns, humanTokens(sum.PromptN), humanTokens(sum.PredictedN), humanTokens(sum.Total()),
-			humanTokens(sum.CacheRead))
+			humanTokens(sum.CacheRead),
+			metrics.CacheHitPct(sum.CacheRead, sum.CacheWrite, sum.PromptN))
 	}
 	// E3 (ENHANCE.md): fresh-vs-cached spend health. Fresh input tokens are the
 	// expensive currency; cache-read tokens are cheap — the fresh share of
@@ -299,7 +303,7 @@ func writeUsageSection(b *strings.Builder, st usageStore, dim usage.Dimension, r
 	b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, r := range rows {
 		// Cache R/W column: read-only when the provider never reports cache
-		// writes (always-0 write is noise — bugs.md cache-write item).
+		// writes (always-0 write is noise — cache-write item).
 		cacheCell := humanTokens(r.CacheRead)
 		if r.CacheWrite > 0 {
 			cacheCell += "/" + humanTokens(r.CacheWrite)

@@ -17,19 +17,39 @@ var (
 	paramStartRE        = regexp.MustCompile(`<parameter=([\w-]+)>\s*`)
 	paramCloseRE        = regexp.MustCompile(`\s*</parameter>\s*$`)
 
+	// DSML (DeepSeek Markup Language) uses the full-width vertical bar
+	// (U+FF5C "｜") as its delimiter: <｜｜DSML｜｜tool_calls> wraps one or more
+	// <｜｜DSML｜｜invoke name="fn">…</｜｜DSML｜｜invoke> blocks, each holding
+	// <｜｜DSML｜｜parameter name="k" string="true|false">value</｜｜DSML｜｜parameter>
+	// entries. DeepSeek-family models fall back to this native text format when
+	// the request suppresses structured tool calls (tool_choice "none") — the
+	// exact collapse-round case where a dropped call loses user work.
+	dsmlInvokeRE = regexp.MustCompile(`<｜｜DSML｜｜invoke\s+name="([^"]+)"\s*>`)
+	dsmlParamRE  = regexp.MustCompile(`<｜｜DSML｜｜parameter\s+name="([^"]+)"(?:\s+string="(?:true|false)")?\s*>`)
+	// dsmlInvokeClose terminates one invoke block.
+	dsmlInvokeClose = "</｜｜DSML｜｜invoke>"
+
 	toolClosedPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?s)<tool_call>.*?</tool_call>`),
 		regexp.MustCompile(`(?s)<function=[\w-]+>.*?</function>`),
+		regexp.MustCompile(`(?s)<｜｜DSML｜｜tool_calls>.*?</｜｜DSML｜｜tool_calls>`),
+		regexp.MustCompile(`(?s)<｜｜DSML｜｜invoke\s+name="[^"]+"\s*>.*?</｜｜DSML｜｜invoke>`),
 	}
 	toolAllPatterns = append([]*regexp.Regexp(nil), toolClosedPatterns...)
 
-	toolXMLSignals = []string{"<tool_call>", "<function="}
+	toolXMLSignals = []string{"<tool_call>", "<function=", "<｜｜DSML｜｜invoke", "<｜｜DSML｜｜tool_calls>"}
 )
 
 func init() {
 	toolAllPatterns = append(toolAllPatterns,
 		regexp.MustCompile(`(?s)<tool_call>.*$`),
 		regexp.MustCompile(`(?s)<function=[\w-]+>.*$`),
+		regexp.MustCompile(`(?s)<｜｜DSML｜｜tool_calls>.*$`),
+		regexp.MustCompile(`(?s)<｜｜DSML｜｜invoke\s+name="[^"]+"\s*>.*$`),
+		// Orphan closers: a close tag whose open was already stripped/flushed on
+		// an earlier delta must not leak into the display.
+		regexp.MustCompile(`(?s)</｜｜DSML｜｜tool_calls>`),
+		regexp.MustCompile(`(?s)</｜｜DSML｜｜invoke>`),
 	)
 }
 
@@ -41,6 +61,22 @@ func hasToolSignal(text string) bool {
 		}
 	}
 	return false
+}
+
+// hasDSMLSignal reports whether text contains DeepSeek DSML tool-call markup.
+// Tracked separately because DSML is recovered unconditionally (it is a
+// first-class provider format surfaced when structured calls are suppressed),
+// unlike the generic XML forms gated behind AutoHealToolCalls.
+func hasDSMLSignal(text string) bool {
+	return strings.Contains(text, "<｜｜DSML｜｜invoke") || strings.Contains(text, "<｜｜DSML｜｜tool_calls>")
+}
+
+// parseDSMLToolCallsFromText recovers only DSML tool calls (used when the
+// generic XML auto-heal opt-in is off but a DeepSeek native call must still be
+// honored). It never touches the <tool_call>/<function=name> forms.
+func parseDSMLToolCallsFromText(content string, idOffset int, allowIncomplete bool) []parsedToolCall {
+	sc := &toolCallScanner{content: content, idOffset: idOffset, allowIncomplete: allowIncomplete}
+	return sc.allDSMLCalls()
 }
 
 // stripToolMarkup removes tool-call XML from text.
@@ -79,7 +115,92 @@ func parseToolCallsFromText(content string, idOffset int, allowIncomplete bool) 
 	// Reset the cursor + emitted counter before scanning the function form.
 	sc.pos = 0
 	sc.emitted = 0
-	return sc.allFunctionCalls()
+	if calls := sc.allFunctionCalls(); len(calls) > 0 {
+		return calls
+	}
+	// DSML fallback: DeepSeek-family models emit their native markup when
+	// structured tool calls are suppressed (tool_choice "none") — recover it so
+	// a well-formed call is never silently dropped.
+	sc.pos = 0
+	sc.emitted = 0
+	return sc.allDSMLCalls()
+}
+
+// allDSMLCalls extracts every <｜｜DSML｜｜invoke name="fn">…</｜｜DSML｜｜invoke>
+// block (with or without the surrounding tool_calls wrapper).
+func (sc *toolCallScanner) allDSMLCalls() []parsedToolCall {
+	var calls []parsedToolCall
+	for {
+		pc, ok := sc.nextDSMLCall()
+		if !ok {
+			return calls
+		}
+		calls = append(calls, pc)
+	}
+}
+
+func (sc *toolCallScanner) nextDSMLCall() (parsedToolCall, bool) {
+	for {
+		rel := dsmlInvokeRE.FindStringSubmatchIndex(sc.content[sc.pos:])
+		if rel == nil {
+			return parsedToolCall{}, false
+		}
+		name := sc.content[sc.pos+rel[2] : sc.pos+rel[3]]
+		bodyStart := sc.pos + rel[1]
+
+		// Bound the body at the invoke close tag, or (incomplete stream) at the
+		// next invoke / tool_calls open, or end of content.
+		bodyEnd := len(sc.content)
+		end := len(sc.content)
+		if ci := strings.Index(sc.content[bodyStart:], dsmlInvokeClose); ci >= 0 {
+			bodyEnd = bodyStart + ci
+			end = bodyEnd + len(dsmlInvokeClose)
+		} else if !sc.allowIncomplete {
+			// Complete parse requires a close tag; skip this candidate.
+			sc.pos = bodyStart
+			continue
+		} else if m := dsmlInvokeRE.FindStringIndex(sc.content[bodyStart:]); m != nil {
+			bodyEnd = bodyStart + m[0]
+			end = bodyEnd
+		}
+
+		args, ok := parseDSMLParameters(sc.content[bodyStart:bodyEnd])
+		if !ok {
+			sc.pos = bodyStart
+			continue
+		}
+		sc.pos = end
+		return parsedToolCall{id: sc.nextID(), name: name, arguments: args}, true
+	}
+}
+
+// parseDSMLParameters folds the DSML parameter entries of one invoke body into
+// a JSON argument object. The optional string="true|false" attribute only marks
+// whether the value is a quoted string; values are passed through verbatim (the
+// receiving tool decodes JSON arrays/objects itself).
+func parseDSMLParameters(body string) (string, bool) {
+	matches := dsmlParamRE.FindAllStringSubmatchIndex(body, -1)
+	if len(matches) == 0 {
+		// An invoke with no parameters maps to an empty argument object.
+		if strings.TrimSpace(body) == "" {
+			return "{}", true
+		}
+		return "{}", true
+	}
+	args := make(map[string]string, len(matches))
+	for i, pm := range matches {
+		key := body[pm[2]:pm[3]]
+		valStart := pm[1]
+		valEnd := len(body)
+		if i+1 < len(matches) {
+			valEnd = matches[i+1][0]
+		}
+		val := strings.TrimSpace(body[valStart:valEnd])
+		val = strings.TrimSuffix(val, "</｜｜DSML｜｜parameter>")
+		args[key] = strings.TrimSpace(val)
+	}
+	b, _ := json.Marshal(args)
+	return string(b), true
 }
 
 // toolCallScanner parses tool-call XML from a content buffer with a single

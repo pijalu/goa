@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/pijalu/goa/internal"
 )
@@ -49,8 +50,85 @@ const (
 	TeamDelegationOff   = "off"
 )
 
-// teamNamePattern matches team and member names (TEAMS.md §3.5 rule 1–2).
-var teamNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+// memberNamePattern matches member names (TEAMS.md §3.5 rule 2). Member
+// names double as agent-pool roles: they are registered via
+// pool.SetConfig(role) and referenced by the main agent's delegation tools
+// (delegate_to role:"<member-name>"), so they keep the strict DNS-label
+// charset the LLM can reproduce reliably.
+var memberNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+// teamNamePattern matches team names (TEAMS.md §3.5 rule 1). Team names are
+// user-facing display labels: they only serve as config map keys and /team
+// command arguments (the command router splits on ':' only, never on
+// whitespace), so they allow a friendly charset — any letters, digits,
+// spaces, dots, underscores and dashes — as long as they start and end with
+// an alphanumeric and stay within 64 bytes.
+var teamNamePattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9])?$`)
+
+// maxTeamNameLen bounds team names (bytes), mirroring the member rule.
+const maxTeamNameLen = 64
+
+// IsValidTeamName reports whether name satisfies the team naming rule
+// (TEAMS.md §3.5 rule 1). Team names are display labels (map keys + /team
+// args), so the charset is permissive: letters (either case), digits, spaces,
+// dots, underscores, dashes; must start and end alphanumeric; 1–64 bytes.
+// Interactive entry points (config menu, /team) must reject a non-conforming
+// name at input time instead of persisting a definition that config
+// validation would then refuse on the next startup.
+func IsValidTeamName(name string) bool {
+	return len(name) <= maxTeamNameLen && teamNamePattern.MatchString(name)
+}
+
+// IsValidMemberName reports whether name satisfies the member naming rule
+// (TEAMS.md §3.5 rule 2): the strict DNS-label charset, because member names
+// double as agent-pool roles referenced by the delegation tools.
+func IsValidMemberName(name string) bool {
+	return memberNamePattern.MatchString(name)
+}
+
+// NormalizeTeamNameSlug converts a user-typed team name into a valid team
+// name: lowercase, whitespace collapsed to single dashes, unsupported
+// characters dropped, leading/trailing dashes trimmed, truncated to 64 bytes.
+// It returns "" when nothing usable remains (e.g. input was only symbols).
+// Interactive flows use it to suggest a corrected name instead of a bare
+// rejection.
+func NormalizeTeamNameSlug(name string) string {
+	name = strings.TrimSpace(name)
+	var b strings.Builder
+	b.Grow(len(name))
+	pendingDash := false
+	for _, r := range name {
+		lower, ok := slugRune(r)
+		if !ok {
+			// Separator or unsupported character: collapse any run into one dash,
+			// emitted lazily so a trailing separator never yields a trailing dash.
+			pendingDash = true
+			continue
+		}
+		if pendingDash && b.Len() > 0 {
+			b.WriteByte('-')
+		}
+		pendingDash = false
+		b.WriteRune(lower)
+	}
+	out := b.String()
+	if len(out) > maxTeamNameLen {
+		out = strings.TrimRight(out[:maxTeamNameLen], "-")
+	}
+	return out
+}
+
+// slugRune maps r to the lowercase rune kept in a team-name slug, or
+// ok=false when r is a separator/unsupported character (collapsed to a dash).
+func slugRune(r rune) (lower rune, ok bool) {
+	switch {
+	case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		return r, true
+	case r >= 'A' && r <= 'Z':
+		return r + ('a' - 'A'), true
+	}
+	return 0, false
+}
 
 // TeamsConfig is the top-level `teams:` section (TEAMS.md §3): the session's
 // active team plus the named team definitions.
@@ -60,8 +138,8 @@ type TeamsConfig struct {
 }
 
 // TeamDefinition is a named agent team: a set of members (main shorthand +
-// companion shorthand, or the canonical Members map), a review policy, and
-// defaults applied on activation.
+// companion shorthand, or the canonical Members map), a review policy, an
+// optional ordered workflow, and defaults applied on activation.
 type TeamDefinition struct {
 	Description string                `yaml:"description,omitempty"`
 	Main        *TeamMember           `yaml:"main,omitempty"`
@@ -70,7 +148,31 @@ type TeamDefinition struct {
 	Review      string                `yaml:"review,omitempty"`
 	ReviewGates TeamReviewGates       `yaml:"review_gates,omitempty"`
 	Delegation  string                `yaml:"delegation,omitempty"`
+	Workflow    []TeamWorkflowStage   `yaml:"workflow,omitempty"`
 	Defaults    TeamDefaults          `yaml:"defaults,omitempty"`
+}
+
+// TeamWorkflowStage is one ordered step of a team's workflow (bugs.md "team:
+// allow defining member order / workflow"). Stages run in list order; each
+// hands its output to the next. A stage with LoopBackTo set forms a feedback
+// loop: after it completes, control returns to the named earlier stage (e.g.
+// a reviewer sends work back to the coder) and the intervening stages repeat,
+// bounded by MaxIterations — this is the architect ⇄ coder ⇄ reviewer cycle.
+type TeamWorkflowStage struct {
+	// Member is the team member (pool role) that runs this stage. It must
+	// reference a defined member (main/reviewer/worker) of the team.
+	Member string `yaml:"member"`
+	// Prompt is the stage instruction. It is rendered as a Go template with
+	// the user's task as {{.UserInput}} and the accumulated prior-stage output
+	// prepended as context. Empty falls back to a sensible per-member default.
+	Prompt string `yaml:"prompt,omitempty"`
+	// LoopBackTo, when set, names an EARLIER stage in the same workflow: after
+	// this stage completes the loop returns there. Must point backward
+	// (no forward/self loops) so the workflow always has a defined entry.
+	LoopBackTo string `yaml:"loop_back_to,omitempty"`
+	// MaxIterations caps how many times the loop back-edge may fire (0 = run
+	// the loop once, i.e. no repeat). Prevents unbounded reviewer⇄coder cycles.
+	MaxIterations int `yaml:"max_iterations,omitempty"`
 }
 
 // TeamMember is a named model binding: model ID, optional provider override,
@@ -212,6 +314,75 @@ func (d TeamDefinition) EffectiveDelegation() string {
 	return TeamDelegationAgent
 }
 
+// HasWorkflow reports whether the team defines an ordered member workflow.
+func (d TeamDefinition) HasWorkflow() bool { return len(d.Workflow) > 0 }
+
+// ValidateWorkflow checks the team's workflow structurally (member refs,
+// uniqueness, backward loop targets) and returns a single error, or nil. It is
+// the programmatic counterpart of the config-validation path, used by
+// /team:run before building the pipeline.
+func (d TeamDefinition) ValidateWorkflow() error {
+	if len(d.Workflow) == 0 {
+		return nil
+	}
+	members, err := d.ResolvedMembers()
+	if err != nil {
+		return err
+	}
+	ve := &internal.ValidationError{}
+	validateTeamWorkflow(ve, "workflow", d, members)
+	if ve.HasErrors() {
+		return fmt.Errorf("%s", ve.ErrList[0])
+	}
+	return nil
+}
+
+// validateWorkflow checks the team's ordered workflow (bugs.md "team: member
+// order / workflow"): every stage must reference a defined member, stage
+// members must be unique, and loop_back_to must point to an earlier stage in
+// the list (so the workflow has a well-defined entry and loops are backward).
+func validateTeamWorkflow(ve *internal.ValidationError, prefix string, def TeamDefinition, members []ResolvedMember) {
+	if len(def.Workflow) == 0 {
+		return
+	}
+	known := make(map[string]struct{}, len(members))
+	for _, rm := range members {
+		known[rm.Name] = struct{}{}
+	}
+	seen := make(map[string]int, len(def.Workflow)) // stage member -> index
+	for i, s := range def.Workflow {
+		sp := fmt.Sprintf("%s.workflow[%d]", prefix, i)
+		validateWorkflowStage(ve, sp, s, known, seen, i)
+		seen[s.Member] = i
+	}
+}
+
+// validateWorkflowStage validates one workflow stage against the team's
+// member set and the set of stages seen so far (for backward loop targets).
+func validateWorkflowStage(ve *internal.ValidationError, sp string, s TeamWorkflowStage, known map[string]struct{}, seen map[string]int, idx int) {
+	if s.Member == "" {
+		ve.Add(sp + ".member: must be set")
+		return
+	}
+	if _, ok := known[s.Member]; !ok {
+		ve.Add(fmt.Sprintf("%s.member: %q is not a member of the team", sp, s.Member))
+	}
+	if _, dup := seen[s.Member]; dup {
+		ve.Add(fmt.Sprintf("%s.member: member %q appears more than once in the workflow", sp, s.Member))
+	}
+	if s.LoopBackTo == "" {
+		return
+	}
+	target, ok := seen[s.LoopBackTo]
+	if !ok {
+		ve.Add(fmt.Sprintf("%s.loop_back_to: %q does not match an earlier workflow stage", sp, s.LoopBackTo))
+		return
+	}
+	if target >= idx {
+		ve.Add(fmt.Sprintf("%s.loop_back_to: must point to an earlier stage (got %q at index %d, current %d)", sp, s.LoopBackTo, target, idx))
+	}
+}
+
 // validateTeams enforces TEAMS.md §3.5 rules 1–10.
 func (c *Config) validateTeams(ve *internal.ValidationError) {
 	tc := c.Teams
@@ -240,8 +411,8 @@ func (c *Config) validateTeams(ve *internal.ValidationError) {
 // validateTeamDefinition validates one team definition.
 func (c *Config) validateTeamDefinition(ve *internal.ValidationError, name string, def TeamDefinition, skipModelCheck bool, knownModels, knownProviders map[string]struct{}) {
 	prefix := "teams.definitions." + name
-	if !teamNamePattern.MatchString(name) {
-		ve.Add(prefix + ": team name must match [a-z0-9][a-z0-9-]{0,63}")
+	if !IsValidTeamName(name) {
+		ve.Add(prefix + ": team name must be 1–64 chars of letters, digits, spaces, '.', '_' or '-', starting and ending alphanumeric")
 	}
 	members, err := def.ResolvedMembers()
 	if err != nil {
@@ -250,6 +421,7 @@ func (c *Config) validateTeamDefinition(ve *internal.ValidationError, name strin
 	}
 	validateTeamReview(ve, prefix, def)
 	c.validateTeamMembers(ve, prefix, members, skipModelCheck, knownModels, knownProviders)
+	validateTeamWorkflow(ve, prefix, def, members)
 }
 
 // validateTeamReview checks the review policy, gates, quorum, and delegation.
@@ -308,7 +480,7 @@ func (c *Config) validateTeamMembers(ve *internal.ValidationError, prefix string
 
 // validateTeamMember validates a single normalized member.
 func (c *Config) validateTeamMember(ve *internal.ValidationError, mp string, rm ResolvedMember, skipModelCheck bool, knownModels, knownProviders map[string]struct{}) {
-	if !teamNamePattern.MatchString(rm.Name) {
+	if !IsValidMemberName(rm.Name) {
 		ve.Add(mp + ": member name must match [a-z0-9][a-z0-9-]{0,63}")
 	}
 	switch rm.Member.Role {

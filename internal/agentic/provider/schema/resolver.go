@@ -52,7 +52,7 @@ func scoreMatch(m ProfileMatch) int {
 // profile matches, it returns DefaultProfile() so that unmatched or custom
 // providers still get a sane baseline — most importantly standard Bearer
 // authentication — instead of an empty profile that silently drops the API key
-// (bugs.md Issue 9: poolside/groq/fireworks/perplexity/zai-api/azure/custom).
+// (Issue 9: poolside/groq/fireworks/perplexity/zai-api/azure/custom).
 func (r *Resolver) Resolve(model Model) VariantProfile {
 	var best VariantProfile
 	bestScore := -1
@@ -258,7 +258,7 @@ func mergeCompat(c *CompatFlags, o CompatFlags) {
 	setIfNonEmpty(&c.ImageURLScheme, o.ImageURLScheme)
 	mergeMapAny(c.ThinkingExtraBody, o.ThinkingExtraBody)
 	// Plain bool with no tri-state: an override can only turn the
-	// requirement ON (OR semantics), never explicitly clear it (bugs.md
+	// requirement ON (OR semantics), never explicitly clear it
 	// thinking-mode 400: user variant overrides for DeepSeek-class models).
 	c.RequiresReasoningContentOnAssistantMessages = c.RequiresReasoningContentOnAssistantMessages || o.RequiresReasoningContentOnAssistantMessages
 }

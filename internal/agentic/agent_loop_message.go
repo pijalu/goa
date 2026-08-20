@@ -19,7 +19,7 @@ const (
 )
 
 // elideLoopSample renders a repeated sequence for one-line TUI display
-// (bugs.md runaway-loop visibility: `start of repeat...(x chars)...end of
+// (runaway-loop visibility: `start of repeat...(x chars)...end of
 // repeat`). Whitespace runs collapse to single spaces; when the flattened
 // sequence is longer than its elided form, the middle is replaced by an
 // "...(N chars)..." marker keeping the head and tail visible. A sequence

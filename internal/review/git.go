@@ -56,24 +56,84 @@ func HasUncommittedChanges(dir string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-// Diff returns a unified diff from baseRef to the current state.
-// When baseRef is "HEAD" and the working tree is dirty, it returns the
-// working-tree diff; otherwise it returns `git diff baseRef..HEAD`.
-func Diff(dir, baseRef string) (string, error) {
-	var args []string
+// DiffArgs returns the git argument list that produces the review diff for
+// baseRef. It is the single source of truth shared by Diff (which executes
+// it) and DiffCommand (which displays it), so the command shown to the user
+// or agent always matches what actually runs.
+func DiffArgs(baseRef string) []string {
 	if baseRef == "HEAD" {
 		// HEAD with no range shows working-tree changes when dirty and
 		// nothing when clean. This matches the user's expectation for
 		// uncommitted work.
-		args = []string{"diff", "HEAD"}
-	} else {
-		args = []string{"diff", baseRef + "..HEAD"}
+		return []string{"diff", "HEAD"}
 	}
-	out, err := gitOutput(dir, args...)
+	return []string{"diff", baseRef + "..HEAD"}
+}
+
+// DiffCommand returns the shell command that produces the review diff for
+// baseRef (e.g. "git diff HEAD^1..HEAD"). Review summaries point the agent
+// at this command instead of embedding diff content, keeping the submitted
+// context small.
+func DiffCommand(baseRef string) string {
+	return "git " + strings.Join(DiffArgs(baseRef), " ")
+}
+
+// Diff returns a unified diff from baseRef to the current state.
+// When baseRef is "HEAD" and the working tree is dirty, it returns the
+// working-tree diff; otherwise it returns `git diff baseRef..HEAD`.
+func Diff(dir, baseRef string) (string, error) {
+	out, err := gitOutput(dir, DiffArgs(baseRef)...)
 	if err != nil {
 		return "", fmt.Errorf("git diff: %w", err)
 	}
 	return out, nil
+}
+
+// RefInfo describes a git tag or branch for review-base completion.
+type RefInfo struct {
+	// Name is the short ref name usable as a diff base (e.g. "v1.2.0", "main").
+	Name string
+	// Kind is "tag" or "branch".
+	Kind string
+}
+
+// RecentRefs returns up to n tags and branches, most recent first.
+// Recency uses for-each-ref's -creatordate: for an annotated tag it is the
+// tag date, for a lightweight tag or branch it is the date of the commit the
+// ref points to. Tags and branches are interleaved in one recency ordering so
+// the completion surfaces genuinely recent checkpoints regardless of kind.
+func RecentRefs(dir string, n int) ([]RefInfo, error) {
+	if n <= 0 {
+		n = 20
+	}
+	// NOTE: for-each-ref does not expand %x00 hex escapes (unlike git log),
+	// so we emit only %(refname) and derive the short name + kind from the
+	// namespace prefix instead of splitting on a NUL delimiter.
+	out, err := gitOutput(dir,
+		"for-each-ref",
+		"--sort=-creatordate",
+		"--format=%(refname)",
+		"--count", fmt.Sprintf("%d", n),
+		"refs/tags", "refs/heads",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("git for-each-ref: %w", err)
+	}
+	var refs []RefInfo
+	for _, line := range strings.Split(out, "\n") {
+		full := strings.TrimSpace(line)
+		if full == "" {
+			continue
+		}
+		// Distinguish tag from branch by namespace, not objecttype: a
+		// lightweight tag points straight at a commit, exactly like a branch.
+		if name, ok := strings.CutPrefix(full, "refs/tags/"); ok {
+			refs = append(refs, RefInfo{Name: name, Kind: "tag"})
+		} else if name, ok := strings.CutPrefix(full, "refs/heads/"); ok {
+			refs = append(refs, RefInfo{Name: name, Kind: "branch"})
+		}
+	}
+	return refs, nil
 }
 
 // RecentCommits returns the last n commits with subjects truncated to

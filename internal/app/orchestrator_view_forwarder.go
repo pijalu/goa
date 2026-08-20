@@ -120,7 +120,7 @@ func (a *App) handleOrchViewEvent(ne orchpanel.AgentViewEvent) {
 
 // persistOrchViewEvent writes sub-agent work to the session store so a saved
 // session holds the FULL orchestration run — not just the bare /orchestrate
-// command line (bugs.md item K: "orchestrate must log more — all sub agents
+// command line (item K: "orchestrate must log more — all sub agents
 // work must exist in the session").
 //
 // Sub-agent turns are persisted as SYSTEM content tagged with the agent id,

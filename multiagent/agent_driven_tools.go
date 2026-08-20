@@ -39,6 +39,11 @@ func (t *RequestReviewTool) Schema() agentic.ToolSchema {
 	}
 }
 
+// Deferred reports that request_review's schema is withheld from the eager
+// block and loaded on demand via tool_search (P1). It is an opt-in-heavy
+// companion tool; core tools stay eager.
+func (*RequestReviewTool) Deferred() bool { return true }
+
 func (t *RequestReviewTool) Execute(input string) (string, error) {
 	if !t.Enabled {
 		return "", fmt.Errorf("agent-driven workflows are disabled. Enable with /companion:on, or use framework-driven companion mode with /companion:framework")

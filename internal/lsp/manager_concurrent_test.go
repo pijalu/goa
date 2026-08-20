@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// TestManager_ConcurrentDidChange reproduces bugs.md Issue 19: the
+// TestManager_ConcurrentDidChange reproduces Issue 19: the
 // ToolScheduler executes independent tool calls in parallel goroutines, and
 // every read/edit/write tool notifies the LSP manager (touchLSP). Files of
 // the same language share one serverClient, so parallel DidChange calls hit

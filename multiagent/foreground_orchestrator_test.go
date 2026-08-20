@@ -6,7 +6,9 @@ package multiagent
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -352,6 +354,138 @@ func TestAfterMainTurn_EmptyReviewSkipped(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("timeout")
 	default:
+	}
+}
+
+// countingProvider records how many times Stream ran (for loop assertions).
+type countingProvider struct {
+	api   provider.Api
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *countingProvider) API() provider.Api { return p.api }
+
+func (p *countingProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls // vary the response per call so the loop detector doesn't trip
+	p.mu.Unlock()
+	text := fmt.Sprintf("out-%d", n)
+	result := provider.NewAssistantMessageEventStream(64)
+	go func() {
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextStart, ContentIndex: 0})
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextDelta, ContentIndex: 0, Delta: text})
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextEnd, ContentIndex: 0})
+		result.End(&provider.AssistantMessage{Content: []provider.ContentBlock{{Type: provider.ContentBlockText, Text: text}}})
+	}()
+	return result, nil
+}
+
+func (p *countingProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return p.Stream(model, ctx, provider.BuildSimpleOptions(model, opts))
+}
+
+func (p *countingProvider) count() int { p.mu.Lock(); defer p.mu.Unlock(); return p.calls }
+
+// TestRunPipeline_LoopsBackReviewerToCoder proves the team-workflow feedback
+// loop (bugs.md: architect ⇄ coder ⇄ code reviewer): a reviewer stage with a
+// loop_back_to edge returns control to the coder and the intervening stages
+// repeat, bounded by max_iterations.
+func TestRunPipeline_LoopsBackReviewerToCoder(t *testing.T) {
+	cp := &countingProvider{api: provider.Api("test-counting-api")}
+	provider.RegisterApiProvider(cp)
+	countingModel := provider.Model{
+		ID: "count-model", Name: "count-model", Api: cp.api,
+		Provider: provider.ProviderCustom, InputTypes: []string{"text"},
+		BaseURL: "http://localhost:9999/v1/chat/completions",
+	}
+	// Pool default model is the counting model; every role resolves to it.
+	pool := NewAgentPool(countingModel, provider.StreamOptions{}, nil)
+	orch := NewForegroundOrchestrator(pool)
+
+	p := &Pipeline{
+		ID: "team-wf",
+		Stages: []PipelineStage{
+			{ID: "architect", Name: "Architect", Agent: "architect", Prompt: "Design"},
+			{ID: "coder", Name: "Coder", Agent: "coder", Prompt: "Implement"},
+			{ID: "reviewer", Name: "Reviewer", Agent: "reviewer", Prompt: "Review", Loop: LoopConfig{LoopBackTo: "coder", MaxIterations: 2}},
+		},
+	}
+	if err := orch.RunPipeline(context.Background(), p, "task"); err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	// architect=1, then coder/reviewer run 3 times (initial + 2 loop-backs)
+	// = 1 + 2*... architect(1) + coder×3 + reviewer×3 = 7 total Stream calls.
+	if got, want := cp.count(), 7; got != want {
+		t.Errorf("total stage runs = %d, want %d (architect×1, coder×3, reviewer×3)", got, want)
+	}
+}
+
+// failingProvider is a test-only provider whose Stream always fails (e.g. a
+// slow-LLM context deadline), so the companion run aborts before EventEnd.
+type failingProvider struct {
+	api provider.Api
+	err error
+}
+
+func (p *failingProvider) API() provider.Api { return p.api }
+
+func (p *failingProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return nil, p.err
+}
+
+func (p *failingProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return nil, p.err
+}
+
+func failingModel(text string) provider.Model {
+	api := provider.Api("test-failing-api-" + text)
+	provider.RegisterApiProvider(&failingProvider{api: api, err: context.DeadlineExceeded})
+	return provider.Model{
+		ID:         "failing-model",
+		Name:       "failing-model",
+		Api:        api,
+		Provider:   provider.ProviderCustom,
+		InputTypes: []string{"text"},
+		BaseURL:    "http://localhost:9999/v1/chat/completions",
+	}
+}
+
+// TestAfterMainTurn_FailureEmitsCompanionStreamEnd is the regression test for
+// the bugs.md entry "team: run breaks on slow LLM — stuck screen, incorrect
+// statusbar". When the companion run fails mid-stream (a slow-LLM deadline),
+// no EventEnd fires so no stream_end is emitted — leaving the footer stuck on
+// "reviewing"/busy and the transcript section open. AfterMainTurn must emit a
+// companion stream_end on failure so the UI always returns to idle.
+func TestAfterMainTurn_FailureEmitsCompanionStreamEnd(t *testing.T) {
+	// A non-eligible retry policy (empty Codes) so the failing companion
+	// surfaces immediately instead of burning the real 5-retry backoff
+	// schedule (~31s) — keeps the test fast while still exercising the
+	// failure path.
+	pool := NewAgentPool(failingModel("boom"), provider.StreamOptions{
+		RetryPolicy: &provider.RetryPolicy{Mode: provider.RetryModeNormal, MaxRetries: 1, Codes: []string{}},
+	}, nil)
+	orch := NewForegroundOrchestrator(pool)
+	orch.SetMode(WorkflowCompanionMinor)
+
+	ctx := context.Background()
+	err := orch.AfterMainTurn(ctx, "func main() {}")
+	if err == nil {
+		t.Fatal("expected companion run error from failing provider")
+	}
+
+	// Drain events, looking for the companion cleanup stream_end.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case msg := <-orch.Events():
+			if msg.From == "companion" && msg.To == "stream_end" && msg.Kind == "content" {
+				return // success: cleanup stream_end emitted
+			}
+		case <-deadline:
+			t.Fatal("no companion stream_end emitted after companion failure — UI would stay stuck busy")
+		}
 	}
 }
 

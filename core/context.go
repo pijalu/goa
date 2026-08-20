@@ -279,7 +279,7 @@ type Context struct {
 
 	// ToolTeardown, when set, is called after /tools:name:off unregisters a
 	// tool so integrations tied to it can be torn down live (e.g. lsp closes
-	// its manager and detaches read/edit/write linking — bugs.md Issue LSP).
+	// its manager and detaches read/edit/write linking — Issue LSP).
 	ToolTeardown func(name string)
 
 	// SkillRegistry provides skill lookup (populated by M08).
@@ -538,6 +538,22 @@ func (c Context) Flash(text string) {
 	}
 	select {
 	case c.EventBus.Chat <- event.ChatEvent{Flash: &event.Flash{Text: text}}:
+	default:
+	}
+}
+
+// WriteSystem appends a durable system message to the chat viewport from any
+// goroutine (goroutine-safe event-bus post). Unlike Writef — which targets the
+// per-command OutputBuffer echoed only when the command returns — WriteSystem
+// renders live, so a background flow (e.g. async OAuth) can surface output
+// after its originating command has already returned. Preformatted preserves
+// embedded ANSI such as OSC-8 hyperlinks.
+func (c Context) WriteSystem(text string, preformatted bool) {
+	if c.EventBus == nil || text == "" {
+		return
+	}
+	select {
+	case c.EventBus.Chat <- event.ChatEvent{SystemMessage: &event.SystemMessage{Text: text, Preformatted: preformatted}}:
 	default:
 	}
 }

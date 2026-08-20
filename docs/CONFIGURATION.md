@@ -44,7 +44,12 @@ providers:
     max_retry_delay: 2s              # Cap exponential backoff
     transport: sse                   # sse | websocket
     cache_retention: none            # none | short | long
-    session_id: ""                   # Cache-affinity session id
+    session_id: ""                   # Cache-affinity session id (WARNING: pins ALL
+                                     # conversations, sub-agents, and one-shot calls to a
+                                     # single provider cache key — diverging contexts that
+                                     # share a key evict each other's cache, surfacing as
+                                     # unexplained cache misses. Leave empty unless you
+                                     # know the provider requires it; see AGENTS.md Rule 7)
     headers:                         # Custom HTTP headers
       X-Custom: value
     metadata:                        # Provider-specific metadata
@@ -87,34 +92,50 @@ models:
     headers:                         # Per-model HTTP headers
       X-Model-Header: "1"
     compat: '{"toolResultAsUser":true}' # Provider-specific compat JSON
-    compress_output: null              # null = auto (local=on, remote=off) | true | false
+    compress_output: false              # false | true
 
 # ── Execution ──────────────────────────────────────────────────────
 execution:
   mode: yolo                         # yolo | confirm | review
-  retries: 5                         # Default max retries for provider stream requests (per-provider max_retries overrides)
+  retries: 2                         # Default max retries for provider stream requests (per-provider max_retries overrides)
   max_tool_repeat_total: 0          # Max identical tool calls in the entire turn (0 = disabled)
   max_tool_repeat_consecutive: 2    # Max consecutive identical tool calls (soft hint at 2, hard at limit)
-  max_tool_calls: 3                 # Max duplicate occurrences of the same call within the rolling window (0 = unlimited)
+  max_tool_calls: 200               # Max duplicate occurrences of the same call within the rolling window (0 = unlimited)
   tool_call_limit_reset_window: 10  # Number of recent calls inspected for the duplicate-window limit above
   token_warning: 70                  # % of budget → warning
-  token_critical: 85                 # % of budget → critical
-  loop_warning: 5                    # Consecutive same-tool calls before warning
-  loop_interrupt: 10                 # Consecutive same-tool calls → interrupt
-  activity_timeout: 120s             # No output → warning
-  error_threshold: 0.3               # Error rate % → mode auto-downgrade
+  token_critical: 90                  # % of budget → critical
+  loop_warning: 10                    # Consecutive same-tool calls before warning
+  loop_interrupt: 15                 # Consecutive same-tool calls → interrupt
+  activity_timeout: 30s              # No output → warning
+  error_threshold: 0.5               # Error rate % → mode auto-downgrade
   worktree_mode: multi_agent         # always | multi_agent
   auto_save_model: true              # Persist model changes
 
 # ── Context Compression ────────────────────────────────────────────
 context_compression:
   enabled: true
-  max_tokens: 8192                   # Target context window
-  threshold_percent: 80              # Compress when usage exceeds this %
-  on_context_error: true             # On error → fall back to tool elision
-  strategy: micro                    # Default: micro compaction after 1h idle
-                                     # Options: tool_elision | selective |
-                                     #          summarize | hybrid | micro
+  max_tokens: 8192                   # Target context window (0 = auto: model window)
+  # Proactive fill levels (% of the effective window). Every layer is
+  # OPT-IN: 0 disables it — there is no implicit engine default-on. The
+  # embedded default.yaml enables only the hard ceiling (95, summarize).
+  # Valid values: 0 (disabled), -1 (legacy disable spelling), or 5..100
+  # in 5% steps.
+  thresholds:
+    soft_percent: 0                  # Early-maintenance layer (0 = off)
+    trigger_percent: 0               # Trigger layer (0 = off)
+    hard_percent: 95                 # Emergency ceiling (0 = off)
+  # Per-layer methods. Any method works on any layer; empty = SDK default
+  # (micro / tool_elision / summarize for soft/trigger/hard).
+  strategies:
+    soft: ""
+    trigger: ""
+    hard: ""                         # Options: micro | tool_elision |
+                                     #          selective | hybrid | summarize
+  on_context_error: true             # Reactive net: compress on context-length errors
+  on_error_strategy: hybrid          # Recovery method: hybrid (elision →
+                                     # selective → summarize) | summarize |
+                                     # tool_elision | selective | micro
+  strategy: ""                       # Legacy trigger-layer strategy alias
   preserve_recent_turns: 4           # Keep last N turns uncompressed
   micro_compaction:
     keep_recent_messages: 20         # Messages to never truncate
@@ -122,6 +143,10 @@ context_compression:
     cache_miss_threshold: "1h"       # Idle time before micro triggers
     truncated_marker: "[Old tool result content cleared]"
     min_context_ratio: 0.5           # Min context usage to trigger (0.0-1.0)
+  tool_result_pruning:               # CX1: pre-compaction pruner (ahead of summarize)
+    threshold_chars: 8192            # Prune tool results over this many Unicode code points
+    head_chars: 4096                 # Leading code points retained
+    tail_chars: 1024                 # Trailing code points retained
 
 # ── Mode ─────────────────────────────────────────────────────────
 mode:
@@ -145,16 +170,23 @@ skills:
     - .goa/skills
   embedded: true
   execution_mode: subagent           # subagent | inline
+  sticky:                            # Force knowledge skills always-on (project level)
+    - telegram
+  sticky_off: []                     # Turn frontmatter-sticky skills back to on-demand
 
 # ── Tools ──────────────────────────────────────────────────────────
 tools:
+  max_inline_bytes: 0            # Spill policy: cap on model-facing tool-result bytes
+                                 # (0=disabled). Over-cap plain-text results are saved
+                                 # verbatim to ~/.goa/spill/<session>/ and replaced by a
+                                 # bounded head/tail preview + locator notice.
   # Optional tools toggles. Most are opt-IN (default false).
   # `clarify_disabled` is the exception: it is opt-OUT (default false),
   # so the ask_user_question tool is ENABLED by default.
   enabled:
     bg_exec: false            # background process execution
     memento: false           # thinking artifacts
-    pty_exec: false          # PTY-backed command execution
+    terminals: false          # Persistent terminal sessions
     ssh_bash: false          # remote shell execution
     delegate_to: false       # multi-agent delegation
     request_review: false    # multi-agent review requests
@@ -552,6 +584,91 @@ User values are merged on top of the embedded defaults.
   }
 }
 ```
+
+## Hooks
+
+Goa runs lifecycle command hooks at four interception points. Hooks execute
+with a JSON payload on stdin; a `beforeTool` hook can veto a tool call by
+exiting non-zero (goa dialect) or with the Claude Code deny contract (CC
+dialect). All executions are recorded in `<project>/.goa/hooks.log`.
+
+### Goa-native hooks (`hooks.yaml`)
+
+Configured in `~/.goa/hooks.yaml` (user) and `<project>/.goa/hooks.yaml`
+(project; project hooks append after user hooks).
+
+```yaml
+hooks:
+  - event: beforeTool
+    command: /path/to/guard.sh
+    args: []          # optional fixed args prepended to the payload
+  - event: afterTool
+    command: /path/to/log.sh
+  - event: sessionStart
+    command: /path/to/start.sh
+  - event: sessionEnd
+    command: /path/to/end.sh
+```
+
+Events: `beforeTool` (can veto — non-zero exit), `afterTool` (never vetoes),
+`sessionStart`, `sessionEnd`. Payloads are goa-shaped
+(`event`, `tool_name`, `tool_input`, `call_id`, `output`, `error`,
+`session_id`, `cwd`).
+
+### Claude Code hooks (`hooks.json` / `settings.json`)
+
+An existing Claude Code hook config is accepted as an additional source (gap
+TL4): `~/.claude/hooks.json`, `~/.claude/settings.json` (user scope) and
+`<project>/.claude/hooks.json`, `<project>/.claude/settings.json` (project
+scope). Both the bare event map and the `{"hooks": {...}}` settings shape are
+supported; only `type: "command"` hooks run — `http`, `mcp_tool`, `prompt`,
+and `agent` hooks are skipped with a warning.
+
+Supported CC events map onto goa's points: `PreToolUse` → `beforeTool`,
+`PostToolUse` → `afterTool`, `SessionStart` → `sessionStart`, `SessionEnd` →
+`sessionEnd`. Tool events keep their matcher (tool name; CC literal
+alternatives match case-insensitively, regex matchers use Go RE2); session
+matchers are ignored. Hooks receive CC-shaped stdin (`hook_event_name`,
+`tool_name`, `tool_input`, `tool_use_id`, `tool_response`, `session_id`,
+`cwd`), run with `sh -c` (shell form) or exec form when `args` is present, in
+the project directory with `CLAUDE_PROJECT_DIR` exported and
+`${CLAUDE_PROJECT_DIR}` substituted. The CC default 600s timeout applies.
+
+CC output follows the Claude Code contract: stdout JSON is read on every exit
+code; exit 2 blocks (JSON cannot override it); otherwise a valid JSON object
+alone decides via `hookSpecificOutput.permissionDecision`
+(`allow`/`deny`/`ask`/`defer`) or the legacy top-level `decision`
+(`approve`/`block`). Matching hooks run serially and fold most-restrictively
+(`deny`/`block` > `ask`/`defer` > `allow`); a `beforeTool` veto error carries
+every vetoing hook's reason plus the accumulated `additionalContext` so the
+model sees it. `additionalContext` is capped at Claude Code's 10,000-character
+limit.
+
+Example (denies all `Bash` calls):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/deny.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Known limitations (mirroring dsh's bridge): `PostToolUse` feedback and
+`SessionStart`/`SessionEnd` context are recorded in the audit log but not
+injected into the conversation; `UserPromptSubmit`, `Stop`, `SubagentStart`,
+`SubagentStop`, and the other CC events are not supported; `if`, `async`,
+`once`, `statusMessage`, and `updatedInput` are not honored.
 
 ## Saving Config Changes
 

@@ -305,7 +305,7 @@ func showSessionPicker(
 }
 
 // filterSessionsWithModelTurn keeps only sessions holding an actual model
-// turn (bugs.md "Session command: must not list sessions without an actual
+// turn ("Session command: must not list sessions without an actual
 // model turn"). Command-only sessions (e.g. /orchestrate) still appear in
 // /session:list and export; restoring one would show a one-sided transcript
 // with no model work.
@@ -325,7 +325,7 @@ func filterSessionsWithModelTurn(sessions []core.SessionInfo) []core.SessionInfo
 // The picker keeps the store's newest-first order (PreserveOrder) so the
 // most recent session is on top and preselected (the selector defaults its
 // cursor to item 0 when currentValue matches nothing). Each label is
-// prefixed with a timestamp (bugs.md "Session command: list ordering,
+// prefixed with a timestamp ("Session command: list ordering,
 // filtering, timestamps"):
 //   - today          → "15:04"      (time only)
 //   - other days     → "2006-01-02" (date only)

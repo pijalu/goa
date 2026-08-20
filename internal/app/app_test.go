@@ -14,6 +14,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/provider"
@@ -86,10 +87,14 @@ func containsRendered(cv *tui.ChatViewport, substr string) bool {
 }
 
 // TestClarify_InputTitleShowsProgressNotQuestion pins the fix for the
-// "long series of questions" UX bug: the input-line title must be a compact
-// progress cue ("... — 2 of 5"), NOT the full question text (which lives in
-// the card bubble). Previously the entire question/options were stuffed into
-// the editor title, so a long series ballooned the title with no progress cue.
+// "long series of questions" UX bug on the FREE-TEXT path: the input-line
+// title must be a compact progress cue ("... — 2 of 5"), NOT the full
+// question text (which lives in the card bubble). Previously the entire
+// question/options were stuffed into the editor title, so a long series
+// ballooned the title with no progress cue.
+//
+// (Cards WITH options no longer touch the editor title — they are answered
+// through a navigable selector overlay; see TestClarify_OptionsUseSelector.)
 func TestClarify_InputTitleShowsProgressNotQuestion(t *testing.T) {
 	term := &testTerminal{w: 100, h: 30}
 	engine := tui.NewTUI(term)
@@ -113,7 +118,7 @@ func TestClarify_InputTitleShowsProgressNotQuestion(t *testing.T) {
 	app := New(subs)
 
 	longQuestion := "Which of the many plausible approaches should the planner take when decomposing this work into independently schedulable sub-agent tasks?"
-	card := tui.NewClarifyCard("Clarifications needed", "ctx", longQuestion, []string{"option A", "option B"})
+	card := tui.NewClarifyCard("Clarifications needed", "ctx", longQuestion, nil) // free-text path
 	card.SetProgress(2, 5)
 
 	done := make(chan struct{})
@@ -189,6 +194,149 @@ func TestClarify_StandaloneTitleNoProgress(t *testing.T) {
 	if got != "Clarifications needed" {
 		t.Errorf("standalone title = %q, want %q", got, "Clarifications needed")
 	}
+}
+
+// clarifyKeyTerminal is a testTerminal that captures the input handler so a
+// test can drive selector keys (up/down/enter/esc) into the engine.
+type clarifyKeyTerminal struct {
+	testTerminal
+	onInput func(string)
+}
+
+func (t *clarifyKeyTerminal) Start(onInput func(string), _ func()) { t.onInput = onInput }
+
+func (t *clarifyKeyTerminal) sendKey(s string) {
+	if t.onInput != nil {
+		t.onInput(s)
+	}
+}
+
+// TestClarify_OptionsUseSelector pins the Pi showAuthSelect behavior: a
+// ClarifyCard WITH options is answered through a navigable selector overlay
+// (arrow keys + enter), NOT the free-text main input line. The editor title
+// must remain untouched and the picked option is returned.
+func TestClarify_OptionsUseSelector(t *testing.T) {
+	term := &clarifyKeyTerminal{}
+	term.w, term.h = 100, 30
+	engine := tui.NewTUI(term)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+	engine.RunLoops()
+
+	chat := tui.NewChatViewport()
+	inp := tui.NewEditor()
+	engine.AddChild(chat)
+	engine.AddChild(inp)
+	inp.SetTUI(engine)
+	engine.SetFocus(inp)
+
+	subs := testSubsystems()
+	subs.tuiEngine = engine
+	subs.chat = chat
+	subs.inputEditor = inp
+	app := New(subs)
+
+	card := tui.NewClarifyCard("OpenAI Codex login method", "", "Pick a login method",
+		[]string{"Sign in with browser", "Use a device code"})
+
+	type answer struct {
+		text string
+		ok   bool
+	}
+	ansCh := make(chan answer, 1)
+	go func() {
+		text, ok := app.clarify(card)
+		ansCh <- answer{text, ok}
+	}()
+
+	// Wait for the selector overlay to appear, then navigate down → enter.
+	waitForVisibleText(t, engine, "Sign in with browser")
+	engine.ApplySync(func() {
+		if got := inp.Title(); got != "" {
+			t.Errorf("editor title must stay untouched for option cards, got %q", got)
+		}
+		if app.pendingInput != nil {
+			t.Error("option cards must not register a main-input request")
+		}
+	})
+	term.sendKey("\x1b[B") // down → "Use a device code"
+	term.sendKey("\r")     // enter
+
+	select {
+	case got := <-ansCh:
+		if !got.ok || got.text != "Use a device code" {
+			t.Errorf("clarify = (%q, %v), want (%q, true)", got.text, got.ok, "Use a device code")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("clarify did not return after selector confirm")
+	}
+}
+
+// TestClarify_OptionsSelectorCancel verifies Esc on the option selector
+// reports cancellation (ok==false) rather than blocking forever.
+func TestClarify_OptionsSelectorCancel(t *testing.T) {
+	term := &clarifyKeyTerminal{}
+	term.w, term.h = 100, 30
+	engine := tui.NewTUI(term)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+	engine.RunLoops()
+
+	chat := tui.NewChatViewport()
+	engine.AddChild(chat)
+
+	subs := testSubsystems()
+	subs.tuiEngine = engine
+	subs.chat = chat
+	app := New(subs)
+
+	card := tui.NewClarifyCard("Pick", "", "?", []string{"a", "b"})
+	type answer struct {
+		text string
+		ok   bool
+	}
+	ansCh := make(chan answer, 1)
+	go func() {
+		text, ok := app.clarify(card)
+		ansCh <- answer{text, ok}
+	}()
+
+	waitForVisibleText(t, engine, "a")
+	term.sendKey("\x1b") // esc → cancel
+
+	select {
+	case got := <-ansCh:
+		if got.ok || got.text != "" {
+			t.Errorf("cancelled clarify = (%q, %v), want (\"\", false)", got.text, got.ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("clarify did not return after selector cancel")
+	}
+}
+
+// waitForVisibleText polls the rendered frame until substr appears.
+func waitForVisibleText(t *testing.T, engine *tui.TUI, substr string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		engine.RenderNow()
+		for _, l := range engine.AgentFrame().Visible {
+			if strings.Contains(l, substr) {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	var b strings.Builder
+	for _, l := range engine.AgentFrame().Visible {
+		b.WriteString(l)
+		b.WriteByte('\n')
+	}
+	t.Fatalf("frame never showed %q; visible:\n%s", substr, b.String())
 }
 
 func TestInitialFooterData_ResolvesProvider(t *testing.T) {
@@ -706,6 +854,41 @@ func TestFormatFooterStats(t *testing.T) {
 	}
 }
 
+// TestFormatFooterStats_ShowsProjectedContext is P20/CX8 acceptance criterion
+// 2: the footer's occupancy display reads the projected figure (the
+// provider-anchored next-request projection), not the stale estimate. The
+// estimate and the projection are deliberately different here: the footer must
+// show the projection's percentage.
+func TestFormatFooterStats_ShowsProjectedContext(t *testing.T) {
+	stats := formatFooterStats(sessionStats{
+		PromptN:          1500,
+		PredictedN:       800,
+		ContextEstimate:  2500, // stale estimate: 25%
+		ContextProjected: 8000, // projection: 80%
+		ContextMax:       10000,
+	})
+	if !strings.Contains(stats, "80.0%/10.0K") {
+		t.Errorf("expected projected context usage (80.0%%/10.0K), got %q", stats)
+	}
+	if strings.Contains(stats, "25.0%") {
+		t.Errorf("footer shows the stale estimate (25.0%%) instead of the projection, got %q", stats)
+	}
+}
+
+// TestFormatFooterStats_ProjectedFallsBackToEstimate verifies the footer
+// falls back to the estimate when no projection has been recorded (they are
+// equal then anyway).
+func TestFormatFooterStats_ProjectedFallsBackToEstimate(t *testing.T) {
+	stats := formatFooterStats(sessionStats{
+		ContextEstimate:  2500,
+		ContextProjected: 0,
+		ContextMax:       10000,
+	})
+	if !strings.Contains(stats, "25.0%/10.0K") {
+		t.Errorf("expected fallback context usage (25.0%%/10.0K), got %q", stats)
+	}
+}
+
 func TestFormatFooterStats_ToolCalls(t *testing.T) {
 	stats := formatFooterStats(sessionStats{
 		PromptN:         1500,
@@ -738,29 +921,163 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		PredictedN:      500,
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
+		LastCacheHit:    CacheHitTrend{Pct: 60, Seen: true, window: []float64{60}},
 		ContextEstimate: 2000,
 		ContextMax:      10000,
 	})
-	// 300 / (300+200) = 60% (cache hit = reads / (reads + writes))
-	if !strings.Contains(stats, "CH60.0%") {
-		t.Errorf("expected cache hit 60%%, got %q", stats)
+	// 300 / (300+200) = 60% (cache hit = reads / (reads + writes)).
+	// Format: CH:<avg>%▸<last>% — single observation, avg=last=60.
+	if !strings.Contains(stats, "CH:60.0%") {
+		t.Errorf("expected CH avg 60%%, got %q", stats)
+	}
+	if !strings.Contains(stats, "▸60.0%") {
+		t.Errorf("expected last cache hit 60%%, got %q", stats)
 	}
 	// Cache hit is shown even when PromptN is 0, as long as cache ops exist.
 	noPrompt := formatFooterStats(sessionStats{
 		PromptN:         0,
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
+		LastCacheHit:    CacheHitTrend{Pct: 60, Seen: true, window: []float64{60}},
 	})
-	if !strings.Contains(noPrompt, "CH60.0%") {
-		t.Errorf("expected cache hit 60%% when PromptN is 0, got %q", noPrompt)
+	if !strings.Contains(noPrompt, "CH:60.0%") {
+		t.Errorf("expected CH avg 60%% when PromptN is 0, got %q", noPrompt)
 	}
-	// No cache ops at all should not show CH.
+	if !strings.Contains(noPrompt, "▸60.0%") {
+		t.Errorf("expected last cache hit 60%% when PromptN is 0, got %q", noPrompt)
+	}
+	// No cache ops at all should not show a cache-hit rate.
 	noCache := formatFooterStats(sessionStats{
 		PromptN:    1000,
 		PredictedN: 500,
 	})
-	if strings.Contains(noCache, "CH") {
+	if strings.Contains(noCache, "▸") {
 		t.Errorf("expected no cache hit display when no cache ops, got %q", noCache)
+	}
+}
+
+// TestFormatFooterStats_LastCacheHit locks the status-bar cache-hit contract:
+// the format is CH:<avg>%▸<last>% where avg is the rolling average of the
+// last 10 observations and last is the most recent per-completion rate.
+func TestFormatFooterStats_LastCacheHit(t *testing.T) {
+	withLast := formatFooterStats(sessionStats{
+		LastCacheHit: CacheHitTrend{Pct: 41.9, Seen: true, window: []float64{41.9}},
+	})
+	if !strings.Contains(withLast, "CH:41.9%") {
+		t.Errorf("expected CH avg, got %q", withLast)
+	}
+	if !strings.Contains(withLast, "▸41.9%") {
+		t.Errorf("expected per-completion rate, got %q", withLast)
+	}
+	// No per-completion observation → no CH/▸ part.
+	noLast := formatFooterStats(sessionStats{
+		CacheReadTotal:  900,
+		CacheWriteTotal: 100,
+	})
+	if strings.Contains(noLast, "▸") {
+		t.Errorf("expected no per-completion rate without observation, got %q", noLast)
+	}
+	if strings.Contains(noLast, "CH:") {
+		t.Errorf("expected no CH without observation, got %q", noLast)
+	}
+}
+
+// TestFormatCacheHitPart_Colors locks the CH evolution coloring:
+// bold green growing / green stable or minor change (<5pts drop) / red
+// significant drop (>=5pts); first observation (no baseline) is green.
+// The prefix checked is the AVG color (first element in the output).
+func TestFormatCacheHitPart_Colors(t *testing.T) {
+	const (
+		green = "\x1b[38;2;63;185;80m" // ansi.Fg("#3fb950")
+		red   = "\x1b[38;2;248;81;73m" // ansi.Fg("#f85149")
+	)
+	cases := []struct {
+		name string
+		tr   CacheHitTrend
+		want string // SGR prefix (avg color, first element)
+	}{
+		{"first observation is stable green", CacheHitTrend{Pct: 50, Seen: true, window: []float64{50}}, green},
+		{"growing is bold green", CacheHitTrend{Pct: 52, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 52}}, ansi.Bold + green},
+		{"stable is green", CacheHitTrend{Pct: 50, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 50}}, green},
+		{"slight grow is green", CacheHitTrend{Pct: 50.5, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 50.5}}, green},
+		{"minor drop <5pts stays green", CacheHitTrend{Pct: 47, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 47}}, green},
+		{"drop of exactly 5pts: avg green, last red", CacheHitTrend{Pct: 45, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 45}}, green}, // avg delta -2.5 → green, last delta -5 → red
+		{"drop >5pts is red", CacheHitTrend{Pct: 10, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 10}}, red},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatLastCacheHitPart(tc.tr)
+			if !strings.HasPrefix(got, tc.want) {
+				t.Errorf("formatLastCacheHitPart(%+v) = %q, want prefix %q", tc.tr, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFormatCacheHitPart_PerElementColors verifies that avg and last are
+// colored independently: the avg reflects its own trend, and the last
+// reflects its own trend, each with the >=5pt threshold.
+func TestFormatCacheHitPart_PerElementColors(t *testing.T) {
+	const (
+		green = "\x1b[38;2;63;185;80m" // ansi.Fg("#3fb950")
+		red   = "\x1b[38;2;248;81;73m" // ansi.Fg("#f85149")
+		reset = "\x1b[0m"
+	)
+	cases := []struct {
+		name     string
+		tr       CacheHitTrend
+		wantAvg  string // expected SGR for the CH:<avg>% element
+		wantLast string // expected SGR for the ▸<last>% element
+	}{
+		{
+			name:     "avg minor drop, last significant drop",
+			tr:       CacheHitTrend{Pct: 40, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 50, 40}},
+			wantAvg:  green, // avg: (50+50+40)/3 = 46.67, prevAvg: 50, delta = -3.3 (< 5)
+			wantLast: red,   // last: 40 vs prev 50, delta = -10 (>= 5)
+		},
+		{
+			name:     "avg significant drop, last stable",
+			tr:       CacheHitTrend{Pct: 50, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{80, 80, 50}},
+			wantAvg:  red,   // avg: (80+80+50)/3 = 70, prevAvg: 80, delta = -10 (>= 5)
+			wantLast: green, // last: 50 vs prev 50, delta = 0
+		},
+		{
+			name:     "both stable",
+			tr:       CacheHitTrend{Pct: 75, PrevPct: 75, Seen: true, HasPrev: true, window: []float64{75, 75}},
+			wantAvg:  green,
+			wantLast: green,
+		},
+		{
+			name:     "both significant drop",
+			tr:       CacheHitTrend{Pct: 10, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 50, 10}},
+			wantAvg:  red, // avg: (50+50+10)/3 = 36.67, prevAvg: 50, delta = -13.3 (>= 5)
+			wantLast: red, // last: 10 vs prev 50, delta = -40 (>= 5)
+		},
+		{
+			name:     "minor fluctuation stays green",
+			tr:       CacheHitTrend{Pct: 73, PrevPct: 75, Seen: true, HasPrev: true, window: []float64{75, 74, 73}},
+			wantAvg:  green, // avg: 74, prevAvg: 74.5, delta = -0.5 (< 5)
+			wantLast: green, // last: 73 vs 75, delta = -2 (< 5)
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatLastCacheHitPart(tc.tr)
+			// Format: <avgColor>CH:<avg>%<reset><lastColor>▸<last>%<reset>
+			// Find the reset between avg and last to split them.
+			idx := strings.Index(got, reset)
+			if idx < 0 {
+				t.Fatalf("formatLastCacheHitPart missing reset: %q", got)
+			}
+			avgPart := got[:idx+len(reset)]
+			lastPart := got[idx+len(reset):]
+			if !strings.HasPrefix(avgPart, tc.wantAvg) {
+				t.Errorf("avg part = %q, want prefix %q", avgPart, tc.wantAvg)
+			}
+			if !strings.HasPrefix(lastPart, tc.wantLast) {
+				t.Errorf("last part = %q, want prefix %q", lastPart, tc.wantLast)
+			}
+		})
 	}
 }
 
@@ -966,7 +1283,7 @@ func TestSetupEventHandlers_DoneNotClosedBeforeEngineStop(t *testing.T) {
 }
 
 // TestLogTurnStats_NoStatsTurnAnnotated is the regression test for the
-// identical-stats anomaly (bugs.md runaway-loop entry): turns that never
+// identical-stats anomaly (runaway-loop entry): turns that never
 // reached the LLM (guardrail latch, connection error) must log a distinct
 // "no LLM call" line instead of re-logging the previous turn's stale,
 // byte-identical token counts.

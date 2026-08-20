@@ -22,6 +22,7 @@ import (
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tui"
 )
 
 func newTestSubsystems(dir string) *subsystems {
@@ -54,6 +55,37 @@ func TestPromptContextBanner(t *testing.T) {
 		toolBytes, toolBytes/4)
 	if got != want {
 		t.Errorf("promptContextBanner = %q, want %q", got, want)
+	}
+}
+
+// TestShowStickySkillBanner verifies the startup banner reports the
+// always-on (sticky) knowledge skills — sticky must be visible at start —
+// and stays silent when none are sticky.
+func TestShowStickySkillBanner(t *testing.T) {
+	build := func(sticky []bool) []string {
+		var list []skills.SkillSummary
+		for i, isSticky := range sticky {
+			list = append(list, skills.SkillSummary{
+				Name:     fmt.Sprintf("skill-%d", i),
+				Category: skills.SkillCategoryKnowledge,
+				Sticky:   isSticky,
+			})
+		}
+		chat := tui.NewChatViewport()
+		showStickySkillBanner(nil, chat, list)
+		return chat.Render(80)
+	}
+
+	lines := build([]bool{false, true, false, true})
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "Sticky skills (always-on): skill-1, skill-3") {
+		t.Errorf("banner should list sticky skills skill-1 and skill-3, got:\n%s", joined)
+	}
+
+	lines = build([]bool{false, false})
+	joined = strings.Join(lines, "\n")
+	if strings.Contains(joined, "Sticky skills") {
+		t.Errorf("banner should stay silent with no sticky skills, got:\n%s", joined)
 	}
 }
 
@@ -558,5 +590,37 @@ func TestBuildSelfDocSection_GeneratedFromEmbeddedDocs(t *testing.T) {
 	}
 	if !strings.Contains(section, "Read embedded docs") {
 		t.Errorf("missing read-tool guidance:\n%s", section)
+	}
+}
+
+// TestAvailableSkillsSection_FiltersModelInvocable is the P16 acceptance for
+// the model-facing <available_skills> section: a user_invocable:false skill
+// never appears in what the model sees, and neither does a
+// model_invocable:false skill.
+func TestAvailableSkillsSection_FiltersModelInvocable(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "plain", "name: plain\ndescription: Plain\ncategory: action")
+	writeTestSkill(t, dir, "model-off", "name: model-off\ndescription: Model off\ncategory: action\nmodel_invocable: false")
+	writeTestSkill(t, dir, "user-off", "name: user-off\ndescription: User off\ncategory: action\nuser_invocable: false")
+
+	skillReg := skills.NewSkillRegistry([]string{filepath.Join(dir, ".goa", "skills")})
+	if err := skillReg.LoadAll(); err != nil {
+		t.Fatalf("load skills: %v", err)
+	}
+
+	subs := newTestSubsystems(dir)
+	subs.skillRegistry = skillReg
+	subs.toolRegistry = tools.NewToolRegistry()
+	subs.toolRegistry.Register(&mockTool{name: "run_skill"})
+
+	got := availableSkillsSection(subs)
+	if !strings.Contains(got, "plain") {
+		t.Errorf("plain skill should be advertised to the model:\n%s", got)
+	}
+	if strings.Contains(got, "model-off") {
+		t.Errorf("model_invocable:false skill must not be advertised to the model:\n%s", got)
+	}
+	if strings.Contains(got, "user-off") {
+		t.Errorf("user_invocable:false skill must never appear in the model's tool schema:\n%s", got)
 	}
 }

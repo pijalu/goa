@@ -88,7 +88,7 @@ func DetectOpenAICompat(model Model) OpenAICompletionsCompat {
 	// serialization contract, not an endpoint property: a DeepSeek model
 	// proxied under another provider (e.g. opencode zen's
 	// deepseek-v4-flash-free) must inherit the flag even when the
-	// provider/URL fingerprint says nothing about DeepSeek (bugs.md
+	// provider/URL fingerprint says nothing about DeepSeek
 	// thinking-mode 400). Endpoint-keyed flags (isZai, isMoonshot, ...)
 	// deliberately do NOT match on model id — max_tokens field, store
 	// support, developer role etc. depend on the serving endpoint.

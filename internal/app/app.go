@@ -6,6 +6,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +21,7 @@ import (
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/acp"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
+	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/usage"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
@@ -58,9 +60,10 @@ type App struct {
 	// survive mid-session context resets — this flag re-arms on
 	// EventContextReset so a fresh-context goal's cold start is not counted
 	// as a cache bust.
-	cacheReadEstablished bool
-	tokenSessionMax      int
-	tokenSessionEstimate int
+	cacheReadEstablished  bool
+	tokenSessionMax       int
+	tokenSessionEstimate  int
+	tokenSessionProjected int
 
 	// Last-turn tracking.
 	lastTurnPromptN    int
@@ -85,7 +88,7 @@ type App struct {
 	// last turn end. Turns that never reached the LLM (latch errors,
 	// connection failures) log a distinct "no LLM call" line instead of
 	// re-logging the previous turn's byte-identical stale numbers
-	// (bugs.md runaway-loop identical-stats anomaly).
+	// (runaway-loop identical-stats anomaly).
 	turnStatsSeen bool
 
 	// usageStore records per-turn token usage to the global SQLite DB for
@@ -110,11 +113,14 @@ type App struct {
 	// Compression counters for the footer.
 	microCompacts int
 	compacts      int
+	// compactions documents each completed compression round (per-round
+	// session-stats record). Guarded by statsMu like the counters above.
+	compactions []CompactionRound
 
-	// Previous cache hit percentage for cache-hit evolution tracking.
-	// Used to color the CH% footer stat based on whether the cache hit rate
-	// is growing, dropping, or stable.
-	prevCacheHitPct float64
+	// Cache hit rate trend for the footer CH stat: the last completion's
+	// rate plus a rolling window of the last 10 rates for the CH:<avg>%
+	// segment. Each element is colored independently by its own evolution.
+	lastCacheHit CacheHitTrend
 
 	// Status tracking for granular footer/status messages.
 	toolResultsSeen      int
@@ -220,6 +226,12 @@ func (a *App) Run() bool {
 		card.SetProgress(step, total)
 		return a.clarify(card)
 	})
+	// Attach the sandbox escalation approval path (bash sandbox surface). The
+	// approver routes through the same perms-driven decision as tool
+	// confirmation; headless builds stay fail-closed (no approver wired).
+	attachEscalationApprover(subs.toolRegistry, func(ctx context.Context, req sandbox.EscalationRequest) (bool, error) {
+		return a.approveSandboxEscalation(ctx, engine, req)
+	})
 	a.wireToolConfirmation(engine)
 	a.loadPersistedPathApprovals()
 	showStartupBanner(subs, chat)
@@ -237,6 +249,10 @@ func (a *App) Run() bool {
 	a.startAsyncPluginLoad(engine)
 
 	done := a.setupEventHandlers(engine, chat, inp)
+	// P22/DS6: hot-reload config edits from disk for the interactive session.
+	// Started before the event loops so an edit made while the app runs
+	// applies on the next request; stopped on shutdown (no goroutine leaks).
+	a.subs.startConfigWatcher()
 	engine.RunLoops() // launch the commandLoop (sole state owner) + renderLoop
 	// Startup-done hook: fires the title transition when the async loads
 	// (plugins + history) complete, or at the 5s fallback — whichever first.
@@ -254,6 +270,7 @@ func (a *App) Run() bool {
 		a.usageStore = nil
 	}
 	engine.Stop()
+	a.subs.stopConfigWatcher()
 
 	if subs.runWizard {
 		fmt.Println("\n⟡  Launching setup wizard...")
@@ -512,22 +529,34 @@ func (a *App) requestMainInputWithCancel(prompt string, onSubmit func(string), o
 	}
 }
 
+// clarifyResult is the outcome of a clarify round: the user's answer text and
+// whether they confirmed (false = cancelled).
+type clarifyResult struct {
+	text string
+	ok   bool
+}
+
 // clarify renders a ClarifyCard in the conversation and blocks until the user
-// answers on the main input line. It is the host backend for the
-// ask_user_question tool (core.Context.ClarifyFunc). Because tool execution
-// happens off the commandLoop, ALL state mutations (card append, pendingInput
-// registration, title set) are routed through app.apply so the commandLoop
-// remains the sole mutator. The blocking happens here on the tool goroutine.
+// answers. It is the host backend for the ask_user_question tool
+// (core.Context.ClarifyFunc). Because tool execution happens off the
+// commandLoop, ALL state mutations (card append, pendingInput registration,
+// title set) are routed through app.apply so the commandLoop remains the sole
+// mutator. The blocking happens here on the tool goroutine.
+//
+// Answer discipline mirrors Pi's login dialog: a card WITH options is answered
+// by picking from a navigable option list (selector overlay — arrow keys +
+// enter, esc cancels); a card without options keeps the free-text main input
+// line. The card bubble stays in the conversation as context either way.
 func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
-	type result struct {
-		text string
-		ok   bool
-	}
-	resCh := make(chan result, 1)
+	resCh := make(chan clarifyResult, 1)
 
 	a.apply(func() {
 		if a.subs.chat != nil {
 			a.subs.chat.AddClarifyCard(card)
+		}
+		if len(card.Options()) > 0 {
+			a.clarifyWithOptionList(card, resCh)
+			return
 		}
 		// The question and options live in the card bubble; the input-line title
 		// is only a compact cue. For a multi-question batch, show progress
@@ -546,9 +575,9 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 			inp.SetText("")
 		}
 		a.requestMainInputWithCancel(prompt, func(text string) {
-			resCh <- result{text, true}
+			resCh <- clarifyResult{text, true}
 		}, func() {
-			resCh <- result{"", false}
+			resCh <- clarifyResult{"", false}
 		})
 		if a.subs.tuiEngine != nil {
 			a.subs.tuiEngine.RequestRender()
@@ -557,6 +586,45 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 
 	r := <-resCh
 	return r.text, r.ok
+}
+
+// clarifyWithOptionList answers an option-carrying ClarifyCard through a
+// navigable selector overlay (Pi showAuthSelect style) instead of the
+// free-text main input. The selector title carries the card title plus the
+// compact batch-progress cue; the highlighted row is the one whose label or
+// number the user confirms with Enter; Esc/Ctrl+C cancels (ok==false).
+// Runs on the commandLoop (via clarify's apply). Falls back to the free-text
+// input path when no engine is wired.
+func (a *App) clarifyWithOptionList(card *tui.ClarifyCard, resCh chan<- clarifyResult) {
+	engine := a.subs.tuiEngine
+	if engine == nil {
+		resCh <- clarifyResult{"", false}
+		return
+	}
+	title := card.Title()
+	if label := card.ProgressLabel(); label != "" {
+		title = strings.TrimSpace(title + " — " + label)
+	}
+	if title == "" {
+		title = card.Question()
+	}
+	options := card.Options()
+	items := make([]tui.SelectorItem, 0, len(options))
+	for _, opt := range options {
+		items = append(items, tui.SelectorItem{
+			Value:         opt,
+			Label:         opt,
+			PreserveOrder: true,
+		})
+	}
+	selCh := engine.ShowSelector(title, items, "")
+	go func() {
+		sel := <-selCh
+		// Deliver on the commandLoop so the wake-up is serialized with the
+		// rest of the UI state, mirroring how SelectOptionFunc callbacks are
+		// marshalled in commandcontext.go.
+		a.apply(func() { resCh <- clarifyResult{sel, sel != ""} })
+	}()
 }
 
 // clearMainInputRequest clears any pending main-input request and restores the
@@ -666,6 +734,8 @@ func (a *App) reloadSkills() {
 	reg.SetTrustChecker(newSkillTrustChecker(trustMgr))
 	reg.SetDisabled(cfg.Skills.Disabled)
 	reg.SetEnabled(cfg.Skills.Enabled)
+	reg.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
+	reg.SetEmbeddedEnabled(cfg.Skills.EmbeddedEnabled)
 	if err := reg.LoadAll(); err != nil {
 		log.Printf("Warning: failed to reload skills after trust: %v\n", err)
 		return

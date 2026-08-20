@@ -55,7 +55,7 @@ func wrapDetail(text string, width int) []string {
 		inner = 1
 	}
 	// Reasons/expectations are model-authored and may contain newlines;
-	// ansi.Wrap is single-paragraph only, so split paragraphs first (bugs.md
+	// ansi.Wrap is single-paragraph only, so split paragraphs first
 	// "Corruption on goal change").
 	var out []string
 	for _, wl := range wrapParagraphs(text, inner) {

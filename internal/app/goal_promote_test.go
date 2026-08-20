@@ -20,11 +20,16 @@ import (
 
 // promoteRecordingRunner is a core.AgentRunner that records the objective of
 // the goal each continuation turn ran for, then completes the goal so the
-// drive loop exits after one turn.
+// drive loop exits after one turn. When hold is non-nil, Run blocks on it
+// after recording and before completing: tests that assert the promoted
+// goal's state after the driver kick use it to park the drive goroutine
+// mid-turn — without it the goroutine completes (and clears) the goal before
+// the test goroutine reads it, racing the assertion.
 type promoteRecordingRunner struct {
 	mu         sync.Mutex
 	objectives []string
 	mode       *goal.GoalMode
+	hold       <-chan struct{}
 }
 
 func (r *promoteRecordingRunner) Run(_ context.Context, _ string) error {
@@ -35,6 +40,9 @@ func (r *promoteRecordingRunner) Run(_ context.Context, _ string) error {
 	r.mu.Lock()
 	r.objectives = append(r.objectives, objective)
 	r.mu.Unlock()
+	if r.hold != nil {
+		<-r.hold
+	}
 	_, _ = r.mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorRuntime)
 	return nil
 }
@@ -272,6 +280,12 @@ func TestHandleGoalUpdate_ModelCancelClearPromotesPaused(t *testing.T) {
 func TestHandleGoalUpdate_RuntimeCancelClearStartsNext(t *testing.T) {
 	a, mode, runner := newCancelPolicyTestApp(t)
 
+	// Park the drive goroutine mid-turn (recorded run, pre-completion) so the
+	// promoted goal is still active when asserted below, not DONE-and-cleared.
+	release := make(chan struct{})
+	runner.hold = release
+	t.Cleanup(func() { close(release) })
+
 	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil, Change: clearChange(goal.GoalActorRuntime)})
 
 	g := mode.GetGoal().Goal
@@ -367,6 +381,13 @@ func TestHandleGoalUpdate_PauseOnCompleteDoesNotLeak(t *testing.T) {
 	if _, err := a.subs.goalManager.Queue.AppendGoal(goal.UpcomingGoalInput{Objective: "second objective"}); err != nil {
 		t.Fatalf("append second goal: %v", err)
 	}
+	// Park the drive goroutine mid-turn — after it records its run, before it
+	// completes the goal. The promotion below kicks the driver synchronously,
+	// and the goroutine otherwise completes (and clears) the goal before the
+	// assertions read it: the CI flake "promoted goal = <nil>, want active".
+	release := make(chan struct{})
+	runner.hold = release
+	t.Cleanup(func() { close(release) })
 	// The synthetic events bypass the real mode: clear the paused goal the
 	// way a completing goal would (markCompleteLocked empties the mode
 	// before its clear event reaches this consumer), or the second

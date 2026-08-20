@@ -78,7 +78,7 @@ func TestTodoSummaryLine(t *testing.T) {
 	}
 }
 
-// TestTodoMutationsPublishSnapshots (bugs.md Issue 4): todo add/update must
+// TestTodoMutationsPublishSnapshots (Issue 4): todo add/update must
 // publish a goal snapshot so the footer's ⬩ pending-todo markers refresh
 // live — a silent persist left the status line stale until the next goal
 // lifecycle event.
@@ -112,7 +112,7 @@ func TestTodoMutationsPublishSnapshots(t *testing.T) {
 }
 
 // TestRenameGoalTodo renames an existing todo and persists it (replay-safe),
-// publishing a snapshot like every other todo mutation (bugs.md Issue 5).
+// publishing a snapshot like every other todo mutation (Issue 5).
 func TestRenameGoalTodo(t *testing.T) {
 	st := &testStore{}
 	pub := &testPublisher{}
@@ -154,7 +154,7 @@ func TestRenameGoalTodo(t *testing.T) {
 }
 
 // TestRemoveGoalTodo deletes a todo, keeps IDs of the survivors stable, and
-// persists the removal through replay (bugs.md Issue 5).
+// persists the removal through replay (Issue 5).
 func TestRemoveGoalTodo(t *testing.T) {
 	st := &testStore{}
 	pub := &testPublisher{}

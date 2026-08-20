@@ -25,6 +25,7 @@ func (c *Config) DeepMerge(other *Config) {
 	c.mergePrompts(other)
 	c.mergeThinkingLevels(other)
 	c.mergeContextCompression(other)
+	c.mergeTimeContext(other)
 	c.mergeTelegram(other)
 	c.mergePermissions(other)
 	c.mergeOrchestrator(other)
@@ -166,6 +167,9 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	}
 	if src.StreamLoopMaxRepeats != 0 {
 		dst.StreamLoopMaxRepeats = src.StreamLoopMaxRepeats
+	}
+	if src.StreamLoopMinPeriod != 0 {
+		dst.StreamLoopMinPeriod = src.StreamLoopMinPeriod
 	}
 	if src.StreamLoopMaxStrikes != 0 {
 		dst.StreamLoopMaxStrikes = src.StreamLoopMaxStrikes
@@ -336,6 +340,12 @@ func (c *Config) mergeSkills(other *Config) {
 	c.Skills.Enabled = uniqueStrings(c.Skills.Enabled)
 	c.Skills.Disabled = append(c.Skills.Disabled, other.Skills.Disabled...)
 	c.Skills.Disabled = uniqueStrings(c.Skills.Disabled)
+	c.Skills.EmbeddedEnabled = append(c.Skills.EmbeddedEnabled, other.Skills.EmbeddedEnabled...)
+	c.Skills.EmbeddedEnabled = uniqueStrings(c.Skills.EmbeddedEnabled)
+	c.Skills.Sticky = append(c.Skills.Sticky, other.Skills.Sticky...)
+	c.Skills.Sticky = uniqueStrings(c.Skills.Sticky)
+	c.Skills.StickyOff = append(c.Skills.StickyOff, other.Skills.StickyOff...)
+	c.Skills.StickyOff = uniqueStrings(c.Skills.StickyOff)
 }
 
 // mergeMCP merges MCP server definitions. Servers are keyed by name; a server
@@ -413,6 +423,7 @@ func (c *Config) mergeTools(other *Config) {
 	mergeEditFile(&c.Tools.Edit, &other.Tools.Edit)
 	mergeWriteFile(&c.Tools.Write, &other.Tools.Write)
 	mergePython(&c.Tools.Python, &other.Tools.Python)
+	mergeRunCode(&c.Tools.RunCode, &other.Tools.RunCode)
 	other.Tools.Enabled.ApplyTo(&c.Tools.Enabled)
 }
 
@@ -443,6 +454,16 @@ func mergePython(dst, src *PythonConfig) {
 	if src.TimeoutSeconds != 0 {
 		dst.TimeoutSeconds = src.TimeoutSeconds
 	}
+}
+
+// mergeRunCode merges the run_code tool config, preserving defaults for unset
+// scalar fields so embedded defaults are not zeroed by a config layer that
+// only touches other fields. The *bool Jail pointer is copied only when
+// explicitly set (nil = keep the default), so the default jailed worker can
+// be opted out with jail: false and survives unrelated merges. Disabling the
+// tool entirely is handled through tools.enabled.run_code.
+func mergeRunCode(dst, src *RunCodeConfig) {
+	mergeNonZeroScalars(reflect.ValueOf(dst).Elem(), reflect.ValueOf(src).Elem())
 }
 
 // mergeWriteFile merges the write tool config. Write does not support fuzzy
@@ -674,6 +695,9 @@ func (c *Config) mergeContextCompression(other *Config) {
 	if cc.Strategy != "" {
 		c.ContextCompression.Strategy = cc.Strategy
 	}
+	if cc.OnErrorStrategy != "" {
+		c.ContextCompression.OnErrorStrategy = cc.OnErrorStrategy
+	}
 	if cc.CacheGate != "" {
 		c.ContextCompression.CacheGate = cc.CacheGate
 	}
@@ -681,6 +705,7 @@ func (c *Config) mergeContextCompression(other *Config) {
 	mergeCompressionStrategies(&c.ContextCompression.Strategies, cc.Strategies)
 	mergeCompressionPerModel(&c.ContextCompression.PerModel, cc.PerModel)
 	mergeMicroCompaction(&c.ContextCompression.MicroCompaction, cc.MicroCompaction)
+	mergeToolResultPruning(&c.ContextCompression.ToolResultPruning, cc.ToolResultPruning)
 }
 
 // contextCompressionLayerEmpty reports whether a cascade layer carries no
@@ -692,11 +717,13 @@ func contextCompressionLayerEmpty(cc ContextCompressionConfig) bool {
 		cc.ThresholdPercent == 0 &&
 		cc.PreserveRecentTurns == 0 &&
 		cc.Strategy == "" &&
+		cc.OnErrorStrategy == "" &&
 		cc.CacheGate == "" &&
 		cc.Thresholds == (CompressionThresholdsConfig{}) &&
 		cc.Strategies == (CompressionLayerStrategiesConfig{}) &&
 		len(cc.PerModel) == 0 &&
-		cc.MicroCompaction == (MicroCompactionSettings{})
+		cc.MicroCompaction == (MicroCompactionSettings{}) &&
+		cc.ToolResultPruning == (ToolResultPruningSettings{})
 }
 
 // mergeCompressionStrategies overlays non-empty per-layer strategy fields.
@@ -715,6 +742,9 @@ func mergeCompressionStrategies(dst *CompressionLayerStrategiesConfig, src Compr
 // mergeMicroCompaction overlays micro-compaction settings field-wise so a
 // higher layer setting one key does not reset the others to zero.
 func mergeMicroCompaction(dst *MicroCompactionSettings, src MicroCompactionSettings) {
+	if src.Enabled != nil {
+		dst.Enabled = src.Enabled
+	}
 	if src.KeepRecentMessages != 0 {
 		dst.KeepRecentMessages = src.KeepRecentMessages
 	}
@@ -729,6 +759,20 @@ func mergeMicroCompaction(dst *MicroCompactionSettings, src MicroCompactionSetti
 	}
 	if src.MinContextRatio != 0 {
 		dst.MinContextRatio = src.MinContextRatio
+	}
+}
+
+// mergeToolResultPruning overlays tool-result pruner settings field-wise so a
+// higher layer setting one key does not reset the others to zero.
+func mergeToolResultPruning(dst *ToolResultPruningSettings, src ToolResultPruningSettings) {
+	if src.ThresholdChars != 0 {
+		dst.ThresholdChars = src.ThresholdChars
+	}
+	if src.HeadChars != 0 {
+		dst.HeadChars = src.HeadChars
+	}
+	if src.TailChars != 0 {
+		dst.TailChars = src.TailChars
 	}
 }
 
@@ -768,6 +812,21 @@ func mergeCompressionPerModel(dst *map[string]ModelCompressionOverride, src map[
 			m.PreserveRecentTurns = o.PreserveRecentTurns
 		}
 		(*dst)[id] = m
+	}
+}
+
+// mergeTimeContext merges the temporal-context injection section (CX6). The
+// enable switch follows the enable-only cascade pattern (default is off, so
+// higher layers can only turn it on); zone and interval propagate when set.
+func (c *Config) mergeTimeContext(other *Config) {
+	if other.TimeContext.Enabled {
+		c.TimeContext.Enabled = true
+	}
+	if other.TimeContext.TimeZone != "" {
+		c.TimeContext.TimeZone = other.TimeContext.TimeZone
+	}
+	if other.TimeContext.RefreshInterval != "" {
+		c.TimeContext.RefreshInterval = other.TimeContext.RefreshInterval
 	}
 }
 

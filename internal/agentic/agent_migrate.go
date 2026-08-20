@@ -163,13 +163,20 @@ func roleToProviderRole(r Role) provider.Role {
 }
 
 // migrateSchemas converts old ToolSchema slices to provider.ToolSchema slices.
-func migrateSchemas(schemas []ToolSchema) []provider.ToolSchema {
+// The input schemas are projected for the model's provider family (P6):
+// OpenAI-family models keep the schemas byte-identical, while Gemini/Moonshot
+// drop the JSON Schema keywords their dialects reject.
+func migrateSchemas(schemas []ToolSchema, model provider.Model) []provider.ToolSchema {
 	result := make([]provider.ToolSchema, len(schemas))
 	for i, s := range schemas {
+		input := s.Schema
+		if projected := provider.ProjectToolSchema(model, input); projected != nil {
+			input = projected
+		}
 		result[i] = provider.ToolSchema{
 			Name:        s.Name,
 			Description: s.Description,
-			InputSchema: s.Schema,
+			InputSchema: input,
 		}
 	}
 	return result

@@ -126,7 +126,7 @@ func TestMarker_NoReasonStaysSingleLine(t *testing.T) {
 	}
 }
 
-// TestMarker_MultiLineReason pins the bugs.md "Corruption on goal change"
+// TestMarker_MultiLineReason pins the Corruption on goal change:
 // fix: model-supplied reasons routinely contain newlines; every rendered row
 // must be a single visual line (no embedded "\n").
 func TestMarker_MultiLineReason(t *testing.T) {

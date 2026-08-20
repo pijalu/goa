@@ -89,15 +89,15 @@ func (t *AskUserQuestionTool) Schema() agentic.ToolSchema {
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"summary":  map[string]any{"type": "string", "description": "Optional context explaining why the question is asked."},
+							"summary":  map[string]any{"type": "string", "description": "Optional context for the question."},
 							"question": map[string]any{"type": "string", "description": "The question itself (required)."},
 							"options": map[string]any{
 								"type":        "array",
 								"description": "answer choices (max 6)",
 								"items":       map[string]any{"type": "string"},
 							},
-							"required":        map[string]any{"type": "boolean", "description": "If true, cancellation is an error. Default false."},
-							"allow_free_text": map[string]any{"type": "boolean", "description": "If false with options, restrict to listed options. Default true."},
+							"required":        map[string]any{"type": "boolean", "description": "If true, cancellation is an error."},
+							"allow_free_text": map[string]any{"type": "boolean", "description": "If false with options, restrict to listed options."},
 						},
 						"required": []string{"question"},
 					},

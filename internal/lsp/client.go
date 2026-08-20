@@ -323,7 +323,7 @@ type ServerInfo struct {
 // ServerCapabilities is a subset of LSP server capabilities. Provider flags
 // are `any` because the spec allows `boolean | object` (e.g. pyright sends
 // {"workDoneProgress":true}); a strict bool broke every pyright initialize
-// handshake (bugs.md Issue LSP). The values are informational only.
+// handshake (Issue LSP). The values are informational only.
 type ServerCapabilities struct {
 	TextDocumentSync        any `json:"textDocumentSync,omitempty"`
 	DefinitionProvider      any `json:"definitionProvider,omitempty"`

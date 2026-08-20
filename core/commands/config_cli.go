@@ -194,7 +194,7 @@ func applyConfigSet(ctx core.Context, key, value string) error {
 	// own range, but cross-field invariants (e.g. compression thresholds
 	// soft ≤ trigger ≤ hard) are enforced by Config.Validate. Without this
 	// gate /config could apply and persist a configuration that fails
-	// validation on the next start (bugs.md).
+	// validation on the next start.
 	candidate := ctx.Config.DeepCopy()
 	if err := setConfigField(candidate, path, value); err != nil {
 		writeFmt(ctx, "Invalid value for %s: %v\n", key, err)
@@ -279,14 +279,22 @@ func syncLoopDetectorConfig(ctx core.Context, key string) bool {
 		if ctx.LoopDetector != nil {
 			ctx.LoopDetector.SetLoopThresholds(exec.LoopWarning, exec.LoopInterrupt)
 		}
-	case "execution.stream_loop_max_repeats":
-		if ctx.LoopDetector != nil {
-			ctx.LoopDetector.SetStreamMaxRepeats(exec.StreamLoopMaxRepeats)
-		}
+	case "execution.stream_loop_max_repeats", "execution.stream_loop_min_period":
+		syncStreamLoopThresholds(ctx.LoopDetector, exec)
 	default:
 		return false
 	}
 	return true
+}
+
+// syncStreamLoopThresholds pushes the stream-loop numeric knobs to the live
+// detector (nil-safe; invalid values restore detector defaults).
+func syncStreamLoopThresholds(ld *core.LoopDetector, exec config.ExecutionConfig) {
+	if ld == nil {
+		return
+	}
+	ld.SetStreamMaxRepeats(exec.StreamLoopMaxRepeats)
+	ld.SetStreamMinPeriod(exec.StreamLoopMinPeriod)
 }
 
 func syncRuntimeConfig(ctx core.Context, key, value string) error {
@@ -320,13 +328,23 @@ func persistConfigValue(ctx core.Context, key string, path []string, value strin
 	if override, ok := configSavePaths[key]; ok {
 		savePath = override
 	}
+	// Per-model compression overrides: an empty value means "clear this field so
+	// the model inherits the global section". Persist that as a key removal
+	// rather than writing an empty scalar, so the override entry stays clean
+	// (and disappears entirely once its last field is cleared).
+	if _, _, isPerModel := parsePerModelCompressionKey(path); isPerModel && value == "" {
+		if err := ctx.ConfigSaver.DeleteHomeField(savePath); err != nil {
+			return fmt.Errorf("cleared %s in memory, but failed to persist the clear: %v", key, err)
+		}
+		return nil
+	}
 	if err := ctx.ConfigSaver.SaveHomeField(savePath, scalarValue(value)); err != nil {
 		return fmt.Errorf("set %s = %s (in memory, but failed to persist: %v)", key, value, err)
 	}
 	// Setting the tiered trigger_percent clears the deprecated legacy
 	// threshold_percent alias (see setTriggerPercentClearLegacy); remove the
 	// legacy key from the home config too so it cannot re-shadow the tiered
-	// value after a reload (bugs.md Issue 2).
+	// value after a reload (Issue 2).
 	if key == "context_compression.thresholds.trigger_percent" {
 		if err := ctx.ConfigSaver.DeleteHomeField([]string{"context_compression", "threshold_percent"}); err != nil {
 			return fmt.Errorf("set %s = %s (in memory, but failed to clear legacy threshold_percent: %v)", key, value, err)
@@ -479,39 +497,48 @@ var configSetters = map[string]configSetter{
 	"context_compression.thresholds.soft_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.SoftPercent }, 0, 100),
 	"context_compression.thresholds.trigger_percent": setTriggerPercentClearLegacy,
 	"context_compression.thresholds.hard_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.HardPercent }, 0, 100),
-	"context_compression.strategies.soft":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Soft }, true),
-	"context_compression.strategies.trigger":         setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Trigger }, false),
-	"context_compression.strategies.hard":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Hard }, false),
+	"context_compression.strategies.soft":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Soft }),
+	"context_compression.strategies.trigger":         setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Trigger }),
+	"context_compression.strategies.hard":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Hard }),
 	"context_compression.cache_gate":                 setCacheGate,
 	"context_compression.max_tokens":                 setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
 	"context_compression.on_context_error":           setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
+	"context_compression.on_error_strategy":          setOnErrorStrategy,
 	"context_compression.preserve_recent_turns":      setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.PreserveRecentTurns }, 0, 100),
 	// Micro compaction knobs: no hidden configuration keys — the micro own
 	// gates (usage ratio, cold-cache threshold) change runtime behavior and
 	// must be visible/settable like every other compression knob.
+	"context_compression.micro_compaction.enabled":              setBoolPtr(func(cfg *config.Config) **bool { return &cfg.ContextCompression.MicroCompaction.Enabled }),
 	"context_compression.micro_compaction.keep_recent_messages": setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.MicroCompaction.KeepRecentMessages }, 0, 1000),
 	"context_compression.micro_compaction.min_content_tokens":   setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.MicroCompaction.MinContentTokens }, 0, 1000000),
 	"context_compression.micro_compaction.min_context_ratio":    setMicroMinContextRatio,
 	"context_compression.micro_compaction.cache_miss_threshold": setMicroCacheMissThreshold,
 	"context_compression.micro_compaction.truncated_marker":     setString(func(cfg *config.Config) *string { return &cfg.ContextCompression.MicroCompaction.TruncatedMarker }),
-	"execution.loop_warning":                                    setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
-	"execution.loop_interrupt":                                  setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
-	"execution.disable_thinking_loop_detection":                 setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingLoopDetection }),
-	"execution.disable_tool_loop_detection":                     setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableToolLoopDetection }),
-	"execution.disable_stream_loop_detection":                   setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableStreamLoopDetection }),
-	"execution.disable_thinking_stall_detection":                setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingStallDetection }),
-	"execution.stream_loop_max_repeats":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxRepeats }),
-	"execution.stream_loop_max_strikes":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxStrikes }),
-	"execution.stream_loop_reset_after":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopResetAfter }),
-	"execution.disable_tool_budget":                             setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
-	"skills.execution_mode":                                     setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
-	"tools.bash.enable_complexity_analysis":                     setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),
-	"tools.bash.warn_file_edits":                                setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Tools.Bash.WarnFileEdits }),
-	"tools.bash.jail":                                           setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.Jail }),
-	"tools.bash.max_complexity_score":                           setInt(func(cfg *config.Config) *int { return &cfg.Tools.Bash.MaxComplexityScore }),
-	"tools.terminal.sandbox.enabled":                            setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Terminal.Sandbox.Enabled }),
-	"tools.enabled.goal":                                        setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.Goal }),
-	"tools.enabled.lsp":                                         setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.LSP }),
+	// Per-turn temporal context injection (gap CX6): no hidden knobs — the
+	// enable switch, display zone, and refresh interval are settable like
+	// every other runtime behavior.
+	"time_context.enabled":                       setBool(func(cfg *config.Config) *bool { return &cfg.TimeContext.Enabled }),
+	"time_context.time_zone":                     setString(func(cfg *config.Config) *string { return &cfg.TimeContext.TimeZone }),
+	"time_context.refresh_interval":              setTimeContextRefreshInterval,
+	"execution.loop_warning":                     setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
+	"execution.loop_interrupt":                   setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
+	"execution.disable_thinking_loop_detection":  setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingLoopDetection }),
+	"execution.disable_tool_loop_detection":      setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableToolLoopDetection }),
+	"execution.disable_stream_loop_detection":    setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableStreamLoopDetection }),
+	"execution.disable_thinking_stall_detection": setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingStallDetection }),
+	"execution.stream_loop_max_repeats":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxRepeats }),
+	"execution.stream_loop_min_period":           setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMinPeriod }),
+	"execution.stream_loop_max_strikes":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxStrikes }),
+	"execution.stream_loop_reset_after":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopResetAfter }),
+	"execution.disable_tool_budget":              setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
+	"skills.execution_mode":                      setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
+	"tools.bash.enable_complexity_analysis":      setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),
+	"tools.bash.warn_file_edits":                 setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Tools.Bash.WarnFileEdits }),
+	"tools.bash.jail":                            setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.Jail }),
+	"tools.bash.max_complexity_score":            setInt(func(cfg *config.Config) *int { return &cfg.Tools.Bash.MaxComplexityScore }),
+	"tools.terminal.sandbox.enabled":             setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Terminal.Sandbox.Enabled }),
+	"tools.enabled.goal":                         setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.Goal }),
+	"tools.enabled.lsp":                          setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.LSP }),
 }
 
 func setActiveMajor(cfg *config.Config, value string) error {
@@ -560,7 +587,7 @@ func setActiveModel(cfg *config.Config, value string) error {
 // (e.g., "llama3 \u2022 high | llama3 (companion) \u2022 medium") instead of bare model IDs.
 func validateActiveModel(value string) error {
 	// Selector sentinel values ("__delete__X", "__add__", …) must never be
-	// persisted as a model ID (bugs.md: active model ended up named
+	// persisted as a model ID (active model ended up named
 	// "__delete__deepseek-v4-flash").
 	if strings.HasPrefix(value, "__") {
 		return fmt.Errorf("invalid model value: %q is a selector action value, not a model ID", value)
@@ -667,24 +694,29 @@ func setCompressionStrategy(cfg *config.Config, value string) error {
 	return fmt.Errorf("context_compression.strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
 }
 
+// setOnErrorStrategy validates and sets the on-error recovery strategy
+// (context_compression.on_error_strategy). Empty resets to the default
+// (hybrid).
+func setOnErrorStrategy(cfg *config.Config, value string) error {
+	switch strings.ToLower(value) {
+	case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+		cfg.ContextCompression.OnErrorStrategy = strings.ToLower(value)
+		return nil
+	}
+	return fmt.Errorf("context_compression.on_error_strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+}
+
 // setLayerStrategy validates and sets one per-layer compression strategy
-// (strategies.soft|trigger|hard). The soft layer is zero-LLM only
-// (micro|tool_elision); anything else is rejected at the CLI layer too.
-func setLayerStrategy(field func(cfg *config.Config) *string, soft bool) func(cfg *config.Config, value string) error {
+// (strategies.soft|trigger|hard). Any strategy is allowed on any layer.
+func setLayerStrategy(field func(cfg *config.Config) *string) func(cfg *config.Config, value string) error {
 	return func(cfg *config.Config, value string) error {
 		v := strings.ToLower(value)
 		switch v {
-		case "", "tool_elision", "micro":
-			// valid for every layer
-		case "selective", "summarize", "hybrid":
-			if soft {
-				return fmt.Errorf("soft layer strategy must be zero-LLM (micro or tool_elision)")
-			}
-		default:
-			return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+		case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+			*field(cfg) = v
+			return nil
 		}
-		*field(cfg) = v
-		return nil
+		return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
 	}
 }
 
@@ -696,6 +728,126 @@ func setCacheGate(cfg *config.Config, value string) error {
 		return nil
 	}
 	return fmt.Errorf("context_compression.cache_gate must be \"on\" or \"off\"")
+}
+
+// setPerModelCompressionField sets one compression override field for a single
+// model (context_compression.per_model.<modelID>.<field>), creating the
+// PerModel map / entry on demand. An empty value clears the field back to
+// "inherit from the global section". The validation rules mirror the global
+// setters (same allowed strategies, threshold ranges, on/off cache gate), so a
+// per-model override can never be set to a value the global field would reject.
+func setPerModelCompressionField(cfg *config.Config, modelID, field, value string) error {
+	pm := cfg.ContextCompression.PerModel
+	if pm == nil {
+		pm = map[string]config.ModelCompressionOverride{}
+		cfg.ContextCompression.PerModel = pm
+	}
+	ov := pm[modelID]
+	if err := applyPerModelField(&ov, field, value); err != nil {
+		return err
+	}
+	pm[modelID] = ov
+	return nil
+}
+
+// applyPerModelField validates and writes one per-model override field.
+func applyPerModelField(ov *config.ModelCompressionOverride, field, value string) error {
+	switch field {
+	case "strategy":
+		v := strings.ToLower(value)
+		switch v {
+		case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+			ov.Strategy = v
+			return nil
+		}
+		return fmt.Errorf("per-model strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+	case "strategies.soft", "strategies.trigger", "strategies.hard":
+		return setPerModelLayerStrategy(ov, field, value)
+	case "thresholds.soft_percent":
+		return setPerModelLevel(&ov.Thresholds.SoftPercent, field, value, true)
+	case "thresholds.trigger_percent":
+		return setPerModelLevel(&ov.Thresholds.TriggerPercent, field, value, false)
+	case "thresholds.hard_percent":
+		return setPerModelLevel(&ov.Thresholds.HardPercent, field, value, false)
+	case "max_tokens":
+		return setPerModelIntRange(&ov.MaxTokens, field, value, 0, 1<<30)
+	case "cache_gate":
+		v := strings.ToLower(value)
+		switch v {
+		case "", "on", "off":
+			ov.CacheGate = v
+			return nil
+		}
+		return fmt.Errorf("per-model cache_gate must be \"on\" or \"off\"")
+	case "preserve_recent_turns":
+		return setPerModelIntRange(&ov.PreserveRecentTurns, field, value, 0, 100)
+	}
+	return fmt.Errorf("unknown per-model compression field: %s", field)
+}
+
+// setPerModelLayerStrategy validates a per-layer strategy override; the soft
+// layer must stay zero-LLM (micro or tool_elision), mirroring the global rule.
+func setPerModelLayerStrategy(ov *config.ModelCompressionOverride, field, value string) error {
+	v := strings.ToLower(value)
+	switch v {
+	case "", "tool_elision", "micro":
+		// valid for every layer
+	case "selective", "summarize", "hybrid":
+		if field == "strategies.soft" {
+			return fmt.Errorf("soft layer strategy must be zero-LLM (micro or tool_elision)")
+		}
+	default:
+		return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+	}
+	switch field {
+	case "strategies.soft":
+		ov.Strategies.Soft = v
+	case "strategies.trigger":
+		ov.Strategies.Trigger = v
+	case "strategies.hard":
+		ov.Strategies.Hard = v
+	}
+	return nil
+}
+
+// setPerModelIntRange parses an int override; empty clears it to 0 (inherit).
+func setPerModelIntRange(dst *int, field, value string, min, max int) error {
+	if value == "" {
+		*dst = 0
+		return nil
+	}
+	v, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	if v < min || v > max {
+		return fmt.Errorf("%s must be between %d and %d (got %d)", field, min, max, v)
+	}
+	*dst = v
+	return nil
+}
+
+// setPerModelLevel parses a threshold-level override, mirroring the global
+// validation (validateCompressionLevel): empty/0 = inherit, -1 = disable (soft
+// layer only), otherwise 10-95 in 5% increments.
+func setPerModelLevel(dst *int, field, value string, allowDisable bool) error {
+	if value == "" {
+		*dst = 0
+		return nil
+	}
+	v, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	if v == 0 || (allowDisable && v == -1) {
+		*dst = v
+		return nil
+	}
+	if v < 10 || v > 95 || v%5 != 0 {
+		return fmt.Errorf("%s must be 10-95 in 5%% increments (got %d)", field, v)
+	}
+	*dst = v
+	return nil
 }
 
 // setMicroMinContextRatio validates the micro-compaction usage gate: 0 (or
@@ -729,12 +881,27 @@ func setMicroCacheMissThreshold(cfg *config.Config, value string) error {
 	return nil
 }
 
+// setTimeContextRefreshInterval validates the time_context refresh interval
+// as a Go duration ("60s", "5m", "0"). Empty or "0" means inject at every
+// eligible step entry (no suppression).
+func setTimeContextRefreshInterval(cfg *config.Config, value string) error {
+	if value == "" || value == "0" {
+		cfg.TimeContext.RefreshInterval = ""
+		return nil
+	}
+	if _, err := time.ParseDuration(value); err != nil {
+		return fmt.Errorf("time_context.refresh_interval must be a duration (e.g. 60s, 5m) or 0, got %q", value)
+	}
+	cfg.TimeContext.RefreshInterval = value
+	return nil
+}
+
 // setTriggerPercentClearLegacy sets the tiered trigger_percent AND clears the
 // deprecated legacy ThresholdPercent alias. The legacy alias otherwise wins over
 // Thresholds.TriggerPercent both in the menu display (compressionTriggerValue)
 // and at runtime (resolveAgenticThresholds), so a config file still carrying
 // `threshold_percent:` would permanently shadow any edit to the tiered field
-// (bugs.md Issue 2 — trigger threshold changes not reflected). Clearing it on an
+// (Issue 2 — trigger threshold changes not reflected). Clearing it on an
 // explicit edit makes the new value take effect while leaving untouched legacy
 // configs (which never run this setter) at their documented behavior.
 func setTriggerPercentClearLegacy(cfg *config.Config, value string) error {
@@ -769,11 +936,31 @@ func setIntRange(getter func(*config.Config) *int, min, max int) configSetter {
 
 func setConfigField(cfg *config.Config, path []string, value string) error {
 	key := strings.Join(path, ".")
-	setter, ok := configSetters[key]
-	if !ok {
-		return fmt.Errorf("unknown config key: %s", key)
+	if setter, ok := configSetters[key]; ok {
+		return setter(cfg, value)
 	}
-	return setter(cfg, value)
+	// Dynamic per-model compression override keys:
+	// context_compression.per_model.<modelID>.<field> — the model ID is embedded
+	// in the path, so these cannot be listed in the static configSetters map.
+	if modelID, field, ok := parsePerModelCompressionKey(path); ok {
+		return setPerModelCompressionField(cfg, modelID, field, value)
+	}
+	return fmt.Errorf("unknown config key: %s", key)
+}
+
+// parsePerModelCompressionKey splits a context_compression.per_model.<modelID>.<field>
+// path into its model ID and field. ok is false for any other key shape.
+func parsePerModelCompressionKey(path []string) (modelID, field string, ok bool) {
+	// path = [context_compression, per_model, <modelID>, <field...>]
+	if len(path) < 4 || path[0] != "context_compression" || path[1] != "per_model" {
+		return "", "", false
+	}
+	modelID = path[2]
+	if modelID == "" {
+		return "", "", false
+	}
+	field = strings.Join(path[3:], ".")
+	return modelID, field, field != ""
 }
 
 func parseBool(value string) bool {

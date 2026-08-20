@@ -91,9 +91,9 @@ func TestCompressCommand_Run_AppliesForcedMicro(t *testing.T) {
 	agent := agentic.NewAgent(agentic.Config{
 		SystemPrompt: "You are helpful.",
 		ContextCompression: agentic.ContextCompressionConfig{
-			MaxTokens:        1_000_000,
-			ThresholdPercent: 80,
-			Strategy:         agentic.CompressionMicro,
+			MaxTokens:  1_000_000,
+			Thresholds: agentic.CompressionThresholds{SoftPercent: 80},
+			Strategies: agentic.CompressionLayerStrategies{Soft: agentic.CompressionMicro},
 			MicroCompaction: agentic.MicroCompactionConfig{
 				KeepRecentMessages: 1,
 				MinContentTokens:   1,

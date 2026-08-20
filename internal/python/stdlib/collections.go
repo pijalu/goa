@@ -12,14 +12,17 @@ import (
 	"github.com/pijalu/goa/internal/python/compat"
 )
 
-// Counter implements a multiset of string keys.
+// Counter implements a multiset of keys. Keys are stored as strings:
+// non-string keys are normalized through str(key) (falling back to repr),
+// so an int key 200 and the string key "200" address the same bucket.
 type Counter struct {
 	counts map[string]int64
 }
 
 var counterType = py.NewTypeX("Counter", `Counter(iterable)
 
-A counter for string keys.`, counterNew, counterInit)
+A counter for hashable keys. Non-string keys are normalized through
+str(key), so c[200] and c['200'] share the same bucket.`, counterNew, counterInit)
 
 func init() {
 	py.RegisterModule(&py.ModuleImpl{
@@ -55,14 +58,33 @@ Return a list of counts.`)
 	counterType.Dict["items"] = py.MustNewMethod("items", counterItems, 0, `items() -> list
 
 Return a list of (key, count) pairs.`)
+	counterType.Dict["get"] = py.MustNewMethod("get", counterGet, 0, `get(key, default=None) -> count
+
+Return the count for key if key is present, else default.
+Non-string keys are normalized through str(key) before lookup.`)
 }
 
 // Type returns the Counter type.
 func (c *Counter) Type() *py.Type { return counterType }
 
+// counterKey normalizes a Counter key to its string form: py.String and
+// py.Bytes are used directly, any other object is stringified through its
+// str/__str__ (falling back to __repr__ like CPython's hash-based dicts do
+// for display). This lets Counter accept any hashable key (int status
+// codes, bools, ...) instead of rejecting them with a TypeError.
+func counterKey(o py.Object) (string, error) {
+	switch v := o.(type) {
+	case py.String:
+		return string(v), nil
+	case py.Bytes:
+		return string(v), nil
+	}
+	return py.StrAsString(o)
+}
+
 // M__getitem__ returns the count for a key (default 0).
 func (c *Counter) M__getitem__(key py.Object) (py.Object, error) {
-	k, err := compat.AsString(key, "Counter")
+	k, err := counterKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +93,7 @@ func (c *Counter) M__getitem__(key py.Object) (py.Object, error) {
 
 // M__setitem__ sets the count for a key.
 func (c *Counter) M__setitem__(key, value py.Object) (py.Object, error) {
-	k, err := compat.AsString(key, "Counter")
+	k, err := counterKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +107,7 @@ func (c *Counter) M__setitem__(key, value py.Object) (py.Object, error) {
 
 // M__contains__ reports whether the key has a positive count.
 func (c *Counter) M__contains__(key py.Object) (py.Object, error) {
-	k, err := compat.AsString(key, "Counter")
+	k, err := counterKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -280,6 +302,30 @@ func counterItems(self py.Object, args py.Tuple) (py.Object, error) {
 	return py.NewListFromItems(items), nil
 }
 
+// counterGet implements Counter.get(key, default=None) with CPython
+// semantics: it returns the stored count for key (which may be 0) or
+// default when the key is absent. Non-string keys are normalized through
+// str(key) before lookup, matching item access.
+func counterGet(self py.Object, args py.Tuple) (py.Object, error) {
+	var key py.Object
+	var def py.Object = py.None
+	if err := py.UnpackTuple(args, nil, "get", 1, 2, &key, &def); err != nil {
+		return nil, err
+	}
+	c, ok := self.(*Counter)
+	if !ok {
+		return nil, py.ExceptionNewf(py.TypeError, "expected Counter, got %s", self.Type().Name)
+	}
+	k, err := counterKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if v, present := c.counts[k]; present {
+		return py.Int(v), nil
+	}
+	return def, nil
+}
+
 func (c *Counter) addFromIterable(iterable py.Object, delta int64) error {
 	items, err := compat.IterItems(iterable)
 	if err != nil {
@@ -297,7 +343,7 @@ func (c *Counter) addFromIterable(iterable py.Object, delta int64) error {
 		return err
 	}
 	for _, item := range items {
-		k, err := compat.AsString(item, "Counter")
+		k, err := counterKey(item)
 		if err != nil {
 			return err
 		}

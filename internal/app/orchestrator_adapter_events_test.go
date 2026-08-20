@@ -38,6 +38,7 @@ func TestOrchestratorAdapterEvents_ForwardContextStats(t *testing.T) {
 		Type: agentic.EventContextStats,
 		ContextStats: &agentic.ContextStats{
 			EstimatedTokens: 1234,
+			ProjectedTokens: 5678,
 			MaxTokens:       100000,
 			AutoMax:         true,
 		},
@@ -49,6 +50,9 @@ func TestOrchestratorAdapterEvents_ForwardContextStats(t *testing.T) {
 	snap := h.Stats.Snapshot()
 	if snap.ContextEstimate != 1234 {
 		t.Errorf("ContextEstimate = %d, want 1234", snap.ContextEstimate)
+	}
+	if snap.ContextProjected != 5678 {
+		t.Errorf("ContextProjected = %d, want 5678", snap.ContextProjected)
 	}
 	if snap.ContextMax != 100000 {
 		t.Errorf("ContextMax = %d, want 100000", snap.ContextMax)
@@ -66,6 +70,9 @@ func TestOrchestratorAdapterEvents_ForwardContextStats(t *testing.T) {
 	last := got[len(got)-1].Payload
 	if orchInt(last, "context_estimate") != 1234 {
 		t.Errorf("stats payload context_estimate = %d, want 1234", orchInt(last, "context_estimate"))
+	}
+	if orchInt(last, "context_projected") != 5678 {
+		t.Errorf("stats payload context_projected = %d, want 5678", orchInt(last, "context_projected"))
 	}
 	if orchInt(last, "context_max") != 100000 {
 		t.Errorf("stats payload context_max = %d, want 100000", orchInt(last, "context_max"))

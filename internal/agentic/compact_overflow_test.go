@@ -45,16 +45,15 @@ func (p *summaryCapturingProvider) StreamSimple(model provider.Model, ctx provid
 	return p.Stream(model, ctx, provider.BuildSimpleOptions(model, opts))
 }
 
-// TestCompact_PreShrinksBeforeSummarize verifies the pre-flight overflow guard:
-// when the history to summarize is itself near/over the window, Compact runs
-// selective compression first so the summarization request does not
-// self-overflow (which would make Compact fail exactly when it is needed most).
-func TestCompact_PreShrinksBeforeSummarize(t *testing.T) {
-	p := &summaryCapturingProvider{api: provider.Api("test-compact-preshrink-1")}
+// TestCompact_SummarizesOriginalHistory verifies the current contract: Compact
+// no longer pre-shrinks (selective) before summarizing — summarize runs on the
+// ORIGINAL history so the provider prefix cache is preserved. Self-overflow is
+// now handled by the micro-on-overflow fallback (see compact_micro_optional_test.go),
+// not by an unconditional pre-flight shrink.
+func TestCompact_SummarizesOriginalHistory(t *testing.T) {
+	p := &summaryCapturingProvider{api: provider.Api("test-compact-orig-1")}
 	provider.RegisterApiProvider(p)
 
-	// A history far over the 90% summarize-headroom threshold: many large
-	// user/assistant turns against a tiny MaxTokens window.
 	const turns = 30
 	hist := make([]Message, 0, turns*2+1)
 	hist = append(hist, Message{Type: Content, Role: User, Content: strings.Repeat("x", 200)})
@@ -68,17 +67,17 @@ func TestCompact_PreShrinksBeforeSummarize(t *testing.T) {
 		SystemPrompt: "You are helpful",
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:           800, // tiny: 90% headroom = 720; history >> that
-			Strategy:            CompressionSelective,
+			MaxTokens:           800,
 			PreserveRecentTurns: 2,
 		},
 	})
 	agent.mu.Lock()
 	agent.history = hist
+	origLen := len(agent.history)
 	agent.mu.Unlock()
 
 	if err := agent.Compact(context.Background()); err != nil {
-		t.Fatalf("Compact failed (should have pre-shrunk): %v", err)
+		t.Fatalf("Compact: %v", err)
 	}
 
 	p.mu.Lock()
@@ -89,11 +88,12 @@ func TestCompact_PreShrinksBeforeSummarize(t *testing.T) {
 	if !called {
 		t.Fatal("summarize was not called")
 	}
-	// Without pre-shrink the summarizer would receive ~all 61 messages; with
-	// pre-shrink (selective keeps PreserveRecentTurns) it must receive far fewer.
-	if received >= len(hist) {
-		t.Fatalf("pre-shrink did not reduce summarization input: summarizer received %d of %d messages",
-			received, len(hist))
+	// No pre-shrink: the summarizer receives the FULL original (non-system)
+	// history — there is no system message stored in history here. The +1 is
+	// the summarize instruction appended as the final user message after the
+	// replayed prefix (cache-warm summarization, CA1).
+	if received != origLen+1 {
+		t.Fatalf("summarize should run on original history + instruction (%d msgs), got %d", origLen+1, received)
 	}
 
 	// And the result is the valid [user, assistant] compact pair.
@@ -102,6 +102,92 @@ func TestCompact_PreShrinksBeforeSummarize(t *testing.T) {
 	agent.mu.Unlock()
 	if len(h) != 2 || h[0].Role != User || h[1].Role != Assistant {
 		t.Fatalf("expected [user, assistant] compact pair, got %+v", h)
+	}
+}
+
+// TestCompact_SummarizeOverflowShrinksInputUntilFits pins the bug-2 input-side
+// guarantee: when the summarize request overflows AND micro truncation cannot
+// free enough (a chat-heavy history with no elidable tool payload), the retry
+// input must be cut down so the retried summarize fits the window. Before the
+// fix the retry re-overflowed and Compact failed, surfacing as the "hard
+// fallback" drop with the "summarize did not fit the window" label.
+func TestCompact_SummarizeOverflowShrinksInputUntilFits(t *testing.T) {
+	// Overflow once, then succeed. The provider records messages per attempt.
+	p := registerOverflowProvider("shrink-retry", 1)
+	a := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "sys",
+		Logger:       NewLogger(Error),
+	})
+	// A plain-chat history (no tool payloads for micro to free) large enough
+	// that the summarize request overflows the window.
+	big := strings.Repeat("u", 4000)
+	a.history = []Message{{Type: Content, Role: System, Content: "sys"}}
+	for i := 0; i < 40; i++ {
+		a.history = append(a.history,
+			Message{Type: Content, Role: User, Content: big},
+			Message{Type: Content, Role: Assistant, Content: big},
+		)
+	}
+	// Tiny window: the full history (~100K tokens) vastly exceeds it.
+	a.cfg.Model.ContextWindow = 4000
+
+	if err := a.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact must succeed after shrinking the summarize input: %v", err)
+	}
+	p.mu.Lock()
+	received := append([]int(nil), p.received...)
+	p.mu.Unlock()
+	if len(received) != 2 {
+		t.Fatalf("summarize attempts = %d, want 2 (overflow + shrunk retry)", len(received))
+	}
+	if received[1] >= received[0] {
+		t.Errorf("retry input was not shrunk: attempt sizes %v (want retry < first)", received)
+	}
+	// The compacted result is the [user, assistant] summary pair.
+	if len(a.history) != 2 {
+		t.Errorf("after Compact history = %d messages, want the summary pair", len(a.history))
+	}
+}
+
+// TestCompact_OversizedSummaryIsCappedToFit pins the bug-2 output-side
+// guarantee: a verbose model returning an oversized summary must not land a
+// compacted history that still exceeds the ceiling (which would re-fire
+// compression — or the destructive fallback — on the very next turn). The
+// summary is capped to the window budget with a truncation note.
+func TestCompact_OversizedSummaryIsCappedToFit(t *testing.T) {
+	// Provider returns a summary far larger than the window budget allows.
+	big := strings.Repeat("S", 200000) // ~60K tokens, window is 4000
+	p := textEventProvider(big)
+	a := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "sys",
+		Logger:       NewLogger(Error),
+	})
+	a.cfg.Model.ContextWindow = 4000
+	a.history = []Message{
+		{Type: Content, Role: System, Content: "sys"},
+		{Type: Content, Role: User, Content: strings.Repeat("u", 12000)},
+		{Type: Content, Role: Assistant, Content: strings.Repeat("a", 12000)},
+	}
+
+	if err := a.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if len(a.history) != 2 {
+		t.Fatalf("expected summary pair, got %d", len(a.history))
+	}
+	summary := a.history[1].Content
+	if !strings.Contains(summary, "truncated to fit the context window") {
+		t.Errorf("oversized summary must carry the truncation note; got len=%d", len(summary))
+	}
+	// The landed pair must fit under the hard ceiling of the window.
+	a.mu.Lock()
+	after := a.estimateContextTokensLocked()
+	a.mu.Unlock()
+	hardCeiling := 4000 * 95 / 100
+	if after > hardCeiling {
+		t.Errorf("compacted history %d tokens still exceeds hard ceiling %d — summary was not capped", after, hardCeiling)
 	}
 }
 

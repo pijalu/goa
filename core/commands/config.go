@@ -230,15 +230,15 @@ func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 		"thinking_blocks":  (*configMenu).toggleThinkingBlocks,
 		"show_thinking":    (*configMenu).toggleShowThinking,
 		"multi_agent":      (*configMenu).openMultiAgent,
-		"orchestrator":     (*configMenu).openOrchestrator,
-		"teams":            (*configMenu).openTeams,
+		"orchestrator":     (*configMenu).openOrchestratorMenu,
+		"teams":            (*configMenu).openTeamsMenu,
 		"tools":            (*configMenu).openTools,
 		"bash":             (*configMenu).openBash,
 		"mcp":              (*configMenu).openMCP,
 		"sandbox":          (*configMenu).openSandbox,
 		"loop_detection":   (*configMenu).openLoopDetection,
 		"skills":           (*configMenu).openSkills,
-		"goals":            (*configMenu).openGoalsRetention,
+		"goals":            (*configMenu).openGoalsMenu,
 	}
 }
 
@@ -256,6 +256,13 @@ func (m *configMenu) openBash()          { m.open(m.settingBash) }
 func (m *configMenu) openMCP()           { m.open(m.settingMCP) }
 func (m *configMenu) openLoopDetection() { m.open(m.settingLoopDetection) }
 func (m *configMenu) openSkills()        { m.open(m.settingSkills) }
+
+// Entry wrappers that push the root page onto history so ESC from the
+// submenu returns to Settings root instead of closing the menu (bug: Teams /
+// Orchestrator / Goals bypassed m.open, so back() exited to the TUI).
+func (m *configMenu) openTeamsMenu()        { m.open(m.openTeams) }
+func (m *configMenu) openOrchestratorMenu() { m.open(m.openOrchestrator) }
+func (m *configMenu) openGoalsMenu()        { m.open(m.openGoalsRetention) }
 
 func (m *configMenu) openActiveModel() {
 	m.open(func() {
@@ -724,7 +731,7 @@ func (m *configMenu) settingMultiAgent() {
 }
 
 // companionBindingSummary renders the companion provider+model binding for
-// the multi-agent settings row (bugs.md Bug B: the two are selected together
+// the multi-agent settings row (Bug B: the two are selected together
 // like /model — a model cannot be selected without its attached provider).
 func companionBindingSummary(cfg *config.Config) string {
 	model := cfg.MultiAgent.CompanionModel
@@ -741,7 +748,7 @@ func companionBindingSummary(cfg *config.Config) string {
 
 // settingCompanionModel picks the companion provider+model as ONE choice:
 // the selected model's provider is persisted alongside the model so the two
-// can never contradict (bugs.md Bug B).
+// can never contradict (Bug B).
 func (m *configMenu) settingCompanionModel() {
 	m.current = m.settingCompanionModel
 	m.selectModelPageFull("Select companion model:", m.ctx.Config.MultiAgent.CompanionModel, func(modelID, providerID string) {
@@ -1054,6 +1061,7 @@ func (m *configMenu) settingLoopThresholds() {
 		{Value: "max_tool_calls", Label: "Max tool calls per turn", Description: thresholdLabel(cfg.Execution.MaxToolCalls, 3)},
 		{Value: "disable_tool_budget", Label: "Disable tool budget", Description: boolLabel(cfg.Execution.DisableToolBudget)},
 		{Value: "stream_repeats", Label: "Stream-loop stop repeats", Description: thresholdLabel(cfg.Execution.StreamLoopMaxRepeats, 5)},
+		{Value: "stream_min_period", Label: "Stream-loop min unit length (chars)", Description: thresholdLabel(cfg.Execution.StreamLoopMinPeriod, 50)},
 		{Value: "stream_strikes", Label: "Stream-loop stop strikes", Description: thresholdLabel(cfg.Execution.StreamLoopMaxStrikes, 3)},
 		{Value: "stream_reset_after", Label: "Stream-loop strike reset (clean msgs/tool calls)", Description: thresholdLabel(cfg.Execution.StreamLoopResetAfter, 10)},
 	}
@@ -1110,6 +1118,7 @@ func (m *configMenu) handleLoopThresholdSetting(selected string) {
 		"max_tool_calls":          {key: "execution.max_tool_calls", prompt: "Max tool calls per turn:", intVal: &cfg.Execution.MaxToolCalls},
 		"disable_tool_budget":     {key: "execution.disable_tool_budget", isBool: true, boolVal: &cfg.Execution.DisableToolBudget},
 		"stream_repeats":          {key: "execution.stream_loop_max_repeats", prompt: "Stream-loop stop repeats (>=2):", intVal: &cfg.Execution.StreamLoopMaxRepeats},
+		"stream_min_period":       {key: "execution.stream_loop_min_period", prompt: "Stream-loop min repeated unit length in chars (>=8, 0 = default 50):", intVal: &cfg.Execution.StreamLoopMinPeriod},
 		"stream_strikes":          {key: "execution.stream_loop_max_strikes", prompt: "Stream-loop warnings before stop (>=1):", intVal: &cfg.Execution.StreamLoopMaxStrikes},
 		"stream_reset_after":      {key: "execution.stream_loop_reset_after", prompt: "Clean messages/tool calls to reset strikes (>=1):", intVal: &cfg.Execution.StreamLoopResetAfter},
 	}

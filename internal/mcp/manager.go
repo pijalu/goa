@@ -305,19 +305,26 @@ func (m *Manager) logf(lv agentic.Level, format string, args ...interface{}) {
 	}
 }
 
+// mcpGroupDeferralThreshold is the minimum number of tools a single MCP
+// server must expose before its tools are marked deferred (P1). Small
+// servers stay eager — the indirection is not worth it for a few schemas.
+const mcpGroupDeferralThreshold = 6
+
 func (m *Manager) registerTools(server string, toolsInfo []client.ToolInfo) {
 	if m.reg == nil {
 		return
 	}
 	prefix := toolPrefix(server)
+	deferred := len(toolsInfo) > mcpGroupDeferralThreshold
 	toolList := make([]agentic.Tool, 0, len(toolsInfo))
 	for _, info := range toolsInfo {
 		toolList = append(toolList, &mcpTool{
-			server: server,
-			name:   info.Name,
-			desc:   info.Description,
-			schema: normalizeSchema(info.InputSchema),
-			mgr:    m,
+			server:   server,
+			name:     info.Name,
+			desc:     info.Description,
+			schema:   normalizeSchema(info.InputSchema),
+			mgr:      m,
+			deferred: deferred,
 		})
 	}
 	m.reg.RegisterGroup(prefix, toolList)
@@ -337,7 +344,15 @@ type mcpTool struct {
 	desc   string
 	schema map[string]any
 	mgr    *Manager
+	// deferred marks the tool as a P1 deferred candidate: servers exposing
+	// more than mcpGroupDeferralThreshold tools have their schemas withheld
+	// from the eager block and loaded on demand via tool_search.
+	deferred bool
 }
+
+// Deferred reports whether this MCP tool's schema is withheld from the eager
+// block (large-group servers only, P1).
+func (t *mcpTool) Deferred() bool { return t.deferred }
 
 func (t *mcpTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{

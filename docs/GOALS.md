@@ -224,7 +224,7 @@ Telemetry: `goal_challenged`, `goal_verify_failed`, `goal_judge_error`, `goal_au
 - A bordered **Goal** panel appears while a goal is active.
 - Lifecycle transitions render as low-profile markers (blocked markers show the unblock condition: `needs: …`).
 - Completion renders a summary card with stats.
-- Goal status appears in the footer status bar.
+- Goal status appears in the footer status bar: an active goal carries a ◈ goal-count sign next to the profile (one ◈ per goal up to 3, then a numeric prefix — `◈`, `◈◈◈`, `25◈`), plus ⬩ markers per pending todo.
 
 ## Autonomy and starting goals
 

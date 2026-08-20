@@ -539,6 +539,15 @@ func (t *TUI) buildSnapshot() *Scene {
 	w, h := t.terminal.Size()
 	scene := t.buildScene(w, h)
 	t.publishSize(scene.TerminalW, scene.TerminalH)
+	// Stamp the clear generation so the compositor can drop this snapshot if a
+	// Clear() (e.g. /new) lands before it is rendered (the stale-scene race).
+	scene.ClearGen = t.compositor.ClearGen()
+	// Stamp the chat viewport's mutation generation so the compositor can
+	// detect when the conversation has settled (no mutation since the last
+	// frame) and re-sync a deferred scrollback exactly once.
+	if cv := t.findChatViewport(); cv != nil {
+		scene.MutationGen = uint64(cv.Generation())
+	}
 	return scene
 }
 
@@ -1115,7 +1124,14 @@ func (t *TUI) findChatViewport() *ChatViewport {
 // Intended for tests; production renders go through the throttled renderLoop.
 // RenderNow synchronously renders one frame and returns the composed canvas.
 // Intended for tests; production renders go through the throttled renderLoop.
-func (t *TUI) RenderNow() []string { return t.renderNow() }
+// The snapshot is taken on the command loop (ApplySync) so it cannot
+// interleave with overlay mutations queued from other goroutines — the
+// selector apply-callback path adds overlays via engine.Apply.
+func (t *TUI) RenderNow() []string {
+	var lines []string
+	t.ApplySync(func() { lines = t.renderNow() })
+	return lines
+}
 
 // SendKey injects a decoded key into the TUI, routes it to the focused
 // component, and synchronously renders one frame. This is the primary API for
@@ -1134,10 +1150,8 @@ func (t *TUI) renderNow() []string {
 		return nil
 	}
 
-	w, h := t.terminal.Size()
-	scene := t.buildScene(w, h)
+	scene := t.buildSnapshot()
 	t.compositor.Render(scene)
-	t.publishSize(scene.TerminalW, scene.TerminalH)
 	return t.compositor.Buffer()
 }
 

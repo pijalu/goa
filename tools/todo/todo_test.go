@@ -56,7 +56,7 @@ func TestTodoListClear(t *testing.T) {
 	}
 }
 
-// TestTodoList_GoalLinkage pins the bugs.md lifecycle semantics: when a goal
+// TestTodoList_GoalLinkage pins the lifecycle semantics: when a goal
 // starts the todo list is BLANK and linked to the goal; goal todos never
 // escape — the session list is preserved underneath and resurfaces when the
 // goal ends.

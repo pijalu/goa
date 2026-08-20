@@ -42,7 +42,8 @@ func TestHandleContextError_AlwaysEscalatesCheapStrategyToSelective(t *testing.T
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           100000,
 			OnContextError:      true,
-			Strategy:            CompressionMicro,
+			Thresholds:          CompressionThresholds{SoftPercent: 1},
+			Strategies:          CompressionLayerStrategies{Soft: CompressionMicro},
 			PreserveRecentTurns: 2,
 		},
 	})
@@ -113,7 +114,8 @@ func TestMaybeCompressAfterLengthTruncation_FiresAtWindowEdge(t *testing.T) {
 	a := NewAgent(Config{
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			Strategy:            CompressionToolElision,
+			Thresholds:          CompressionThresholds{SoftPercent: 1},
+			Strategies:          CompressionLayerStrategies{Soft: CompressionToolElision},
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -142,7 +144,8 @@ func TestMaybeCompressAfterLengthTruncation_IgnoresOutputCapTruncation(t *testin
 	a := NewAgent(Config{
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			Strategy:            CompressionToolElision,
+			Thresholds:          CompressionThresholds{SoftPercent: 1},
+			Strategies:          CompressionLayerStrategies{Soft: CompressionToolElision},
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -166,7 +169,8 @@ func TestMaybeCompressAfterLengthTruncation_IgnoresNonLengthStop(t *testing.T) {
 	a := NewAgent(Config{
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			Strategy:            CompressionToolElision,
+			Thresholds:          CompressionThresholds{SoftPercent: 1},
+			Strategies:          CompressionLayerStrategies{Soft: CompressionToolElision},
 			PreserveRecentTurns: 1,
 		},
 	})

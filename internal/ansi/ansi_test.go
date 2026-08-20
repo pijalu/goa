@@ -59,6 +59,27 @@ func TestStrip(t *testing.T) {
 	}
 }
 
+func TestHyperlink(t *testing.T) {
+	// Emits OSC-8 open + close around the text.
+	got := Hyperlink("https://example.com", "click me")
+	want := "\x1b]8;;https://example.com\x07click me\x1b]8;;\x07"
+	if got != want {
+		t.Errorf("Hyperlink = %q, want %q", got, want)
+	}
+	// Strip removes the sequences, leaving the text.
+	if s := Strip(got); s != "click me" {
+		t.Errorf("Strip(Hyperlink) = %q, want %q", s, "click me")
+	}
+	// Width ignores the escape sequences (only the visible text counts).
+	if w := Width(got); w != len("click me") {
+		t.Errorf("Width(Hyperlink) = %d, want %d", w, len("click me"))
+	}
+	// Empty URL returns the text unchanged (no dangling open sequence).
+	if s := Hyperlink("", "plain"); s != "plain" {
+		t.Errorf("Hyperlink(empty url) = %q, want %q", s, "plain")
+	}
+}
+
 func TestWidth(t *testing.T) {
 	tests := []struct {
 		input string

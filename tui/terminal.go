@@ -81,7 +81,7 @@ type ProcessTerminal struct {
 	// a real terminal — e.g. during a SIGWINCH race or an emulator resize
 	// burst — and Size() would otherwise fall back to 80x24 for a single
 	// frame. That one-frame blip makes the compositor take its
-	// resize/full-repaint path and repaint the header (the bugs.md "Mascot
+	// resize/full-repaint path and repaint the header (the "Mascot
 	// redraw" regression: the logo flashing mid-session during a tool call).
 	// A transient misread is indistinguishable from a real resize at the
 	// compositor, so Size() filters it at the source.
@@ -145,7 +145,7 @@ func (t *ProcessTerminal) Start(onInput func(string), onResize func()) {
 		// exactly `width` columns fills the last column and leaves the terminal
 		// in a pending-wrap state, so the next line-feed or write wraps onto an
 		// extra row and every subsequent compositor row index is off by one
-		// (the scrollback line-duplication in bugs.md). Stop() re-enables it
+		// (the scrollback line-duplication in). Stop re-enables it
 		// (\x1b[?7h) so the parent shell wraps normally.
 		os.Stdout.WriteString("\x1b[?7l")
 
@@ -624,7 +624,7 @@ func (t *ProcessTerminal) drainInput(maxMs, idleMs int) {
 
 // termLog is the optional terminal-output capture (GOA_TERM_LOG). When set,
 // every byte written to stdout is also appended to the file — the diagnostic
-// for rendering bugs that only reproduce on a real terminal (bugs.md
+// for rendering bugs that only reproduce on a real terminal
 // Issue 20: escape-sequence semantics the byte-level harness cannot
 // arbitrate). Lazily opened on first write; append so relaunches keep history.
 var termLog struct {
@@ -667,7 +667,7 @@ func (t *ProcessTerminal) WriteString(s string) {
 
 // Size returns terminal dimensions.
 //
-// Transient-filtered (bugs.md "Mascot redraw"): a failed or degenerate
+// Transient-filtered (Mascot redraw): a failed or degenerate
 // TIOCGWINSZ read does NOT fall back to the 80x24 default once a plausible
 // size is known — that single-frame 80x24 blip was the source of the
 // mid-session header repaint. Instead the last known-good size is returned

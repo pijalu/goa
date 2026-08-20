@@ -5,6 +5,7 @@
 package app
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/pijalu/goa/core"
@@ -62,7 +63,7 @@ func newTestGoalManager() *core.GoalManager {
 	return mgr
 }
 
-// TestFooterGoalFieldsSurviveStatsRebuild (bugs.md Issues 3-4): a routine
+// TestFooterGoalFieldsSurviveStatsRebuild (Issues 3-4): a routine
 // footer SetData (stats/activity tick without goal knowledge) must not wipe
 // the ◈ goal marker.
 func TestFooterGoalFieldsSurviveStatsRebuild(t *testing.T) {
@@ -82,5 +83,70 @@ func TestFooterGoalFieldsSurviveStatsRebuild(t *testing.T) {
 	data := footer.Data()
 	if data.GoalStatus != "active" {
 		t.Errorf("goal status lost across stats rebuild: %+v", data)
+	}
+	if data.GoalPendingTodos != 1 {
+		t.Errorf("pending todo count lost across stats rebuild: %+v", data)
+	}
+}
+
+// TestHandleGoalUpdate_CountsPendingTodos (Issue 4): the footer
+// pending-todo count tracks not-done todos from the snapshot (pending and
+// in_progress count, done does not); a clear event zeroes it.
+func TestHandleGoalUpdate_CountsPendingTodos(t *testing.T) {
+	a := &App{}
+	footer := tui.NewFooter()
+	chat := tui.NewChatViewport()
+	a.subs = &subsystems{footer: footer, chat: chat, goalManager: newTestGoalManager()}
+
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: &goal.GoalSnapshot{
+		Objective: "five todos", Status: goal.GoalActive,
+		Todos: []goal.GoalTodoItem{
+			{ID: "t1", Title: "done 1", Status: goal.TodoDone},
+			{ID: "t2", Title: "done 2", Status: goal.TodoDone},
+			{ID: "t3", Title: "wip", Status: goal.TodoInProgress},
+			{ID: "t4", Title: "later 1", Status: goal.TodoPending},
+			{ID: "t5", Title: "later 2", Status: goal.TodoPending},
+		},
+	}})
+
+	if got := footer.Data().GoalPendingTodos; got != 3 {
+		t.Errorf("GoalPendingTodos = %d, want 3 (2 done excluded)", got)
+	}
+
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil})
+	if got := footer.Data().GoalPendingTodos; got != 0 {
+		t.Errorf("after clear GoalPendingTodos = %d, want 0", got)
+	}
+}
+
+// TestHandleGoalUpdate_CountsGoals: the footer's ◈ goal-count sign reflects
+// the total goals — 1 (the current goal) + queued goals — so it can render
+// the todo-style shape (1 → "◈", 3 → "◈◈◈", 25 → "25◈").
+func TestHandleGoalUpdate_CountsGoals(t *testing.T) {
+	a := &App{}
+	footer := tui.NewFooter()
+	chat := tui.NewChatViewport()
+	mgr := newTestGoalManager()
+	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	if _, err := mgr.Queue.Append("queued one"); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, err := mgr.Queue.Append("queued two"); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	a.subs = &subsystems{footer: footer, chat: chat, goalManager: mgr}
+
+	// Active goal + 2 queued → 3 goals → "◈◈◈".
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: &goal.GoalSnapshot{
+		Objective: "current", Status: goal.GoalActive,
+	}})
+	if got := footer.Data().GoalCount; got != 3 {
+		t.Errorf("GoalCount = %d, want 3 (1 current + 2 queued)", got)
+	}
+
+	// A clear event zeroes the count.
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil})
+	if got := footer.Data().GoalCount; got != 0 {
+		t.Errorf("after clear GoalCount = %d, want 0", got)
 	}
 }

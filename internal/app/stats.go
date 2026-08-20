@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic"
@@ -58,23 +59,118 @@ const (
 	ToolCallStopped ToolCallLevel = 2 // red — budget exceeded, force-stopped
 )
 
+// cacheHitWindowSize is the number of recent cache-hit rates kept for the
+// rolling average shown in the footer CH:<avg>% segment.
+const cacheHitWindowSize = 10
+
+// CacheHitTrend bundles a cache-hit rate with its previous value so the
+// footer can color it by evolution: bold green when growing, green when
+// stable/slightly growing, orange on a slight drop (< 5 points), red on a
+// drop (>= 5 points). Seen gates display (no cache activity yet); HasPrev
+// gates delta coloring (first observation has no baseline and renders as
+// stable).
+//
+// The trend also maintains a rolling window of the last cacheHitWindowSize
+// rates for the average (CH:<avg>%) — the avg and last values are colored
+// independently, each only shifting to orange/red on a >= 5-point change.
+type CacheHitTrend struct {
+	Pct     float64   // last completion's cache-hit rate
+	PrevPct float64   // previous value (for delta coloring)
+	Seen    bool      // at least one cache-active round observed
+	HasPrev bool      // at least two observations (delta coloring armed)
+	window  []float64 // rolling window of recent rates (max cacheHitWindowSize)
+}
+
+// observe folds one new cache-hit rate into the trend: the current value
+// becomes the previous baseline and pct becomes current. The rate is also
+// appended to the rolling window (capped at cacheHitWindowSize).
+func (t *CacheHitTrend) observe(pct float64) {
+	t.PrevPct, t.HasPrev = t.Pct, t.Seen
+	t.Pct, t.Seen = pct, true
+	t.window = append(t.window, pct)
+	if len(t.window) > cacheHitWindowSize {
+		t.window = t.window[len(t.window)-cacheHitWindowSize:]
+	}
+}
+
+// AvgPct returns the rolling average of the last cacheHitWindowSize
+// cache-hit rates. Returns 0 when no observations exist.
+func (t *CacheHitTrend) AvgPct() float64 {
+	if len(t.window) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, v := range t.window {
+		sum += v
+	}
+	return sum / float64(len(t.window))
+}
+
+// AvgPrevPct returns the average of the window *before* the most recent
+// observation — the baseline for delta coloring the average. Returns 0 when
+// fewer than 2 observations exist.
+func (t *CacheHitTrend) AvgPrevPct() float64 {
+	if len(t.window) < 2 {
+		return 0
+	}
+	// Compute avg of window[0:len-1] (exclude the latest).
+	prev := t.window[:len(t.window)-1]
+	sum := 0.0
+	for _, v := range prev {
+		sum += v
+	}
+	return sum / float64(len(prev))
+}
+
+// cacheHitTrendFromTotals builds a display-only trend from aggregate token
+// counters, for construction sites that have no evolving baseline
+// (orchestrator role rows, headless stats): Seen gates display, HasPrev
+// stays false so the value renders as stable green.
+func cacheHitTrendFromTotals(read, write, prompt int) CacheHitTrend {
+	if read == 0 && write == 0 {
+		return CacheHitTrend{}
+	}
+	return CacheHitTrend{Pct: metrics.CacheHitPct(read, write, prompt), Seen: true}
+}
+
 // sessionStats holds cumulative + last-turn statistics for footer display.
 type sessionStats struct {
-	PromptN         int
-	PredictedN      int
-	CacheReadTotal  int
-	CacheWriteTotal int
-	CacheMisses     int     // cache-bust count: zero-cache-read requests after the cache was established
-	SpeedTokPerSec  float64 // last turn output tok/s
-	ContextEstimate int
-	ContextMax      int
-	CostUSD         float64
-	ShowCost        bool
-	ToolCalls       int
-	ToolCallLevel   ToolCallLevel // 0=normal, 1=warning, 2=stopped
-	MicroCompacts   int
-	Compacts        int
-	PrevCacheHitPct float64 // previous cache hit % for evolution comparison
+	PromptN          int
+	PredictedN       int
+	CacheReadTotal   int
+	CacheWriteTotal  int
+	CacheMisses      int     // cache-bust count: zero-cache-read requests after the cache was established
+	SpeedTokPerSec   float64 // last turn output tok/s
+	ContextEstimate  int
+	ContextProjected int
+	ContextMax       int
+	CostUSD          float64
+	ShowCost         bool
+	ToolCalls        int
+	ToolCallLevel    ToolCallLevel // 0=normal, 1=warning, 2=stopped
+	MicroCompacts    int
+	Compacts         int
+	// LastCacheHit is the most recent completion's cache-hit trend —
+	// rendered as CH:<avg>%▸<last>% where <avg> is the rolling average
+	// of the last 10 observations and <last> is the most recent rate.
+	// Each element is colored independently by its own evolution.
+	LastCacheHit CacheHitTrend
+	// Compactions documents each completed compression round (strategy,
+	// before/after %, freed tokens, removed messages, time). The aggregate
+	// MicroCompacts/Compacts counters above feed the footer; this per-round
+	// record makes the session stats self-documenting ("context
+	// compressions are invisible").
+	Compactions []CompactionRound
+}
+
+// CompactionRound documents one completed compression pass in the session.
+type CompactionRound struct {
+	Strategy    string    `json:"strategy"` // elision|selective|micro|summarize|hybrid|ceiling|overflow|truncation
+	BeforePct   int       `json:"before_pct"`
+	AfterPct    int       `json:"after_pct"`
+	FreedTokens int       `json:"freed_tokens,omitempty"`
+	Removed     int       `json:"removed,omitempty"`
+	At          time.Time `json:"at"` // when the round completed
 }
 
 func (a *App) handleAgentOutputEvent(ev *agentic.OutputEvent) {
@@ -115,20 +211,102 @@ func (a *App) handleAgentStatsEvent(ev *agentic.OutputEvent) {
 	case agentic.EventContextReset:
 		a.resetCacheBustBaseline()
 	case agentic.EventCompact:
-		a.recordCompact(ev.Text)
+		a.recordCompact(ev)
+		a.showCompactionBubble(ev)
 	default:
 		a.handleTokenStats(ev)
 	}
 }
 
-func (a *App) recordCompact(kind string) {
+// compactionStrategy extracts the strategy label from an EventCompact: the
+// structured Compaction payload wins, falling back to the free-text Text
+// label for events emitted by paths that predate the payload.
+func compactionStrategy(ev *agentic.OutputEvent) string {
+	if ev.Compaction != nil && ev.Compaction.Strategy != "" {
+		return ev.Compaction.Strategy
+	}
+	return ev.Text
+}
+
+// isMicroCompaction reports whether a compression strategy label counts
+// toward the footer's micro bucket (the m in c:Xm-Y) rather than the
+// full-compact bucket.
+func isMicroCompaction(strategy string) bool {
+	return strategy == string(agentic.CompressionMicro)
+}
+
+// recordCompact counts one completed compression pass and appends its
+// per-round record to the session stats.
+func (a *App) recordCompact(ev *agentic.OutputEvent) {
+	strategy := compactionStrategy(ev)
 	a.statsMu.Lock()
 	defer a.statsMu.Unlock()
-	if kind == "micro" {
+	if isMicroCompaction(strategy) {
 		a.microCompacts++
 	} else {
 		a.compacts++
 	}
+	a.compactions = append(a.compactions, compactionRoundFromEvent(ev, strategy))
+}
+
+// compactionRoundFromEvent builds the per-round session-stats record from an
+// EventCompact. Structured fields come from the Compaction payload; the time
+// is stamped now (the event carries no timestamp).
+func compactionRoundFromEvent(ev *agentic.OutputEvent, strategy string) CompactionRound {
+	r := CompactionRound{Strategy: strategy, At: time.Now()}
+	if ev.Compaction != nil {
+		r.BeforePct = ev.Compaction.BeforePct
+		r.AfterPct = ev.Compaction.AfterPct
+		r.FreedTokens = ev.Compaction.FreedTokens
+		r.Removed = ev.Compaction.Removed
+	}
+	return r
+}
+
+// showCompactionBubble renders a dedicated conversation element for a
+// completed compression pass so the user sees the drop instead of an
+// unexplained context reset (context compressions are invisible).
+// AddFlashMessage dedups a repeated same-strategy pass (a reactive ceiling
+// enforcer firing several turns in a row) by updating the last bubble in
+// place instead of stacking. It runs on the commandLoop via apply (the chat
+// single-owner invariant), guarded for headless/tests.
+func (a *App) showCompactionBubble(ev *agentic.OutputEvent) {
+	if a.subs == nil || a.subs.chat == nil {
+		return
+	}
+	a.subs.chat.AddFlashMessage(formatCompactionBubble(ev))
+}
+
+// formatCompactionBubble renders the one-line compaction bubble text. The ⚡
+// prefix + "Context compacted (<strategy>):" shape is the flash-dedup key
+// (flashKind), so repeated passes of the same strategy update in place.
+func formatCompactionBubble(ev *agentic.OutputEvent) string {
+	strategy := ev.Text
+	var ci *agentic.CompactionInfo
+	if ev.Compaction != nil {
+		ci = ev.Compaction
+		if ci.Strategy != "" {
+			strategy = ci.Strategy
+		}
+	}
+	if strategy == "" {
+		strategy = "unknown"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚡ Context compacted (%s)", strategy)
+	if ci != nil {
+		fmt.Fprintf(&b, ": %d%% → %d%%", ci.BeforePct, ci.AfterPct)
+		if ci.Removed > 0 {
+			fmt.Fprintf(&b, " · %d messages dropped", ci.Removed)
+		}
+		if ci.FreedTokens > 0 {
+			fmt.Fprintf(&b, " · ~%d tokens freed", ci.FreedTokens)
+		}
+		if ci.Detail != "" {
+			fmt.Fprintf(&b, "\n%s", ci.Detail)
+		}
+	}
+	return b.String()
 }
 
 func (a *App) clearStats() {
@@ -146,14 +324,16 @@ func (a *App) clearStats() {
 	a.lastTurnCacheWrite = 0
 	a.tokenSessionMax = 0
 	a.tokenSessionEstimate = 0
+	a.tokenSessionProjected = 0
 	a.lastTurnSpeed = 0
 	a.turnCount = 0
 	a.turnStatsSeen = false
 	a.microCompacts = 0
 	a.compacts = 0
+	a.compactions = nil
 	a.toolCallsTotal = 0
 	a.toolCallWarningLevel = ToolCallNormal
-	a.prevCacheHitPct = 0
+	a.lastCacheHit = CacheHitTrend{}
 }
 
 // resetCacheBustBaseline re-arms the cache-bust detector after an in-place
@@ -226,7 +406,7 @@ func (a *App) handleUserOrSystemContent(ev *agentic.OutputEvent) {
 		// A stream-retry notification means the agent reset its content buffer
 		// and will re-stream the answer from scratch. Retract the orphaned
 		// in-progress assistant bubble so the partial pre-retry text does not
-		// linger next to the re-streamed bubble (bugs.md Issue 4 duplicates).
+		// linger next to the re-streamed bubble (Issue 4 duplicates).
 		if isStreamRetry(ev) {
 			a.subs.chat.RemoveLastMessageOfType(tui.ConsoleAssistantMessage, tui.ConsoleThinkingBlock)
 		}
@@ -372,7 +552,7 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 // finishes while its widget is fully scrolled into terminal scrollback. The
 // compositor never repaints committed rows, so the widget's ✓/✗ transition
 // would be invisible and the frozen running rows would read as "still
-// ongoing" (bugs.md Issue 6: the first series of a parallel cancel batch
+// ongoing" (Issue 6: the first series of a parallel cancel batch
 // "stayed blue"). The echo renders the tool renderer's own summary (e.g.
 // "✓ Cancelled silky.nyala: G05 — …"), capped at a few lines, ANSI-free.
 func (a *App) echoScrolledOffToolResult(tc *tui.ToolExecutionComponent, ev *agentic.OutputEvent) {
@@ -412,7 +592,7 @@ func (a *App) applyToolResultToWidget(tc *tui.ToolExecutionComponent, ev *agenti
 // (elapsed) at the TRUE execution start: the scheduler started the task
 // (EventToolStart). Until this arrives a finalized call stays Pending and
 // shows "waiting Ns…" — never a fake elapsed that includes queue time
-// (bugs.md Bug W).
+// (Bug W).
 func (a *App) handleToolStart(ev *agentic.OutputEvent) {
 	a.toolTracker().OnStart(ev)
 }
@@ -451,7 +631,7 @@ func (a *App) setStreamingStatus() {
 // agent streams, or any orphan) so cancelled tools show ✗ instead of hanging.
 // A widget whose arguments never finished streaming was canceled BEFORE the
 // tool executed — it is labeled accordingly so the user does not think work
-// happened and its output was lost (bugs.md: "Tool call start a review but
+// happened and its output was lost ("Tool call start a review but
 // no output of work done").
 // The foreground tracker is reset so the next turn starts clean.
 func (a *App) failPendingTools() {
@@ -549,7 +729,13 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 	modelCfg := a.subs.cfg.GetModelByID(a.subs.cfg.ActiveModel)
 	ctxPct := 0.0
 	if a.tokenSessionMax > 0 {
-		ctxPct = float64(a.tokenSessionEstimate) / float64(a.tokenSessionMax) * 100
+		// The log's context figure is the projected occupancy (CX8/P20), the
+		// same provider-anchored figure the footer shows.
+		ctxTokens := a.tokenSessionProjected
+		if ctxTokens <= 0 {
+			ctxTokens = a.tokenSessionEstimate
+		}
+		ctxPct = float64(ctxTokens) / float64(a.tokenSessionMax) * 100
 	}
 	turn := a.turnCount
 	promptN := a.lastTurnPromptN
@@ -569,7 +755,7 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 	// early rejection) emits no EventTokenStats; re-logging the previous
 	// turn's stale numbers produced byte-identical [stats] lines across
 	// consecutive turns that looked like impossible zero-progress repeats
-	// (bugs.md runaway-loop identical-stats anomaly). Say what happened.
+	// (runaway-loop identical-stats anomaly). Say what happened.
 	if !statsSeen {
 		a.subs.logger.Log(agentic.Info, fmt.Sprintf("[stats] turn %d: no LLM call (no token stats this turn)", turn))
 		return
@@ -711,7 +897,7 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	// NOTE: the widget is deliberately NOT stamped Running here. Stamping at
 	// args-complete starts every widget of a batch at the same instant, so
 	// queued (conflict-serialized) calls display a fake ticking "elapsed"
-	// (bugs.md "Multi-tool calling and timeout" + Bug W). The Running
+	// (Multi-tool calling and timeout+ Bug W). The Running
 	// transition happens on EventToolStart (true scheduler execution start)
 	// or, as a backstop, the call's first progress event.
 
@@ -806,6 +992,7 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 	if ev.ContextStats != nil {
 		a.tokenSessionMax = ev.ContextStats.MaxTokens
 		a.tokenSessionEstimate = ev.ContextStats.EstimatedTokens
+		a.tokenSessionProjected = ev.ContextStats.ProjectedTokens
 	}
 
 	// Record per-turn usage to the global store (best-effort, non-fatal).
@@ -849,6 +1036,15 @@ func (a *App) applyTokenTimingsLocked(timings *agentic.TokenTimings) {
 	a.lastTurnCacheWrite = timings.CacheWriteTokens
 	a.tokenCacheReadTotal += timings.CacheReadTokens
 	a.tokenCacheWriteTotal += timings.CacheWriteTokens
+
+	// Cache-hit rate trend: the per-completion rate (pi-style, from THIS
+	// round's numbers) — the status bar shows only this, no cumulative
+	// session rate. Only rounds with cache activity feed the trend — a
+	// cache-less round (or provider) must not drag the rate to 0 and trip
+	// the drop coloring.
+	if timings.CacheReadTokens > 0 || timings.CacheWriteTokens > 0 {
+		a.lastCacheHit.observe(metrics.CacheHitPct(timings.CacheReadTokens, timings.CacheWriteTokens, timings.PromptN))
+	}
 	// Count cache busts two ways:
 	//  1. Zero cache reads AFTER the cache was established (provider TTL
 	//     expiry reports 0). The first request(s) of a session — or of a
@@ -929,20 +1125,23 @@ func (a *App) usageStoreOpen() (*usage.Store, error) {
 // buildFooterStatsLocked requires a.statsMu to be held by the caller.
 func (a *App) buildFooterStatsLocked() sessionStats {
 	st := sessionStats{
-		PromptN:         a.tokenPromptTotal,
-		PredictedN:      a.tokenPredictedTotal,
-		CacheReadTotal:  a.tokenCacheReadTotal,
-		CacheWriteTotal: a.tokenCacheWriteTotal,
-		SpeedTokPerSec:  a.lastTurnSpeed,
-		ContextEstimate: a.tokenSessionEstimate,
-		ContextMax:      a.tokenSessionMax,
-		ToolCalls:       a.toolCallsTotal,
-		ToolCallLevel:   a.toolCallWarningLevel,
+		PromptN:          a.tokenPromptTotal,
+		PredictedN:       a.tokenPredictedTotal,
+		CacheReadTotal:   a.tokenCacheReadTotal,
+		CacheWriteTotal:  a.tokenCacheWriteTotal,
+		SpeedTokPerSec:   a.lastTurnSpeed,
+		ContextEstimate:  a.tokenSessionEstimate,
+		ContextProjected: a.tokenSessionProjected,
+		ContextMax:       a.tokenSessionMax,
+		ToolCalls:        a.toolCallsTotal,
+		ToolCallLevel:    a.toolCallWarningLevel,
 	}
 	applyPricing(&st, a.subs.cfg, a.subs.cfg.ActiveModel)
 	st.MicroCompacts = a.microCompacts
 	st.Compacts = a.compacts
 	st.CacheMisses = a.tokenCacheMisses
+	st.LastCacheHit = a.lastCacheHit
+	st.Compactions = append([]CompactionRound(nil), a.compactions...)
 	return st
 }
 
@@ -1156,15 +1355,12 @@ func buildFooterStatParts(s sessionStats) []string {
 	if s.SpeedTokPerSec > 0 {
 		parts = append(parts, fmt.Sprintf("%.1f tok/s", s.SpeedTokPerSec))
 	}
-	// Cache hit percentage = CacheRead / (CacheRead + CacheWrite) * 100.
-	// This is the standard cache hit rate: what fraction of cache operations
-	// were hits vs misses (cache creations). When CacheWrite is 0 (OpenAI-style
-	// where cache is a subset of prompt tokens), the rate represents how much
-	// of the cache-eligible input was served from cache, using PromptN (net
-	// non-cached tokens) as the cache-miss portion.
-	if s.CacheReadTotal > 0 || s.CacheWriteTotal > 0 {
-		pct := metrics.CacheHitPct(s.CacheReadTotal, s.CacheWriteTotal, s.PromptN)
-		parts = append(parts, formatCacheHitPart(pct, s.PrevCacheHitPct))
+	// Cache hit percentage: CH:<avg>%▸<last>% where <avg> is the rolling
+	// average of the last 10 cache-hit observations and <last> is the most
+	// recent per-completion rate. See CacheHitPct for the formula; each
+	// element carries its own previous baseline for delta coloring.
+	if s.LastCacheHit.Seen {
+		parts = append(parts, formatLastCacheHitPart(s.LastCacheHit))
 	}
 	// Cache-miss counter, next to CH and only when non-zero (a miss means the
 	// established cache was bypassed — compression, TTL expiry, prefix churn).
@@ -1178,13 +1374,24 @@ func buildFooterStatParts(s sessionStats) []string {
 		parts = append(parts, fmt.Sprintf("$%.4f", s.CostUSD))
 	}
 	if s.ContextMax > 0 {
-		parts = append(parts, formatContextUsage(s.ContextEstimate, s.ContextMax))
+		parts = append(parts, formatContextUsage(footerContextTokens(s), s.ContextMax))
 	}
 	// Show compression counters when non-zero.
 	if s.MicroCompacts > 0 || s.Compacts > 0 {
 		parts = append(parts, fmt.Sprintf("c:%dm-%d", s.MicroCompacts, s.Compacts))
 	}
 	return parts
+}
+
+// footerContextTokens resolves the token figure the footer's occupancy display
+// renders: the projected next-request cost when recorded, else the estimate
+// (CX8/P20 — occupancy displays read the projection; the fallback only applies
+// before any provider usage has been recorded, when they are equal anyway).
+func footerContextTokens(s sessionStats) int {
+	if s.ContextProjected > 0 {
+		return s.ContextProjected
+	}
+	return s.ContextEstimate
 }
 
 // formatContextUsage renders context usage as "52.3%/128k". The
@@ -1207,29 +1414,61 @@ func formatContextUsage(estimate, max int) string {
 	return ansi.Fg(color) + value + ansi.Reset
 }
 
-// formatCacheHitPart renders the cache hit percentage with color coding
-// based on evolution from the previous value:
-//   - Growing (>=1%):        light green (#3fb950)
-//   - Dropping (1% to <10%): light orange (#d29922)
-//   - Dropping (>=10%):      red (#f85149)
-//   - Stable (<1% change):   normal status bar color
-func formatCacheHitPart(pct, prevPct float64) string {
+// Cache-hit evolution thresholds, in percentage points of delta from the
+// previous value. Colors only shift on significant changes (>=5pt drop):
+// minor fluctuations stay green to avoid alarm fatigue.
+const (
+	cacheHitGrowDelta = 1.0  // >= this: growing (bold green)
+	cacheHitDropDelta = -5.0 // <= this: significant drop (red); between 0 and this: stable (green)
+)
+
+// formatLastCacheHitPart renders the cache hit rate segment of the status
+// bar: CH:<avg>%▸<last>% where <avg> is the rolling average of the last
+// cacheHitWindowSize observations and <last> is the most recent one.
+//
+// Each element is colored independently based on its evolution from its
+// own previous baseline (significant changes only — >=5pt drop for red):
+//   - Growing (>=+1pt):           bold green (#3fb950)
+//   - Stable / minor change:      green (#3fb950) — any delta > -5pts
+//   - Significant drop (>=5pts):  red (#f85149)
+//
+// The first observation (no previous baseline) renders as stable green.
+func formatLastCacheHitPart(t CacheHitTrend) string {
+	avg := t.AvgPct()
+	avgPrev := t.AvgPrevPct()
+	avgColor := cacheHitColorFor(avg, avgPrev, t.HasPrev)
+	lastColor := cacheHitColorFor(t.Pct, t.PrevPct, t.HasPrev)
+	return fmt.Sprintf("%sCH:%.1f%%%s%s▸%.1f%%%s",
+		avgColor, avg, ansi.Reset,
+		lastColor, t.Pct, ansi.Reset)
+}
+
+// cacheHitColorFor resolves the SGR prefix (color + optional bold) for a
+// cache-hit element (avg or last) based on its delta from the previous
+// baseline. hasPrev=false renders as stable green (no baseline).
+//
+// Color scheme (per the bug report: emphasize significant changes, not minor
+// fluctuations):
+//   - Growing (>=+1pt):        bold green (#3fb950)
+//   - Stable / minor change:   green (#3fb950) — any delta > -5pts
+//   - Significant drop:        red (#f85149) — delta <= -5pts
+func cacheHitColorFor(pct, prevPct float64, hasPrev bool) string {
+	const (
+		green = "#3fb950"
+		red   = "#f85149"
+	)
 	delta := pct - prevPct
-	colorHex := tui.TheTheme.ColorHex("status_bar_fg")
-
 	switch {
-	case delta >= 1.0:
-		// Growing cache hit — green
-		colorHex = "#3fb950"
-	case delta <= -10.0:
-		// Dropping significantly — red
-		colorHex = "#f85149"
-	case delta <= -1.0:
-		// Dropping moderately — orange
-		colorHex = "#d29922"
+	case !hasPrev:
+		// No baseline yet — first observation reads as stable.
+		return ansi.Fg(green)
+	case delta >= cacheHitGrowDelta:
+		return ansi.Bold + ansi.Fg(green)
+	case delta > cacheHitDropDelta:
+		return ansi.Fg(green)
+	default:
+		return ansi.Fg(red)
 	}
-
-	return ansi.Fg(colorHex) + fmt.Sprintf("CH%.1f%%", pct) + ansi.Reset
 }
 
 // formatCacheMissPart renders the cache-miss counter in warning orange:

@@ -12,7 +12,7 @@ import (
 
 // NewGoalTools creates the single agent-facing goal tool bound to the given
 // GoalMode. createAllowed gates autonomous goal creation at execution time
-// (bugs.md S2): it is consulted only for the `create` action and callers
+// (S2): it is consulted only for the `create` action and callers
 // typically allow create when the feature flag is on OR a goal is active.
 // Terminal transitions are self-describing: the tool enforces the
 // terminal-answer contract (reason/expectation) and the done-gate challenge

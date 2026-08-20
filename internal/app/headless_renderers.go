@@ -117,6 +117,23 @@ func (r *plainRenderer) Summary(stats sessionStats, turns int, totalTime time.Du
 	}
 	parts = append(parts, fmt.Sprintf("total_time=%s", totalTime.Round(time.Millisecond)))
 	fmt.Fprintf(r.out, "-- summary %s\n", strings.Join(parts, " "))
+	printCompactionRounds(r.out, "-- ", stats.Compactions)
+}
+
+// printCompactionRounds writes one line per completed compression round so a
+// headless session documents its compressions (the user may have missed the
+// live bubble). No output when the session never compressed.
+func printCompactionRounds(out io.Writer, prefix string, rounds []CompactionRound) {
+	for i, c := range rounds {
+		fmt.Fprintf(out, "%scompression %d: %s %d%%→%d%%", prefix, i+1, c.Strategy, c.BeforePct, c.AfterPct)
+		if c.FreedTokens > 0 {
+			fmt.Fprintf(out, " freed=%d", c.FreedTokens)
+		}
+		if c.Removed > 0 {
+			fmt.Fprintf(out, " removed=%d", c.Removed)
+		}
+		fmt.Fprintln(out)
+	}
 }
 
 func (r *plainRenderer) Error(msg string) {
@@ -279,6 +296,7 @@ func (r *ansiRenderer) Summary(stats sessionStats, turns int, totalTime time.Dur
 	}
 	parts = append(parts, fmt.Sprintf("total_time=%s", totalTime.Round(time.Millisecond)))
 	fmt.Fprintln(r.out, strings.Join(parts, " "))
+	printCompactionRounds(r.out, "", stats.Compactions)
 }
 
 func (r *ansiRenderer) Error(msg string) {

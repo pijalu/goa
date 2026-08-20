@@ -73,7 +73,7 @@ func (t *Tracker) OnCall(ev *agentic.OutputEvent) (*tui.ToolExecutionComponent, 
 // OnStart processes an EventToolStart: transitions the widget Pending →
 // Running at the TRUE execution start (the scheduler started the task), so a
 // queued call's elapsed timer measures execution only — never queue time
-// (bugs.md Bug W). Returns the widget, or nil if none matched.
+// (Bug W). Returns the widget, or nil if none matched.
 func (t *Tracker) OnStart(ev *agentic.OutputEvent) *tui.ToolExecutionComponent {
 	if ev == nil {
 		return nil
@@ -165,7 +165,7 @@ func (t *Tracker) onCallDelta(ev *agentic.OutputEvent) (*tui.ToolExecutionCompon
 	// Ignore nameless deltas: a widget created with an empty tool name can
 	// never be matched by later named events (name-based noID lookup) nor
 	// re-titled (widgets have no SetToolName), so it stays a blank box with a
-	// ticking timer forever (bugs.md "Empty tool TUI"). The agent already
+	// ticking timer forever (Empty tool TUI). The agent already
 	// suppresses nameless emissions; this is defense in depth for any other
 	// event source. The call gets its widget at its first named delta or at
 	// the final event.
@@ -247,7 +247,7 @@ func (t *Tracker) register(tc *tui.ToolExecutionComponent, id string) {
 // transition to Running: args-complete arrives when the assistant message
 // finishes streaming — for a multi-call batch, ALL calls complete args in
 // one burst before ANY of them executes, so stamping Running here would
-// start every widget's elapsed clock at the same instant (bugs.md
+// start every widget's elapsed clock at the same instant
 // "Multi-tool calling and timeout": three sequential 12.4s bash calls all
 // displayed "elapsed 37.2s"). The Running transition happens on the call's
 // first progress event (applyProgress), which is emitted only when that
@@ -344,7 +344,7 @@ func (t *Tracker) applyProgress(tc *tui.ToolExecutionComponent, text string) {
 	// so the first progress is the true execution-start signal. Transition
 	// Pending → Running HERE — not at args-complete — otherwise every call of
 	// a multi-call batch gets its startTime stamped together at batch end and
-	// all widgets later show the SAME elapsed (bugs.md "Multi-tool calling
+	// all widgets later show the SAME elapsed ("Multi-tool calling
 	// and timeout": three sequential 12.4s bash calls all displayed
 	// "elapsed 37.2s"). SetStatus restarts the timer only on a real status
 	// change, so already-Running widgets are unaffected.

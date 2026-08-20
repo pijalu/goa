@@ -471,7 +471,7 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 // registerTools registers the built-in filesystem and execution tools.
 // Optional tools are skipped when disabled in configuration. It also connects
 // configured MCP servers and returns their manager (nil when none configured).
-// headless suppresses interactive-only tools (bugs.md Bug C).
+// headless suppresses interactive-only tools (Bug C).
 func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager, headless bool) (*lsp.Manager, *mcp.Manager) {
 	backupStager := tools.NewBackupStager(projectDir)
 
@@ -538,18 +538,12 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		Analyzer:            analyzerForBash(cfg.Tools.Bash),
 		Redactor:            secrets.DefaultRedactor(),
 	})
-	reg.Register(&tools.TerminalTool{
-		WorktreeMgr:         wm,
-		SandboxMgr:          sandboxMgr,
-		Blocked:             cfg.Tools.Terminal.Sandbox.BlockedCommands,
-		Allowed:             cfg.Tools.Terminal.Sandbox.AllowedCommands,
-		TimeoutSeconds:      cfg.Tools.Terminal.Sandbox.TimeoutSeconds,
-		MaxOutputChars:      cfg.Tools.Terminal.Sandbox.MaxOutputChars,
-		Bypass:              !cfg.Tools.Terminal.Sandbox.Enabled,
-		CompressionResolver: func() bool { return compression },
-	})
-
 	registerOptionalTools(reg, wm, projectDir, cfg, bgMgr, changeTracker, headless)
+	// P1 deferred-tool loader: a tiny schema whose description embeds the
+	// compact catalog of deferred tools. Registered last so its catalog sees
+	// the full deferred set; the model pulls deferred schemas on demand
+	// instead of shipping every schema with every request.
+	reg.Register(tools.NewToolSearchTool(reg))
 	mcpMgr := registerMCPServers(reg, projectDir, cfg)
 	return lspMgr, mcpMgr
 }
@@ -588,7 +582,7 @@ func registerMCPServers(reg *tools.ToolRegistry, projectDir string, cfg *config.
 
 // registerOptionalTools registers tools that are gated by configuration flags.
 // headless suppresses interactive-only tools: ask_user_question requires a
-// human at the input line, which headless mode has none of (bugs.md Bug C).
+// human at the input line, which headless mode has none of (Bug C).
 func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projectDir string, cfg *config.Config, bgMgr *background.Manager, changeTracker *bm25.ChangeTracker, headless bool) {
 	if cfg.Tools.Enabled.Verify {
 		reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
@@ -598,6 +592,28 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 			TimeoutSeconds: cfg.Tools.Python.TimeoutSeconds,
 			ProjectDir:     projectDir,
 			Jail:           cfg.Tools.Python.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
+		})
+	}
+	// run_code code-mode dispatch (gap TL7): a Python program that performs
+	// multiple tool sub-calls through the same guarded pipeline as direct
+	// calls, with a durable per-sub-call dispatch log under
+	// .goa/dispatch/<run>/ (spill-bounded artifacts).
+	if cfg.Tools.Enabled.RunCode {
+		var dispatchDir string
+		if projectDir != "" {
+			dispatchDir = filepath.Join(projectDir, ".goa", "dispatch")
+		}
+		reg.Register(&tools.RunCodeTool{
+			TimeoutSeconds:    cfg.Tools.RunCode.TimeoutSeconds,
+			MaxProgramBytes:   cfg.Tools.RunCode.MaxProgramBytes,
+			MaxLogResultBytes: cfg.Tools.RunCode.MaxLogResultBytes,
+			ProjectDir:        projectDir,
+			// The run_code worker is a "jailed worker" (gap TL7): its own os
+			// file API is confined to the project unless the user explicitly
+			// opts out. Sub-calls still respect their own tools' jails.
+			Jail:        cfg.Tools.RunCode.Jail == nil || *cfg.Tools.RunCode.Jail,
+			Registry:    reg,
+			DispatchDir: dispatchDir,
 		})
 	}
 	if cfg.Tools.Enabled.SSHBash {
@@ -611,7 +627,7 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 	}
 	// ask_user_question is enabled BY DEFAULT (inverted flag) — except in
 	// headless mode, where there is no user at the input line to answer
-	// (bugs.md Bug C). The host callback (Clarify) is injected after the App
+	// (Bug C). The host callback (Clarify) is injected after the App
 	// is built — see internal/app attachClarifyTool.
 	if !cfg.Tools.Enabled.ClarifyDisabled && !headless {
 		reg.Register(&ask.AskUserQuestionTool{})
@@ -661,7 +677,7 @@ func defaultInt(val, defaultVal int) int {
 // newLSPManager builds a multi-language LSP manager from config. It returns
 // nil when LSP is disabled EITHER globally (`lsp: false`) OR via the
 // user-facing tool switch (`tools.enabled.lsp: false`) — off means off: no
-// manager, no file touches, no background server spawns (bugs.md Issue LSP:
+// manager, no file touches, no background server spawns (Issue LSP:
 // the tool flag used to gate only the model-facing tool while the manager
 // kept spawning servers, wedging reads for ~55s on cold npx downloads).
 // Servers spawn lazily per file (async, never blocking file tools), so Start
@@ -785,6 +801,15 @@ func registerWebFetchTool(reg *tools.ToolRegistry, sessionStore *core.SessionSto
 	reg.Register(tool)
 }
 
+// registerSessionQueryTools registers the read-only session query tools
+// (session_search, session_event_read) over the shared session store.
+func registerSessionQueryTools(reg *tools.ToolRegistry, sessionStore *core.SessionStore) {
+	// Session tools are always registered: they are read-only and give the
+	// model the ability to recall decisions from prior sessions.
+	reg.Register(&tools.SessionSearchTool{Store: sessionStore})
+	reg.Register(&tools.SessionEventReadTool{Store: sessionStore})
+}
+
 func hasConfiguredModel(cfg *config.Config) bool {
 	return cfg.ActiveProvider != "" && cfg.ActiveModel != ""
 }
@@ -808,6 +833,21 @@ func attachClarifyTool(reg *tools.ToolRegistry, clarify ask.ClarifyFunc) {
 	if t, ok := reg.Get("ask_user_question"); ok {
 		if at, ok := t.(*ask.AskUserQuestionTool); ok {
 			at.SetClarify(clarify)
+		}
+	}
+}
+
+// attachEscalationApprover injects the sandbox escalation approval callback
+// into the registered bash tool. Called from App.Run once both the App and the
+// tool registry exist. When no approver is wired (e.g. headless mode), the
+// bash tool keeps its fail-closed default: escalations are denied.
+func attachEscalationApprover(reg *tools.ToolRegistry, approver func(ctx context.Context, req sandbox.EscalationRequest) (bool, error)) {
+	if approver == nil {
+		return
+	}
+	if t, ok := reg.Get("bash"); ok {
+		if bt, ok := t.(*tools.BashTool); ok {
+			bt.EscalationApprover = sandbox.EscalationApprover(approver)
 		}
 	}
 }

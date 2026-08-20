@@ -85,7 +85,7 @@ func TestModelCommand_NoArgs_ShowsSelector(t *testing.T) {
 }
 
 // TestModelCommand_PickerKeepsDefaultKeymap is a regression guard for the
-// /goal:manage selector rework (bugs.md goal manager): the /model picker
+// /goal:manage selector rework (goal manager): the /model picker
 // must keep the DEFAULT selector bindings — '+' = add, '-' = delete — and
 // must not request the per-instance reorder keymap.
 func TestModelCommand_PickerKeepsDefaultKeymap(t *testing.T) {
@@ -312,7 +312,7 @@ func TestModelCommand_AddNoProvider(t *testing.T) {
 }
 
 // TestModelCommand_AddAlwaysPromptsProvider verifies the interactive add-model
-// flow ALWAYS asks for the provider first (bugs.md Issue 11), even when an
+// flow ALWAYS asks for the provider first (Issue 11), even when an
 // active provider is set — and pre-selects that active provider as the default.
 // The subsequent model list is scoped to the chosen provider only.
 func TestModelCommand_AddAlwaysPromptsProvider(t *testing.T) {

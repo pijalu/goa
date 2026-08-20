@@ -6,7 +6,7 @@ package tui
 
 import "testing"
 
-// TestEditor_BackspaceShrinksHeight reproduces bugs.md "Input line is not
+// TestEditor_BackspaceShrinksHeight reproduces "Input line is not
 // resized when content is deleted": typing a wrapped multi-line input grows
 // the editor, and backspacing those lines away must shrink it back — the
 // reserved height tracks the content, it is not ratcheted forever.

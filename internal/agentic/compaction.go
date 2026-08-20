@@ -21,6 +21,12 @@ var DefaultMicroCompactionConfig = MicroCompactionConfig{
 
 // MicroCompactionConfig controls the micro compaction strategy.
 type MicroCompactionConfig struct {
+	// Enabled gates micro compaction as an explicit opt-in. It is DISABLED by
+	// default so the summarize strategy stays the default compaction path on a
+	// full window. When enabled, micro compaction runs as a dry-run first to
+	// validate it can meet the required shrink before any mutation; see Compact.
+	Enabled bool
+
 	// KeepRecentMessages is the number of most recent messages to never touch.
 	KeepRecentMessages int
 
@@ -40,24 +46,115 @@ type MicroCompactionConfig struct {
 	MinContextRatio float64
 }
 
+// PruneMarker is the fixed in-place marker substituted for the removed middle
+// span of an over-budget tool result by the pre-compaction tool-result pruner.
+// Its cost counts against the pruning budget: a valid configuration keeps
+// HeadChars + len(PruneMarker) + TailChars within ThresholdChars so every
+// pruned result fits the threshold and a second pass emits nothing.
+const PruneMarker = "\n\n[... tool result middle pruned ...]\n\n"
+
+// DefaultToolResultPruningConfig is the default configuration for the
+// pre-compaction tool-result pruner (dsh compaction-tool-result-pruner parity:
+// 8192/4096/1024 Unicode code points).
+var DefaultToolResultPruningConfig = ToolResultPruningConfig{
+	ThresholdChars: 8192,
+	HeadChars:      4096,
+	TailChars:      1024,
+}
+
+// ToolResultPruningConfig controls the pre-compaction tool-result pruner: a
+// model-free pass that runs ahead of summarizeHistory and rewrites over-budget
+// historical tool results in place to head + PruneMarker + tail. Character
+// budgets are in Unicode code points (runes), matching the dsh reference.
+type ToolResultPruningConfig struct {
+	// ThresholdChars prunes a tool result when its content exceeds this many
+	// Unicode code points. <= 0 falls back to the default (8192).
+	ThresholdChars int
+
+	// HeadChars is the number of leading Unicode code points retained.
+	// <= 0 falls back to the default (4096).
+	HeadChars int
+
+	// TailChars is the number of trailing Unicode code points retained.
+	// <= 0 falls back to the default (1024).
+	TailChars int
+}
+
+// resolve returns the effective pruning configuration: zero or negative
+// fields inherit the defaults so an SDK caller that never configured pruning
+// (or set only one field) still gets a sane pass — the same field-wise
+// fallback convention as microFallbackConfig. A combination whose head +
+// marker + tail exceeds the threshold cannot prune without growth (the dsh
+// config rejects it at construction); resolve falls the whole triple back to
+// the defaults so the pruned output is always within threshold and strictly
+// smaller than its input.
+func (c ToolResultPruningConfig) resolve() ToolResultPruningConfig {
+	def := DefaultToolResultPruningConfig
+	if c.ThresholdChars <= 0 {
+		c.ThresholdChars = def.ThresholdChars
+	}
+	if c.HeadChars <= 0 {
+		c.HeadChars = def.HeadChars
+	}
+	if c.TailChars <= 0 {
+		c.TailChars = def.TailChars
+	}
+	if c.HeadChars+len([]rune(PruneMarker))+c.TailChars > c.ThresholdChars {
+		return def
+	}
+	return c
+}
+
+// microFallbackConfig returns the micro settings for the summarize-overflow
+// fallback in Compact (applyMicroForSummarize). The fallback runs regardless
+// of MicroCompaction.Enabled — it is the escape hatch when summarize itself
+// overflows the window, not an opt-in maintenance pass — so Enabled is
+// irrelevant here and zero-valued truncation fields fall back to the
+// documented defaults: SDK callers that never configured micro still get a
+// sane pass (bounded keep window, minimum content size, readable marker)
+// instead of wiping every old tool result with an empty marker.
+func microFallbackConfig(cfg MicroCompactionConfig) MicroCompactionConfig {
+	def := DefaultMicroCompactionConfig
+	if cfg.KeepRecentMessages <= 0 {
+		cfg.KeepRecentMessages = def.KeepRecentMessages
+	}
+	if cfg.MinContentTokens <= 0 {
+		cfg.MinContentTokens = def.MinContentTokens
+	}
+	if cfg.TruncatedMarker == "" {
+		cfg.TruncatedMarker = def.TruncatedMarker
+	}
+	if cfg.MinContextRatio <= 0 {
+		cfg.MinContextRatio = def.MinContextRatio
+	}
+	if cfg.CacheMissThreshold <= 0 {
+		cfg.CacheMissThreshold = def.CacheMissThreshold
+	}
+	return cfg
+}
+
 // microCompactForced is the forced variant of micro compaction. When force is
 // true, the MinContextRatio check is skipped so a manual /compress invocation
 // can run even when usage is below the configured ratio.
 //
 // It self-manages the agent mutex: the history read, cache gate, and in-place
-// truncation run under a.mu; the EventCompact emission runs after unlock
-// (emitEvent acquires a.mu itself, so emitting under the lock would self-deadlock).
-func (a *Agent) microCompactForced(force bool) {
+// truncation run under a.mu; it returns the pre-pass stats plus the work done
+// so the CALLER emits the EventCompact after unlock (emitEvent acquires a.mu
+// itself, so emitting under the lock would self-deadlock). This moves the
+// single emission point to the top-level entry (compressHistoryWith /
+// compressHistoryWithStrategy), matching every other strategy.
+func (a *Agent) microCompactForced(force bool) (ContextStats, compactionResult) {
 	cfg := a.cfg.ContextCompression.MicroCompaction
 	a.mu.Lock()
+	before := a.computeContextStats()
 	if len(a.history) == 0 {
 		a.mu.Unlock()
-		return
+		return before, compactionResult{}
 	}
 	contextRatio := a.contextRatio()
 	if !force && contextRatio < cfg.MinContextRatio {
 		a.mu.Unlock()
-		return
+		return before, compactionResult{}
 	}
 
 	// Cache-aware gating (resurrects the previously-dead CacheMissThreshold).
@@ -69,29 +166,31 @@ func (a *Agent) microCompactForced(force bool) {
 	// skipping the mutation risks an overflow. force=true (explicit
 	// /compress) always mutates so a manual invocation always does visible
 	// work.
-	rt := a.cfg.ContextCompression.resolveThresholds()
-	deferCeilingRatio := float64(rt.deferralCeiling()) / 100
-	if !force && contextRatio < deferCeilingRatio && !a.cacheAssumedCold() {
+	// Simplified cache gate (soft/hard/error model): micro is the SOFT-layer
+	// strategy. Defer it while the provider cache is presumed hot, regardless of
+	// any derived level (no deferralCeiling = hard−10 magic). force=true (manual
+	// /compress) always mutates. The one override is the HARD ceiling: at/above
+	// it the overflow risk beats cache churn, so the mutation runs even hot.
+	overHard := contextRatio >= float64(a.cfg.ContextCompression.resolveThresholds().effectiveHard())/100
+	if !force && !overHard && !a.cacheAssumedCold() {
 		if a.cfg.Logger != nil {
 			// Info, not Debug: this suppresses compression the user configured.
-			a.cfg.Logger.Log(Info, "micro compaction deferred: provider cache presumed hot (idle < %s, ratio=%.1f%%, ceiling=%d%%)",
-				cfg.CacheMissThreshold, contextRatio*100, rt.deferralCeiling())
+			a.cfg.Logger.Log(Info, "micro (soft) compaction deferred: provider cache presumed hot (idle < %s, ratio=%.1f%%)",
+				cfg.CacheMissThreshold, contextRatio*100)
 		}
 		a.mu.Unlock()
-		return
+		return before, compactionResult{}
 	}
 
 	keepIdx := computeKeepIdx(a.history, cfg.KeepRecentMessages, force)
 	changed := a.truncateToolResults(a.history, keepIdx, cfg)
 	a.mu.Unlock()
 
-	if changed > 0 {
-		if a.cfg.Logger != nil {
-			a.cfg.Logger.Log(Info, "Applied micro compaction: truncated %d tool results, keepIdx=%d, ratio=%.1f%%",
-				changed, keepIdx, contextRatio*100)
-		}
-		a.emitEvent(OutputEvent{Type: EventCompact, Text: "micro"})
+	if changed > 0 && a.cfg.Logger != nil {
+		a.cfg.Logger.Log(Info, "Applied micro compaction: truncated %d tool results, keepIdx=%d, ratio=%.1f%%",
+			changed, keepIdx, contextRatio*100)
 	}
+	return before, compactionResult{changed: changed}
 }
 
 // cacheAssumedCold reports whether the provider prefix cache is presumed cold
@@ -148,7 +247,7 @@ func (a *Agent) cacheColdWithThreshold(threshold time.Duration) bool {
 // stale mid-turn — it advances only at turn END, so during a long single turn
 // the idle-gap logic would flip the gate cold while rounds still complete
 // every few seconds, busting a provably hot cache BELOW the deferral ceiling
-// (bugs.md prefix-cache bust loop companion defect). The caller must hold a.mu.
+// (prefix-cache bust loop companion defect). The caller must hold a.mu.
 func (a *Agent) lastProviderActivityLocked() time.Time {
 	last := a.lastTurnEnd
 	if a.lastRoundActivity.After(last) {
@@ -246,4 +345,31 @@ func (a *Agent) truncateToolResults(history []Message, keepIdx int, cfg MicroCom
 		a.invalidateContextUsageLocked()
 	}
 	return changed
+}
+
+// microCompactionDryRun estimates the outcome of a micro compaction pass
+// WITHOUT mutating history. It mirrors truncateToolResults' selection exactly
+// (same keepIdx, same MinContentTokens gate, same marker) but only counts the
+// tokens that WOULD be freed, so the caller can validate — before committing
+// any in-place mutation — whether micro compaction can shrink usage below the
+// required level. Returns the number of tool results that would change and the
+// estimated tokens that would be reclaimed. The caller must hold a.mu.
+func (a *Agent) microCompactionDryRun(cfg MicroCompactionConfig, force bool) (changed, freedTokens int) {
+	keepIdx := computeKeepIdx(a.history, cfg.KeepRecentMessages, force)
+	markerTokens := len(cfg.TruncatedMarker) / 4
+	for i := 1; i < keepIdx && i < len(a.history); i++ {
+		msg := &a.history[i]
+		if msg.Role != ToolRole {
+			continue
+		}
+		contentTokens := len(msg.Content) / 4
+		if contentTokens < cfg.MinContentTokens {
+			continue
+		}
+		changed++
+		if d := contentTokens - markerTokens; d > 0 {
+			freedTokens += d
+		}
+	}
+	return changed, freedTokens
 }

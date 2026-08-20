@@ -96,7 +96,7 @@ teams:
 
   definitions:
     # ── 2-model shorthand (the requested main/companion pair) ──────────
-    pair-strong:                 # team name (map key; matches [a-z0-9][a-z0-9-]*)
+    pair-strong:                 # team name (map key; display label — letters, digits, spaces, . _ -)
       description: "Strong coder + fast reviewer"
       main:                      # ≡ members.main + role: main
         model: default           # model ID from `models:` (required)
@@ -231,8 +231,8 @@ main agent decides if and when to consult a worker.
 
 ### 3.5 Validation rules (`config/config_validate.go`)
 
-1. Team name matches `[a-z0-9][a-z0-9-]{0,63}`; duplicate after merge → higher-priority source wins (normal cascade).
-2. Exactly **one** member with `role: main` per team (after shorthand normalization); zero or two+ → error. Member names match the team-name charset and must not collide with reserved pool roles (`orchestrator`) unless intentional for run mapping (§7).
+1. Team name is a user-facing **display label**: 1–64 chars drawn from letters (either case), digits, spaces, `.`, `_`, `-`, and must start and end with an alphanumeric (`^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9])?$`). Team names only serve as config map keys and `/team` command arguments (the command router splits on `:` only, never whitespace), so they are deliberately permissive — `LocalTeam` and `My Team` are valid. Duplicate after merge → higher-priority source wins (normal cascade).
+2. Exactly **one** member with `role: main` per team (after shorthand normalization); zero or two+ → error. **Member names are stricter than team names** — they match `[a-z0-9][a-z0-9-]{0,63}` because member names double as agent-pool roles (registered via `pool.SetConfig(role)` and referenced by the main agent's `delegate_to` delegation tools), and they must not collide with reserved pool roles (`orchestrator`) unless intentional for run mapping (§7).
 3. Every member's `model` must exist in `models:`; `provider`, when set, must exist in `providers:`.
 4. `mode` names must resolve (built-in or user-defined `prompts/mode/<name>/definition.md`); unknown mode → error.
 5. `review` must be one of `off|agent|framework|gated` (default `agent` when a reviewer exists). `review != off` requires **at least one** `role: reviewer` member; `review: off` with reviewer members present → error (pointless config).

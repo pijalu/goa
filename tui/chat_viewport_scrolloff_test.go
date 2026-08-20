@@ -7,7 +7,7 @@ package tui
 import "testing"
 
 // TestChatViewport_IsScrolledOff verifies the scrolled-off geometry the app
-// uses for completion echoes (bugs.md Issue 6): an entry is scrolled off only
+// uses for completion echoes (Issue 6): an entry is scrolled off only
 // when its rendered rows lie entirely above the visible window. The visible
 // window is the compositor's transcript band: terminal height minus the fixed
 // bottom chrome — children above the transcript scroll with it and do NOT

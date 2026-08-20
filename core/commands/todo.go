@@ -15,7 +15,7 @@ import (
 )
 
 // TodoCommand handles /todo slash commands: CRUD over the ACTIVE goal's todo
-// list (bugs.md Issue 5). Todos are goal-scoped — without an active goal
+// list (Issue 5). Todos are goal-scoped — without an active goal
 // every subcommand reports a clear error.
 //
 // The router splits only on ':', so:
@@ -208,7 +208,7 @@ func (c *TodoCommand) edit(ctx core.Context, pos int, title string) error {
 }
 
 // promptEdit opens the main input line PREFILLED with the todo's current
-// title; the prompt names the todo being edited (bugs.md Issue 5).
+// title; the prompt names the todo being edited (Issue 5).
 func (c *TodoCommand) promptEdit(ctx core.Context, pos int) error {
 	if ctx.ShowInputFunc == nil {
 		return fmt.Errorf("main input not available")

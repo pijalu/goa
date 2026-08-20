@@ -15,7 +15,7 @@ import (
 // TestPluginProvidersMap_AuthStoreKeyExposed verifies a provider whose API key
 // lives in the auth store (set via /login, not in ProviderConfig.APIKey) is
 // exposed to plugins with that resolved key — otherwise the quota plugin sees
-// no_api_key and the provider vanishes from /quota (bugs.md z.ai #6).
+// no_api_key and the provider vanishes from /quota (z.ai #6).
 func TestPluginProvidersMap_AuthStoreKeyExposed(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.ProviderConfig{

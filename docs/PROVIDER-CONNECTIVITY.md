@@ -300,25 +300,35 @@ This is managed server-side by the agent before sending the next request.
 
 | Strategy | Description | Cost | When Used |
 |----------|-------------|------|-----------|
-| `tool_elision` | Remove tool call arguments and results from older messages, replace with placeholders | Free (local, no LLM call) | Default (fallback) |
-| `micro` | On cache-miss turns, replaces old tool result bodies with a short marker `[Old tool result content cleared]` | Free | Primary strategy (default config) |
+| `tool_elision` | Remove tool call arguments and results from older messages, replace with placeholders | Free (local, no LLM call) | Default trigger-layer method |
+| `micro` | On cache-miss turns, replaces old tool result bodies with a short marker `[Old tool result content cleared]` | Free | Default soft-layer method |
 | `selective` | Remove oldest user/assistant messages, keep system prompt + recent turns | Free | Fallback when over threshold |
-| `hybrid` | `tool_elision` first, then `selective` if still over threshold | Free | When `hybrid` strategy is selected |
-| `summarize` | Use LLM to summarize old messages into a single assistant message | Costly (1 LLM call) | Only when explicitly chosen |
+| `hybrid` | `tool_elision` first, then `selective` if still over threshold | Free | Default on-error recovery method |
+| `summarize` | Use LLM to summarize old messages into a single assistant message | Costly (1 LLM call) | Default hard-ceiling method |
 
 ### Trigger Conditions
 
-Compression runs when:
+Every proactive layer is OPT-IN (`0` disables it — there is no implicit
+engine default-on; a negative value is a legacy disable spelling, and valid
+values are 5..100 in 5% steps):
 
-1. **Threshold trigger**: Estimated token usage exceeds `ThresholdPercent`
-   (default: 80%) of `MaxTokens` (0 = auto-detect from active model's
-   context window).
-2. **Error trigger**: The LLM returns a context-length error
-   (`on_context_error: true`, default: enabled).
+1. **Soft layer** (`thresholds.soft_percent`, default 0 = off): cheap
+   maintenance when the cache is cold, below the trigger level.
+2. **Trigger layer** (`thresholds.trigger_percent`, default 0 = off).
+3. **Hard ceiling** (`thresholds.hard_percent`): the embedded default.yaml
+   sets 95 — at 95% of the effective window the hard-layer method (default
+   `summarize`) runs with the cache gate bypassed.
+4. **Error trigger**: the LLM returns a context-length error
+   (`on_context_error: true`, default: enabled) → the configurable
+   `on_error_strategy` (default `hybrid`: elision → selective → summarize)
+   recovers, with the destructive message-drop only as a last resort.
+
+Any method (`micro`/`tool_elision`/`selective`/`hybrid`/`summarize`) can be
+assigned to any layer via `strategies.soft|trigger|hard`.
 
 ### Micro Compaction Details
 
-The default strategy (`micro`) is specifically designed for cache-hit
+Micro compaction (`micro`) is specifically designed for cache-hit
 efficiency:
 
 - Runs only when the cache is presumed **cold** (after `cache_miss_threshold`,

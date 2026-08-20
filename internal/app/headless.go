@@ -151,22 +151,27 @@ type HeadlessApp struct {
 	renderer HeadlessRenderer
 	confirm  ConfirmStrategy
 
-	statsMu              sync.Mutex
-	tokenPromptTotal     int
-	tokenPredictedTotal  int
-	tokenCacheReadTotal  int
-	tokenCacheWriteTotal int
-	tokenSessionMax      int
-	tokenSessionEstimate int
-	lastTurnPromptN      int
-	lastTurnPredictedN   int
-	lastTurnCacheRead    int
-	lastTurnCacheWrite   int
-	lastTurnSpeed        float64
-	turnCount            int
-	microCompacts        int
-	compacts             int
-	toolCallsTotal       int
+	statsMu               sync.Mutex
+	tokenPromptTotal      int
+	tokenPredictedTotal   int
+	tokenCacheReadTotal   int
+	tokenCacheWriteTotal  int
+	tokenSessionMax       int
+	tokenSessionEstimate  int
+	tokenSessionProjected int
+	lastTurnPromptN       int
+	lastTurnPredictedN    int
+	lastTurnCacheRead     int
+	lastTurnCacheWrite    int
+	lastTurnSpeed         float64
+	turnCount             int
+	microCompacts         int
+	compacts              int
+	// compactions documents each completed compression round (per-round
+	// session-stats record), mirroring App.compactions so headless summary
+	// output can list them. Guarded by statsMu like the counters above.
+	compactions    []CompactionRound
+	toolCallsTotal int
 
 	stream headlessStreamState
 
@@ -285,7 +290,13 @@ func (h *HeadlessApp) startWork(ctx context.Context, dc *doneCloser, prompt stri
 		return h.startGoal(ctx, prompt)
 	}
 	go h.waitForIdle(ctx, dc)
-	if err := h.subs.agentMgr.SendUserInput(prompt); err != nil {
+	// Expand @[label](goa-session:<id>) cross-session references (P24 / CX7)
+	// the same way the interactive prompt intake does.
+	expanded, err := expandSessionReferences(h.subs, prompt)
+	if err != nil {
+		return fmt.Errorf("session reference error: %w", err)
+	}
+	if err := h.subs.agentMgr.SendUserInput(expanded); err != nil {
 		return fmt.Errorf("send error: %w", err)
 	}
 	return nil
@@ -539,7 +550,7 @@ func (h *HeadlessApp) startSession() error {
 	// Wire tool confirmation so ask/confirm autonomy levels can prompt (or
 	// reject when non-interactive) before executing sensitive tools.
 	h.subs.agentMgr.SetConfirmTool(h.confirmTool)
-	_, err = h.subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, h.subs.cfg)
+	_, err = h.subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, h.subs.liveConfig())
 	if err != nil {
 		return fmt.Errorf("failed to start session: %w", err)
 	}
@@ -695,7 +706,7 @@ func (h *HeadlessApp) handleAgentEvent(ev *agentic.OutputEvent) {
 	case agentic.EventTokenStats, agentic.EventContextStats:
 		h.handleStatsEvent(ev)
 	case agentic.EventCompact:
-		h.recordCompact(ev.Text)
+		h.recordCompact(ev)
 	case agentic.EventProgress:
 		// Progress/status messages are not rendered in headless mode.
 	}
@@ -832,17 +843,23 @@ func (h *HeadlessApp) handleStatsEvent(ev *agentic.OutputEvent) {
 	if ev.ContextStats != nil {
 		h.tokenSessionMax = ev.ContextStats.MaxTokens
 		h.tokenSessionEstimate = ev.ContextStats.EstimatedTokens
+		h.tokenSessionProjected = ev.ContextStats.ProjectedTokens
 	}
 }
 
-func (h *HeadlessApp) recordCompact(kind string) {
+// recordCompact counts one completed compression pass and appends its
+// per-round record, mirroring App.recordCompact so headless and TUI session
+// stats classify and document compressions identically.
+func (h *HeadlessApp) recordCompact(ev *agentic.OutputEvent) {
+	strategy := compactionStrategy(ev)
 	h.statsMu.Lock()
 	defer h.statsMu.Unlock()
-	if kind == "micro" {
+	if isMicroCompaction(strategy) {
 		h.microCompacts++
 	} else {
 		h.compacts++
 	}
+	h.compactions = append(h.compactions, compactionRoundFromEvent(ev, strategy))
 }
 
 func (h *HeadlessApp) endStream() {
@@ -862,16 +879,23 @@ func (h *HeadlessApp) buildStats() sessionStats {
 
 func (h *HeadlessApp) buildStatsLocked() sessionStats {
 	st := sessionStats{
-		PromptN:         h.tokenPromptTotal,
-		PredictedN:      h.tokenPredictedTotal,
-		SpeedTokPerSec:  h.lastTurnSpeed,
-		ContextEstimate: h.tokenSessionEstimate,
-		ContextMax:      h.tokenSessionMax,
-		ToolCalls:       h.toolCallsTotal,
-		MicroCompacts:   h.microCompacts,
-		Compacts:        h.compacts,
+		PromptN:          h.tokenPromptTotal,
+		PredictedN:       h.tokenPredictedTotal,
+		SpeedTokPerSec:   h.lastTurnSpeed,
+		ContextEstimate:  h.tokenSessionEstimate,
+		ContextProjected: h.tokenSessionProjected,
+		ContextMax:       h.tokenSessionMax,
+		ToolCalls:        h.toolCallsTotal,
+		CacheReadTotal:   h.tokenCacheReadTotal,
+		CacheWriteTotal:  h.tokenCacheWriteTotal,
+		LastCacheHit:     cacheHitTrendFromTotals(h.lastTurnCacheRead, h.lastTurnCacheWrite, h.lastTurnPromptN),
+		MicroCompacts:    h.microCompacts,
+		Compacts:         h.compacts,
+		Compactions:      append([]CompactionRound(nil), h.compactions...),
 	}
-	applyPricing(&st, h.subs.cfg, h.subs.cfg.ActiveModel)
+	if h.subs != nil {
+		applyPricing(&st, h.subs.cfg, h.subs.cfg.ActiveModel)
+	}
 	return st
 }
 

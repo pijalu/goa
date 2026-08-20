@@ -149,7 +149,7 @@ func (s *Scheduler) loop(t *pluginTimer, cb func()) {
 // synchronous command/tool execution is mid-flight — including parked on a
 // goa.http.fetch hop that released vmMu via runOutsideVMLock — the timer
 // DEFERS instead of entering the runtime: two goja frames must never overlap
-// (bugs.md item E, the flaky TestPluginCommandExecutesThroughRouter). The
+// (item E, the flaky TestPluginCommandExecutesThroughRouter). The
 // callback re-fires on the next timer tick (intervals) or after a short
 // back-off (one-shots), so no cache update is lost — only delayed.
 func invokeSafe(cb func()) {

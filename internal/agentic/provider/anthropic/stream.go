@@ -80,8 +80,12 @@ func buildParams(model provider.Model, ctx provider.Context, opts provider.Strea
 			{"type": "text", "text": ctx.SystemPrompt},
 		}
 	}
-	if len(ctx.Tools) > 0 {
+	if len(ctx.Tools) > 0 && !ctx.NoTools {
 		body["tools"] = convertTools(ctx.Tools)
+	}
+	if ctx.NoTools {
+		// Final-step collapse (P7): the model must answer text-only.
+		body["tool_choice"] = map[string]interface{}{"type": "none"}
 	}
 	if opts.Temperature != nil && provider.ToBool(compat.SupportsTemperature, true) {
 		body["temperature"] = *opts.Temperature

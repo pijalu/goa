@@ -6,6 +6,8 @@ package commands
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,11 +22,13 @@ import (
 func testSkill(name, desc string, inline bool, command string) *skills.Skill {
 	return &skills.Skill{
 		Meta: skills.SkillMeta{
-			Name:        name,
-			Description: desc,
-			Inline:      inline,
-			Command:     command,
-			InputSchema: nil,
+			Name:           name,
+			Description:    desc,
+			Inline:         inline,
+			Command:        command,
+			InputSchema:    nil,
+			ModelInvocable: true,
+			UserInvocable:  true,
 		},
 		Body:     "Skill body for " + name,
 		FilePath: "/path/to/" + name + "/SKILL.md",
@@ -134,7 +138,7 @@ func TestRunSkill_Inline(t *testing.T) {
 }
 
 // TestRunSkill_InlineStripsNoise verifies inline injection strips SPDX license
-// comment blocks and never emits the bare "[Skill:]" marker (bugs.md run_skill
+// comment blocks and never emits the bare "[Skill:]" marker (run_skill
 // Issue B), while framing the body as instructions to execute (Issue A).
 func TestRunSkill_InlineStripsNoise(t *testing.T) {
 	var buf strings.Builder
@@ -581,14 +585,14 @@ func TestUpdateCompletionsWithParams(t *testing.T) {
 
 func TestSkillSubcommandCompletions_Empty(t *testing.T) {
 	comps := skillSubcommandCompletions("")
-	if len(comps) != 4 {
-		t.Fatalf("expected 4 completions, got %d", len(comps))
+	if len(comps) != 5 {
+		t.Fatalf("expected 5 completions, got %d", len(comps))
 	}
 }
 
 func TestSkillSubcommandCompletions_IncludesEnableDisable(t *testing.T) {
 	comps := skillSubcommandCompletions("")
-	want := map[string]bool{"run": false, "show": false, "enable": false, "disable": false}
+	want := map[string]bool{"run": false, "show": false, "enable": false, "disable": false, "sticky": false}
 	for _, c := range comps {
 		want[c.Value] = true
 	}
@@ -694,3 +698,116 @@ func (f *fakeTool) Execute(input string) (string, error) {
 }
 
 func (f *fakeTool) IsRetryable(err error) bool { return false }
+
+// TestListSkills_FiltersUserInvocable is the P16 acceptance for the TUI skill
+// menu: a user_invocable:false skill never appears in /skills, while a
+// model_invocable:false skill still appears (and runs) from the UI.
+func TestListSkills_FiltersUserInvocable(t *testing.T) {
+	ctx := skillTestContext(new(strings.Builder))
+	plain := testSkill("plain", "Plain skill", false, "")
+	modelOff := testSkill("model-off", "Model-off skill", false, "")
+	modelOff.Meta.ModelInvocable = false
+	userOff := testSkill("user-off", "User-off skill", false, "")
+	userOff.Meta.UserInvocable = false
+	reg := newSkillRegistry(map[string]*skills.Skill{
+		"plain":     plain,
+		"model-off": modelOff,
+		"user-off":  userOff,
+	})
+
+	if err := listSkills(ctx, reg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := ctx.OutputBuffer.String()
+	if !strings.Contains(text, "plain") {
+		t.Errorf("plain skill should be listed, got:\n%s", text)
+	}
+	if !strings.Contains(text, "model-off") {
+		t.Errorf("model_invocable:false skill must still appear in the TUI skill menu (P16 acceptance), got:\n%s", text)
+	}
+	if strings.Contains(text, "user-off") {
+		t.Errorf("user_invocable:false skill must not appear in the TUI skill menu, got:\n%s", text)
+	}
+	if !strings.Contains(text, "2 skill(s)") {
+		t.Errorf("expected 2 listed skills, got:\n%s", text)
+	}
+}
+
+// TestSkillNameCompletions_FiltersUserInvocable verifies run/show
+// completions (user invocation surfaces) hide user_invocable:false skills but
+// keep model_invocable:false skills invocable from the UI.
+func TestSkillNameCompletions_FiltersUserInvocable(t *testing.T) {
+	plain := testSkill("plain", "Plain skill", false, "")
+	modelOff := testSkill("model-off", "Model-off skill", false, "")
+	modelOff.Meta.ModelInvocable = false
+	userOff := testSkill("user-off", "User-off skill", false, "")
+	userOff.Meta.UserInvocable = false
+	reg := newSkillRegistry(map[string]*skills.Skill{
+		"plain":     plain,
+		"model-off": modelOff,
+		"user-off":  userOff,
+	})
+
+	comps := skillNameCompletions("run", "", reg)
+	got := map[string]bool{}
+	for _, c := range comps {
+		got[c.Value] = true
+	}
+	if !got["run:plain"] {
+		t.Errorf("plain should be completable, got: %+v", comps)
+	}
+	if !got["run:model-off"] {
+		t.Errorf("model_invocable:false skill must remain runnable from the UI (P16 acceptance), got: %+v", comps)
+	}
+	if got["run:user-off"] {
+		t.Errorf("user_invocable:false skill must not be completable from the UI, got: %+v", comps)
+	}
+}
+
+// TestRegisterSkillShortcuts_FiltersUserInvocable verifies slash shortcuts
+// (a user-facing invocation surface) are not registered for
+// user_invocable:false skills, while model_invocable:false skills keep their
+// shortcut so they still run from the UI.
+func TestRegisterSkillShortcuts_FiltersUserInvocable(t *testing.T) {
+	dir := t.TempDir()
+	writeShortcutSkill(t, dir, "plain", "plain", "")
+	writeShortcutSkill(t, dir, "model-off", "modeloff", "model_invocable: false")
+	writeShortcutSkill(t, dir, "user-off", "useroff", "user_invocable: false")
+
+	reg := skills.NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+
+	cmdReg := core.NewCommandRegistry()
+	warnings := RegisterSkillShortcuts(cmdReg, reg)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if _, ok := cmdReg.Resolve("plain"); !ok {
+		t.Error("plain skill shortcut should be registered")
+	}
+	if _, ok := cmdReg.Resolve("modeloff"); !ok {
+		t.Error("model_invocable:false skill shortcut should stay registered (runs from the UI)")
+	}
+	if _, ok := cmdReg.Resolve("useroff"); ok {
+		t.Error("user_invocable:false skill must not get a user-facing slash shortcut")
+	}
+}
+
+// writeShortcutSkill creates a SKILL.md with a command shortcut and optional
+// invocation policy under dir/<name>/.
+func writeShortcutSkill(t *testing.T, dir, name, command, policy string) {
+	t.Helper()
+	sd := filepath.Join(dir, name)
+	if err := os.MkdirAll(sd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fm := "name: " + name + "\ndescription: d\ncommand: " + command
+	if policy != "" {
+		fm += "\n" + policy
+	}
+	if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte("---\n"+fm+"\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

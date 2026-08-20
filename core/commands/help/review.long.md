@@ -13,10 +13,10 @@ Review code changes in a git project. The review opens a pager showing the diff,
 Subcommands are separated from `/review` by a colon (`:`).
 
 - `/review` — start a review. If the working tree has uncommitted changes, the diff is against `HEAD`; otherwise it shows the most recent commit (`HEAD^1..HEAD`).
-- `/review:<commit>` — start a review against a specific base commit.
+- `/review:<ref>` — start a review against a specific checkpoint: a tag, branch, or `HEAD` ancestor (e.g. `/review:v1.2.0`, `/review:main`, `/review:^3`). Tab-completion after `/review:` suggests `^1` (the default base) first, then the most recent tags and branches.
 - `/review:list` — list the last 10 commits.
 - `/review:status` — show active review sessions and their comments.
-- `/review:submit` — send the latest review (diff + comments) to the main agent as a user message.
+- `/review:submit` — send the latest review to the main agent as a user message. The message contains the base/head refs and your comments plus the `git diff <base>..HEAD` command — the diff itself is not embedded, keeping the agent's context small.
 - `/review:export` — write the latest review to `review_<basesha>_<timestamp>.md` in the project root.
 
 ## Pager Keys

@@ -144,7 +144,7 @@ func TestProviderCommand_PickerAddRunsWizard(t *testing.T) {
 }
 
 // TestProviderCommand_PickerKeepsDefaultKeymap is a regression guard for the
-// /goal:manage selector rework (bugs.md goal manager): the /provider picker
+// /goal:manage selector rework (goal manager): the /provider picker
 // must keep the DEFAULT selector bindings — '+' = add, '-' = delete — and
 // must not request the per-instance reorder keymap.
 func TestProviderCommand_PickerKeepsDefaultKeymap(t *testing.T) {
@@ -208,6 +208,98 @@ func TestProviderCommand_PickerAddCancelLeavesConfig(t *testing.T) {
 	}
 	if len(cfg.Providers) != 1 {
 		t.Errorf("Providers = %d, want 1 (no provider added)", len(cfg.Providers))
+	}
+}
+
+// TestProviderCommand_CodexShowsAuthChoiceNotForcedKey is the regression for
+// issue 3: an openai-codex provider must offer an auth-type choice (OAuth vs
+// API key) instead of forcing an API-key prompt.
+func TestProviderCommand_CodexShowsAuthChoiceNotForcedKey(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, ir, _ := newMenuTestContext(t, cfg)
+	saver := &fakeConfigSaver{}
+	ctx.ConfigSaver = saver
+
+	preset := config.FindPreset("openai-codex")
+	if preset == nil {
+		t.Skip("openai-codex preset not in catalog")
+	}
+	finalizePresetProviderFromPicker(*ctx, cfg, saver, preset)
+
+	// Must show an auth-choice selector, NOT an API-key prompt.
+	if sr.title != "Authenticate "+preset.Name+":" {
+		t.Fatalf("expected auth choice selector, got selector %q / input %q", sr.title, ir.prompt)
+	}
+	if strings.HasPrefix(ir.prompt, "API key") {
+		t.Fatalf("codex forced an API-key prompt: %q", ir.prompt)
+	}
+	var vals []string
+	for _, it := range sr.options {
+		vals = append(vals, it.Value)
+	}
+	if !contains(vals, "oauth") || !contains(vals, "apikey") {
+		t.Errorf("auth choice items = %v, want oauth+apikey", vals)
+	}
+}
+
+// TestProviderCommand_CodexAuthChoiceAPIKeyPromptsKey verifies picking the API
+// key option still flows into the key prompt.
+func TestProviderCommand_CodexAuthChoiceAPIKeyPromptsKey(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, ir, _ := newMenuTestContext(t, cfg)
+	saver := &fakeConfigSaver{}
+	ctx.ConfigSaver = saver
+
+	preset := config.FindPreset("openai-codex")
+	if preset == nil {
+		t.Skip("openai-codex preset not in catalog")
+	}
+	finalizePresetProviderFromPicker(*ctx, cfg, saver, preset)
+	sr.onSel("apikey", true)
+	if !strings.HasPrefix(ir.prompt, "API key for ") {
+		t.Fatalf("expected API key prompt after apikey choice, got %q", ir.prompt)
+	}
+	ir.onSub("sk-codex-1", true)
+	if got := cfg.GetProviderByID("openai-codex"); got == nil || got.APIKey != "sk-codex-1" {
+		t.Errorf("codex provider not added with key: %+v", got)
+	}
+}
+
+// TestProviderCommand_CodexAuthChoiceOAuthSkipsKeyPrompt verifies picking OAuth
+// adds the provider without forcing an API-key prompt.
+func TestProviderCommand_CodexAuthChoiceOAuthSkipsKeyPrompt(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, ir, _ := newMenuTestContext(t, cfg)
+	saver := &fakeConfigSaver{}
+	ctx.ConfigSaver = saver
+	// Stub the OAuth runner so no real browser/network flow starts. The runner
+	// is invoked on a background goroutine (async picker OAuth), so restore the
+	// seam only after it has been called.
+	called := make(chan struct{})
+	origRunner := loginFlowRunner
+	loginFlowRunner = func(core.Context, string) error {
+		close(called)
+		return nil
+	}
+	defer func() {
+		<-called
+		loginFlowRunner = origRunner
+	}()
+
+	preset := config.FindPreset("openai-codex")
+	if preset == nil {
+		t.Skip("openai-codex preset not in catalog")
+	}
+	finalizePresetProviderFromPicker(*ctx, cfg, saver, preset)
+	sr.onSel("oauth", true)
+	if strings.HasPrefix(ir.prompt, "API key") {
+		t.Errorf("OAuth path unexpectedly prompted for API key: %q", ir.prompt)
+	}
+	pickerProviderMu.Lock()
+	got := cfg.GetProviderByID("openai-codex")
+	pickerProviderMu.Unlock()
+	if got == nil {
+		t.Error("codex provider not added after OAuth choice")
 	}
 }
 

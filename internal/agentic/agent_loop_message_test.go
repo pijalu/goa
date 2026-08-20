@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// Regression tests for the runaway-loop TUI visibility bug (bugs.md
+// Regression tests for the runaway-loop TUI visibility bug
 // 2026-08-03): the guardrail stopped a session without ever showing WHAT
 // was judged a loop, so the user could not tell a genuine loop from a false
 // positive. Every guardrail message — the soft stream-loop warning, the
@@ -106,7 +106,7 @@ func TestStreamLoopStrike_MessagesShowRepeatedSequence(t *testing.T) {
 	// the smallest qualifying period, so the captured sample is the full
 	// unit (deterministic assertions). Six copies chain above the default
 	// five-repeat threshold.
-	unit := "the quick brown fox jumps over the lazy dog while parsing go"
+	unit := "the quick brown fox jumps over lazy dog while pars"
 	if len(unit) != streamLoopExactMinPeriod {
 		t.Fatalf("fixture unit must be exactly %d chars for a deterministic sample, got %d", streamLoopExactMinPeriod, len(unit))
 	}

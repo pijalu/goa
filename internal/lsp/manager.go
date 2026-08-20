@@ -55,7 +55,7 @@ type spawnFlight struct{ done chan struct{} }
 // initialize handshake — the server PROCESS stays on lifecycleCtx, so a
 // healthy server is never killed by this deadline. Before this bound, a
 // server that accepted its pipe but never answered Initialize wedged the
-// calling tool FOREVER (bugs.md "Read stuck" / Issue 21-style hang).
+// calling tool FOREVER (Read stuck/ Issue 21-style hang).
 // A var (not const) so tests can shrink the bound.
 var spawnHandshakeTimeout = 3 * time.Minute
 
@@ -68,7 +68,7 @@ type serverClient struct {
 	// number sent on the wire is monotonic per uri. Tool executions
 	// (read/edit/write touchLSP) run in parallel scheduler goroutines, so
 	// several goroutines can notify the same client at once — the unguarded
-	// map caused "fatal error: concurrent map writes" (bugs.md Issue 19).
+	// map caused "fatal error: concurrent map writes" (Issue 19).
 	mu       sync.Mutex
 	versions map[string]int // uri → latest didOpen/didChange version
 }
@@ -160,7 +160,7 @@ func (m *Manager) lookup(path string) (spec *ServerSpec, key, root string, ok bo
 // server start. Server starts can take ~1 minute (cold npx download) and used
 // to run synchronously here, which wedged file tools for the full duration —
 // two parallel reads of Python files both reported "Took 55.1s"
-// (bugs.md "Read stuck"). Use waitClientFor where blocking is acceptable
+// (Read stuck). Use waitClientFor where blocking is acceptable
 // (model-initiated navigation queries, which carry a ctx).
 func (m *Manager) clientFor(path string) *serverClient {
 	spec, key, root, ok := m.lookup(path)
@@ -294,7 +294,7 @@ func (m *Manager) spawn(spec *ServerSpec, root string) *serverClient {
 // server) canonicalize URIs to the real path in publishDiagnostics, while
 // others (gopls, pyright) echo the didOpen URI back — resolving up front
 // keeps didOpen and diagnostics keyed identically for BOTH kinds
-// (bugs.md Issue LSP: tsserver diagnostics silently dropped).
+// (Issue LSP: tsserver diagnostics silently dropped).
 func uriFor(path string) string {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
@@ -306,7 +306,7 @@ func uriFor(path string) string {
 // includes textDocument.publishDiagnostics: servers such as
 // typescript-language-server only PUSH diagnostics when the client declares
 // the capability — with an empty capabilities object they stay silent forever
-// (bugs.md Issue LSP: tsserver produced zero diagnostics).
+// (Issue LSP: tsserver produced zero diagnostics).
 func clientCapabilities() map[string]any {
 	return map[string]any{
 		"textDocument": map[string]any{
@@ -442,7 +442,7 @@ func (m *Manager) OpenDocument(ctx context.Context, path, text string) error {
 
 // DidChange notifies the appropriate server of a content change, opening the
 // document first if it was not open (so a bare DidChange still works). Like
-// OpenDocument it never blocks on a starting server (bugs.md "Read stuck").
+// OpenDocument it never blocks on a starting server (Read stuck).
 func (m *Manager) DidChange(ctx context.Context, path, text string) error {
 	c := m.clientFor(path)
 	if c == nil {
@@ -483,7 +483,7 @@ func (m *Manager) DiagnosticsFor(ctx context.Context, path string) []Diagnostic 
 // ServerIDFor returns the id of the language server that handles path
 // (e.g. "gopls", "pyright"), or "" when no server supports the file type.
 // Used to label diagnostics with the actual source server instead of a
-// hardcoded "gopls" (bugs.md Issue LSP — py/js files reported as gopls).
+// hardcoded "gopls" (Issue LSP — py/js files reported as gopls).
 func (m *Manager) ServerIDFor(path string) string {
 	spec, _, _, ok := m.lookup(path)
 	if !ok {

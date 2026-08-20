@@ -58,6 +58,7 @@ type Config struct {
 	Prompts            PromptsConfig            `yaml:"prompts"`
 	ThinkingLevels     ThinkingLevelConfig      `yaml:"thinking_levels"`
 	ContextCompression ContextCompressionConfig `yaml:"context_compression"`
+	TimeContext        TimeContextConfig        `yaml:"time_context"`
 	Telegram           TelegramConfig           `yaml:"telegram"`
 	Orchestrator       OrchestratorConfig       `yaml:"orchestrator,omitempty"`
 	Teams              TeamsConfig              `yaml:"teams,omitempty"`
@@ -122,6 +123,11 @@ type ExecutionConfig struct {
 	// text block required before the streaming loop detector stops the turn
 	// (0 = default 5). Higher values tolerate more deliberate repetition.
 	StreamLoopMaxRepeats int `yaml:"stream_loop_max_repeats,omitempty"`
+	// StreamLoopMinPeriod is the smallest repeated unit (in characters) the
+	// streaming loop detector treats as a loop (0 = default 50). Shorter
+	// exact repeats are punctuation/connector noise. Values below 8 are
+	// rejected: periods under that floor are never scanned at all.
+	StreamLoopMinPeriod int `yaml:"stream_loop_min_period,omitempty"`
 	// StreamLoopMaxStrikes is the number of stream-loop detections after
 	// which the turn is stopped (0 = default 3). Earlier detections abandon
 	// the looped round, warn the model with an ephemeral hint, and re-stream.
@@ -130,6 +136,38 @@ type ExecutionConfig struct {
 	// loop detected) after which the stream-loop strike counter resets to
 	// zero (0 = default 10).
 	StreamLoopResetAfter int `yaml:"stream_loop_reset_after,omitempty"`
+}
+
+// RetryBackoffConfig configures the exponential-backoff schedule for a
+// provider's retry policy. All values are optional; zero falls back to the
+// package defaults (initial 1000ms, max 30000ms, jitter 0.25).
+type RetryBackoffConfig struct {
+	// InitialMS is the base delay for the first retry in milliseconds
+	// (doubles per attempt).
+	InitialMS int `yaml:"initial_ms,omitempty" json:"initial_ms,omitempty"`
+	// MaxMS caps both the local exponential delay and any accepted provider
+	// Retry-After, in milliseconds.
+	MaxMS int `yaml:"max_ms,omitempty" json:"max_ms,omitempty"`
+	// Jitter is the symmetric random multiplier range around one
+	// (0.1 = ±10%). Valid range [0, 1].
+	Jitter float64 `yaml:"jitter,omitempty" json:"jitter,omitempty"`
+}
+
+// RetryPolicyConfig configures per-provider model-request retries, mirroring
+// the dsh llm-retry policy. mode is "normal" (finite budget, code-eligible) or
+// "always" (retry every model-request failure until cancel).
+type RetryPolicyConfig struct {
+	// Mode selects normal (default) or always retry behavior.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// MaxRetries is the finite retry budget for normal mode. When unset, the
+	// global execution.retries (or provider max_retries) applies.
+	MaxRetries int `yaml:"max_retries,omitempty" json:"max_retries,omitempty"`
+	// Backoff schedules the delay between attempts.
+	Backoff RetryBackoffConfig `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+	// Codes restricts normal-mode retries to the listed failure codes
+	// (EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT). Empty uses the
+	// default transient set.
+	Codes []string `yaml:"codes,omitempty" json:"codes,omitempty"`
 }
 
 // ProviderConfig configures a single LLM provider (endpoint + auth).
@@ -180,6 +218,12 @@ type ProviderConfig struct {
 
 	// MaxRetryDelay caps exponential backoff delay.
 	MaxRetryDelay string `yaml:"max_retry_delay,omitempty"`
+
+	// RetryPolicy configures per-provider model-request retries (mode,
+	// finite budget, backoff, eligible codes). When set, its max_retries beats
+	// the global execution.retries and the scalar max_retries above; its
+	// backoff overrides MaxRetryDelay. Nil keeps the legacy scalar behavior.
+	RetryPolicy *RetryPolicyConfig `yaml:"retry_policy,omitempty" json:"retry_policy,omitempty"`
 
 	// ReasoningEffort sets a default reasoning level for this provider.
 	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
@@ -493,7 +537,7 @@ type GoalsConfig struct {
 	FreshContext *bool `yaml:"fresh_context,omitempty"`
 	// VerifyTimeout bounds a single verify-command execution at goal
 	// completion (e.g. "2m", "90s"). Empty/invalid = default (2m). The bound
-	// is displayed to the user in the completion evidence (bugs.md Bug A:
+	// is displayed to the user in the completion evidence (Bug A:
 	// "the goal complete should have a clear timeout").
 	VerifyTimeout string `yaml:"verify_timeout,omitempty"`
 }
@@ -582,12 +626,31 @@ type SkillsConfig struct {
 	Enabled []string `yaml:"enabled,omitempty"`
 	// Disabled lists skill names to turn off (any source: embedded and
 	// file-based). Disabled skills are not registered, so they never appear in
-	// the system prompt listing, the skills banner, or the run_skill enum. A
-	// name in both Enabled and Disabled is disabled (explicit off wins).
-	// Load-time only: the system prompt is not rebuilt mid-session.
+	// the system prompt listing, the skills banner, or the <available_skills>
+	// catalog. A name in both Enabled and Disabled is disabled (explicit off
+	// wins). Load-time only: the system prompt is not rebuilt mid-session.
 	Disabled []string `yaml:"disabled,omitempty"`
+	// EmbeddedEnabled re-enables individual embedded skills that are OFF by
+	// default (all embedded skills except telegram). Unlike the
+	// global Enabled allowlist — which gates EVERY source and would suppress
+	// home/project/plugin file skills — this list is embedded-scoped: it only
+	// opts embedded skills back in, leaving file-based skills untouched.
+	// Load-time only.
+	EmbeddedEnabled []string `yaml:"embedded_enabled,omitempty"`
+	// Sticky forces the named knowledge skills sticky-on regardless of their
+	// frontmatter (always-on: body persisted into every agent's history for
+	// the whole session). Toggled via /skill:sticky and /config Skills; the
+	// state is persisted at PROJECT level (skills.sticky in .goa/config.yaml)
+	// so it sticks across sessions per project. Action-category skills and
+	// disabled skills are never affected. Load-time only.
+	Sticky []string `yaml:"sticky,omitempty"`
+	// StickyOff overrides the frontmatter sticky:true of the named knowledge
+	// skills off, so a skill shipped always-on can be turned back to on-demand
+	// without editing its SKILL.md. A name in both Sticky and StickyOff is not
+	// sticky (explicit off wins, mirroring Disabled). Project-level; load-time
+	// only.
+	StickyOff []string `yaml:"sticky_off,omitempty"`
 }
-
 // ToolsConfig holds tool-specific sub-configurations.
 type ToolsConfig struct {
 	Bash        BashConfig           `yaml:"bash"`
@@ -597,10 +660,16 @@ type ToolsConfig struct {
 	SmartSearch SmartSearchConfig    `yaml:"smartsearch"`
 	Edit        EditConfig           `yaml:"edit"`
 	Python      PythonConfig         `yaml:"python"`
+	RunCode     RunCodeConfig        `yaml:"run_code"`
 	ReadFile    tools.FileToolConfig `yaml:"read_file"`
 	Write       WriteConfig          `yaml:"write"`
 	WebFetch    tools.WebFetchConfig `yaml:"webfetch"`
 	Enabled     ToolEnabledConfig    `yaml:"enabled"`
+	// MaxInlineBytes caps the model-facing size of any single plain-text tool
+	// result (gap CX2 spill policy). A result over the cap is saved verbatim
+	// to ~/.goa/spill/<session>/ and replaced by a budgeted head/tail preview
+	// plus a locator notice. Zero (the default) disables the policy entirely.
+	MaxInlineBytes int `yaml:"max_inline_bytes"`
 }
 
 // SmartSearchConfig controls the smartsearch tool.
@@ -635,7 +704,7 @@ type ToolEnabledConfig struct {
 	DelegateTo    bool `yaml:"delegate_to"`
 	Goal          bool `yaml:"goal"`
 	Memento       bool `yaml:"memento"`
-	PTYExec       bool `yaml:"pty_exec"`
+	Terminals     bool `yaml:"terminals"`
 	RequestReview bool `yaml:"request_review"`
 	SSHBash       bool `yaml:"ssh_bash"`
 	WebFetch      bool `yaml:"webfetch"`
@@ -647,6 +716,10 @@ type ToolEnabledConfig struct {
 	// defaults to true so the model can run Python code unless the user
 	// explicitly disables it.
 	PythonEnabled bool `yaml:"python"`
+	// RunCode controls the `run_code` code-mode dispatch tool (gap TL7): a
+	// Python program that performs multiple tool sub-calls through the same
+	// guarded permission/jail path as direct calls. Opt-OUT: defaults to true.
+	RunCode bool `yaml:"run_code"`
 	// Agent controls the `agent` sub-agent tool. Opt-OUT: defaults to true
 	// (set in the embedded default config) so the model can spawn sub-agents
 	// unless the user explicitly disables it.
@@ -662,7 +735,7 @@ type ToolEnabledConfig struct {
 	// config) so the model gets precise navigation unless the user disables it
 	// or the project has no language server.
 	LSP bool `yaml:"lsp"`
-	// Todo controls the standalone `todo_list` tool (bugs.md: "todo should be
+	// Todo controls the standalone `todo_list` tool ("todo should be
 	// available outside of goal"). Opt-OUT: defaults to true (set in the
 	// embedded default config) so the model can track work items without an
 	// active goal; when a goal is active the tool is linked to the goal's own
@@ -723,12 +796,13 @@ func (t *ToolEnabledConfig) fieldPtr(name string) *bool {
 		"delegate_to":      &t.DelegateTo,
 		"goal":             &t.Goal,
 		"memento":          &t.Memento,
-		"pty_exec":         &t.PTYExec,
+		"terminals":        &t.Terminals,
 		"request_review":   &t.RequestReview,
 		"ssh_bash":         &t.SSHBash,
 		"webfetch":         &t.WebFetch,
 		"verify":           &t.Verify,
 		"python":           &t.PythonEnabled,
+		"run_code":         &t.RunCode,
 		"agent":            &t.Agent,
 		"agent_swarm":      &t.AgentSwarm,
 		"goa":              &t.Goa,
@@ -785,6 +859,24 @@ type PythonConfig struct {
 	Jail bool `yaml:"jail"`
 }
 
+// RunCodeConfig controls the run_code code-mode dispatch tool (gap TL7).
+type RunCodeConfig struct {
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+	// Jail confines the run_code program's own `os` file API to the project
+	// directory and below, matching the python/bash jail. The worker is
+	// jailed by default (nil = true); set false explicitly to allow the
+	// program's own file operations outside the project. Sub-calls always
+	// respect their own tools' jail configuration regardless of this flag.
+	Jail *bool `yaml:"jail"`
+	// MaxProgramBytes caps the submitted program length. Zero defaults to the
+	// tool's built-in cap (200KB).
+	MaxProgramBytes int `yaml:"max_program_bytes"`
+	// MaxLogResultBytes caps the inline sub-call result bytes stored in the
+	// durable dispatch log; oversized results spill to the dispatch spill dir.
+	// Zero defaults to the tool's built-in cap (64KB).
+	MaxLogResultBytes int `yaml:"max_log_result_bytes"`
+}
+
 // BashConfig controls bash tool behavior.
 type BashConfig struct {
 	BlockedCommands []string `yaml:"blocked_commands"`
@@ -808,7 +900,7 @@ type BashConfig struct {
 	EnableComplexityAnalysis bool `yaml:"enable_complexity_analysis"`
 	// WarnFileEdits prepends a non-blocking hint to the output of shell commands
 	// that modify project files (redirects, sed -i, interpreter inline writes),
-	// steering the model to the edit tool (bugs.md). Never blocks. nil = enabled
+	// steering the model to the edit tool. Never blocks. nil = enabled
 	// (default); set false to silence the hint. Toggleable in /config.
 	WarnFileEdits *bool `yaml:"warn_file_edits,omitempty"`
 }
@@ -853,7 +945,7 @@ type TUIConfig struct {
 	// line; the animated frame shows only next to the model in the footer).
 	SpinnerLocation string `yaml:"spinner_location,omitempty"`
 	// AnimatedTitle animates the terminal window title with the spinner while
-	// the agent is working. Default false (bugs.md 2026-07-21: keep the static
+	// the agent is working. Default false (2026-07-21: keep the static
 	// hexagon title during activities); set to true to opt in.
 	AnimatedTitle *bool             `yaml:"animated_title,omitempty"`
 	Tools         ToolDisplayConfig `yaml:"tools"`
@@ -971,6 +1063,23 @@ type ThinkingLevelConfig struct {
 	Coder     string `yaml:"coder"`
 }
 
+// TimeContextConfig controls the per-turn temporal context injection (CX6):
+// a durable context message carrying a zoned timestamp and elapsed-since-last
+// reading, injected at model step preparation. The feature is off by default;
+// enable it to give the model a clock when interpreting otherwise-unqualified
+// dates and times.
+type TimeContextConfig struct {
+	// Enabled turns on per-step temporal context injection. Off by default.
+	Enabled bool `yaml:"enabled"`
+	// TimeZone is the IANA display zone used to format timestamps and
+	// reported to the model. Empty uses the local zone.
+	TimeZone string `yaml:"time_zone,omitempty"`
+	// RefreshInterval is the minimum wall-clock gap between readings, as a Go
+	// duration string ("60s", "5m"). Empty or "0" injects at every eligible
+	// step entry.
+	RefreshInterval string `yaml:"refresh_interval,omitempty"`
+}
+
 // ContextCompressionConfig controls automatic conversation history compression.
 type ContextCompressionConfig struct {
 	// Enabled is tri-state: nil = inherit from the lower cascade layer (embedded
@@ -985,7 +1094,11 @@ type ContextCompressionConfig struct {
 	Strategies       CompressionLayerStrategiesConfig    `yaml:"strategies,omitempty"`
 	PerModel         map[string]ModelCompressionOverride `yaml:"per_model,omitempty"`
 	OnContextError   bool                                `yaml:"on_context_error"`
-	Strategy         string                              `yaml:"strategy"`
+	// OnErrorStrategy selects the strategy applied when a context-length
+	// error triggers recovery (used when on_context_error is true). Empty =
+	// "hybrid" (tool_elision → selective → summarize as last resort).
+	OnErrorStrategy   string                              `yaml:"on_error_strategy,omitempty"`
+	Strategy          string                              `yaml:"strategy"`
 	// CacheGate controls the prefix-cache gate that defers proactive
 	// compression while the provider cache is presumed hot: "on" (default)
 	// or "off". Per-model overrides win over the global value. Turn it off
@@ -993,23 +1106,31 @@ type ContextCompressionConfig struct {
 	CacheGate           string                  `yaml:"cache_gate,omitempty"`
 	PreserveRecentTurns int                     `yaml:"preserve_recent_turns"`
 	MicroCompaction     MicroCompactionSettings `yaml:"micro_compaction,omitempty"`
+	// ToolResultPruning configures the pre-compaction tool-result pruner
+	// (CX1): a model-free pass ahead of summarization that rewrites
+	// over-budget historical tool results to head + marker + tail.
+	ToolResultPruning ToolResultPruningSettings `yaml:"tool_result_pruning,omitempty"`
 }
 
 // CompressionThresholdsConfig holds the fill levels (percent of the effective
 // context window) at which compression escalates. Zero fields mean "inherit"
-// (from the global section for per-model overrides, from defaults otherwise).
+// (from the global section for per-model overrides); 0 in the global section
+// DISABLES that layer — there is no implicit engine default-on ceiling (the
+// embedded default config sets hard_percent: 95 explicitly).
 type CompressionThresholdsConfig struct {
-	// SoftPercent is the early cheap-maintenance level (0 = disabled).
+	// SoftPercent is the early maintenance level (0 = disabled).
 	SoftPercent int `yaml:"soft_percent,omitempty"`
-	// TriggerPercent is the main strategy trigger (0 = default).
+	// TriggerPercent is the main strategy trigger (0 = disabled).
 	TriggerPercent int `yaml:"trigger_percent,omitempty"`
-	// HardPercent is the emergency ceiling (0 = default 95).
+	// HardPercent is the emergency ceiling (0 = disabled; negative values are
+	// accepted and also disable the layer — legacy opt-out spelling).
 	HardPercent int `yaml:"hard_percent,omitempty"`
 }
 
 // CompressionLayerStrategiesConfig holds the per-layer compression strategies.
 // Empty fields inherit (from the global section for per-model overrides, from
-// the SDK defaults otherwise: soft=micro, trigger=tool_elision, hard=hybrid).
+// the SDK defaults otherwise: soft=micro, trigger=tool_elision, hard=summarize).
+// Any strategy is allowed on any layer.
 type CompressionLayerStrategiesConfig struct {
 	Soft    string `yaml:"soft,omitempty"`
 	Trigger string `yaml:"trigger,omitempty"`
@@ -1038,11 +1159,32 @@ func (cc ContextCompressionConfig) EnabledValue() bool {
 
 // MicroCompactionSettings holds micro-specific config overrides.
 type MicroCompactionSettings struct {
+	// Enabled opts micro compaction in as a pre-summarize validation step.
+	// It is DISABLED by default so summarize stays the default compaction path.
+	// When enabled, micro runs first as a dry-run (no mutation) to validate it
+	// can meet the required shrink; summarize always runs on the original
+	// history, and micro is only applied for real if summarize overflows.
+	Enabled            *bool   `yaml:"enabled,omitempty"`
 	KeepRecentMessages int     `yaml:"keep_recent_messages,omitempty"`
 	MinContentTokens   int     `yaml:"min_content_tokens,omitempty"`
 	CacheMissThreshold string  `yaml:"cache_miss_threshold,omitempty"`
 	TruncatedMarker    string  `yaml:"truncated_marker,omitempty"`
 	MinContextRatio    float64 `yaml:"min_context_ratio,omitempty"`
+}
+
+// ToolResultPruningSettings holds tool-result pruner config overrides (CX1).
+// Character budgets are in Unicode code points; zero fields inherit the
+// defaults (threshold 8192, head 4096, tail 1024).
+type ToolResultPruningSettings struct {
+	// ThresholdChars prunes a tool result when its content exceeds this many
+	// Unicode code points (default 8192).
+	ThresholdChars int `yaml:"threshold_chars,omitempty"`
+	// HeadChars is the number of leading Unicode code points retained
+	// (default 4096).
+	HeadChars int `yaml:"head_chars,omitempty"`
+	// TailChars is the number of trailing Unicode code points retained
+	// (default 1024).
+	TailChars int `yaml:"tail_chars,omitempty"`
 }
 
 // TelegramConfig controls the telegram talk style system prompt injection.

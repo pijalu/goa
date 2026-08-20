@@ -37,22 +37,23 @@ type AgentTab struct {
 // requested by the tabbed-run UI: provider/model/thinking plus cache-hit.
 // Label is the display name (role, disambiguated when a role recurs).
 type AgentEnhancedRow struct {
-	AgentID         string
-	Role            string
-	Label           string
-	Provider        string
-	Model           string
-	Thinking        string
-	Status          string
-	Turns           int
-	TokensIn        int
-	TokensOut       int
-	CacheRead       int
-	CacheCreation   int // Anthropic-style cache_creation_input_tokens (writes)
-	ToolCalls       int
-	ContextEstimate int
-	ContextMax      int
-	ContextAutoMax  bool
+	AgentID          string
+	Role             string
+	Label            string
+	Provider         string
+	Model            string
+	Thinking         string
+	Status           string
+	Turns            int
+	TokensIn         int
+	TokensOut        int
+	CacheRead        int
+	CacheCreation    int // Anthropic-style cache_creation_input_tokens (writes)
+	ToolCalls        int
+	ContextEstimate  int
+	ContextProjected int
+	ContextMax       int
+	ContextAutoMax   bool
 }
 
 // AgentLogLineKind classifies a transcript line for faint-vs-normal styling.
@@ -259,7 +260,7 @@ func (v *MultiAgentView) ensureBookendTabs() {
 	if len(v.tabs) > 0 {
 		return
 	}
-	// Tabs are ordered [Stats, Conversation, <agent>…] per bugs.md. Stats
+	// Tabs are ordered [Stats, Conversation, <agent>…] per. Stats
 	// is the default active tab so the overview is visible first; the user
 	// can switch to Conversation to see the transcript.
 	v.tabs = []AgentTab{
@@ -307,6 +308,7 @@ func (v *MultiAgentView) applyRowEv(row *AgentEnhancedRow, ev AgentViewEvent) {
 		row.CacheCreation = ev.Stats.CacheCreation
 		row.ToolCalls = ev.Stats.ToolCalls
 		row.ContextEstimate = ev.Stats.ContextEstimate
+		row.ContextProjected = ev.Stats.ContextProjected
 		row.ContextMax = ev.Stats.ContextMax
 		row.ContextAutoMax = ev.Stats.ContextAutoMax
 	}

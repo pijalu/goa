@@ -15,13 +15,41 @@ import (
 )
 
 // Comment is a user note attached to a specific diff line.
+//
+// The attachment point is (File, LineNum, Side): a bare line number is
+// ambiguous because old and new files use different coordinate spaces, so
+// Side records which numbering LineNum belongs to. Comments persisted before
+// Side existed have Side == "" and are treated as SideNew (the common case:
+// notes on added/context lines).
 type Comment struct {
 	ID        string    `json:"id"`
 	File      string    `json:"file"`
 	LineNum   int       `json:"line_num"`
+	Side      Side      `json:"side"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// anchor returns the comment's attachment point with the legacy empty side
+// normalized to SideNew.
+func (c Comment) anchor() LineAnchor {
+	side := c.Side
+	if side == "" {
+		side = SideNew
+	}
+	return LineAnchor{File: c.File, LineNum: c.LineNum, Side: side}
+}
+
+// AnchorLabel returns a human-readable position such as "main.go:12" or,
+// for comments on removed lines, "main.go:12 (removed)".
+func (c Comment) AnchorLabel() string {
+	a := c.anchor()
+	label := fmt.Sprintf("%s:%d", a.File, a.LineNum)
+	if a.Side == SideOld {
+		label += " (removed)"
+	}
+	return label
 }
 
 // Session tracks an in-progress code review.
@@ -68,12 +96,15 @@ func NewSession(projectDir string) (*Session, error) {
 	}, nil
 }
 
-// AddComment appends a new comment to the session.
-func (s *Session) AddComment(file string, lineNum int, content string) Comment {
+// AddComment appends a new comment to the session. The side identifies
+// which diff coordinate space lineNum belongs to (SideNew for added/context
+// lines, SideOld for removed lines).
+func (s *Session) AddComment(file string, lineNum int, side Side, content string) Comment {
 	c := Comment{
 		ID:        generateID(),
 		File:      file,
 		LineNum:   lineNum,
+		Side:      side,
 		Content:   content,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -105,11 +136,15 @@ func (s *Session) RemoveComment(id string) bool {
 	return false
 }
 
-// CommentsFor returns comments attached to a specific file and line.
-func (s *Session) CommentsFor(file string, lineNum int) []Comment {
+// CommentsFor returns comments attached to a specific file, line, and diff
+// side. The side must match exactly (after legacy normalization): a comment
+// on new line N never matches a removed line whose old number happens to be
+// N, and vice versa.
+func (s *Session) CommentsFor(file string, lineNum int, side Side) []Comment {
+	want := LineAnchor{File: file, LineNum: lineNum, Side: side}
 	var out []Comment
 	for _, c := range s.Comments {
-		if c.File == file && c.LineNum == lineNum {
+		if c.anchor() == want {
 			out = append(out, c)
 		}
 	}
@@ -117,15 +152,24 @@ func (s *Session) CommentsFor(file string, lineNum int) []Comment {
 }
 
 // MarkdownSummary returns a Markdown formatted review summary intended for
-// the LLM and for human readers. It includes the base/head refs and only the
-// diff hunks that contain comments, so the result is focused on the reviewed
-// changes rather than the complete raw diff.
-func (s *Session) MarkdownSummary(diff string) string {
+// the LLM and for human readers. It contains the base/head refs and the
+// review comments. It deliberately does NOT embed any diff content: diffs
+// can be huge and would bloat the agent's context. Instead it points to the
+// exact command that produces the diff under review, so the agent can
+// inspect the changes itself (run the command, or read the referenced files
+// at the comment anchors).
+func (s *Session) MarkdownSummary() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Code Review\n\n")
 	fmt.Fprintf(&b, "- **Base:** %s\n", s.BaseRef)
 	fmt.Fprintf(&b, "- **Head:** %s\n", s.HeadRef)
 	fmt.Fprintf(&b, "- **Dirty:** %v\n\n", s.Dirty)
+
+	// Point to the diff source instead of embedding the diff. DiffCommand
+	// mirrors DiffArgs exactly, so this command reproduces the reviewed diff.
+	fmt.Fprintf(&b, "The changes under review are produced by `%s` (run from the project root). "+
+		"Do not expect the diff inline; run that command or read the referenced files to see them.\n\n",
+		DiffCommand(s.BaseRef))
 
 	if len(s.Comments) == 0 {
 		b.WriteString("No comments yet.\n")
@@ -134,125 +178,20 @@ func (s *Session) MarkdownSummary(diff string) string {
 
 	b.WriteString("## Comments\n\n")
 	for _, c := range s.Comments {
-		fmt.Fprintf(&b, "- `%s:%d`: %s\n", c.File, c.LineNum, c.Content)
-	}
-
-	commented := s.commentedHunks(diff)
-	if len(commented) > 0 {
-		b.WriteString("\n## Diff\n\n")
-		b.WriteString("```diff\n")
-		for _, hunk := range commented {
-			b.WriteString(hunk)
-			if !strings.HasSuffix(hunk, "\n") {
-				b.WriteByte('\n')
-			}
-		}
-		b.WriteString("```\n")
+		// AnchorLabel marks removed-line comments so the reader (human or
+		// LLM) does not confuse the old-side number with new-file numbering.
+		fmt.Fprintf(&b, "- `%s`: %s\n", c.AnchorLabel(), c.Content)
 	}
 
 	return b.String()
 }
 
-// commentedHunks returns the diff hunks that contain at least one commented
-// line. Each returned string includes the file header (diff --git, ---, +++)
-// and the hunk header and body, so it is a valid unified-diff fragment.
-func (s *Session) commentedHunks(diff string) []string {
-	hunks := collectHunks(ParseDiff(diff))
-	if len(hunks) == 0 || len(s.Comments) == 0 {
-		return nil
-	}
-
-	for i := range hunks {
-		hunks[i].comment = hunkHasComment(hunks[i], s.Comments)
-	}
-
-	var out []string
-	for _, h := range hunks {
-		if h.comment {
-			out = append(out, strings.Join(h.raw, "\n"))
-		}
-	}
-	return out
-}
-
-type diffHunk struct {
-	raw     []string
-	lines   []DiffLine
-	comment bool
-}
-
-func collectHunks(lines []DiffLine) []diffHunk {
-	var hunks []diffHunk
-	var current *diffHunk
-	var headerBuf []string // file header lines for the current file
-
-	flush := func() {
-		if current != nil {
-			hunks = append(hunks, *current)
-			current = nil
-		}
-	}
-
-	for _, line := range lines {
-		switch line.Kind {
-		case DiffHeader:
-			flush()
-			headerBuf = []string{line.Raw}
-		case DiffFileMeta:
-			headerBuf = append(headerBuf, line.Raw)
-		case DiffHunkHeader:
-			flush()
-			current = &diffHunk{raw: append([]string(nil), headerBuf...)}
-			current.raw = append(current.raw, line.Raw)
-		case DiffContext, DiffAdded, DiffRemoved:
-			if current == nil {
-				continue
-			}
-			current.raw = append(current.raw, line.Raw)
-			current.lines = append(current.lines, line)
-		}
-	}
-	flush()
-	return hunks
-}
-
-func hunkHasComment(h diffHunk, comments []Comment) bool {
-	for _, line := range h.lines {
-		file, lineNum := lineFileAndNumber(line)
-		if lineNum <= 0 {
-			continue
-		}
-		for _, c := range comments {
-			if c.File == file && c.LineNum == lineNum {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// lineFileAndNumber returns the file and line number a parsed diff line
-// represents, using the new line number for context/added lines and the old
-// line number for removed lines.
-func lineFileAndNumber(line DiffLine) (string, int) {
-	if line.File == "" {
-		return "", 0
-	}
-	switch line.Kind {
-	case DiffAdded, DiffContext:
-		return line.File, line.NewLineNum
-	case DiffRemoved:
-		return line.File, line.OldLineNum
-	}
-	return "", 0
-}
-
 // Export writes the Markdown review summary to path.
-func (s *Session) Export(diff, path string) error {
+func (s *Session) Export(path string) error {
 	if err := EnsureDir(path); err != nil {
 		return fmt.Errorf("create export directory: %w", err)
 	}
-	return os.WriteFile(path, []byte(s.MarkdownSummary(diff)), 0644)
+	return os.WriteFile(path, []byte(s.MarkdownSummary()), 0644)
 }
 
 // ExportPath returns a default export filename under projectDir using the
@@ -282,8 +221,8 @@ func sanitizeRef(r rune) rune {
 
 // Summary is a deprecated alias for MarkdownSummary. New code should use
 // MarkdownSummary.
-func (s *Session) Summary(diff string) string {
-	return s.MarkdownSummary(diff)
+func (s *Session) Summary() string {
+	return s.MarkdownSummary()
 }
 
 func generateID() string {

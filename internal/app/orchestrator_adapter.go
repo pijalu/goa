@@ -234,7 +234,7 @@ func applyContextStats(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev
 	if ev.ContextStats == nil {
 		return
 	}
-	h.Stats.SetContext(ev.ContextStats.EstimatedTokens, ev.ContextStats.MaxTokens, ev.ContextStats.AutoMax)
+	h.Stats.SetContext(ev.ContextStats.EstimatedTokens, ev.ContextStats.ProjectedTokens, ev.ContextStats.MaxTokens, ev.ContextStats.AutoMax)
 	if rt != nil {
 		rt.EmitLiveStats(h, liveStatsInterval)
 	}

@@ -12,6 +12,7 @@ import (
 	"net/http"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
 func init() {
@@ -59,13 +60,13 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 	if baseURL == "" {
 		switch flavor {
 		case "codex":
-			baseURL = "https://api.openai.com/v1/responses/codex"
+			baseURL = codexBaseURL(opts)
 		default:
 			baseURL = "https://api.openai.com/v1/responses"
 		}
 	}
 
-	body := buildResponsesBody(model, ctx, opts)
+	body := buildResponsesBody(model, ctx, opts, flavor)
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -87,6 +88,11 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 	for k, v := range opts.Headers {
 		req.Header.Set(k, v)
 	}
+	// Codex OAuth subscription transport headers (after opts.Headers so the
+	// account identity is always present and not user-overridable).
+	if flavor == "codex" {
+		applyCodexHeaders(req, opts)
+	}
 
 	client := provider.NewStreamingHTTPClient()
 
@@ -105,12 +111,66 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 	return stream, nil
 }
 
-func buildResponsesBody(model provider.Model, ctx provider.Context, opts provider.StreamOptions) map[string]interface{} {
+// codexOAuthBaseURL is the subscription transport endpoint used when the
+// credential is an OAuth token (ChatGPT Plus/Pro), per pi's implementation.
+const codexOAuthBaseURL = "https://chatgpt.com/backend-api/codex/responses"
+
+// codexAPIKeyBaseURL is the endpoint used with a plain OpenAI API key.
+const codexAPIKeyBaseURL = "https://api.openai.com/v1/responses/codex"
+
+// codexBaseURL selects the codex endpoint based on credential kind.
+func codexBaseURL(opts provider.StreamOptions) string {
+	if opts.CodexAccountID != "" {
+		return codexOAuthBaseURL
+	}
+	return codexAPIKeyBaseURL
+}
+
+// applyCodexHeaders sets the Codex identity headers. The OAuth transport adds
+// the ChatGPT account id and beta flag; both transports tag the originator.
+func applyCodexHeaders(req *http.Request, opts provider.StreamOptions) {
+	if req.Header.Get("originator") == "" {
+		req.Header.Set("originator", "goa")
+	}
+	if opts.CodexAccountID == "" {
+		return
+	}
+	req.Header.Set("chatgpt-account-id", opts.CodexAccountID)
+	if req.Header.Get("OpenAI-Beta") == "" {
+		req.Header.Set("OpenAI-Beta", "responses=experimental")
+	}
+	if req.Header.Get("accept") == "" {
+		req.Header.Set("accept", "text/event-stream")
+	}
+}
+
+func buildResponsesBody(model provider.Model, ctx provider.Context, opts provider.StreamOptions, flavor string) map[string]interface{} {
+	isCodex := flavor == "codex"
 	body := map[string]interface{}{
 		"model":  model.ID,
-		"input":  convertResponsesInput(ctx.Messages, ctx.SystemPrompt),
+		"input":  convertResponsesInput(ctx.Messages, systemPromptFor(ctx, isCodex)),
 		"stream": true,
-		"tools":  convertResponsesTools(ctx.Tools),
+	}
+	if isCodex {
+		// ChatGPT Codex subscription transport (mirrors Pi/opencode): the system
+		// prompt rides in the dedicated instructions field, the store must be
+		// false (the subscription rejects store=true), and tool calls run auto /
+		// parallel by default.
+		instructions := ctx.SystemPrompt
+		if instructions == "" {
+			instructions = "You are a helpful assistant."
+		}
+		body["instructions"] = instructions
+		body["store"] = false
+		body["parallel_tool_calls"] = true
+		body["tool_choice"] = "auto"
+	}
+	if ctx.NoTools {
+		// Final-step collapse (P7): the model must answer text-only.
+		body["tool_choice"] = "none"
+		delete(body, "parallel_tool_calls")
+	} else {
+		body["tools"] = convertResponsesTools(ctx.Tools)
 	}
 	if opts.MaxTokens > 0 {
 		body["max_output_tokens"] = opts.MaxTokens
@@ -119,9 +179,25 @@ func buildResponsesBody(model provider.Model, ctx provider.Context, opts provide
 		body["temperature"] = *opts.Temperature
 	}
 	if opts.SessionID != "" {
-		body["previous_response_id"] = opts.SessionID
+		// Codex carries session affinity via prompt_cache_key only; the SSE
+		// backend rejects previous_response_id (HTTP 400). Other responses
+		// flavors chain turns via previous_response_id.
+		if isCodex {
+			body["prompt_cache_key"] = opts.SessionID
+		} else {
+			body["previous_response_id"] = opts.SessionID
+		}
 	}
 	return body
+}
+
+// systemPromptFor returns the system prompt to inline as a leading input
+// message; codex omits it because the prompt rides in the instructions field.
+func systemPromptFor(ctx provider.Context, isCodex bool) string {
+	if isCodex {
+		return ""
+	}
+	return ctx.SystemPrompt
 }
 
 func convertResponsesInput(messages []provider.Message, systemPrompt string) []map[string]interface{} {
@@ -347,13 +423,20 @@ func streamAzureResponses(model provider.Model, ctx provider.Context, opts provi
 
 	apiKey := opts.APIKey
 	if apiKey == "" {
-		apiKey = provider.GetEnvAPIKey(provider.ProviderAzure)
+		var err error
+		apiKey, err = provider.GetEnvAPIKey(provider.ProviderAzure)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("azure API key required: set AZURE_OPENAI_API_KEY")
+		return nil, &schema.MissingCredentialError{
+			Provider: string(provider.ProviderAzure),
+			Sources:  provider.EnvVarsForProvider(provider.ProviderAzure),
+		}
 	}
 
-	body := buildResponsesBody(model, ctx, opts)
+	body := buildResponsesBody(model, ctx, opts, "")
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)

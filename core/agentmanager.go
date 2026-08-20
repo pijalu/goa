@@ -119,6 +119,9 @@ type AgentManager struct {
 	pendingSteering      string // steering text saved during finalizeTurn, dispatched after am.running=false
 	companionBuf         strings.Builder
 	goalStateProvider    agentic.GoalStateProvider
+	stickyProvider       agentic.StickyProvider
+	preTurnProvider      agentic.PreTurnProvider
+	spillPolicyFactory   func(sessionID string) agentic.SpillPolicy
 	postTurnHook         func()
 	lifecycleRegistry    LifecycleRegistry
 	projectDir           string
@@ -202,7 +205,7 @@ func (am *AgentManager) StartSession(mdl agenticprovider.Model, opts agenticprov
 
 	am.systemPrompt = finalPrompt
 	agent.AddObserver(am)
-	// Wire mid-turn steering (bugs.md steering-lateness; pi parity): the agent
+	// Wire mid-turn steering (steering-lateness; pi parity): the agent
 	// polls this queue between stream rounds and weaves steering into the
 	// current turn instead of delivering it as a late, separate turn.
 	if am.steering != nil {
@@ -306,7 +309,7 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 	// re-drive goals (the agent may panic again). The hook itself runs in the
 	// cleanup defer — AFTER am.running is cleared and steering dispatched —
 	// because the goal driver started by the hook must never observe the
-	// agent as still busy with this turn (bugs.md Issue 7: a drive started
+	// agent as still busy with this turn (Issue 7: a drive started
 	// while the agent is mid-turn queue-storms continuation prompts).
 	turnEndedCleanly := false
 	defer am.recoverTurnPanic()
@@ -342,7 +345,7 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 	am.mu.Unlock()
 	// A genuine new user turn resets the agent's runaway-loop latch and
 	// repeat counters: the guardrail stops a runaway exchange, never the
-	// session (bugs.md runaway-loop bricking). Goal continuation turns
+	// session (runaway-loop bricking). Goal continuation turns
 	// bypass runAgentTurn and keep their guardrail state so cross-turn
 	// driver loops still latch. Optional interface: test runners need not
 	// implement it.
@@ -869,10 +872,21 @@ func (am *AgentManager) RefreshContextCompression() {
 // SetStreamOptions replaces the active agent's stream options for subsequent turns.
 // This updates the API key, headers, timeout, and other provider settings so the
 // new provider's credentials are used on the next turn.
+//
+// Rule 7 (append-only conversations; cache IDs are context-scoped): a
+// provider/model switch mid-session does NOT begin a new context — the
+// conversation continues as an append of itself, so it must keep its
+// SessionID (the provider cache key). An empty incoming SessionID therefore
+// inherits the live one; an explicitly-set SessionID (e.g. static provider
+// config) is a deliberate override and wins. Rotation stays with
+// ResetConversationID, which writes the agent's options directly.
 func (am *AgentManager) SetStreamOptions(opts agenticprovider.StreamOptions) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	if am.activeAgent != nil {
+		if opts.SessionID == "" {
+			opts.SessionID = am.activeAgent.StreamOptions().SessionID
+		}
 		am.activeAgent.SetStreamOptions(opts)
 	}
 }
@@ -886,7 +900,7 @@ func (am *AgentManager) SetStreamOptions(opts agenticprovider.StreamOptions) {
 // would otherwise keep the prior SessionID. SessionID drives the provider cache
 // key (OpenAI prompt_cache_key / previous_response_id, session-affinity
 // headers), so without a reset the "clean" context would still be pinned to the
-// old conversation's cache / response chain (bugs.md Issue 8).
+// old conversation's cache / response chain (Issue 8).
 func (am *AgentManager) ResetConversationID() string {
 	am.mu.Lock()
 	defer am.mu.Unlock()

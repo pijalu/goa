@@ -34,7 +34,7 @@ func (c *SkillsCommand) CompleteArgs(ctx core.Context, prefix string) []core.Arg
 		return skillSubcommandCompletions(parts[0])
 	}
 
-	// Level 2+: propose skill names for run:/show:/enable:/disable:
+	// Level 2+: propose skill names for run:/show:/enable:/disable:/sticky:
 	switch parts[0] {
 	case "run", "show":
 		return skillNameCompletions(parts[0], strings.Join(parts[1:], ":"), ctx.SkillRegistry)
@@ -42,6 +42,8 @@ func (c *SkillsCommand) CompleteArgs(ctx core.Context, prefix string) []core.Arg
 		return skillEnableCompletions(parts[0], strings.Join(parts[1:], ":"), ctx)
 	case "disable":
 		return skillDisableCompletions(parts[0], strings.Join(parts[1:], ":"), ctx)
+	case "sticky":
+		return skillStickyCompletions(parts[0], strings.Join(parts[1:], ":"), ctx.SkillRegistry)
 	}
 	return nil
 }
@@ -55,6 +57,7 @@ func skillSubcommandCompletions(prefix string) []core.ArgCompletion {
 		{"show", "show skill details"},
 		{"enable", "enable a disabled skill"},
 		{"disable", "disable an enabled skill"},
+		{"sticky", "toggle always-on (sticky) for a knowledge skill"},
 	}
 	for _, v := range subcmds {
 		if prefix == "" || strings.HasPrefix(v.val, prefix) {
@@ -75,10 +78,18 @@ func skillEnableCompletions(subcmd, searchPrefix string, ctx core.Context) []cor
 	return skillNameCompletionsFromNames(subcmd, searchPrefix, names, ctx.SkillRegistry)
 }
 
+// skillStickyCompletions proposes knowledge-category skills (sticky applies
+// only to them) for /skill:sticky, annotated with the current sticky state.
+func skillStickyCompletions(subcmd, searchPrefix string, reg core.SkillRegistry) []core.ArgCompletion {
+	return skillNameCompletionsFiltered(subcmd, searchPrefix, reg, func(s skills.SkillSummary) bool {
+		return s.Category == skills.SkillCategoryKnowledge
+	})
+}
+
 // skillDisableCompletions proposes enabled skills for /skill:disable.
 func skillDisableCompletions(subcmd, searchPrefix string, ctx core.Context) []core.ArgCompletion {
 	return skillNameCompletionsFiltered(subcmd, searchPrefix, ctx.SkillRegistry, func(s skills.SkillSummary) bool {
-		return ctx.Config == nil || skillEnabled(ctx.Config, s.Name)
+		return ctx.Config == nil || skillEnabled(ctx.Config, s.Name, ctx.SkillRegistry)
 	})
 }
 
@@ -103,8 +114,12 @@ func skillNameCompletionsFromNames(subcmd, searchPrefix string, names []string, 
 }
 
 // skillNameCompletions proposes skill names matching the search prefix.
+// run/show are user-invocation surfaces (P16): skills the user cannot invoke
+// (user_invocable:false) are not proposed.
 func skillNameCompletions(subcmd, searchPrefix string, reg core.SkillRegistry) []core.ArgCompletion {
-	return skillNameCompletionsFiltered(subcmd, searchPrefix, reg, nil)
+	return skillNameCompletionsFiltered(subcmd, searchPrefix, reg, func(s skills.SkillSummary) bool {
+		return s.IsUserInvocable()
+	})
 }
 
 // skillNameCompletionsFiltered proposes skill names matching the search prefix
@@ -146,8 +161,10 @@ func (c *SkillsCommand) Run(ctx core.Context, args []string) error {
 		return enableSkill(ctx, args[1:])
 	case "disable":
 		return disableSkill(ctx, args[1:])
+	case "sticky":
+		return stickySkillCmd(ctx, args[1:])
 	default:
-		return fmt.Errorf("unknown skill subcommand: %s (use 'run', 'show', 'enable', or 'disable')", args[0])
+		return fmt.Errorf("unknown skill subcommand: %s (use 'run', 'show', 'enable', 'disable', or 'sticky')", args[0])
 	}
 }
 
@@ -164,7 +181,7 @@ func enableSkill(ctx core.Context, args []string) error {
 		writeFmt(ctx, "Skill not found: %s. Use /skills to list available skills.\n", name)
 		return nil
 	}
-	if ctx.Config != nil && skillEnabled(ctx.Config, name) {
+	if ctx.Config != nil && skillEnabled(ctx.Config, name, ctx.SkillRegistry) {
 		writeFmt(ctx, "Skill %s is already enabled.\n", name)
 		return nil
 	}
@@ -186,7 +203,7 @@ func disableSkill(ctx core.Context, args []string) error {
 		writeFmt(ctx, "Skill not found: %s. Use /skills to list available skills.\n", name)
 		return nil
 	}
-	if ctx.Config != nil && !skillEnabled(ctx.Config, name) {
+	if ctx.Config != nil && !skillEnabled(ctx.Config, name, ctx.SkillRegistry) {
 		writeFmt(ctx, "Skill %s is already disabled.\n", name)
 		return nil
 	}
@@ -213,6 +230,29 @@ func skillExistsSomewhere(ctx core.Context, name string) bool {
 	return false
 }
 
+// stickySkillCmd is the /skill:sticky <name> entry point: it flips the
+// always-on (sticky) state of a knowledge skill and persists the change at
+// project level (skills.sticky / skills.sticky_off).
+func stickySkillCmd(ctx core.Context, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: /skill:sticky <name>")
+	}
+	name := args[0]
+	next, err := nextSkillStickyState(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := setSkillStickyState(ctx, name, next); err != nil {
+		return err
+	}
+	if next {
+		writeFmt(ctx, "Sticky enabled for skill %s (always-on, persisted per project).\n", name)
+	} else {
+		writeFmt(ctx, "Sticky disabled for skill %s.\n", name)
+	}
+	return nil
+}
+
 // listSkills displays all available skills.
 // Depends on OutputWriter + SkillRegistry.
 func listSkills(ctx core.Context, reg core.SkillRegistry) error {
@@ -235,6 +275,10 @@ func listSkills(ctx core.Context, reg core.SkillRegistry) error {
 	if ctx.Config != nil && ctx.Config.Skills.ExecutionMode == config.AgenticSkillModeInline {
 		summaries = filterSkillsForMode(summaries, true)
 	}
+	// The TUI skill menu is the user-facing surface (P16): skills the user
+	// cannot invoke (user_invocable:false) are hidden, while
+	// model_invocable:false skills still appear and run from here.
+	summaries = filterUserInvocable(summaries)
 	if len(summaries) > 0 {
 		writeStr(w, "# Skills\n\n")
 		for _, s := range summaries {
@@ -243,11 +287,7 @@ func listSkills(ctx core.Context, reg core.SkillRegistry) error {
 				cat = "action"
 			}
 			icon := typeIcon(cat)
-			typ := ""
-			if s.Inline {
-				typ = " (inline)"
-			}
-			writeFmt(w, "- %s **%s** — %s%s\n", icon, s.Name, s.Description, typ)
+			writeFmt(w, "- %s **%s** — %s%s\n", icon, s.Name, s.Description, skillTypeSuffix(s))
 		}
 		writeFmt(w, "\n%d skill(s). Use `/skill:run:<name>` to execute.\n", len(summaries))
 		return nil
@@ -263,6 +303,19 @@ func listSkills(ctx core.Context, reg core.SkillRegistry) error {
 	return nil
 }
 
+// skillTypeSuffix renders the listing annotations for a skill: " (inline)"
+// for inline skills and " (sticky)" for always-on knowledge skills.
+func skillTypeSuffix(s skills.SkillSummary) string {
+	typ := ""
+	if s.Inline {
+		typ = " (inline)"
+	}
+	if s.Sticky {
+		typ += " (sticky)"
+	}
+	return typ
+}
+
 // filterSkillsForMode removes skills that require a sub-agent when the global
 // execution mode is inline.
 func filterSkillsForMode(summaries []skills.SkillSummary, inlineMode bool) []skills.SkillSummary {
@@ -272,6 +325,19 @@ func filterSkillsForMode(summaries []skills.SkillSummary, inlineMode bool) []ski
 	filtered := make([]skills.SkillSummary, 0, len(summaries))
 	for _, s := range summaries {
 		if !s.RequiresSubAgent {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
+// filterUserInvocable returns only the skills the user may invoke from the
+// TUI skill menu (P16). A model_invocable:false skill stays in the list —
+// the model flag gates only the model-facing catalog.
+func filterUserInvocable(summaries []skills.SkillSummary) []skills.SkillSummary {
+	filtered := make([]skills.SkillSummary, 0, len(summaries))
+	for _, s := range summaries {
+		if s.IsUserInvocable() {
 			filtered = append(filtered, s)
 		}
 	}
@@ -488,12 +554,18 @@ func (c *SkillShortcutCommand) Run(ctx core.Context, args []string) error {
 }
 
 // RegisterSkillShortcuts registers dedicated /<command> shortcuts for skills
-// that define a "command:" field in their frontmatter.
+// that define a "command:" field in their frontmatter. Shortcuts are a
+// user-facing invocation surface (P16): a user_invocable:false skill is not
+// given a slash command, even though trusted internal callers can still load
+// it by name via the registry.
 func RegisterSkillShortcuts(registry *core.CommandRegistry, skillReg *skills.SkillRegistry) []string {
 	var warnings []string
 	for _, s := range skillReg.List() {
 		skill, ok := skillReg.Get(s.Name)
 		if !ok || skill.Meta.Command == "" {
+			continue
+		}
+		if !s.IsUserInvocable() {
 			continue
 		}
 		cmd := &SkillShortcutCommand{Skill: skill}

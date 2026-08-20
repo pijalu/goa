@@ -153,17 +153,12 @@ func showModelSelector(host core.UIHost, cfg *config.Config, saver config.Config
 // provider's live /models list merged with the built-in registry models for
 // that provider. Live entries win on ID conflict; registry entries fill gaps
 // (e.g. z.ai's coding endpoint, whose /models list is incomplete). On live
-// fetch error the registry list alone is returned (may still be empty).
+// fetch error the registry list alone is returned (may still be empty) and a
+// warning is flashed so the fallback is visible instead of silent.
 func modelListForProvider(host core.UIHost, providerID string) []provider.ModelInfo {
-	var live []provider.ModelInfo
-	if ctx, ok := host.(core.Context); ok && ctx.ProviderManager != nil {
-		if pm, ok := ctx.ProviderManager.(interface {
-			ListModelsCached(string, time.Duration) ([]provider.ModelInfo, error)
-		}); ok {
-			live, _ = pm.ListModelsCached(providerID, modelCacheTTL)
-		} else {
-			live, _ = ctx.ProviderManager.ListModels(providerID)
-		}
+	live, err := fetchLiveModels(host, providerID)
+	if err != nil {
+		warnLiveModelDiscoveryFallback(host, providerID, err)
 	}
 
 	var registry []provider.ModelInfo
@@ -191,6 +186,21 @@ func modelListForProvider(host core.UIHost, providerID string) []provider.ModelI
 		}
 	}
 	return out
+}
+
+// fetchLiveModels interrogates the provider's live GET /models endpoint via
+// the provider manager (using its TTL cache when available).
+func fetchLiveModels(host core.UIHost, providerID string) ([]provider.ModelInfo, error) {
+	ctx, ok := host.(core.Context)
+	if !ok || ctx.ProviderManager == nil {
+		return nil, nil
+	}
+	if pm, ok := ctx.ProviderManager.(interface {
+		ListModelsCached(string, time.Duration) ([]provider.ModelInfo, error)
+	}); ok {
+		return pm.ListModelsCached(providerID, modelCacheTTL)
+	}
+	return ctx.ProviderManager.ListModels(providerID)
 }
 
 // runModelAdd handles "/model add". With no arguments it opens the
@@ -486,6 +496,8 @@ func fetchAllProviderModels(host core.UIHost, cfg *config.Config) []providerMode
 }
 
 // fetchProviderModels tries to get the model list from a single provider.
+// On live fetch failure a warning is flashed so the picker's fallback (to
+// other providers / custom input) is visible instead of silently empty.
 func fetchProviderModels(host core.UIHost, providerID string) []provider.ModelInfo {
 	ctx, ok := host.(core.Context)
 	if !ok || ctx.ProviderManager == nil {
@@ -498,19 +510,62 @@ func fetchProviderModels(host core.UIHost, providerID string) []provider.ModelIn
 		if err == nil {
 			return models
 		}
+		warnLiveModelDiscoveryFallback(host, providerID, err, registryModelCount(host, providerID))
+		return nil
 	}
 	models, err := ctx.ProviderManager.ListModels(providerID)
 	if err != nil {
+		warnLiveModelDiscoveryFallback(host, providerID, err, registryModelCount(host, providerID))
 		return nil
 	}
 	return models
+}
+
+// registryModelCount reports how many known (registry/catalog) models a
+// provider has, so the discovery-failure flash can distinguish "using known
+// models" (fallback actually has entries) from "no known models" (the picker
+// will offer only the custom-model row). Zero when the host exposes no
+// registry lookup — the flash then keeps the legacy wording.
+func registryModelCount(host core.UIHost, providerID string) int {
+	if pm, ok := host.(interface {
+		ListRegistryModels(string) []provider.ModelInfo
+	}); ok {
+		return len(pm.ListRegistryModels(providerID))
+	}
+	if ctx, ok := host.(core.Context); ok && ctx.ProviderManager != nil {
+		if pm, ok := ctx.ProviderManager.(interface {
+			ListRegistryModels(string) []provider.ModelInfo
+		}); ok {
+			return len(pm.ListRegistryModels(providerID))
+		}
+	}
+	return 0
+}
+
+// warnLiveModelDiscoveryFallback flashes a warning when a provider's live
+// /models endpoint cannot be interrogated, so the picker's fallback to
+// cached/registry models becomes visible instead of silent. When the registry
+// fallback is also empty the message says so — "using known models" would be
+// a lie (the picker then shows only the custom-model row), which is exactly
+// what the openai-codex subscription endpoint (no /models route, Cloudflare
+// 403) produced before it gained a registry alias.
+func warnLiveModelDiscoveryFallback(host core.UIHost, providerID string, err error, registryCount ...int) {
+	known := true
+	if len(registryCount) > 0 {
+		known = registryCount[0] > 0
+	}
+	if !known {
+		host.Flash(fmt.Sprintf("Model discovery failed for %s (%v); no known models for this provider — type a custom model name.", providerID, err))
+		return
+	}
+	host.Flash(fmt.Sprintf("Model discovery failed for %s (%v); using known models.", providerID, err))
 }
 
 // isModelSentinel reports whether v is a selector action/sentinel value that
 // leaked into the model-value space (e.g. "__delete__X" emitted by the
 // backspace/delete hotkey in a picker whose callback has no delete handler).
 // Such values must never become the active model or a configured model name
-// (bugs.md: the picker left the active model named "__delete__deepseek-v4-flash").
+// (the picker left the active model named "__delete__deepseek-v4-flash").
 func isModelSentinel(v string) bool {
 	return strings.HasPrefix(v, "__")
 }

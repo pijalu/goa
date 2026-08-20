@@ -12,7 +12,7 @@ import (
 )
 
 // TestOrchestratorConversation_ToolWidgetVisible is the RED regression for the
-// bug reported in bugs.md: tool calls from agents must be visible in the unified
+// bug reported in tool calls from agents must be visible in the unified
 // conversation view. Per-agent tabs were removed, so the conversation view is
 // the only place where agent activity is rendered.
 func TestOrchestratorConversation_ToolWidgetVisible(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pijalu/goa/config"
@@ -40,7 +41,11 @@ type ModelListResponse struct {
 // ProviderManager manages active provider selection, model listing,
 // and connection testing.
 type ProviderManager struct {
-	cfg       *config.Config
+	// cfg holds the current configuration. It is an atomic pointer so a hot
+	// reload (config watcher) can swap in a fresh config while request
+	// goroutines resolve the active provider/model: an in-flight request keeps
+	// the config it loaded; the next request sees the new one.
+	cfg       atomic.Pointer[config.Config]
 	client    *http.Client
 	Cache     *ModelCache
 	authStore *auth.Store
@@ -48,13 +53,31 @@ type ProviderManager struct {
 
 // NewProviderManager creates a provider manager.
 func NewProviderManager(cfg *config.Config) *ProviderManager {
-	return &ProviderManager{
-		cfg: cfg,
+	pm := &ProviderManager{
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 		Cache: NewModelCache(),
 	}
+	pm.cfg.Store(cfg)
+	return pm
+}
+
+// Config returns the config currently in effect for request resolution. It is
+// the boot config until a hot reload applies a new one.
+func (pm *ProviderManager) Config() *config.Config {
+	if pm == nil {
+		return nil
+	}
+	return pm.cfg.Load()
+}
+
+// SetConfig atomically swaps the provider configuration, e.g. after a hot
+// reload of the config cascade. The next request resolves the new provider
+// profile (endpoint, API key, models, effort); in-flight requests keep the
+// config they loaded.
+func (pm *ProviderManager) SetConfig(cfg *config.Config) {
+	pm.cfg.Store(cfg)
 }
 
 // SetAuthStore wires the encrypted credential store so the provider manager
@@ -71,12 +94,16 @@ func (pm *ProviderManager) SetAuthStore(store *auth.Store) {
 // configured active provider is not found (no silent fallback to a different
 // provider, which would route requests to the wrong endpoint).
 func (pm *ProviderManager) Active() (*config.ProviderConfig, string) {
-	if pm == nil || pm.cfg == nil {
+	if pm == nil {
 		return nil, ""
 	}
-	provider := pm.cfg.GetProviderByID(pm.cfg.ActiveProvider)
-	if provider == nil && pm.cfg.ActiveProvider == "" {
-		provider = pm.cfg.PreferredProvider()
+	cfg := pm.cfg.Load()
+	if cfg == nil {
+		return nil, ""
+	}
+	provider := cfg.GetProviderByID(cfg.ActiveProvider)
+	if provider == nil && cfg.ActiveProvider == "" {
+		provider = cfg.PreferredProvider()
 	}
 	if provider == nil {
 		return nil, ""
@@ -87,14 +114,15 @@ func (pm *ProviderManager) Active() (*config.ProviderConfig, string) {
 
 // SetActive updates the active provider and model.
 func (pm *ProviderManager) SetActive(providerID, model string) error {
+	cfg := pm.cfg.Load()
 	if providerID != "" {
-		if pm.cfg.GetProviderByID(providerID) == nil {
+		if cfg.GetProviderByID(providerID) == nil {
 			return fmt.Errorf("provider %q not found", providerID)
 		}
-		pm.cfg.ActiveProvider = providerID
+		cfg.ActiveProvider = providerID
 	}
 	if model != "" {
-		pm.cfg.ActiveModel = model
+		cfg.ActiveModel = model
 	}
 	return nil
 }
@@ -161,7 +189,7 @@ func (pm *ProviderManager) ListModelsCached(providerID string, ttl time.Duration
 
 // ListModels queries the provider's /models endpoint.
 func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
-	provider := pm.cfg.GetProviderByID(providerID)
+	provider := pm.cfg.Load().GetProviderByID(providerID)
 	if provider == nil {
 		return nil, fmt.Errorf("provider %q not found", providerID)
 	}
@@ -209,28 +237,75 @@ func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
 // This complements ListModels (live /models fetch): providers whose endpoint
 // does not serve a complete model list (e.g. z.ai's coding plan) still offer
 // their known models in add-model pickers.
+//
+// The openai-codex subscription provider has NO models.dev mapping of its own
+// and its endpoint (https://chatgpt.com/backend-api) serves no /models route
+// (Cloudflare 403), so both the live fetch and a straight registry lookup come
+// back empty. Codex subscriptions serve the codex model family of the openai
+// catalog, so the lookup aliases to the openai registry filtered to codex
+// models (matching Pi's hardcoded codex catalog: gpt-5.x-codex[-spark] plus
+// the gpt-5.x codex-served generations). The provider identity used for
+// streaming is unaffected — only the model-list lookup aliases.
 func (pm *ProviderManager) ListRegistryModels(providerID string) []ModelInfo {
-	pCfg := pm.cfg.GetProviderByID(providerID)
+	pCfg := pm.cfg.Load().GetProviderByID(providerID)
 	if pCfg == nil {
 		return nil
 	}
 	prov, _ := inferProviderIdentity(*pCfg)
 
+	filter := func(string) bool { return true }
+	if prov == schema.ProviderOpenAICodex {
+		prov = schema.ProviderOpenAI
+		filter = isCodexFamilyModel
+	}
+
 	seen := map[string]bool{}
 	var out []ModelInfo
 	for _, m := range models.GetRuntimeModels(prov) {
-		if !seen[m.ID] {
+		if !seen[m.ID] && filter(m.ID) {
 			out = append(out, ModelInfo{ID: m.ID})
 			seen[m.ID] = true
 		}
 	}
 	for _, m := range models.GetModels(prov) {
-		if !seen[m.ID] {
+		if !seen[m.ID] && filter(m.ID) {
 			out = append(out, ModelInfo{ID: m.ID})
 			seen[m.ID] = true
 		}
 	}
 	return out
+}
+
+// isCodexFamilyModel reports whether a model ID belongs to the codex family
+// served by the ChatGPT Codex subscription endpoint: the explicitly codex
+// models (gpt-5.x-codex[-spark]) plus the gpt-5.4+ generations Pi's codex
+// catalog carries (gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6-luna/sol/terra —
+// scripts/generate-models.ts). Older gpt-5.x IDs (gpt-5, gpt-5.1..gpt-5.3) and
+// pro/nano/chat-latest variants are not served by the subscription transport.
+func isCodexFamilyModel(id string) bool {
+	if strings.Contains(id, "codex") {
+		return true
+	}
+	// rest is the version+suffix after "gpt-5." — e.g. "4" for gpt-5.4,
+	// "4-mini" for gpt-5.4-mini. Single-digit minor versions make the lexical
+	// ">= 4" cut exact.
+	rest, ok := strings.CutPrefix(id, "gpt-5.")
+	if !ok {
+		return false
+	}
+	version, suffix, hasSuffix := strings.Cut(rest, "-")
+	if version < "4" {
+		return false
+	}
+	if !hasSuffix {
+		return true // bare gpt-5.N with N >= 4
+	}
+	// Only the Pi-listed codex-served suffixes qualify.
+	switch suffix {
+	case "mini", "luna", "sol", "terra":
+		return true
+	}
+	return false
 }
 
 // TestConnection tests connectivity to a provider by listing models.
@@ -252,9 +327,10 @@ func (pm *ProviderManager) TestConnection(providerID string) (latency time.Durat
 //  3. If input is empty, fall back to the provider's DefaultModel
 //  4. If still empty, fall back to the first ModelConfig for the provider
 func (pm *ProviderManager) ResolveModelName(cfg config.ProviderConfig, modelID string) string {
+	cur := pm.cfg.Load()
 	// 1. Look up by model config ID
 	if modelID != "" {
-		if mc := pm.cfg.GetModelByID(modelID); mc != nil && mc.Model != "" {
+		if mc := cur.GetModelByID(modelID); mc != nil && mc.Model != "" {
 			return mc.Model
 		}
 		// Not a model config ID — return verbatim (raw model name)
@@ -262,9 +338,9 @@ func (pm *ProviderManager) ResolveModelName(cfg config.ProviderConfig, modelID s
 	}
 
 	// 2. Fall back to first ModelConfig for this provider
-	for i := range pm.cfg.Models {
-		if pm.cfg.Models[i].ProviderID == cfg.ID && pm.cfg.Models[i].Model != "" {
-			return pm.cfg.Models[i].Model
+	for i := range cur.Models {
+		if cur.Models[i].ProviderID == cfg.ID && cur.Models[i].Model != "" {
+			return cur.Models[i].Model
 		}
 	}
 
@@ -273,7 +349,7 @@ func (pm *ProviderManager) ResolveModelName(cfg config.ProviderConfig, modelID s
 
 // resolveModelName is a convenience wrapper using ActiveModel from config.
 func (pm *ProviderManager) resolveModelName(cfg config.ProviderConfig) string {
-	return pm.ResolveModelName(cfg, pm.cfg.ActiveModel)
+	return pm.ResolveModelName(cfg, pm.cfg.Load().ActiveModel)
 }
 
 // ResolveActiveModel resolves the active model through the agentic model registry.
@@ -296,7 +372,7 @@ func (pm *ProviderManager) ResolveActiveModel() (agenticprovider.Model, error) {
 		return agenticprovider.Model{}, fmt.Errorf("no model name resolved for provider %q", pCfg.ID)
 	}
 
-	mCfg, err := pm.cfg.GetActiveModelConfig()
+	mCfg, err := pm.cfg.Load().GetActiveModelConfig()
 	if err != nil {
 		mCfg = config.ModelConfig{}
 	}
@@ -723,7 +799,7 @@ func (pm *ProviderManager) ResolveModelByID(modelID string) (agenticprovider.Mod
 // provider. This lets per-role agents (e.g., the companion) use a different
 // provider than the main agent.
 func (pm *ProviderManager) ResolveModelForProvider(providerID, modelID string) (agenticprovider.Model, error) {
-	pCfg := pm.cfg.GetProviderByID(providerID)
+	pCfg := pm.cfg.Load().GetProviderByID(providerID)
 	if pCfg == nil {
 		pCfg, _ = pm.Active()
 	}
@@ -795,13 +871,14 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 // ProviderConfig and ModelConfig, applying defaults for timeout, retries,
 // headers, transport, cache, and reasoning.
 func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
-	pCfg := pm.cfg.GetActiveProviderConfig()
-	mCfg, err := pm.cfg.GetActiveModelConfig()
+	cfg := pm.cfg.Load()
+	pCfg := cfg.GetActiveProviderConfig()
+	mCfg, err := cfg.GetActiveModelConfig()
 	if err != nil {
 		mCfg = config.ModelConfig{}
 	}
 
-	defaultRetries := pm.cfg.Execution.Retries
+	defaultRetries := cfg.Execution.Retries
 	if defaultRetries <= 0 {
 		defaultRetries = 5
 	}
@@ -838,12 +915,16 @@ func (pm *ProviderManager) effectiveAPIKey(provider *config.ProviderConfig) stri
 // OAuth access token). Returns "" when no credential is available. Used by the
 // plugin bridge so providers authenticated via /login (key in the auth store,
 // not in ProviderConfig.APIKey) are still seen as authenticated — otherwise
-// the quota plugin treats them as no_api_key and drops them (bugs.md z.ai #6).
+// the quota plugin treats them as no_api_key and drops them (z.ai #6).
 func (pm *ProviderManager) ResolveAPIKey(providerID string) string {
-	if pm == nil || pm.cfg == nil {
+	if pm == nil {
 		return ""
 	}
-	pCfg := pm.cfg.GetProviderByID(providerID)
+	cfg := pm.cfg.Load()
+	if cfg == nil {
+		return ""
+	}
+	pCfg := cfg.GetProviderByID(providerID)
 	if pCfg == nil {
 		return ""
 	}
@@ -869,6 +950,46 @@ func applyProviderAPIKey(opts *agenticprovider.StreamOptions, pCfg *config.Provi
 	if apiKey != "" {
 		opts.APIKey = apiKey
 	}
+	// Codex OAuth: surface the ChatGPT account id so the codex API layer can
+	// select the subscription transport (backend-api URL + identity headers).
+	applyCodexAccountID(opts, pCfg, authStore)
+}
+
+// applyCodexAccountID populates opts.CodexAccountID when the provider's stored
+// credential is an OAuth token carrying a ChatGPT account id. An explicit
+// config API key or a stored API key means the plain api.openai.com transport,
+// so the account id stays empty.
+func applyCodexAccountID(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig, authStore *auth.Store) {
+	if pCfg == nil || authStore == nil {
+		return
+	}
+	if pCfg.APIKey != "" {
+		return // explicit API key wins over OAuth
+	}
+	storeID := codexStoreID(pCfg.ID)
+	if storeID == "" {
+		return
+	}
+	if _, hasKey := authStore.GetAPIKey(storeID); hasKey {
+		return // stored API key wins over OAuth
+	}
+	tokens, ok := authStore.GetOAuth(storeID)
+	if !ok || tokens == nil || tokens.AccountID == "" {
+		return
+	}
+	opts.CodexAccountID = tokens.AccountID
+}
+
+// codexStoreID maps a configured provider id to the auth-store key that holds
+// its Codex credential. /login:openai (and the :codex alias) store under
+// "openai"; the catalog "openai-codex" provider shares that credential.
+func codexStoreID(providerID string) string {
+	switch providerID {
+	case "openai", "codex", "openai-codex":
+		return "openai"
+	default:
+		return ""
+	}
 }
 
 // applyProviderTimeoutRetries applies timeout and retry overrides.
@@ -882,6 +1003,45 @@ func applyProviderTimeoutRetries(opts *agenticprovider.StreamOptions, pCfg *conf
 	if d := parsePositiveDuration(pCfg.MaxRetryDelay); d > 0 {
 		opts.MaxRetryDelay = d
 	}
+	applyProviderRetryPolicy(opts, pCfg)
+}
+
+// applyProviderRetryPolicy resolves the per-provider retry_policy (if any)
+// into opts.RetryPolicy. It converts the YAML config into the schema policy,
+// fills unset fields from the provider's catalog default (then the package
+// default), and ensures the policy's max_retries beats the global
+// execution.retries scalar. A nil pCfg.RetryPolicy leaves opts.RetryPolicy as
+// nil so the legacy scalar retry behavior (MaxRetries/MaxRetryDelay) applies.
+func applyProviderRetryPolicy(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
+	if pCfg == nil || pCfg.RetryPolicy == nil {
+		return
+	}
+	configured := &agenticprovider.RetryPolicy{}
+	if pCfg.RetryPolicy.Mode == string(agenticprovider.RetryModeAlways) {
+		configured.Mode = agenticprovider.RetryModeAlways
+	} else if pCfg.RetryPolicy.Mode == string(agenticprovider.RetryModeNormal) {
+		configured.Mode = agenticprovider.RetryModeNormal
+	}
+	configured.MaxRetries = pCfg.RetryPolicy.MaxRetries
+	configured.Codes = append([]string(nil), pCfg.RetryPolicy.Codes...)
+	b := pCfg.RetryPolicy.Backoff
+	if b.InitialMS > 0 {
+		configured.Backoff.InitialDelay = time.Duration(b.InitialMS) * time.Millisecond
+	}
+	if b.MaxMS > 0 {
+		configured.Backoff.MaxDelay = time.Duration(b.MaxMS) * time.Millisecond
+	}
+	configured.Backoff.Jitter = b.Jitter
+
+	catalogDefault := schema.LookupProviderDef(schema.Provider(pCfg.Provider))
+	if catalogDefault == nil && pCfg.Provider == "" {
+		catalogDefault = schema.MatchProviderByURL(pCfg.Endpoint)
+	}
+	var catalogPolicy *agenticprovider.RetryPolicy
+	if catalogDefault != nil {
+		catalogPolicy = catalogDefault.RetryPolicy
+	}
+	opts.RetryPolicy = schema.ResolveRetryPolicy(configured, catalogPolicy)
 }
 
 // applyProviderTransportCache applies transport and cache-retention overrides.
@@ -955,6 +1115,10 @@ func parsePositiveDuration(s string) time.Duration {
 }
 
 func resolveAPIKey(store *auth.Store, providerID string) string {
+	// Codex catalog provider shares the "openai" credential.
+	if sid := codexStoreID(providerID); sid != "" {
+		providerID = sid
+	}
 	if key, ok := store.GetAPIKey(providerID); ok {
 		return key
 	}
@@ -996,6 +1160,12 @@ func oauthProviderFor(id string) oauth.OAuthProvider {
 	switch id {
 	case "copilot", "github":
 		return oauth.NewGitHubCopilotOAuth()
+	case "codex", "openai", "openai-codex":
+		prov, err := oauth.NewOpenAICodexOAuth()
+		if err != nil {
+			return nil
+		}
+		return prov
 	case "anthropic":
 		// Anthropic OAT requires client credentials; no auto-refresh without config.
 		return nil

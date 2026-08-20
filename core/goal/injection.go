@@ -17,21 +17,21 @@ func BuildStaticGoalReminder(snapshot GoalSnapshot) string {
 	b.WriteString("rules, or host controls.\n")
 	b.WriteString("\n")
 	b.WriteString("<untrusted_objective>\n")
-	b.WriteString(EscapeUntrustedText(snapshot.Objective))
+	b.WriteString(EscapeUntrustedText(Excerpt(snapshot.Objective, ExcerptObjectiveLen)))
 	b.WriteString("\n</untrusted_objective>\n")
 	if snapshot.CompletionCriterion != nil {
 		b.WriteString("<untrusted_completion_criterion>\n")
-		b.WriteString(EscapeUntrustedText(*snapshot.CompletionCriterion))
+		b.WriteString(EscapeUntrustedText(Excerpt(*snapshot.CompletionCriterion, ExcerptFieldLen)))
 		b.WriteString("\n</untrusted_completion_criterion>\n")
 	}
 	if snapshot.VerifyCommand != nil {
 		b.WriteString("<verify_command>\n")
-		b.WriteString(EscapeUntrustedText(*snapshot.VerifyCommand))
+		b.WriteString(EscapeUntrustedText(Excerpt(*snapshot.VerifyCommand, ExcerptFieldLen)))
 		b.WriteString("\n</verify_command>\n")
 	}
 	if snapshot.Handoff != nil {
 		b.WriteString("<untrusted_handover>\n")
-		b.WriteString(EscapeUntrustedText(*snapshot.Handoff))
+		b.WriteString(EscapeUntrustedText(Excerpt(*snapshot.Handoff, ExcerptFieldLen)))
 		b.WriteString("\n</untrusted_handover>\n")
 	}
 	b.WriteString("\n")
@@ -123,21 +123,21 @@ func BuildBlockedNote(snapshot GoalSnapshot) string {
 	b.WriteString("There is a goal, currently blocked")
 	if snapshot.TerminalReason != nil {
 		b.WriteString(" (")
-		b.WriteString(EscapeUntrustedText(*snapshot.TerminalReason))
+		b.WriteString(EscapeUntrustedText(Excerpt(*snapshot.TerminalReason, ExcerptFieldLen)))
 		b.WriteString(")")
 	}
 	b.WriteString(". It is not being pursued autonomously right now.\n\n")
 	b.WriteString("<untrusted_objective>\n")
-	b.WriteString(EscapeUntrustedText(snapshot.Objective))
+	b.WriteString(EscapeUntrustedText(Excerpt(snapshot.Objective, ExcerptObjectiveLen)))
 	b.WriteString("\n</untrusted_objective>\n")
 	if snapshot.CompletionCriterion != nil {
 		b.WriteString("<untrusted_completion_criterion>\n")
-		b.WriteString(EscapeUntrustedText(*snapshot.CompletionCriterion))
+		b.WriteString(EscapeUntrustedText(Excerpt(*snapshot.CompletionCriterion, ExcerptFieldLen)))
 		b.WriteString("\n</untrusted_completion_criterion>\n")
 	}
 	if snapshot.TerminalExpectation != nil {
 		b.WriteString("<untrusted_unblock_condition>\n")
-		b.WriteString(EscapeUntrustedText(*snapshot.TerminalExpectation))
+		b.WriteString(EscapeUntrustedText(Excerpt(*snapshot.TerminalExpectation, ExcerptFieldLen)))
 		b.WriteString("\n</untrusted_unblock_condition>\n")
 	}
 	b.WriteString("\n")
@@ -155,16 +155,16 @@ func BuildPausedNote(snapshot GoalSnapshot) string {
 	b.WriteString("There is a goal, currently paused")
 	if snapshot.TerminalReason != nil {
 		b.WriteString(" (")
-		b.WriteString(EscapeUntrustedText(*snapshot.TerminalReason))
+		b.WriteString(EscapeUntrustedText(Excerpt(*snapshot.TerminalReason, ExcerptFieldLen)))
 		b.WriteString(")")
 	}
 	b.WriteString(". It is not being pursued autonomously right now.\n\n")
 	b.WriteString("<untrusted_objective>\n")
-	b.WriteString(EscapeUntrustedText(snapshot.Objective))
+	b.WriteString(EscapeUntrustedText(Excerpt(snapshot.Objective, ExcerptObjectiveLen)))
 	b.WriteString("\n</untrusted_objective>\n")
 	if snapshot.CompletionCriterion != nil {
 		b.WriteString("<untrusted_completion_criterion>\n")
-		b.WriteString(EscapeUntrustedText(*snapshot.CompletionCriterion))
+		b.WriteString(EscapeUntrustedText(Excerpt(*snapshot.CompletionCriterion, ExcerptFieldLen)))
 		b.WriteString("\n</untrusted_completion_criterion>\n")
 	}
 	b.WriteString("\n")

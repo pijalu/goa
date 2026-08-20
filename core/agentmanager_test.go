@@ -1043,11 +1043,8 @@ func TestAgentManager_BuildCompressionConfig_AutoFromModelWindow(t *testing.T) {
 	if cc.MaxTokens != 0 {
 		t.Errorf("MaxTokens = %d, want 0 (auto from model window)", cc.MaxTokens)
 	}
-	if cc.Thresholds.TriggerPercent != 80 {
-		t.Errorf("Thresholds.TriggerPercent = %d, want 80 (from deprecated token_critical fallback)", cc.Thresholds.TriggerPercent)
-	}
-	if cc.Strategy != agentic.CompressionToolElision {
-		t.Errorf("Strategy = %q, want tool_elision", cc.Strategy)
+	if cc.Thresholds.HardPercent != 80 {
+		t.Errorf("Thresholds.HardPercent = %d, want 80 (from deprecated token_critical fallback)", cc.Thresholds.HardPercent)
 	}
 }
 
@@ -1068,11 +1065,12 @@ func TestAgentManager_BuildCompressionConfig_ExplicitWins(t *testing.T) {
 	if cc.MaxTokens != 4096 {
 		t.Errorf("MaxTokens = %d, want 4096", cc.MaxTokens)
 	}
-	if cc.Thresholds.TriggerPercent != 50 {
-		t.Errorf("Thresholds.TriggerPercent = %d, want 50 (legacy alias wins)", cc.Thresholds.TriggerPercent)
+	if cc.Thresholds.HardPercent != 50 {
+		t.Errorf("Thresholds.HardPercent = %d, want 50 (legacy alias wins)", cc.Thresholds.HardPercent)
 	}
-	if cc.Strategy != agentic.CompressionSelective {
-		t.Errorf("Strategy = %q, want selective", cc.Strategy)
+	// The legacy whole-config strategy maps onto the hard layer.
+	if cc.Strategies.Hard != agentic.CompressionSelective {
+		t.Errorf("Strategies.Hard = %q, want selective", cc.Strategies.Hard)
 	}
 }
 
@@ -1117,25 +1115,28 @@ func TestAgentManager_BuildCompressionConfig_PerModelOverlay(t *testing.T) {
 		if cc.MaxTokens != 24576 {
 			t.Errorf("MaxTokens = %d, want 24576", cc.MaxTokens)
 		}
-		if cc.Strategy != agentic.CompressionHybrid {
-			t.Errorf("Strategy = %q, want hybrid", cc.Strategy)
+		// Legacy whole-config strategy maps onto the hard layer.
+		if cc.Strategies.Hard != agentic.CompressionHybrid {
+			t.Errorf("Strategies.Hard = %q, want hybrid", cc.Strategies.Hard)
 		}
-		if cc.Thresholds.SoftPercent != 40 || cc.Thresholds.TriggerPercent != 65 || cc.Thresholds.HardPercent != 90 {
-			t.Errorf("Thresholds = %+v, want {40 65 90}", cc.Thresholds)
+		// Soft 40 and hard 90 come through; trigger_percent (65) is dropped
+		// (no trigger layer) — explicit hard_percent wins the ceiling.
+		if cc.Thresholds.SoftPercent != 40 || cc.Thresholds.HardPercent != 90 {
+			t.Errorf("Thresholds = %+v, want {Soft:40 Hard:90}", cc.Thresholds)
 		}
 	})
 
 	t.Run("partial override inherits global", func(t *testing.T) {
 		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
 		cc := am.buildCompressionConfig(newCfg(), "partial-model", 32768)
-		if cc.Thresholds.TriggerPercent != 70 {
-			t.Errorf("TriggerPercent = %d, want 70 (override)", cc.Thresholds.TriggerPercent)
-		}
+		// Explicit global hard_percent (95) wins over the per-model
+		// trigger_percent (70) override: trigger no longer feeds the ceiling.
 		if cc.Thresholds.HardPercent != 95 {
-			t.Errorf("HardPercent = %d, want 95 (inherited)", cc.Thresholds.HardPercent)
+			t.Errorf("HardPercent = %d, want 95 (explicit global hard wins)", cc.Thresholds.HardPercent)
 		}
-		if cc.Strategy != agentic.CompressionMicro {
-			t.Errorf("Strategy = %q, want micro (inherited)", cc.Strategy)
+		// Global legacy strategy (micro) maps onto the hard layer.
+		if cc.Strategies.Hard != agentic.CompressionMicro {
+			t.Errorf("Strategies.Hard = %q, want micro (inherited)", cc.Strategies.Hard)
 		}
 		if cc.PreserveRecentTurns != 4 {
 			t.Errorf("PreserveRecentTurns = %d, want 4 (inherited)", cc.PreserveRecentTurns)
@@ -1145,29 +1146,72 @@ func TestAgentManager_BuildCompressionConfig_PerModelOverlay(t *testing.T) {
 	t.Run("unknown model gets global", func(t *testing.T) {
 		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
 		cc := am.buildCompressionConfig(newCfg(), "other-model", 32768)
-		if cc.Thresholds.TriggerPercent != 80 {
-			t.Errorf("TriggerPercent = %d, want 80 (global)", cc.Thresholds.TriggerPercent)
+		if cc.Thresholds.HardPercent != 95 {
+			t.Errorf("HardPercent = %d, want 95 (global)", cc.Thresholds.HardPercent)
 		}
-		if cc.Strategy != agentic.CompressionMicro {
-			t.Errorf("Strategy = %q, want micro (global)", cc.Strategy)
+		if cc.Strategies.Hard != agentic.CompressionMicro {
+			t.Errorf("Strategies.Hard = %q, want micro (global)", cc.Strategies.Hard)
 		}
 	})
 
 	t.Run("empty model ID gets global", func(t *testing.T) {
 		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
 		cc := am.buildCompressionConfig(newCfg(), "", 32768)
-		if cc.Thresholds.TriggerPercent != 80 {
-			t.Errorf("TriggerPercent = %d, want 80 (global)", cc.Thresholds.TriggerPercent)
+		if cc.Thresholds.HardPercent != 95 {
+			t.Errorf("HardPercent = %d, want 95 (global)", cc.Thresholds.HardPercent)
 		}
 	})
 
 	t.Run("legacy threshold_percent in per-model override", func(t *testing.T) {
 		cfg := newCfg()
+		// No explicit hard ceiling anywhere so the legacy alias is the ceiling.
+		cfg.ContextCompression.Thresholds.HardPercent = 0
 		cfg.ContextCompression.PerModel["legacy-model"] = config.ModelCompressionOverride{ThresholdPercent: 55}
 		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
 		cc := am.buildCompressionConfig(cfg, "legacy-model", 32768)
-		if cc.Thresholds.TriggerPercent != 55 {
-			t.Errorf("TriggerPercent = %d, want 55 (legacy per-model alias)", cc.Thresholds.TriggerPercent)
+		// Legacy threshold_percent maps onto the hard ceiling.
+		if cc.Thresholds.HardPercent != 55 {
+			t.Errorf("HardPercent = %d, want 55 (legacy per-model alias)", cc.Thresholds.HardPercent)
+		}
+	})
+}
+
+// TestAgentManager_BuildCompressionConfig_ToolResultPruning verifies the CX1
+// pruner settings flow from YAML config into the SDK compression config:
+// explicit values win, zero values inherit the documented defaults.
+func TestAgentManager_BuildCompressionConfig_ToolResultPruning(t *testing.T) {
+	t.Run("explicit values win", func(t *testing.T) {
+		cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
+			ToolResultPruning: config.ToolResultPruningSettings{
+				ThresholdChars: 4096, HeadChars: 2048, TailChars: 512,
+			},
+		}}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(cfg, "some-model", 32768)
+		want := agentic.ToolResultPruningConfig{ThresholdChars: 4096, HeadChars: 2048, TailChars: 512}
+		if cc.ToolResultPruning != want {
+			t.Errorf("ToolResultPruning = %+v, want %+v", cc.ToolResultPruning, want)
+		}
+	})
+
+	t.Run("zero inherits SDK defaults", func(t *testing.T) {
+		cfg := &config.Config{}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(cfg, "some-model", 32768)
+		if cc.ToolResultPruning != agentic.DefaultToolResultPruningConfig {
+			t.Errorf("ToolResultPruning = %+v, want defaults %+v", cc.ToolResultPruning, agentic.DefaultToolResultPruningConfig)
+		}
+	})
+
+	t.Run("partial override inherits per field", func(t *testing.T) {
+		cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
+			ToolResultPruning: config.ToolResultPruningSettings{ThresholdChars: 4096},
+		}}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(cfg, "some-model", 32768)
+		want := agentic.ToolResultPruningConfig{ThresholdChars: 4096, HeadChars: 4096, TailChars: 1024}
+		if cc.ToolResultPruning != want {
+			t.Errorf("ToolResultPruning = %+v, want %+v", cc.ToolResultPruning, want)
 		}
 	})
 }
@@ -1193,14 +1237,15 @@ func TestAgentManager_BuildCompressionConfig_EnabledFalseDisablesProactive(t *te
 	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
 
 	cc := am.buildCompressionConfig(cfg, "some-model", 32768)
-	if cc.Thresholds.SoftPercent != 0 || cc.Thresholds.TriggerPercent != 0 || cc.Thresholds.HardPercent != 0 {
+	if cc.Thresholds.SoftPercent != 0 || cc.Thresholds.HardPercent != 0 {
 		t.Errorf("enabled:false must zero proactive thresholds, got %+v", cc.Thresholds)
 	}
 	if !cc.OnContextError {
 		t.Error("enabled:false must not disable the reactive on_context_error net")
 	}
 
-	// Sanity: enabled (nil default) preserves the configured thresholds.
+	// Sanity: enabled (nil default) preserves the configured ceiling (the
+	// legacy trigger_percent feeds the hard ceiling when hard is unset).
 	cfgOn := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
 			Strategy:   config.AgenticCompressionToolElision,
@@ -1209,8 +1254,8 @@ func TestAgentManager_BuildCompressionConfig_EnabledFalseDisablesProactive(t *te
 	}
 	amOn := NewAgentManager(cfgOn, nil, nil, nil, nil, "")
 	ccOn := amOn.buildCompressionConfig(cfgOn, "some-model", 32768)
-	if ccOn.Thresholds.TriggerPercent != 80 {
-		t.Errorf("enabled (default) must keep trigger=80, got %d", ccOn.Thresholds.TriggerPercent)
+	if ccOn.Thresholds.HardPercent != 80 {
+		t.Errorf("enabled (default) must keep ceiling=80, got %d", ccOn.Thresholds.HardPercent)
 	}
 }
 
@@ -1247,9 +1292,8 @@ func TestAgentManager_SetModel_AppliesPerModelOverride(t *testing.T) {
 	am.SetModel(agenticprovider.Model{ID: "small-local", Api: agenticprovider.ApiOpenAICompletions, ContextWindow: 32768})
 
 	got := am.CurrentAgent().CompressionConfig()
-	if got.Thresholds.TriggerPercent != 60 {
-		t.Errorf("after SetModel TriggerPercent = %d, want 60 (per-model override)", got.Thresholds.TriggerPercent)
-	}
+	// Per-model explicit hard_percent (85) wins the ceiling; trigger no longer
+	// feeds it, so the legacy per-model trigger (60) is dropped.
 	if got.Thresholds.HardPercent != 85 {
 		t.Errorf("after SetModel HardPercent = %d, want 85 (per-model override)", got.Thresholds.HardPercent)
 	}
@@ -1276,19 +1320,21 @@ func TestAgentManager_RefreshContextCompression(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	if got := am.CurrentAgent().CompressionConfig().Thresholds.TriggerPercent; got != 80 {
-		t.Fatalf("initial TriggerPercent = %d, want 80", got)
+	// Explicit hard_percent (95) wins the ceiling; the legacy trigger (80) is
+	// dropped once a hard ceiling is set.
+	if got := am.CurrentAgent().CompressionConfig().Thresholds.HardPercent; got != 95 {
+		t.Fatalf("initial HardPercent = %d, want 95", got)
 	}
 
-	// User changes the trigger via /config (in-memory config mutated by the
+	// User changes thresholds via /config (in-memory config mutated by the
 	// setter, then runtime sync calls RefreshContextCompression).
-	cfg.ContextCompression.Thresholds.TriggerPercent = 65
 	cfg.ContextCompression.Thresholds.SoftPercent = 40
+	cfg.ContextCompression.Thresholds.HardPercent = 85
 	am.RefreshContextCompression()
 
 	got := am.CurrentAgent().CompressionConfig()
-	if got.Thresholds.TriggerPercent != 65 {
-		t.Errorf("after refresh TriggerPercent = %d, want 65", got.Thresholds.TriggerPercent)
+	if got.Thresholds.HardPercent != 85 {
+		t.Errorf("after refresh HardPercent = %d, want 85", got.Thresholds.HardPercent)
 	}
 	if got.Thresholds.SoftPercent != 40 {
 		t.Errorf("after refresh SoftPercent = %d, want 40", got.Thresholds.SoftPercent)
@@ -1298,7 +1344,7 @@ func TestAgentManager_RefreshContextCompression(t *testing.T) {
 // TestAgentManager_HandleLoopWarningCriticalInterrupts guards STUB-2: the
 // TestAgentManager_ThinkingLoopInterrupts verifies that a thinking/reasoning
 // loop cancels the in-flight turn, mirroring the tool-loop interrupt path. This
-// reproduces the failure captured in bugs.md where the assistant repeated the
+// reproduces the failure captured in where the assistant repeated the
 // same reasoning paragraph many times with no loop protection firing.
 func TestAgentManager_ThinkingLoopInterrupts(t *testing.T) {
 	cfg := &config.Config{}
@@ -1829,6 +1875,9 @@ func (f *recordingConfigSaver) SaveProjectFieldValue(path []string, value any) e
 func (f *recordingConfigSaver) SaveHomeFieldValue(path []string, value any) error {
 	return f.err
 }
+func (f *recordingConfigSaver) SaveLocalFieldValue(path []string, value any) error {
+	return f.err
+}
 func (f *recordingConfigSaver) DeleteProjectField(path []string) error { return f.err }
 func (f *recordingConfigSaver) DeleteHomeField(path []string) error    { return f.err }
 func (f *recordingConfigSaver) Reload() (*config.Config, error)        { return nil, f.err }
@@ -2102,7 +2151,7 @@ func (r *recordingRunner) RunWithImages(ctx context.Context, input string, image
 	return r.Run(ctx, input)
 }
 
-// TestAgentManager_StartSession_FreshConversationID covers bugs.md Issue 8: every
+// TestAgentManager_StartSession_FreshConversationID covers Issue 8: every
 // StartSession must give the agent a FRESH, non-empty StreamOptions.SessionID so
 // provider-side cache (prompt_cache_key / previous_response_id / session-affinity)
 // is cleared between sessions (/new, first start). Two consecutive sessions must not
@@ -2146,7 +2195,7 @@ func TestAgentManager_StartSession_FreshConversationID(t *testing.T) {
 	}
 }
 
-// TestAgentManager_ResetConversationID covers bugs.md Issue 8: rotating the
+// TestAgentManager_ResetConversationID covers Issue 8: rotating the
 // conversation id on a live session (fresh-context goal) must give the active
 // agent a NEW non-empty SessionID distinct from the previous one, so provider
 // cache is not carried into the clean context.
@@ -2191,7 +2240,7 @@ func (o *okRunner) RunWithImages(ctx context.Context, input string, images []str
 }
 
 // TestRunAgentTurn_PostTurnHookFiresAfterCleanup asserts the post-turn hook
-// observes the turn as fully ended (bugs.md Issue 7): the hook starts the
+// observes the turn as fully ended (Issue 7): the hook starts the
 // goal driver, and if it fired while the manager still marked the turn
 // running, the driver's agent-busy guard would always trip — or worse,
 // without the guard, the driver would queue-storm continuation prompts into
@@ -2326,7 +2375,7 @@ func TestAgentManager_LogCompanionStarted_WritesModelMarker(t *testing.T) {
 }
 
 // loopResetRunner tracks ResetLoopStop calls; used to verify that a genuine
-// new user turn clears the agent's runaway-loop latch (bugs.md runaway-loop
+// new user turn clears the agent's runaway-loop latch (runaway-loop
 // bricking) while runners without the optional interface are left alone.
 type loopResetRunner struct {
 	resetCalls int
@@ -2356,3 +2405,127 @@ func TestAgentManager_UserTurnResetsLoopStop(t *testing.T) {
 		t.Fatalf("ResetLoopStop called %d times, want 1", runner.resetCalls)
 	}
 }
+
+// TestAgentManager_BuildCompressionConfig_OnErrorStrategyMapping pins the
+// on-error wiring: config on_error_strategy maps into the agentic config
+// verbatim (empty stays empty → the SDK hybrid default), and enabled:false
+// does not touch the reactive net fields.
+func TestAgentManager_BuildCompressionConfig_OnErrorStrategyMapping(t *testing.T) {
+	mk := func(onErr string) agentic.ContextCompressionConfig {
+		cfg := &config.Config{
+			ContextCompression: config.ContextCompressionConfig{
+				Enabled:         ccBoolPtr(true),
+				OnContextError:  true,
+				OnErrorStrategy: onErr,
+				Thresholds:      config.CompressionThresholdsConfig{HardPercent: 95},
+			},
+		}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		return am.buildCompressionConfig(cfg, "some-model", 32768)
+	}
+
+	if got := mk("summarize").OnErrorStrategy; got != agentic.CompressionSummarize {
+		t.Errorf("OnErrorStrategy = %q, want summarize", got)
+	}
+	if got := mk("").OnErrorStrategy; got != "" {
+		t.Errorf("empty OnErrorStrategy mapped to %q, want empty (SDK hybrid default)", got)
+	}
+
+	// enabled:false zeroes every proactive layer INCLUDING the hard ceiling
+	// (0 = disabled under the opt-in semantics) but keeps the reactive net.
+	cfgOff := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:         ccBoolPtr(false),
+			OnContextError:  true,
+			OnErrorStrategy: "selective",
+			Thresholds:      config.CompressionThresholdsConfig{HardPercent: 95},
+		},
+	}
+	amOff := NewAgentManager(cfgOff, nil, nil, nil, nil, "")
+	off := amOff.buildCompressionConfig(cfgOff, "some-model", 32768)
+	if off.Thresholds.HardPercent != 0 {
+		t.Errorf("enabled:false must zero hard too, got %d (0 = disabled semantics)", off.Thresholds.HardPercent)
+	}
+	if !off.OnContextError || off.OnErrorStrategy != agentic.CompressionSelective {
+		t.Errorf("enabled:false must keep the reactive net, got on_error=%v strategy=%q", off.OnContextError, off.OnErrorStrategy)
+	}
+}
+
+// TestAgentManager_BuildCompressionConfig_EmbeddedDefaultHardSummarize pins
+// the shipped-default path: the embedded default.yaml sets hard 95 explicitly
+// and leaves the layer strategies unset, so the SDK resolves the hard tier at
+// 95 with summarize (soft/trigger opt-in off).
+func TestAgentManager_BuildCompressionConfig_EmbeddedDefaultHardSummarize(t *testing.T) {
+	// Isolate from the user's home config so only embedded defaults apply.
+	t.Setenv("HOME", t.TempDir())
+	loader := config.NewCascadeLoader(t.TempDir(), "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ContextCompression.Thresholds.HardPercent != 95 {
+		t.Fatalf("test setup: embedded default hard = %d, want 95", cfg.ContextCompression.Thresholds.HardPercent)
+	}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+	cc := am.buildCompressionConfig(cfg, "some-model", 32768)
+
+	if cc.Thresholds.HardPercent != 95 {
+		t.Errorf("HardPercent = %d, want 95 (explicit embedded default)", cc.Thresholds.HardPercent)
+	}
+	if cc.Strategies.Hard != "" {
+		t.Errorf("Strategies.Hard = %q, want empty (SDK resolves unset hard to summarize)", cc.Strategies.Hard)
+	}
+	// NOTE: soft stays opt-in off; trigger may be auto-derived from the
+	// legacy execution.token_critical default (90) — out of scope here.
+	if cc.Thresholds.SoftPercent != 0 {
+		t.Errorf("soft must stay opt-in off, got soft=%d", cc.Thresholds.SoftPercent)
+	}
+	if cc.OnErrorStrategy != agentic.CompressionHybrid {
+		t.Errorf("OnErrorStrategy = %q, want hybrid (embedded default)", cc.OnErrorStrategy)
+	}
+}
+
+// TestAgentManager_StartSession_WiresSpillPolicy verifies the spill-policy
+// factory (gap CX2) is invoked per session with the store's session ID so the
+// policy can scope its spill dir, and that a nil factory leaves the agent
+// without a policy.
+func TestAgentManager_StartSession_WiresSpillPolicy(t *testing.T) {
+	cfg := &config.Config{
+		Execution: config.ExecutionConfig{Mode: internal.ExecutionYolo, WorktreeMode: internal.WorktreeAlways},
+	}
+	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
+	tuiEvents := event.MakeBus(10, 10, 10, 10)
+	sessionStore := NewSessionStore(t.TempDir())
+	am := NewAgentManager(cfg, sessionStore, nil, sessionState, tuiEvents, "")
+
+	var gotSessionID string
+	factoryCalls := 0
+	am.SetSpillPolicyFactory(func(sessionID string) agentic.SpillPolicy {
+		factoryCalls++
+		gotSessionID = sessionID
+		return &stubSpillPolicy{}
+	})
+
+	mdl := agenticprovider.Model{ID: "test-model", Api: agenticprovider.ApiOpenAICompletions}
+	if _, err := am.StartSession(mdl, agenticprovider.StreamOptions{}, "sys", nil, cfg); err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if factoryCalls != 1 {
+		t.Fatalf("spill policy factory should be invoked once per session, got %d", factoryCalls)
+	}
+	agent := am.CurrentAgent()
+	if agent == nil {
+		t.Fatal("CurrentAgent should be set after StartSession")
+	}
+	if gotSessionID == "" || gotSessionID != agent.StreamOptions().SessionID {
+		t.Errorf("factory session ID %q should match the agent session %q", gotSessionID, agent.StreamOptions().SessionID)
+	}
+	if agent.SpillPolicy() == nil {
+		t.Error("agent should carry the factory-provided spill policy")
+	}
+}
+
+type stubSpillPolicy struct{}
+
+func (stubSpillPolicy) ApplySpill(toolName, result string) string { return result }

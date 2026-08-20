@@ -37,34 +37,36 @@ const (
 type AgentStats struct {
 	mu sync.Mutex
 
-	Turns           int
-	TokensIn        int
-	TokensOut       int
-	CacheRead       int
-	CacheCreation   int
-	ToolCalls       int
-	ContextEstimate int
-	ContextMax      int
-	ContextAutoMax  bool
-	Status          AgentStatus
-	StartedAt       time.Time
-	UpdatedAt       time.Time
+	Turns            int
+	TokensIn         int
+	TokensOut        int
+	CacheRead        int
+	CacheCreation    int
+	ToolCalls        int
+	ContextEstimate  int
+	ContextProjected int
+	ContextMax       int
+	ContextAutoMax   bool
+	Status           AgentStatus
+	StartedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // AgentStatsSnapshot is an immutable point-in-time copy of AgentStats.
 type AgentStatsSnapshot struct {
-	Turns           int
-	TokensIn        int
-	TokensOut       int
-	CacheRead       int
-	CacheCreation   int
-	ToolCalls       int
-	ContextEstimate int
-	ContextMax      int
-	ContextAutoMax  bool
-	Status          AgentStatus
-	StartedAt       time.Time
-	UpdatedAt       time.Time
+	Turns            int
+	TokensIn         int
+	TokensOut        int
+	CacheRead        int
+	CacheCreation    int
+	ToolCalls        int
+	ContextEstimate  int
+	ContextProjected int
+	ContextMax       int
+	ContextAutoMax   bool
+	Status           AgentStatus
+	StartedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // NewAgentStats returns a zeroed stats object in the Pending state.
@@ -78,18 +80,19 @@ func (s *AgentStats) Snapshot() AgentStatsSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return AgentStatsSnapshot{
-		Turns:           s.Turns,
-		TokensIn:        s.TokensIn,
-		TokensOut:       s.TokensOut,
-		CacheRead:       s.CacheRead,
-		CacheCreation:   s.CacheCreation,
-		ToolCalls:       s.ToolCalls,
-		ContextEstimate: s.ContextEstimate,
-		ContextMax:      s.ContextMax,
-		ContextAutoMax:  s.ContextAutoMax,
-		Status:          s.Status,
-		StartedAt:       s.StartedAt,
-		UpdatedAt:       s.UpdatedAt,
+		Turns:            s.Turns,
+		TokensIn:         s.TokensIn,
+		TokensOut:        s.TokensOut,
+		CacheRead:        s.CacheRead,
+		CacheCreation:    s.CacheCreation,
+		ToolCalls:        s.ToolCalls,
+		ContextEstimate:  s.ContextEstimate,
+		ContextProjected: s.ContextProjected,
+		ContextMax:       s.ContextMax,
+		ContextAutoMax:   s.ContextAutoMax,
+		Status:           s.Status,
+		StartedAt:        s.StartedAt,
+		UpdatedAt:        s.UpdatedAt,
 	}
 }
 
@@ -115,11 +118,13 @@ func (s *AgentStats) IncToolCall() {
 	s.UpdatedAt = time.Now()
 }
 
-// SetContext stores the latest context-window estimate for the agent.
-func (s *AgentStats) SetContext(estimate, max int, autoMax bool) {
+// SetContext stores the latest context-window figures for the agent: the
+// conservative estimate and the provider-anchored projection (CX8/P20).
+func (s *AgentStats) SetContext(estimate, projected, max int, autoMax bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ContextEstimate = estimate
+	s.ContextProjected = projected
 	s.ContextMax = max
 	s.ContextAutoMax = autoMax
 	s.UpdatedAt = time.Now()

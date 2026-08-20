@@ -39,6 +39,10 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 	if len(deps) > 0 {
 		dep = deps[0]
 	}
+	// Wire the shared auth store so the provider picker can launch codex OAuth.
+	if dep.AuthStore != nil {
+		registerLoginStore(dep.AuthStore)
+	}
 	cmds := []core.Command{
 		// autonomy
 		&AutonomyCommand{},

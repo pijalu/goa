@@ -31,10 +31,12 @@ function register(id, mod) {
 // Load the built-in fetchers.
 register("anthropic", require("./fetchers/anthropic.js"));
 register("openai", require("./fetchers/openai.js"));
+register("codex", require("./fetchers/codex.js"));
 register("zai", require("./fetchers/zai.js"));
 register("kimi", require("./fetchers/kimi.js"));
 register("minimax", require("./fetchers/minimax.js"));
 register("openrouter", require("./fetchers/openrouter.js"));
+register("opencode", require("./fetchers/opencode.js"));
 register(_fallbackId, require("./fetchers/local.js"));
 
 // --- Provider config resolution ------------------------------------------
@@ -91,6 +93,14 @@ function fetcherAliases(fetcher, ident) {
 	if (fetcher === "zai") {
 		return ident === "zaicoding" || ident === "zaicodingcn" || ident === "zaicodingplan" || ident === "zhipu";
 	}
+	if (fetcher === "codex") {
+		return ident === "codex" || ident === "openaicodex" || ident === "openai";
+	}
+	if (fetcher === "opencode") {
+		// Both OpenCode variants (Zen "opencode" and Go "opencode-go") share
+		// the OPENCODE_API_KEY and the usage endpoint under their base URL.
+		return ident === "opencode" || ident === "opencodego" || ident === "opencodezen";
+	}
 	return false;
 }
 
@@ -135,7 +145,7 @@ function refreshDue(fetcherId, force) {
 }
 
 // refreshAllDue refreshes every provider whose interval elapsed (or all when
-// force). OAuth providers without a token are refreshed once so their
+// force). Providers without authentication are refreshed once so their
 // auth_required state is cached and shown in /quota, then skipped on later
 // non-forced ticks (they'd just return auth_required again).
 function refreshAllDue(force) {
@@ -146,7 +156,7 @@ function refreshAllDue(force) {
 			refreshDue(id, force);
 			continue;
 		}
-		if (fetcher.auth && fetcher.auth.type === "oauth" && !oauth.hasToken(id)) {
+		if (fetcher.auth && !authAvailable(id, fetcher)) {
 			// Cache the auth_required state once (so /quota can show it), then
 			// skip until the user logs in or forces a refresh.
 			if (force || !_cache[id]) {
@@ -176,10 +186,24 @@ function hasUsableCache() {
 // token is absent), so it runs synchronously even on the non-forced render
 // path — preserving the /quota auth-required rows without re-introducing
 // network blocking on a bare /quota.
+function goaOAuthAvailable(fetcher) {
+	if (!fetcher || !fetcher.auth || fetcher.auth.type !== "goa_oauth") return true;
+	if (!goa.auth || typeof goa.auth.oauthToken !== "function") return false;
+	var token = goa.auth.oauthToken(fetcher.auth.provider);
+	return !!(token && token.accessToken);
+}
+
+function authAvailable(fetcherId, fetcher) {
+	if (!fetcher || !fetcher.auth) return true;
+	if (fetcher.auth.type === "oauth") return oauth.hasToken(fetcherId);
+	if (fetcher.auth.type === "goa_oauth") return goaOAuthAvailable(fetcher);
+	return true;
+}
+
 function cacheAuthRequiredStates() {
 	for (var id in _fetchers) {
 		var fetcher = _fetchers[id];
-		if (fetcher.auth && fetcher.auth.type === "oauth" && !oauth.hasToken(id) && !_cache[id]) {
+		if (fetcher.auth && !authAvailable(id, fetcher) && !_cache[id]) {
 			refreshDue(id, true);
 		}
 	}
@@ -536,7 +560,10 @@ function appendProviderRows(rows, id) {
 			return;
 		}
 		if (entry.error === "auth_required") {
-			rows.push("| " + name + " | — | — | — | — | auth required — `/quota:login:" + id + "` |");
+			var loginHint = fetcher.auth && fetcher.auth.type === "goa_oauth"
+				? "`/login:openai:oauth`"
+				: "`/quota:login:" + id + "`";
+			rows.push("| " + name + " | — | — | — | — | auth required — " + loginHint + " |");
 			return;
 		}
 		rows.push("| " + name + " | — | — | — | — | error: " + entry.error + " |");
@@ -545,6 +572,11 @@ function appendProviderRows(rows, id) {
 	var display = entry.plan ? name + " (" + entry.plan + ")" : name;
 	for (var i = 0; i < entry.limits.length; i++) {
 		rows.push(renderLimitRow(display, entry.limits[i], entry));
+	}
+	if (Array.isArray(entry.lines)) {
+		for (var j = 0; j < entry.lines.length; j++) {
+			rows.push("| " + display + " | " + entry.lines[j].label + " | " + entry.lines[j].value + " | — | — | — |");
+		}
 	}
 }
 
@@ -635,6 +667,8 @@ function renderAuthStatus() {
 		var state;
 		if (f.auth.type === "api_key") {
 			state = providerConfigFor(id).apiKey ? "api key ✓" : "no api key ∇";
+		} else if (f.auth.type === "goa_oauth") {
+			state = goaOAuthAvailable(f) ? "Goa OAuth ✓" : "login with /login:openai:oauth ∇";
 		} else {
 			state = oauth.hasToken(id) ? "authenticated ✓" : "not authenticated ∇";
 		}
@@ -658,6 +692,9 @@ function loginProvider(id) {
 	var fetcher = _fetchers[id];
 	if (!fetcher) {
 		return "Unknown provider: " + id;
+	}
+	if (fetcher.auth && fetcher.auth.type === "goa_oauth") {
+		return "Use /login:openai:oauth to authenticate Codex through Goa.";
 	}
 	if (!fetcher.auth || fetcher.auth.type !== "oauth") {
 		return (fetcher.name || id) + " uses API-key auth — no login needed (set the key in config).";
@@ -683,6 +720,9 @@ function logoutProvider(id) {
 	if (!_fetchers[id]) {
 		return "Unknown provider: " + id;
 	}
+	if (_fetchers[id].auth && _fetchers[id].auth.type === "goa_oauth") {
+		return "Use Goa's logout command to clear " + (_fetchers[id].name || id) + " credentials.";
+	}
 	oauth.logout(id);
 	delete _cache[id];
 	goa.ui.refreshSegment("quota");
@@ -699,8 +739,8 @@ goa.registerCommand({
 		"  /quota:refresh         Force-refresh all provider quotas\n" +
 		"  /quota:json            Machine-readable JSON output\n" +
 		"  /quota:auth-status     Show per-provider auth state\n" +
-		"  /quota:login:<id>      OAuth device login (OAuth providers only)\n" +
-		"  /quota:logout:<id>     Clear stored OAuth tokens\n" +
+		"  /quota:login:<id>      OAuth login (plugin-owned providers only)\n" +
+		"  /quota:logout:<id>     Clear plugin-owned OAuth tokens\n" +
 		"  /quota:<id>            Force-refresh one provider",
 	run: quotaCommand
 });

@@ -46,7 +46,12 @@ func NewSkillRunnerTool(registry *SkillRegistry, pool *multiagent.AgentPool, ren
 	}
 }
 
-// Schema returns the tool schema for run_skill.
+// Schema returns the tool schema for run_skill. Discovery is catalog-only
+// (P2/TC2): skill_name carries no enum — the <available_skills> listing in
+// the system prompt is the single discovery surface, so the schema is
+// byte-stable across sessions regardless of which skills are registered
+// (prompt-cache friendly). run_skill still validates the name at execution:
+// an unknown name errors with the list of available skills.
 func (t *SkillRunnerTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "run_skill",
@@ -56,7 +61,7 @@ func (t *SkillRunnerTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"skill_name": map[string]any{
 					"type":        "string",
-					"description": "Name of the skill to execute (e.g., refactor, test-gen, document, review, explain)",
+					"description": "Name of the skill to execute — see the available_skills catalog in the system prompt",
 				},
 				"task": map[string]any{
 					"type":        "string",
@@ -94,7 +99,8 @@ func (t *SkillRunnerTool) Execute(input string) (string, error) {
 
 	skill, ok := t.Registry.Get(skillName)
 	if !ok {
-		return "", fmt.Errorf("skill %q not found — use /skills to list available skills", skillName)
+		return "", fmt.Errorf("skill %q not found — available skills: %s (use /skills for details)",
+			skillName, strings.Join(t.modelInvocableSkillNames(), ", "))
 	}
 
 	if t.Inline {
@@ -150,6 +156,22 @@ func (t *SkillRunnerTool) executeInline(skill *Skill, task string) string {
 		}
 	}
 	return b.String()
+}
+
+// modelInvocableSkillNames returns the model-invocable skill names for
+// error messages, mirroring the <available_skills> catalog the model sees
+// (P16: requires both model_invocable and user_invocable).
+func (t *SkillRunnerTool) modelInvocableSkillNames() []string {
+	if t.Registry == nil {
+		return nil
+	}
+	var names []string
+	for _, s := range t.Registry.List() {
+		if s.IsModelInvocable() {
+			names = append(names, s.Name)
+		}
+	}
+	return names
 }
 
 // StripSkillNoise removes non-actionable noise from a skill body before it is
@@ -213,7 +235,7 @@ func (t *SkillRunnerTool) resolveAllowedTools(skill *Skill) []string {
 	if len(allowed) == 0 {
 		allowed = defaultSubAgentToolsFrom(all)
 	}
-	return excludeToolNames(allowed, "run_skill", "terminal")
+	return excludeToolNames(allowed, "run_skill", "terminals")
 }
 
 func defaultSubAgentToolsFrom(all []string) []string {

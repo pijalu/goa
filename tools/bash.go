@@ -25,7 +25,7 @@ import (
 	"github.com/pijalu/goa/internal/secrets"
 )
 
-// Regexes backing detectShellFileEdit (the bash→edit guardrail, bugs.md).
+// Regexes backing detectShellFileEdit (the bash→edit guardrail).
 var (
 	// redirectRe captures a shell output redirect target: "> path", ">> path",
 	// "2> path", "tee path". Excludes fd-dup forms (>&2, 2>&1) via the target
@@ -79,12 +79,18 @@ type BashTool struct {
 	// WarnFileEdits, when true, prepends a non-blocking hint to the output of
 	// shell commands that modify project files (redirects, in-place editors,
 	// interpreter inline file writes), steering the model to the edit tool
-	// (bugs.md). Never blocks. Configurable via tools.bash.warn_file_edits.
+	// Never blocks. Configurable via tools.bash.warn_file_edits.
 	WarnFileEdits bool
 	// WarnFileEditsResolver, when non-nil, is called at execution time to
 	// decide whether the hint is active (live /config toggle). When nil,
 	// WarnFileEdits is used as the static fallback.
 	WarnFileEditsResolver func() bool
+
+	// EscalationApprover approves or rejects a sandbox escalation before an
+	// escalated (wider) command runs. It is injected by the host (App.Run)
+	// and routes through the same perms-driven approval path as tool
+	// confirmation. When nil, escalations are denied — fail closed.
+	EscalationApprover sandbox.EscalationApprover
 }
 
 // Bash timeout defaults.
@@ -106,47 +112,85 @@ func (t *BashTool) LoopHints() agentic.ToolLoopHints {
 func (t *BashTool) Schema() agentic.ToolSchema {
 	// The working-directory statement lives in the top-level description because
 	// that is the text the model actually reads; without it the model prepends a
-	// redundant "cd <project root> && " to every command (bugs.md).
+	// redundant "cd <project root> && " to every command.
 	const cwdNote = " The working directory is the project root by default — do not prepend `cd <project root>` unless a different directory is required."
 	description := "Run a shell command." + cwdNote
 	if t.EnableComplexity {
 		description = "Run a shell command. Complex scripts may be rejected — use simple commands." + cwdNote
 	}
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"command": map[string]any{
+				"type":        "string",
+				"description": "command to execute",
+			},
+			"timeout": map[string]any{
+				"type":        "integer",
+				"description": fmt.Sprintf("timeout (default: %ds, max: %ds)", DefaultBashTimeoutS, MaxBashTimeoutS),
+			},
+			"workdir": map[string]any{
+				"type":        "string",
+				"description": "working directory (default: project root)",
+			},
+			"env": map[string]any{
+				"type":                 "object",
+				"additionalProperties": map[string]any{"type": "string"},
+				"description":          "env vars (values matching *KEY*, *TOKEN*, *SECRET*, *PASSWORD* masked)",
+			},
+		},
+		"required": []string{"command"},
+	}
+	// The sandbox escalation surface is advertised ONLY when confinement is
+	// active; non-sandboxed builds must hide these fields entirely.
+	if t.confinementActive() {
+		props := schema["properties"].(map[string]any)
+		props["sandbox_permissions"] = map[string]any{
+			"type":        "string",
+			"enum":        sandbox.EscalationVocabulary,
+			"description": "the wider sandbox permission a jail-denied command needs, from the closed vocabulary; required together with justification; a non-widening request fails without prompting",
+		}
+		props["justification"] = map[string]any{
+			"type":        "string",
+			"description": "one sentence for the user explaining why this exact command needs the wider sandbox permission; required together with sandbox_permissions",
+		}
+		// Required-with: each escalation field demands the other (JSON Schema
+		// dependentRequired, 2019-09+). The tool also enforces this at execution.
+		schema["dependentRequired"] = map[string]any{
+			"sandbox_permissions": []string{"justification"},
+			"justification":       []string{"sandbox_permissions"},
+		}
+	}
 	return agentic.ToolSchema{
 		Name:        "bash",
 		Description: description,
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"command": map[string]any{
-					"type":        "string",
-					"description": "command to execute",
-				},
-				"timeout": map[string]any{
-					"type":        "integer",
-					"description": fmt.Sprintf("timeout (default: %ds, max: %ds)", DefaultBashTimeoutS, MaxBashTimeoutS),
-				},
-				"workdir": map[string]any{
-					"type":        "string",
-					"description": "working directory (default: project root)",
-				},
-				"env": map[string]any{
-					"type":                 "object",
-					"additionalProperties": map[string]any{"type": "string"},
-					"description":          "env vars (values matching *KEY*, *TOKEN*, *SECRET*, *PASSWORD* masked)",
-				},
-			},
-			"required": []string{"command"},
-		},
+		Schema:      schema,
 	}
+}
+
+// confinementActive reports whether bash is running under project-directory
+// confinement (the sandbox surface). When false the escalation fields are
+// hidden from the schema and escalation requests are rejected.
+func (t *BashTool) confinementActive() bool {
+	return t.Jail && t.ProjectDir != ""
+}
+
+// currentSandboxMode returns the effective confinement mode of this call.
+// The goa project-directory jail confines writes to the workspace root, which
+// corresponds to ModeWorkspaceWrite in the mode vocabulary. The only strictly
+// wider mode is danger-full-access.
+func (t *BashTool) currentSandboxMode() sandbox.Mode {
+	return sandbox.ModeWorkspaceWrite
 }
 
 // bashParams holds the parsed input for BashTool.
 type bashParams struct {
-	Command string            `json:"command"`
-	Timeout int               `json:"timeout"`
-	Workdir string            `json:"workdir"`
-	Env     map[string]string `json:"env"`
+	Command            string            `json:"command"`
+	Timeout            int               `json:"timeout"`
+	Workdir            string            `json:"workdir"`
+	Env                map[string]string `json:"env"`
+	SandboxPermissions string            `json:"sandbox_permissions"`
+	Justification      string            `json:"justification"`
 }
 
 // Execute runs the shell command with security checks.
@@ -165,6 +209,9 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 	if p.Command == "" {
 		return "", toolErr("bash", "missing_command", "No command provided")
 	}
+	if err := t.validateEscalationInput(&p); err != nil {
+		return "", err
+	}
 
 	if err := t.checkBlocked(p.Command); err != nil {
 		return "", err
@@ -177,11 +224,11 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 	if err := t.checkAnalyzed(p.Command); err != nil {
 		return "", err
 	}
-	if err := t.checkJail(&p); err != nil {
+	if err := t.enforceConfinement(ctx, &p); err != nil {
 		return "", err
 	}
 
-	// Non-blocking nudge (bugs.md): if the command modifies a project file via
+	// Non-blocking nudge: if the command modifies a project file via
 	// the shell, we still run it but prepend a hint steering the model to the
 	// edit tool next time. Never block on this — bash is sometimes the only way.
 	fileEditHint := t.fileEditHint(p.Command)
@@ -392,7 +439,7 @@ func toolErr(tool, typ, detail string) *internal.ToolError {
 }
 
 // timeoutErr builds the timeout error with a timeout-specific actionable hint
-// (bugs.md "Timeout hint"): raise the `timeout` parameter when there is
+// (Timeout hint): raise the `timeout` parameter when there is
 // headroom, otherwise split the work — never the generic docs usage line.
 func timeoutErr(actualTimeout int) *internal.ToolError {
 	hint := fmt.Sprintf("The command exceeded the %ds timeout. Increase the \"timeout\" parameter (default: %ds, max: %ds) or split the command into smaller/faster steps.",
@@ -455,7 +502,18 @@ func (t *BashTool) LongDoc() string {
 	if t.EnableComplexity {
 		doc += "\n\n" + t.ComplexityNotice()
 	}
+	if t.confinementActive() {
+		doc += "\n\n" + t.SandboxEscalationNotice()
+	}
 	return doc
+}
+
+// SandboxEscalationNotice returns the text that tells the agent about the
+// sandbox escalation surface: jail-denied commands may be retried once with a
+// strictly wider sandbox_permissions mode + justification, gated by user
+// approval. Only included in the doc when confinement is active.
+func (t *BashTool) SandboxEscalationNotice() string {
+	return fmt.Sprintf("Sandbox escalation: this bash runs confined to the project directory (mode %q). A command denied by the sandbox may be retried ONCE with the narrowest strictly-wider `sandbox_permissions` (%s) plus a `justification`; the user must approve the escalation before it runs. Non-widening requests fail without prompting. Escalation is never speculative — do not attach these fields to commands that do not need wider access.", t.currentSandboxMode(), strings.Join(sandbox.EscalationVocabulary, "/"))
 }
 
 // ComplexityNotice returns the text that tells the agent that bash complexity
@@ -600,7 +658,7 @@ func (t *BashTool) checkAnalyzed(cmd string) error {
 
 // fileEditHint returns a non-blocking hint to prepend to the command output
 // when the command modifies a project file via the shell, steering the model to
-// the edit tool next time. It NEVER blocks — the command always runs (bugs.md:
+// the edit tool next time. It NEVER blocks — the command always runs
 // a hard block broke legitimate workflows; a visible nudge is enough). Returns
 // "" when the command looks read-only or the hint is disabled. Conservative:
 // on doubt it stays silent rather than nag.
@@ -663,35 +721,116 @@ func redirectEditTarget(cmd string) string {
 	return ""
 }
 
-// checkJail enforces project-directory containment when Jail is enabled.
-// It rejects commands that reference paths outside ProjectDir and ensures
-// the working directory stays inside ProjectDir.
-func (t *BashTool) checkJail(p *bashParams) error {
-	if !t.Jail || t.ProjectDir == "" {
+// validateEscalationInput enforces the required-with pairing of the sandbox
+// escalation fields and rejects escalation when no sandbox is active.
+func (t *BashTool) validateEscalationInput(p *bashParams) error {
+	hasPerms := p.SandboxPermissions != ""
+	hasJust := p.Justification != ""
+	if hasPerms != hasJust {
+		if hasPerms {
+			return toolErr("bash", "invalid_escalation", "sandbox_permissions requires a justification")
+		}
+		return toolErr("bash", "invalid_escalation", "justification is only valid together with sandbox_permissions")
+	}
+	if !hasPerms {
+		return nil
+	}
+	if !t.confinementActive() {
+		return toolErr("bash", "escalation_unavailable", "sandbox_permissions is not available in this composition (no sandboxing executor to escalate)")
+	}
+	if strings.TrimSpace(p.Justification) == "" {
+		return toolErr("bash", "invalid_escalation", "invalid justification: expected a non-empty sentence")
+	}
+	if !sandbox.Mode(p.SandboxPermissions).IsValid() {
+		return toolErr("bash", "invalid_escalation", fmt.Sprintf("invalid escalation: unknown sandbox_permissions %q", p.SandboxPermissions))
+	}
+	return nil
+}
+
+// enforceConfinement applies project-directory confinement to the call. On a
+// jail violation it returns the denial — or, when the call requests a strictly
+// wider sandbox mode with a justification and the user approves through the
+// escalation approver, allows the exact command to run unconfined for this
+// call. Non-widening requests fail without prompting anyone; a nil approver
+// keeps the denial final (fail closed).
+func (t *BashTool) enforceConfinement(ctx context.Context, p *bashParams) error {
+	if !t.confinementActive() {
 		return nil
 	}
 	base, err := filepath.Abs(t.ProjectDir)
 	if err != nil {
 		return toolErr("bash", "jail_error", fmt.Sprintf("Cannot resolve project directory: %v", err))
 	}
-	if bashReferencesOutsidePath(p.Command, base) {
-		return &internal.ToolError{
-			Tool: "bash", Type: "jail_violation",
-			Detail:   fmt.Sprintf("Command references a path outside the project directory %q", base),
-			HintText: "Avoid using .., absolute paths outside the project, or cd commands that leave the codebase.",
+	workdirOK := p.Workdir == "" || pathUnderDir(p.Workdir, base)
+	if !bashReferencesOutsidePath(p.Command, base) && workdirOK {
+		// Confined and allowed. Escalation is never speculative: requesting
+		// wider permissions for a command that needs none is rejected.
+		if p.SandboxPermissions != "" {
+			return toolErr("bash", "escalation_unneeded", "this command does not require wider sandbox permissions — escalation is never speculative; drop sandbox_permissions and justification and retry")
 		}
-	}
-	if p.Workdir != "" && !pathUnderDir(p.Workdir, base) {
-		return &internal.ToolError{
-			Tool: "bash", Type: "jail_violation",
-			Detail:   fmt.Sprintf("Working directory %q is outside the project directory %q", p.Workdir, base),
-			HintText: "Use a workdir inside the project directory.",
+		if p.Workdir == "" {
+			p.Workdir = base
 		}
+		return nil
 	}
-	if p.Workdir == "" {
-		p.Workdir = base
+
+	// Jail denial. Without an escalation request the denial is final, with a
+	// marker steering the model to the escalation surface.
+	current := t.currentSandboxMode()
+	if p.SandboxPermissions == "" {
+		return t.sandboxDenialErr(base, current, true)
 	}
+
+	requested := sandbox.Mode(p.SandboxPermissions)
+	// Mode validity is enforced in validateEscalationInput; widening is the
+	// execution-time check.
+	if !requested.StrictlyWider(current) {
+		// Non-widening: fail without prompting anyone.
+		return toolErr("bash", "sandbox_not_widening", fmt.Sprintf("sandbox escalation to %q is not strictly wider than this call's current %q mode", requested, current))
+	}
+
+	approved, aerr := t.approveEscalation(ctx, p, current, requested)
+	if aerr != nil {
+		return aerr
+	}
+	if !approved {
+		// Rejected (or no approval path wired): the denial is final.
+		return t.sandboxDenialErr(base, current, false)
+	}
+	// Approved: the exact command runs unconfined for this call.
 	return nil
+}
+
+// approveEscalation routes an escalation request through the approval path.
+// A nil approver denies escalation (fail closed).
+func (t *BashTool) approveEscalation(ctx context.Context, p *bashParams, current, requested sandbox.Mode) (bool, error) {
+	if t.EscalationApprover == nil {
+		return false, nil
+	}
+	return t.EscalationApprover(ctx, sandbox.EscalationRequest{
+		ToolName:      "bash",
+		Command:       p.Command,
+		Workdir:       p.Workdir,
+		CurrentMode:   current,
+		RequestedMode: requested,
+		Justification: p.Justification,
+	})
+}
+
+// sandboxDenialErr builds the jail denial ToolError carrying the dsh-style
+// sandbox markers so the model sees the denial fact and, when escalation is
+// available, the exact retry guidance.
+func (t *BashTool) sandboxDenialErr(base string, mode sandbox.Mode, escalationAvailable bool) error {
+	detail := fmt.Sprintf("Command references a path outside the project directory %q\n[sandbox: file access denied under %s mode]", base, mode)
+	hint := "This command is not allowed by the project sandbox for security reasons."
+	if escalationAvailable {
+		hint += " [sandbox: escalation available — retry this exact command once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]"
+	}
+	return &internal.ToolError{
+		Tool: "bash", Type: "jail_violation",
+		Detail:   detail,
+		HintText: hint,
+	}
 }
 
 // buildMasks creates a list of secret values to mask in output.

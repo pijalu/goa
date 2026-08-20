@@ -32,7 +32,7 @@ func chromeScene(transcriptRows, chromeRows, w, h int, chromeTag string) *Scene 
 	}
 }
 
-// TestCompositor_ChromeGrowKeepsScrollback pins bugs.md "Slow performance on
+// TestCompositor_ChromeGrowKeepsScrollback pins "Slow performance on
 // very large conversations": a bottom-chrome height GROWTH (the editor
 // gaining a row on newline, a goal/steering bubble appearing) must be an
 // incremental frame — exactly one transcript row scrolls off and the window

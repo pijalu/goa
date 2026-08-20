@@ -291,7 +291,7 @@ func TestToolScheduler_AllSameCategory_RunsSerially(t *testing.T) {
 }
 
 // TestToolScheduler_SameCategory_PreservesRequestOrder verifies the ordering
-// guarantee behind the goal-tool-call ordering bug (bugs.md must-fix #4):
+// guarantee behind the goal-tool-call ordering bug (must-fix #4):
 // when multiple tool calls share a conflict category, the scheduler must not
 // merely serialize them (no overlap) but execute them strictly in the order
 // the model requested them. A stateful tool like the goal tool depends on this:
@@ -507,7 +507,7 @@ func TestToolScheduler_TaskTimeout_AllowsFastTools(t *testing.T) {
 	}
 }
 
-// TestToolScheduler_OnStart verifies the OnStart hook (bugs.md Bug W): it
+// TestToolScheduler_OnStart verifies the OnStart hook (Bug W): it
 // fires for tasks started immediately AND for queued tasks unblocked when a
 // conflicting task finishes — and only then, so the UI can flip "waiting" to
 // "elapsed" at the true execution start.

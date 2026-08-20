@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -193,9 +194,9 @@ func TestSkillRegistryListSource(t *testing.T) {
 
 // TestSkillRegistrySetDisabled verifies skills can be disabled via
 // configuration for ALL sources: disabled built-ins and disabled file-based
-// skills are never registered (prompt listing, banner, run_skill enum all read
-// from this registry). A disabled built-in can no longer be shadowed by a
-// same-named file skill — the explicit off wins.
+// skills are never registered (prompt listing, banner, <available_skills>
+// catalog all read from this registry). A disabled built-in can no longer be
+// shadowed by a same-named file skill — the explicit off wins.
 func TestSkillRegistrySetDisabled(t *testing.T) {
 	// Disabled embedded skill is gone.
 	reg := NewSkillRegistry(nil)
@@ -503,5 +504,293 @@ func TestSkillRegistryRequiresSubAgentForSubSkills(t *testing.T) {
 		if s.Name == "parent" && !s.RequiresSubAgent {
 			t.Error("expected parent to require sub-agent")
 		}
+	}
+}
+
+// TestParseSkillSticky verifies the sticky frontmatter flag parses.
+func TestParseSkillSticky(t *testing.T) {
+	content := `---
+name: sticky-skill
+description: A sticky knowledge skill
+inline: true
+category: knowledge
+sticky: true
+---
+
+Always-on instructions.`
+	skill := parseSkill("sticky-skill", content, "embedded", "")
+	if skill == nil {
+		t.Fatal("parseSkill returned nil")
+	}
+	if !skill.Meta.Sticky {
+		t.Error("Sticky should be true")
+	}
+}
+
+// TestParseSkillStickyDefaultFalse verifies sticky defaults to false.
+func TestParseSkillStickyDefaultFalse(t *testing.T) {
+	skill := parseSkill("plain", "---\nname: plain\ndescription: Plain\n---\nbody", "embedded", "")
+	if skill == nil {
+		t.Fatal("parseSkill returned nil")
+	}
+	if skill.Meta.Sticky {
+		t.Error("Sticky should default to false")
+	}
+}
+
+// TestSkillRegistryStickyOverrides verifies config-level sticky overrides
+// (skills.sticky force-on, skills.sticky_off force-off) applied at load:
+//   - sticky_off wins over sticky and over frontmatter (explicit off wins),
+//   - sticky turns a plain knowledge skill sticky,
+//   - FrontmatterSticky still reports the pristine frontmatter value so
+//     toggles can decide which list to write,
+//   - SkillSummary.Sticky reflects the effective state.
+func TestSkillRegistryStickyOverrides(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, frontmatter string) {
+		sd := filepath.Join(dir, name)
+		if err := os.MkdirAll(sd, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(frontmatter+"\nbody"), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	write("plain-k", "---\nname: plain-k\ndescription: P\ncategory: knowledge\n---")
+	write("fm-sticky", "---\nname: fm-sticky\ndescription: F\ncategory: knowledge\nsticky: true\n---")
+	write("forced-off", "---\nname: forced-off\ndescription: O\ncategory: knowledge\nsticky: true\n---")
+	write("off-wins", "---\nname: off-wins\ndescription: W\ncategory: knowledge\n---")
+	write("plain-action", "---\nname: plain-action\ndescription: A2\ncategory: action\n---")
+
+	reg := NewSkillRegistry([]string{dir})
+	reg.SetStickyOverrides([]string{"plain-k", "off-wins"}, []string{"forced-off", "off-wins"})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+
+	stickyNames := map[string]bool{}
+	for _, s := range reg.StickySkills() {
+		stickyNames[s.Meta.Name] = true
+	}
+	if !stickyNames["plain-k"] {
+		t.Error("plain-k should be sticky via skills.sticky override")
+	}
+	if !stickyNames["fm-sticky"] {
+		t.Error("fm-sticky should stay sticky from frontmatter")
+	}
+	if stickyNames["forced-off"] {
+		t.Error("forced-off should not be sticky (skills.sticky_off override)")
+	}
+	if stickyNames["off-wins"] {
+		t.Error("off-wins: sticky_off must win over sticky")
+	}
+	if stickyNames["plain-action"] {
+		t.Error("action skills are never sticky")
+	}
+
+	if fm, ok := reg.FrontmatterSticky("forced-off"); !ok || !fm {
+		t.Error("FrontmatterSticky(forced-off) = true, true; want the pristine frontmatter value")
+	}
+	if fm, ok := reg.FrontmatterSticky("plain-k"); !ok || fm {
+		t.Error("FrontmatterSticky(plain-k) = false, true; want the pristine frontmatter value")
+	}
+	if _, ok := reg.FrontmatterSticky("missing"); ok {
+		t.Error("FrontmatterSticky(missing) should report ok=false")
+	}
+
+	for _, s := range reg.List() {
+		switch s.Name {
+		case "plain-k", "fm-sticky":
+			if !s.Sticky {
+				t.Errorf("List() Sticky for %s should be true", s.Name)
+			}
+		case "forced-off", "off-wins", "plain-action":
+			if s.Sticky {
+				t.Errorf("List() Sticky for %s should be false", s.Name)
+			}
+		}
+	}
+}
+
+// TestSkillRegistryStickySkills verifies StickySkills returns only sticky
+// knowledge skills, sorted by name, excluding hidden and action skills.
+func TestSkillRegistryStickySkills(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, frontmatter string) {
+		sd := filepath.Join(dir, name)
+		if err := os.MkdirAll(sd, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(frontmatter+"\nbody of "+name), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	write("sticky-b", "---\nname: sticky-b\ndescription: B\nsticky: true\n---")
+	write("sticky-a", "---\nname: sticky-a\ndescription: A\nsticky: true\n---")
+	write("not-sticky", "---\nname: not-sticky\ndescription: N\n---")
+	write("sticky-hidden", "---\nname: sticky-hidden\ndescription: H\nsticky: true\nhidden: true\n---")
+	write("sticky-action", "---\nname: sticky-action\ndescription: X\nsticky: true\ncategory: action\n---")
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got := reg.StickySkills()
+	var names []string
+	for _, s := range got {
+		names = append(names, s.Meta.Name)
+	}
+	want := []string{"sticky-a", "sticky-b"}
+	if len(names) != len(want) {
+		t.Fatalf("StickySkills = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("StickySkills = %v, want sorted %v", names, want)
+		}
+	}
+}
+
+// TestSkillRegistryStickyBodies verifies StickyBodies renders the dedup key
+// blocks: stable, name-labelled, byte-identical across calls.
+func TestSkillRegistryStickyBodies(t *testing.T) {
+	dir := t.TempDir()
+	sd := filepath.Join(dir, "myskill")
+	if err := os.MkdirAll(sd, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte("---\nname: myskill\ndescription: M\nsticky: true\n---\n\nAlways do X."), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	bodies := reg.StickyBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("StickyBodies = %d blocks, want 1", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "myskill") || !strings.Contains(bodies[0], "Always do X.") {
+		t.Errorf("block missing name/body: %q", bodies[0])
+	}
+	again := reg.StickyBodies()
+	if again[0] != bodies[0] {
+		t.Errorf("StickyBodies not byte-stable across calls")
+	}
+}
+
+// TestParseSkillInvocationPolicy covers the P16 frontmatter policy:
+// model_invocable / user_invocable default to true when omitted, and
+// explicit false values are honored.
+func TestParseSkillInvocationPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		frontmatter string
+		wantModel   bool
+		wantUser    bool
+	}{
+		{name: "defaults both true", frontmatter: "name: s\ndescription: d", wantModel: true, wantUser: true},
+		{name: "model only false", frontmatter: "name: s\ndescription: d\nmodel_invocable: false", wantModel: false, wantUser: true},
+		{name: "user only false", frontmatter: "name: s\ndescription: d\nuser_invocable: false", wantModel: true, wantUser: false},
+		{name: "both false", frontmatter: "name: s\ndescription: d\nmodel_invocable: false\nuser_invocable: false", wantModel: false, wantUser: false},
+		{name: "explicit true", frontmatter: "name: s\ndescription: d\nmodel_invocable: true\nuser_invocable: true", wantModel: true, wantUser: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "---\n" + tt.frontmatter + "\n---\n\nbody"
+			skill := parseSkill("s", content, "embedded", "skills/s/SKILL.md")
+			if skill == nil {
+				t.Fatal("parseSkill returned nil")
+			}
+			if skill.Meta.ModelInvocable != tt.wantModel {
+				t.Errorf("ModelInvocable = %v, want %v", skill.Meta.ModelInvocable, tt.wantModel)
+			}
+			if skill.Meta.UserInvocable != tt.wantUser {
+				t.Errorf("UserInvocable = %v, want %v", skill.Meta.UserInvocable, tt.wantUser)
+			}
+			if skill.IsModelInvocable() != (tt.wantModel && tt.wantUser) {
+				t.Errorf("IsModelInvocable = %v, want %v (model predicate must require both flags)", skill.IsModelInvocable(), tt.wantModel && tt.wantUser)
+			}
+			if skill.IsUserInvocable() != tt.wantUser {
+				t.Errorf("IsUserInvocable = %v, want %v", skill.IsUserInvocable(), tt.wantUser)
+			}
+		})
+	}
+}
+
+// TestSkillInvocationPolicyPredicates verifies the surface predicates on
+// SkillSummary: IsModelInvocable requires BOTH flags (P16 acceptance — a
+// user_invocable:false skill never appears in the model's tool schema),
+// while IsUserInvocable reads only the user flag (model_invocable:false
+// skills still run from the UI).
+func TestSkillInvocationPolicyPredicates(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     bool
+		user      bool
+		wantModel bool
+		wantUser  bool
+	}{
+		{name: "both true", model: true, user: true, wantModel: true, wantUser: true},
+		{name: "model false user true", model: false, user: true, wantModel: false, wantUser: true},
+		{name: "model true user false", model: true, user: false, wantModel: false, wantUser: false},
+		{name: "both false", model: false, user: false, wantModel: false, wantUser: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := SkillSummary{ModelInvocable: tt.model, UserInvocable: tt.user}
+			if got := s.IsModelInvocable(); got != tt.wantModel {
+				t.Errorf("IsModelInvocable = %v, want %v", got, tt.wantModel)
+			}
+			if got := s.IsUserInvocable(); got != tt.wantUser {
+				t.Errorf("IsUserInvocable = %v, want %v", got, tt.wantUser)
+			}
+		})
+	}
+}
+
+// TestSkillRegistryListCarriesInvocationPolicy verifies List() surfaces the
+// parsed policy on summaries so model/user consumers can filter.
+func TestSkillRegistryListCarriesInvocationPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeInvPolicySkill(t, dir, "plain", "name: plain\ndescription: P")
+	writeInvPolicySkill(t, dir, "model-off", "name: model-off\ndescription: M\nmodel_invocable: false")
+	writeInvPolicySkill(t, dir, "user-off", "name: user-off\ndescription: U\nuser_invocable: false")
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got := map[string]SkillSummary{}
+	for _, s := range reg.List() {
+		got[s.Name] = s
+	}
+	if !got["plain"].IsModelInvocable() || !got["plain"].IsUserInvocable() {
+		t.Errorf("plain skill should be fully invocable: %+v", got["plain"])
+	}
+	if got["model-off"].IsModelInvocable() {
+		t.Errorf("model-off skill must not be model-invocable: %+v", got["model-off"])
+	}
+	if !got["model-off"].IsUserInvocable() {
+		t.Errorf("model-off skill must remain user-invocable: %+v", got["model-off"])
+	}
+	if got["user-off"].IsUserInvocable() {
+		t.Errorf("user-off skill must not be user-invocable: %+v", got["user-off"])
+	}
+	if got["user-off"].IsModelInvocable() {
+		t.Errorf("user-off skill must not be model-invocable (P16 acceptance): %+v", got["user-off"])
+	}
+}
+
+// writeInvPolicySkill creates a SKILL.md under dir/<name>/.
+func writeInvPolicySkill(t *testing.T, dir, name, frontmatter string) {
+	t.Helper()
+	sd := filepath.Join(dir, name)
+	if err := os.MkdirAll(sd, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := "---\n" + frontmatter + "\n---\n\nbody"
+	if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
 	}
 }

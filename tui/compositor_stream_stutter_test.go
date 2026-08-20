@@ -24,7 +24,7 @@ func stutterSentence(i int) string {
 }
 
 // TestCompositor_StreamingGrowth_NoStutter is the regression test for the TUI
-// streaming stutter bug (bugs.md): during a live stream the chat repainted the
+// streaming stutter bug: during a live stream the chat repainted the
 // same streamed text as duplicated/overlapping fragments, and glued re-wrapped
 // sentences onto one row. The stutter began only once the growing block crossed
 // the viewport bottom / a wrap boundary — i.e. a growth desync in the diff /

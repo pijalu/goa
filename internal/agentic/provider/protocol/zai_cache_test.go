@@ -27,7 +27,7 @@ func zaiModel() schema.Model {
 }
 
 // TestZaiPrefixStableAcrossTurns verifies the provider-caching invariant for
-// z.ai (bugs.md: GLM-5.2 quota burned rapidly): z.ai uses server-side
+// z.ai (GLM-5.2 quota burned rapidly): z.ai uses server-side
 // automatic prefix caching, so the request prefix (system prompt + prior
 // messages + tools) must serialize byte-identically across turns. A turn-2
 // body must contain turn-1's messages array verbatim as its prefix — any

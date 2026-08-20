@@ -20,7 +20,7 @@ import (
 // event stream through the production render path (header + chat viewport +
 // tooltracker + compositor) and asserts that after the header/mascot has
 // scrolled off screen, no emitted write EVER paints mascot bytes into the
-// visible window again — the bugs.md "Mascot/logo redraw" regression
+// visible window again — the Mascot/logo redraw:regression
 // (mascot + empty screen flashing mid-session during tool calls).
 //
 // The replay mirrors App.handleAgentOutputEvent's semantics: content events
@@ -33,6 +33,15 @@ import (
 // GOA_REPLAY_EVENTS at a full session export (e.g. the 91K-event frigolite
 // dump) for the deep pass.
 func TestSessionReplay_MascotNeverRedrawn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow integration replay in -short mode")
+	}
+	// The replay renders every one of 8000 events through the full compositor;
+	// under -race the synchronized renderer makes this exceed the 30s unit-test
+	// timeout. The test still runs in normal (non-race) and CI long modes.
+	if isRaceDetector() {
+		t.Skip("skipping under -race: 8000-event full-render replay exceeds 30s timeout (takes ~43s)")
+	}
 	path := os.Getenv("GOA_REPLAY_EVENTS")
 	if path == "" {
 		path = "testdata/export/events.jsonl"

@@ -28,6 +28,12 @@ type CompatFlags struct {
 	DropNullContent                             bool           `json:"drop_null_content,omitempty"`
 	ImageDetailSupported                        bool           `json:"image_detail_supported,omitempty"`
 	ImageURLScheme                              string         `json:"image_url_scheme,omitempty"`
+	// SupportsTemperature, when explicitly false, omits the temperature field
+	// from the request. Some endpoints (e.g. kimi-code) reject any temperature
+	// other than their fixed default with HTTP 400 "invalid temperature";
+	// omitting the field lets the endpoint apply its own default instead of
+	// erroring the whole turn. Nil means supported (standard behavior).
+	SupportsTemperature *bool `json:"supports_temperature,omitempty"`
 }
 
 // Defaults holds per-variant default request parameters.

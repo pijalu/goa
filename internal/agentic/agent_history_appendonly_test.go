@@ -12,7 +12,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// The append-only history contract (bugs.md prefix-cache contract): every
+// The append-only history contract (prefix-cache contract): every
 // provider request must carry the previous request's history verbatim, and
 // the ONLY permitted in-place change is compression tool_elision — which may
 // rewrite each already-sent tool call/result exactly once (raw payload →
@@ -107,11 +107,14 @@ func TestAgent_HistoryAppendOnlyExceptElision(t *testing.T) {
 		}},
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 2000,
-			Strategy:  CompressionToolElision,
-			// Trigger at 50% so elision fires repeatedly through the turn —
-			// multiple compression passes against a growing history is what
-			// stresses the append-only / elide-exactly-once invariant.
-			Thresholds: CompressionThresholds{TriggerPercent: 50},
+			// Soft/hard model: no trigger layer. Drive the SOFT layer with a
+			// 50% soft threshold + tool_elision strategy so elision fires
+			// repeatedly through the turn — multiple compression passes against
+			// a growing history is what stresses the append-only /
+			// elide-exactly-once invariant. Cold cache (probe reports no cache
+			// reads), so the soft gate does not defer.
+			Thresholds: CompressionThresholds{SoftPercent: 50},
+			Strategies: CompressionLayerStrategies{Soft: CompressionToolElision},
 		},
 	})
 

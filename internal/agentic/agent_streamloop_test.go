@@ -28,7 +28,7 @@ const streamLoopFPEvidence = "So the failure at line 196 is the \"3.5\" query (a
 	"3.4: a = 4 AND b BETWEEN 20 AND 80 -- Matches 80 rows\n AND\n c BETWEEN 150 AND 160 -- Matches 10 rows\n" +
 	"3.5: `a = 5 AND b BETWEEN 20 AND 80 -- Matches 1 row\n AND\n c BETWEEN 150 AND 160 -- Matches 10 rows"
 
-// Field fixtures for the count-based detector rework (bugs.md 2026-08-01):
+// Field fixtures for the count-based detector rework (2026-08-01):
 // a false positive on exploratory Option A/B/C thinking, and a false negative
 // on a ~90-copy paraphrase loop.
 
@@ -65,7 +65,7 @@ const streamLoopTPParaphrase = "No test.db cleanup in the preamble. Let me check
 	"Let me check the reopen pattern:"
 
 // TestStreamLoop_NoFalsePositiveOnExploratoryOptions is the FP regression
-// from the field (bugs.md): Option A/B/C analysis must never trip.
+// from the field: Option A/B/C analysis must never trip.
 func TestStreamLoop_NoFalsePositiveOnExploratoryOptions(t *testing.T) {
 	if streamLoopWouldDetect(streamLoopFPOptions, 3) {
 		t.Error("false positive: exploratory Option A/B/C analysis detected as a loop")
@@ -86,7 +86,7 @@ func TestStreamLoop_NoFalsePositiveOnExploratoryOptions(t *testing.T) {
 }
 
 // TestStreamLoop_ParaphraseLoopDetected is the TP regression from the field
-// (bugs.md): a high-count paraphrase loop MUST trip, even mid-stream.
+// a high-count paraphrase loop MUST trip, even mid-stream.
 func TestStreamLoop_ParaphraseLoopDetected(t *testing.T) {
 	if !streamLoopWouldDetect(streamLoopTPParaphrase, 3) {
 		t.Error("paraphrase loop not detected: ~13 drifting copies of the same intent")
@@ -223,7 +223,7 @@ func TestStreamLoop_ThresholdControlsDetection(t *testing.T) {
 
 // Three fuzzy copies of a long paragraph (small same-length variations, so no
 // two adjacent copies are byte-exact) must NOT trip: three similar paragraphs
-// can be analysis (the Option A/B/C false positive, bugs.md 2026-08-01) — the
+// can be analysis (the Option A/B/C false positive, 2026-08-01) — the
 // copy count, not the similarity, is the evidence. When the family keeps
 // growing, Detector B's shingle coverage confirms the loop.
 func TestStreamLoop_FuzzyCopiesNeedHighCount(t *testing.T) {
@@ -417,6 +417,91 @@ func TestCheckStreamLoop_MaxRepeatsHook(t *testing.T) {
 	a.checkStreamLoop(strings.Repeat(para+" ", 4))
 	if !a.streamLoopDetected {
 		t.Error("4 copies must trigger a reconfigured threshold of 3")
+	}
+}
+
+// The StreamLoopMinPeriod hook drives Detector A's minimum repeat-unit
+// length live: a 53-char unit (52 chars + joining space) repeated 3x trips
+// at the default floor of 50 but not at a reconfigured floor of 60.
+func TestCheckStreamLoop_MinPeriodHook(t *testing.T) {
+	unit := "the quick brown fox jumps over the lazy dog while go" // 52 chars
+	if len(unit) != 52 {
+		t.Fatalf("fixture unit must be 52 chars, got %d", len(unit))
+	}
+	text := unit + strings.Repeat(" "+unit, 5) // 6 copies: above the default maxRepeats of 5
+
+	minPeriod := 60
+	a := NewAgent(Config{
+		Model:               testModel(provider.ApiOpenAICompletions),
+		StreamLoopMinPeriod: func() int { return minPeriod },
+	})
+	a.checkStreamLoop(text)
+	if a.streamLoopDetected {
+		t.Error("53-char period must not trip a min period of 60")
+	}
+	minPeriod = 50
+	a.checkStreamLoop(text)
+	if !a.streamLoopDetected {
+		t.Error("53-char period must trip a min period of 50")
+	}
+}
+
+// TestCheckStreamLoop_MinPeriodDefaults: nil hook and out-of-range hook
+// values fall back to the built-in default of 50.
+func TestCheckStreamLoop_MinPeriodDefaults(t *testing.T) {
+	a := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
+	if got := a.streamLoopMinPeriod(); got != streamLoopExactMinPeriod {
+		t.Errorf("nil hook min period = %d, want default %d", got, streamLoopExactMinPeriod)
+	}
+	a.cfg.StreamLoopMinPeriod = func() int { return 0 }
+	if got := a.streamLoopMinPeriod(); got != streamLoopExactMinPeriod {
+		t.Errorf("0 hook min period = %d, want default %d", got, streamLoopExactMinPeriod)
+	}
+	a.cfg.StreamLoopMinPeriod = func() int { return 3 }
+	if got := a.streamLoopMinPeriod(); got != streamLoopExactMinPeriod {
+		t.Errorf("below-floor hook min period = %d, want default %d", got, streamLoopExactMinPeriod)
+	}
+	a.cfg.StreamLoopMinPeriod = func() int { return 42 }
+	if got := a.streamLoopMinPeriod(); got != 42 {
+		t.Errorf("hook min period = %d, want 42", got)
+	}
+}
+
+// TestStreamLoopScan_MinPeriodBelowFloor: a genuine micro unit (period 28,
+// distinct words) with only 4 copies is below Detector A's certainty bar at
+// every floor — periods ≥ minPeriod need max(maxRepeats, 3) copies, and the
+// configured floor only re-bands small periods, never large trailing
+// repeats (3 chained copies of any trailing 50 chars always fire).
+func TestStreamLoopScan_MinPeriodBelowFloor(t *testing.T) {
+	unit := distinctWordUnit(t, 24)
+	period := len(unit) + 1
+	text := streamLoopNormalize(unit + strings.Repeat(" "+unit, 3)) // 4 copies
+	if _, _, _, ok := streamLoopScan(text, 5, 50); ok {
+		t.Errorf("%d-char micro period x4 must not trip at maxRepeats 5", period)
+	}
+	// Lowering the floor does not rescue it either: 4 < 5 required copies.
+	if _, _, _, ok := streamLoopScan(text, 5, 20); ok {
+		t.Errorf("%d-char micro period x4 must not trip at maxRepeats 5 even at min period 20", period)
+	}
+	// But with 6 copies the lowered floor fires (6 >= 5 required).
+	text6 := streamLoopNormalize(unit + strings.Repeat(" "+unit, 5))
+	if _, _, _, ok := streamLoopScan(text6, 5, 20); !ok {
+		t.Errorf("%d-char period x6 must trip at maxRepeats 5 with min period 20", period)
+	}
+}
+
+// distinctWordUnit builds a space-joined unit of at least minLen chars from
+// pairwise-distinct words, so the only exact repeats in the joined copies
+// are the full-unit period and its multiples.
+func distinctWordUnit(t *testing.T, minLen int) string {
+	t.Helper()
+	words := make([]string, 0, minLen/4)
+	for i := 0; ; i++ {
+		words = append(words, fmt.Sprintf("w%dx", i))
+		unit := strings.Join(words, " ")
+		if len(unit) >= minLen {
+			return unit
+		}
 	}
 }
 
@@ -614,8 +699,106 @@ func TestStreamLoopStrike_MaxStrikesOneStopsImmediately(t *testing.T) {
 // Thinking-stall watchdog: a separate guard with its own flag, error message
 // and disable switch — it must never surface as "stream loop detected" and
 // must not be affected by the stream-loop toggle.
+//
+// Semantics (session export 2026-08-15, goa-export-20260815-015148.zip): the
+// watchdog must only fire when NO thinking deltas arrive for longer than the
+// stop threshold — a true stream gap/hang. A slow local model that streams
+// reasoning tokens continuously for longer than the threshold is making
+// progress and must never be stopped. The pre-fix code measured from the
+// first thinking delta of the phase, so a continuously-streaming locallm was
+// killed exactly thinking_stall_stop_seconds after its first delta despite
+// 2603 subsequent deltas ("No stall but marked as stall").
 // ---------------------------------------------------------------------------
 
+// waitForThinkingStall polls for the watchdog flag set by the stall timer
+// goroutine. The flag is written asynchronously, so a fixed sleep would be
+// racy (and -race-flagged without the mutex); polling keeps tests fast and
+// deterministic.
+func waitForThinkingStall(t *testing.T, a *Agent, want bool, timeout time.Duration, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		a.mu.Lock()
+		got := a.thinkingStalled
+		a.mu.Unlock()
+		if got == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	a.mu.Lock()
+	got := a.thinkingStalled
+	a.mu.Unlock()
+	t.Fatalf("%s: thinkingStalled = %v, want %v (after %v)", msg, got, want, timeout)
+}
+
+// The exported-incident regression: thinking deltas arriving continuously
+// (here faster than the stop threshold) for LONGER than the threshold must
+// never trip the watchdog — every delta is progress.
+func TestThinkingStall_ContinuousDeltasNotStalled(t *testing.T) {
+	const stop = 120 * time.Millisecond
+	a := NewAgent(Config{
+		Model:             testModel(provider.ApiOpenAICompletions),
+		Logger:            NewLogger(Error),
+		ThinkingStallWarn: 40 * time.Millisecond,
+		ThinkingStallStop: stop,
+	})
+	go func() {
+		for range a.Output {
+		}
+	}()
+
+	// Drip deltas every stop/4 for ~4x the stop threshold: cumulative
+	// thinking-phase duration far exceeds the budget, but no gap does.
+	for i := 0; i < 16; i++ {
+		a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "reasoning"})
+		a.mu.Lock()
+		stalled := a.thinkingStalled
+		a.mu.Unlock()
+		if stalled {
+			t.Fatalf("delta %d: thinkingStalled set while deltas were still arriving (gap < stop threshold)", i)
+		}
+		time.Sleep(stop / 4)
+	}
+	waitForThinkingStall(t, a, false, 2*stop, "active thinking stream longer than the stop threshold")
+}
+
+// A true hang: thinking deltas stop arriving for longer than the stop
+// threshold. No further deltas arrive to re-evaluate the per-delta check,
+// so the stall must be detected by the re-armed stall timer alone.
+func TestThinkingStall_NoDeltaGapStops(t *testing.T) {
+	const stop = 60 * time.Millisecond
+	a := NewAgent(Config{
+		Model:             testModel(provider.ApiOpenAICompletions),
+		Logger:            NewLogger(Error),
+		ThinkingStallStop: stop,
+	})
+	go func() {
+		for range a.Output {
+		}
+	}()
+
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "some reasoning"})
+	// No more deltas arrive — the timer must fire on its own.
+	waitForThinkingStall(t, a, true, 5*stop, "no thinking deltas for longer than the stop threshold")
+	a.mu.Lock()
+	elapsed := a.thinkingStallElapsed
+	a.mu.Unlock()
+	if elapsed < stop {
+		t.Errorf("thinkingStallElapsed = %v, want >= %v (the silence gap)", elapsed, stop)
+	}
+
+	done, _, err := a.handleStreamEvent(context.Background(), nil, provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "x"})
+	if !done || err == nil {
+		t.Fatalf("handleStreamEvent = (done=%v, err=%v), want done=true with a stall error", done, err)
+	}
+	if !strings.Contains(err.Error(), "thinking stalled") {
+		t.Errorf("stall error = %v, want it to mention 'thinking stalled'", err)
+	}
+}
+
+// The stall error must still be reported under its own name and must not
+// leak into the stream-loop guard.
 func TestThinkingStall_SeparateFlagAndError(t *testing.T) {
 	a := NewAgent(Config{
 		Model:             testModel(provider.ApiOpenAICompletions),
@@ -626,15 +809,20 @@ func TestThinkingStall_SeparateFlagAndError(t *testing.T) {
 		for range a.Output {
 		}
 	}()
-	// Simulate a model that has been emitting only reasoning tokens for far
-	// longer than the configured stop duration.
+	// Simulate a model whose reasoning stream has gone silent for far longer
+	// than the configured stop duration: the last delta arrived 10 minutes
+	// ago, so this new delta lands after a gap that exceeds the threshold.
 	a.thinkingStallStart = time.Now().Add(-10 * time.Minute)
 	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "still reasoning"})
 
-	if !a.thinkingStalled {
-		t.Fatal("thinkingStalled not set after an over-long reasoning-only phase")
+	a.mu.Lock()
+	stalled := a.thinkingStalled
+	looped := a.streamLoopDetected
+	a.mu.Unlock()
+	if !stalled {
+		t.Fatal("thinkingStalled not set after a reasoning-only silence gap beyond the stop threshold")
 	}
-	if a.streamLoopDetected {
+	if looped {
 		t.Error("streamLoopDetected set by the thinking-stall watchdog — the guards must stay separate")
 	}
 
@@ -648,6 +836,93 @@ func TestThinkingStall_SeparateFlagAndError(t *testing.T) {
 	if strings.Contains(err.Error(), "stream loop detected") {
 		t.Errorf("stall error = %v, must NOT be misreported as a stream loop", err)
 	}
+}
+
+// The warn progress event fires when thinking has been silent past the warn
+// threshold, and the stop timer then declares the stall after the stop
+// threshold of silence. Once stalled the decision is final: a late content
+// delta disarms the timers (forward progress) but must NOT resurrect a turn
+// that is already being stopped with the stall error.
+func TestThinkingStall_WarnOnSilenceThenStallIsFinal(t *testing.T) {
+	const warn = 30 * time.Millisecond
+	const stop = 90 * time.Millisecond
+	a := NewAgent(Config{
+		Model:             testModel(provider.ApiOpenAICompletions),
+		Logger:            NewLogger(Error),
+		ThinkingStallWarn: warn,
+		ThinkingStallStop: stop,
+	})
+	progress := make(chan string, 8)
+	a.AddObserver(OutputObserverFunc(func(ev OutputEvent) {
+		if ev.Type == EventProgress {
+			select {
+			case progress <- ev.Text:
+			default:
+			}
+		}
+	}))
+	go func() {
+		for range a.Output {
+		}
+	}()
+
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "reasoning"})
+	select {
+	case text := <-progress:
+		if !strings.Contains(text, "without producing output") {
+			t.Errorf("warn progress text = %q, want it to mention missing output", text)
+		}
+		// warn emitted after the warn threshold of silence
+	case <-time.After(5 * stop):
+		t.Fatal("no warn progress event after thinking silence exceeded the warn threshold")
+	}
+
+	waitForThinkingStall(t, a, true, 5*stop, "thinking silence past the stop threshold")
+
+	// A content delta arrives after the stall was declared: forward progress
+	// disarms the timers and clears the phase clock, but the stall flag is
+	// sticky — the turn is already being stopped with the stall error.
+	a.handleTextDelta(provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "answer"})
+	a.mu.Lock()
+	start := a.thinkingStallStart
+	stalled := a.thinkingStalled
+	a.mu.Unlock()
+	if !start.IsZero() {
+		t.Error("thinkingStallStart not cleared by content progress")
+	}
+	if !stalled {
+		t.Error("thinkingStalled must stay set once declared — the stall stop is final")
+	}
+	// The stall error still surfaces on the next handled event.
+	done, _, err := a.handleStreamEvent(context.Background(), nil, provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "x"})
+	if !done || err == nil || !strings.Contains(err.Error(), "thinking stalled") {
+		t.Errorf("handleStreamEvent = (done=%v, err=%v), want done=true with a 'thinking stalled' error", done, err)
+	}
+}
+
+// Stall timers must not survive a stream round: after resetStreamRoundState
+// a fresh reasoning phase starts with a clean clock.
+func TestThinkingStall_TimersStopAtRoundBoundary(t *testing.T) {
+	const stop = 60 * time.Millisecond
+	a := NewAgent(Config{
+		Model:             testModel(provider.ApiOpenAICompletions),
+		Logger:            NewLogger(Error),
+		ThinkingStallStop: stop,
+	})
+	go func() {
+		for range a.Output {
+		}
+	}()
+
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "reasoning"})
+	a.resetStreamRoundState()
+	a.mu.Lock()
+	start := a.thinkingStallStart
+	a.mu.Unlock()
+	if !start.IsZero() {
+		t.Fatal("thinkingStallStart must be cleared at the round boundary")
+	}
+	waitForThinkingStall(t, a, false, 3*stop, "stale stall timer after round reset")
 }
 
 func TestThinkingStall_DisabledByHook(t *testing.T) {
@@ -664,20 +939,29 @@ func TestThinkingStall_DisabledByHook(t *testing.T) {
 	}()
 	a.thinkingStallStart = time.Now().Add(-10 * time.Minute)
 	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "still reasoning"})
-	if a.thinkingStalled {
+	a.mu.Lock()
+	stalled := a.thinkingStalled
+	a.mu.Unlock()
+	if stalled {
 		t.Fatal("thinkingStalled set while the watchdog was disabled")
 	}
+	// No timer may be armed while disabled, so nothing can fire later either.
+	waitForThinkingStall(t, a, false, 5*50*time.Millisecond, "watchdog disabled")
 
-	// Re-enable mid-stream: the same over-long phase must now stop.
+	// Re-enable mid-stream: the same over-long silence gap must now stop.
 	disabled = false
+	a.thinkingStallStart = time.Now().Add(-10 * time.Minute)
 	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "more reasoning"})
-	if !a.thinkingStalled {
-		t.Error("thinkingStalled not set after re-enabling the watchdog")
+	a.mu.Lock()
+	stalled = a.thinkingStalled
+	a.mu.Unlock()
+	if !stalled {
+		t.Error("thinkingStalled not set after re-enabling the watchdog on an over-long silence gap")
 	}
 }
 
 // TestStreamLoop_TUIRepetitionSampleDetected is the exact flood from the
-// bugs.md "TUI shows unexpected repetition on normal messages" entry: the
+// TUI shows unexpected repetition on normal messages:entry: the
 // model repeated one accusation with walking casing/punctuation variants
 // ("is never called —" / "is NEVER called!" / "is NEVER CALLED."). After
 // case folding and punctuation stripping the copies are byte-exact, so the
@@ -705,7 +989,7 @@ func TestStreamLoop_TUIRepetitionSampleDetected(t *testing.T) {
 }
 
 // TestStreamLoop_NoFalsePositiveOnStructuredHeaders is the false-positive
-// validation for the runaway-loop visibility bug (bugs.md 2026-08-03): a
+// validation for the runaway-loop visibility bug (2026-08-03): a
 // long structured report whose sections share markdown headers and table
 // separators — but whose per-section content is genuinely varied — is
 // legitimate near-repetition, not a loop, and must never trip the detector

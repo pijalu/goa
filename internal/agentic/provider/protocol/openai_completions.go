@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -17,6 +18,15 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/agentic/provider/transport"
 )
+
+// protocolLog emits protocol-level diagnostics (P21 default-materialization
+// markers: which request fields came from defaults instead of an explicit
+// value, dsh's adapterDefaults reporting). It defaults to stderr like the
+// agentic logger; tests can capture output via setProtocolLogOutput.
+var protocolLog = log.New(os.Stderr, "goa/protocol: ", log.LstdFlags)
+
+// setProtocolLogOutput redirects the package diagnostic logger. Test-only.
+func setProtocolLogOutput(w io.Writer) { protocolLog.SetOutput(w) }
 
 func init() {
 	Register(&openAICompletions{})
@@ -77,6 +87,9 @@ type openAICompletionsCompat struct {
 	SendSessionAffinityHeaders                  bool
 	SupportsLongCacheRetention                  bool
 	ToolResultAsUser                            bool
+	// SupportsTemperature false omits the temperature field (kimi-code
+	// rejects any value but its fixed default with HTTP 400).
+	SupportsTemperature bool
 }
 
 func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) openAICompletionsCompat {
@@ -86,7 +99,7 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 		CacheControlFormat: "",
 		// DeepSeek-class models (thinking mode) 400 when reasoning_content
 		// is not passed back. The variant profile carries the requirement
-		// (e.g. opencode.json) — it must reach the serializer (bugs.md
+		// (e.g. opencode.json) — it must reach the serializer
 		// thinking-mode 400).
 		RequiresReasoningContentOnAssistantMessages: profile.Compat.RequiresReasoningContentOnAssistantMessages,
 	}
@@ -95,6 +108,12 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 	}
 	if profile.Compat.SupportsStore != nil {
 		c.SupportsStore = *profile.Compat.SupportsStore
+	}
+	// Temperature is supported unless the variant profile explicitly disables
+	// it (nil = supported, the standard behavior).
+	c.SupportsTemperature = true
+	if profile.Compat.SupportsTemperature != nil {
+		c.SupportsTemperature = *profile.Compat.SupportsTemperature
 	}
 	if profile.CachePolicy.Mode != "" && profile.CachePolicy.Mode != schema.CacheModeNone {
 		c.CacheControlFormat = "anthropic"
@@ -105,6 +124,21 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 // ---------------------------------------------------------------------------
 // Request building
 // ---------------------------------------------------------------------------
+
+// applyToolChoice attaches the tools array to the body and forces tool use
+// when ToolChoice is set (e.g., "required" for workflow agents). A NoTools
+// context (P7 final-step collapse) omits the tools array and forces
+// tool_choice "none" so the model must answer text-only.
+func applyToolChoice(body map[string]any, tools []map[string]any, toolChoice string, noTools bool) {
+	if noTools {
+		body["tool_choice"] = "none"
+		return
+	}
+	body["tools"] = tools
+	if toolChoice != "" {
+		body["tool_choice"] = toolChoice
+	}
+}
 
 func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.StreamOptions, profile schema.VariantProfile, compat openAICompletionsCompat) map[string]any {
 	messages := convertMessages(model, ctx.Messages, ctx.SystemPrompt, compat)
@@ -123,20 +157,35 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 			"include_usage": true,
 		},
 	}
-	if opts.MaxTokens > 0 {
-		body[compat.MaxTokensField] = opts.MaxTokens
+	// P21 (DS2): the wire request must always be explicit and reconstructable.
+	// An explicit request value always wins; when the request omits max_tokens,
+	// the provider catalog's default_max_tokens is materialized (DeepSeek
+	// 256000 — dsh adapter DEFAULT_MAX_TOKENS). model.MaxTokens (the models.dev
+	// output limit) is deliberately not used here: it is a model hard limit,
+	// not an adapter default cap (dsh llm README: "defaultMaxTokens is an
+	// adapter-configured per-request output cap, not a model hard limit").
+	maxTokens, defaultSource := resolveRequestMaxTokens(opts, model)
+	if maxTokens > 0 {
+		body[compat.MaxTokensField] = maxTokens
 	}
-	if opts.Temperature != nil {
+	if defaultSource != "" {
+		protocolLog.Printf("field max_tokens came from %s default: %d (model=%s provider=%s)",
+			defaultSource, maxTokens, model.ID, model.Provider)
+	}
+	// Omit temperature when the provider does not support it (e.g. kimi-code
+	// rejects any value but its fixed default with HTTP 400 "invalid
+	// temperature"): send nothing and let the endpoint apply its default.
+	if opts.Temperature != nil && compat.SupportsTemperature {
 		body["temperature"] = *opts.Temperature
 	}
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
 	if len(tools) > 0 {
-		body["tools"] = tools
-		if opts.ToolChoice != "" {
-			body["tool_choice"] = opts.ToolChoice
-		}
+		applyToolChoice(body, tools, opts.ToolChoice, ctx.NoTools)
+	} else if ctx.NoTools {
+		// Final-step collapse (P7): the model must answer text-only.
+		body["tool_choice"] = "none"
 	}
 	if compat.SupportsStore {
 		body["store"] = false
@@ -152,6 +201,22 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 	return body
 }
 
+// resolveRequestMaxTokens returns the output-token cap to send on the wire
+// and the source it was resolved from. An explicit request value always wins
+// (dsh: "an explicit cap wins"); when absent, the per-provider catalog
+// default_max_tokens is materialized so the wire request is explicit and
+// reconstructable (P21, DS2). The returned source is "" for an explicit
+// value; the caller omits the field when the returned value is 0.
+func resolveRequestMaxTokens(opts schema.StreamOptions, model schema.Model) (int, string) {
+	if opts.MaxTokens > 0 {
+		return opts.MaxTokens, ""
+	}
+	if def := schema.LookupProviderDef(model.Provider); def != nil && def.DefaultMaxTokens > 0 {
+		return def.DefaultMaxTokens, "provider"
+	}
+	return 0, ""
+}
+
 func applyThinking(body map[string]any, model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile, compat openAICompletionsCompat) {
 	format := compat.ThinkingFormat
 	if format == "" {
@@ -159,6 +224,15 @@ func applyThinking(body map[string]any, model schema.Model, opts schema.StreamOp
 	}
 	if !model.Reasoning && format == "" {
 		return
+	}
+	// P13 (CA2/CA3): purpose=session-title forces thinking off — mirrors the
+	// DS-thinking lock (dsh llm-deepseek README: session-title "forces
+	// thinking disabled and omits the already-resolved effort, reserving its
+	// bounded output for visible title text"). The explicit disabled body is
+	// sent on formats that support one so a server-side sticky thinking
+	// default cannot leak through.
+	if opts.Purpose == schema.PurposeSessionTitle {
+		opts.Reasoning = schema.ThinkingOff
 	}
 	level := resolveThinkingLevel(model, opts, profile)
 	// An explicit "off" disables thinking on the server (pi does the same for
@@ -255,13 +329,15 @@ func imagePathToDataURL(path string) string {
 func convertAssistantMessage(msg schema.Message, compat openAICompletionsCompat) map[string]any {
 	result := map[string]any{"role": "assistant"}
 	var textContent string
+	var thinking string
 	var toolCalls []map[string]any
 	for _, block := range msg.Content {
 		switch block.Type {
 		case schema.ContentBlockText:
 			textContent += block.Text
 		case schema.ContentBlockThinking:
-			result["reasoning_content"] = block.Thinking
+			// DeepSeek-style reasoning; emitted below on tool-call turns only.
+			thinking += block.Thinking
 		case schema.ContentBlockToolCall:
 			toolCalls = append(toolCalls, map[string]any{
 				"id":   block.ToolCallID,
@@ -280,13 +356,17 @@ func convertAssistantMessage(msg schema.Message, compat openAICompletionsCompat)
 		} else {
 			result["content"] = textContent
 		}
-	} else {
-		result["content"] = textContent
-	}
-	if compat.RequiresReasoningContentOnAssistantMessages {
-		if _, ok := result["reasoning_content"]; !ok {
+		// DeepSeek passback rule (dsh serialize.ts): reasoning_content must
+		// return on tool-call turns; it is ignored on plain turns, so drop it
+		// there to save tokens. The flag forces the key (empty when the turn
+		// carries no thinking) — the API 400s without it in thinking mode.
+		if thinking != "" {
+			result["reasoning_content"] = thinking
+		} else if compat.RequiresReasoningContentOnAssistantMessages {
 			result["reasoning_content"] = ""
 		}
+	} else {
+		result["content"] = textContent
 	}
 	return result
 }
@@ -397,7 +477,7 @@ func addOpenAICacheControlToLastTool(tools []map[string]any, cc *cacheControl) {
 // automatic longest-prefix caching, and a marker that jumps to the new last
 // message every round rewrites that history message's bytes, killing the
 // prefix match at that point and forcing a full re-parse of everything
-// after it (bugs.md "cache-hit-first": caught in the LM Studio request
+// after it (cache-hit-first: caught in the LM Studio request
 // capture — identical message text, only the marker moved). Pinned to the
 // opening turn, every request stays a strict append of the previous one.
 func addOpenAICacheControlToFirstConversationMessage(messages []map[string]any, cc *cacheControl) {
@@ -939,14 +1019,21 @@ func zaiThinking(level string) map[string]any {
 
 // thinkingDisabledBodyForFormat returns the explicit "thinking off" body for
 // formats that support one. Formats without a disable signal return nil (the
-// body is simply omitted, as before).
+// body is simply omitted, as before). DeepSeek-compat formats send the
+// explicit disabled signal because DeepSeek defaults thinking ON for
+// thinking-capable models — omitting the body would leave the server-side
+// sticky default in effect (dsh wire-format note: "The adapter-owned off
+// effort maps to thinking: {type: 'disabled'}").
 func thinkingDisabledBodyForFormat(format string) map[string]any {
 	switch format {
 	case "zai":
 		return map[string]any{"thinking": map[string]any{"type": "disabled"}}
+	case "deepseek", "string-thinking":
+		return map[string]any{"thinking": map[string]any{"type": "disabled"}}
 	}
 	return nil
 }
+
 func togetherThinking(level string) map[string]any {
 	body := map[string]any{"reasoning": map[string]any{"enabled": true}}
 	if level != "" {

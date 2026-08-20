@@ -5,6 +5,8 @@
 package internal
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -125,4 +127,151 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// resetAnonymousUserIDMemo clears the process-lifetime memo so tests using
+// fresh temp homes start from an unpolluted cache.
+func resetAnonymousUserIDMemo() {
+	anonymousUserIDMu.Lock()
+	defer anonymousUserIDMu.Unlock()
+	anonymousUserIDMemo = map[string]string{}
+}
+
+func TestAnonymousUserID_PersistsAndIsStable(t *testing.T) {
+	resetAnonymousUserIDMemo()
+	home := t.TempDir()
+	SetGoaHome(home)
+	defer SetGoaHome("")
+
+	id1 := AnonymousUserID()
+	id2 := AnonymousUserID()
+
+	if id1 == "" {
+		t.Fatal("AnonymousUserID returned empty string")
+	}
+	if id1 != id2 {
+		t.Fatalf("AnonymousUserID not memoized: %q != %q", id1, id2)
+	}
+	if !isUUIDv4(id1) {
+		t.Fatalf("AnonymousUserID %q is not a UUID v4", id1)
+	}
+
+	// Persisted as a bare line under the goa home.
+	b, err := os.ReadFile(filepath.Join(home, ".goa", anonymousUserIDFile))
+	if err != nil {
+		t.Fatalf("identity file not persisted: %v", err)
+	}
+	got := strings.TrimSpace(string(b))
+	if got != id1 {
+		t.Fatalf("persisted id %q != returned id %q", got, id1)
+	}
+}
+
+func TestAnonymousUserID_AdoptsExistingFile(t *testing.T) {
+	resetAnonymousUserIDMemo()
+	home := t.TempDir()
+	SetGoaHome(home)
+	defer SetGoaHome("")
+
+	existing := uuidV4()
+	dir := filepath.Join(home, ".goa")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, anonymousUserIDFile), []byte(existing+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := AnonymousUserID(); got != existing {
+		t.Fatalf("AnonymousUserID = %q, want persisted %q", got, existing)
+	}
+}
+
+func TestAnonymousUserID_ReplacesCorruptFile(t *testing.T) {
+	resetAnonymousUserIDMemo()
+	home := t.TempDir()
+	SetGoaHome(home)
+	defer SetGoaHome("")
+
+	dir := filepath.Join(home, ".goa")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := "not-a-uuid\n"
+	if err := os.WriteFile(filepath.Join(dir, anonymousUserIDFile), []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	id := AnonymousUserID()
+	if !isUUIDv4(id) {
+		t.Fatalf("AnonymousUserID returned %q after corrupt file, want fresh UUID v4", id)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, anonymousUserIDFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(b)); got != id {
+		t.Fatalf("corrupt file not replaced: persisted %q != %q", got, id)
+	}
+}
+
+func TestAnonymousUserID_DifferentHomesDifferentIdentities(t *testing.T) {
+	resetAnonymousUserIDMemo()
+	homeA, homeB := t.TempDir(), t.TempDir()
+
+	SetGoaHome(homeA)
+	idA := AnonymousUserID()
+
+	SetGoaHome(homeB)
+	idB := AnonymousUserID()
+
+	SetGoaHome("")
+	resetAnonymousUserIDMemo()
+
+	if idA == idB {
+		t.Fatalf("distinct homes must not share an identity: %q", idA)
+	}
+}
+
+func TestAnonymousUserID_NoHomeIsProcessLocal(t *testing.T) {
+	resetAnonymousUserIDMemo()
+
+	// A home that cannot be created: the parent path is a regular file, so
+	// MkdirAll fails and the function must fall back to a process-local UUID
+	// without panicking.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unwritable := filepath.Join(blocker, "home")
+
+	id := loadOrCreateAnonymousUserID(unwritable)
+	if !isUUIDv4(id) {
+		t.Fatalf("process-local fallback %q is not a UUID v4", id)
+	}
+	// The unwritable home must not gain an identity file: stat fails either
+	// with ENOENT (never created) or ENOTDIR (a parent component is a file).
+	if _, err := os.Stat(filepath.Join(unwritable, anonymousUserIDFile)); err == nil {
+		t.Fatalf("unwritable home must not create the identity file")
+	}
+}
+
+func TestIsUUIDv4(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"123e4567-e89b-42d3-a456-426614174000", true},
+		{"", false},
+		{"123e4567-e89b-42d3-a456-42661417400", false},   // too short
+		{"123e4567e89b42d3a456426614174000", false},      // no dashes
+		{"123e4567-e89b-52d3-a456-426614174000", false},  // version 5
+		{"123e4567-e89b-42d3-g456-426614174000", false},  // non-hex
+		{"123e4567-e89b-42d3-a456-4266141740000", false}, // too long
+	}
+	for _, tc := range cases {
+		if got := isUUIDv4(tc.in); got != tc.want {
+			t.Errorf("isUUIDv4(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
 }

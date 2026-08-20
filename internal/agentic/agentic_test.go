@@ -363,7 +363,7 @@ func TestStreamLoop_NoFalsePositiveOnSimilarSentences(t *testing.T) {
 // streamLoopDetected for the given buffer (exercises the production scan)
 // with the given repeat threshold.
 func streamLoopWouldDetect(text string, maxRepeats int) bool {
-	_, _, _, ok := streamLoopScan(streamLoopNormalize(text), maxRepeats)
+	_, _, _, ok := streamLoopScan(streamLoopNormalize(text), maxRepeats, streamLoopExactMinPeriod)
 	return ok
 }
 

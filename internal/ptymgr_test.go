@@ -8,6 +8,7 @@ package internal
 
 import (
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -326,5 +327,201 @@ func TestPTYManager_Start_LargeOutput_ReadsAll(t *testing.T) {
 	lines := strings.Count(output, "line")
 	if lines < 90 {
 		t.Errorf("Expected at least 90 lines, got %d. Output length: %d", lines, len(output))
+	}
+}
+
+// TestPTYManager_ReadRange_Paging verifies the dsh read offset/count paging
+// semantics on a controlled buffer: count limits the page size and offset
+// pages back from the newest chunk.
+func TestPTYManager_ReadRange_Paging(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	s, err := mgr.Start("paging", "sleep 60", 80, 24)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Seed the buffer with known chunks, oldest first.
+	for _, chunk := range []string{"chunkA\n", "chunkB\n", "chunkC\n"} {
+		s.Buffer.Write(chunk)
+	}
+
+	cases := []struct {
+		name          string
+		offset, count int
+		want          string
+	}{
+		{"defaults", 0, 0, "chunkA\nchunkB\nchunkC\n"},
+		{"count 2 newest", 0, 2, "chunkB\nchunkC\n"},
+		{"offset 1 count 1", 1, 1, "chunkB\n"},
+		{"offset 2 count 1", 2, 1, "chunkA\n"},
+		{"offset beyond buffer", 10, 1, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mgr.ReadRange("paging", tc.offset, tc.count)
+			if err != nil {
+				t.Fatalf("ReadRange: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("ReadRange(offset=%d, count=%d) = %q, want %q", tc.offset, tc.count, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPTYManager_OpenShell_CreatesPersistentShell(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	s, err := mgr.OpenShell("shell1", "", 80, 24)
+	if err != nil {
+		t.Fatalf("OpenShell: %v", err)
+	}
+	if s == nil {
+		t.Fatal("OpenShell returned nil session")
+	}
+	if s.Command != "bash" {
+		t.Errorf("session.Command = %q, want %q", s.Command, "bash")
+	}
+	if !s.IsRunning() {
+		t.Error("shell should be running")
+	}
+
+	// The persistent shell survives across calls: write a command, wait for
+	// the echo+output, and read it back.
+	if err := mgr.Write("shell1", "echo SHELL_ALIVE\r"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	out, err := mgr.Send("shell1", "echo PERSISTENT_OK\r", 3*time.Second)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !strings.Contains(out, "PERSISTENT_OK") {
+		t.Errorf("Send output should contain command output, got: %q", out)
+	}
+}
+
+func TestPTYManager_OpenShell_SetsWorkingDir(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	dir := t.TempDir()
+	_, err := mgr.OpenShell("cwd1", dir, 80, 24)
+	if err != nil {
+		t.Fatalf("OpenShell: %v", err)
+	}
+
+	out, err := mgr.Send("cwd1", "pwd\r", 3*time.Second)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !strings.Contains(out, dir) {
+		t.Errorf("pwd output should contain %q, got: %q", dir, out)
+	}
+}
+
+func TestPTYManager_OpenShell_DuplicateID_ReturnsError(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	if _, err := mgr.OpenShell("dup", "", 80, 24); err != nil {
+		t.Fatalf("First OpenShell: %v", err)
+	}
+	if _, err := mgr.OpenShell("dup", "", 80, 24); err == nil {
+		t.Error("Duplicate OpenShell ID should return error")
+	}
+}
+
+func TestPTYManager_Send_ToStoppedSession_ReturnsError(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	mgr.OpenShell("stopped", "", 80, 24)
+	if err := mgr.Stop("stopped"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := mgr.Send("stopped", "echo hi\r", time.Second); err == nil {
+		t.Error("Send to stopped session should return error")
+	}
+}
+
+func TestPTYManager_Signal_InterruptsForegroundJob(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	mgr.OpenShell("sig", "", 80, 24)
+	// Launch a long-running foreground job; send returns once the echo lands.
+	if _, err := mgr.Send("sig", "sleep 30\r", time.Second); err != nil {
+		t.Fatalf("Send sleep: %v", err)
+	}
+	if err := mgr.Signal("sig", syscall.SIGINT); err != nil {
+		t.Fatalf("Signal: %v", err)
+	}
+	// The shell should still be alive after interrupting the foreground job.
+	time.Sleep(200 * time.Millisecond)
+	if !sessionExists(mgr, "sig") {
+		t.Error("shell session should still exist after SIGINT to a job")
+	}
+}
+
+func TestPTYManager_Signal_Nonexistent_ReturnsError(t *testing.T) {
+	mgr := NewPTYManager()
+	if err := mgr.Signal("no-such", syscall.SIGINT); err == nil {
+		t.Error("Signal to nonexistent session should return error")
+	}
+}
+
+func TestPTYManager_Signal_ToStoppedSession_ReturnsError(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	mgr.OpenShell("sigstop", "", 80, 24)
+	mgr.Stop("sigstop")
+	if err := mgr.Signal("sigstop", syscall.SIGINT); err == nil {
+		t.Error("Signal to stopped session should return error")
+	}
+}
+
+// sessionExists reports whether a session id is currently listed.
+func sessionExists(mgr *PTYManager, id string) bool {
+	for _, s := range mgr.List() {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPTYManager_Send_NoWait_ReturnsImmediately(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	mgr.OpenShell("nowait", "", 80, 24)
+	out, err := mgr.Send("nowait", "echo NO_WAIT\r", 0)
+	if err != nil {
+		t.Fatalf("Send with zero wait: %v", err)
+	}
+	if out != "" {
+		t.Errorf("Send with zero wait should return no output, got: %q", out)
+	}
+}
+
+func TestPTYManager_Stop_KillsBackgroundJobs(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	mgr.OpenShell("tree", "", 80, 24)
+	// Start a background job that outlives the shell; close must reap it.
+	if _, err := mgr.Send("tree", "sleep 30 &\r", 2*time.Second); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if err := mgr.Stop("tree"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if sessionExists(mgr, "tree") {
+		t.Error("session should be removed after Stop")
 	}
 }

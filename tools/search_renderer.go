@@ -86,7 +86,7 @@ func (r *SearchRenderer) RenderResult(output string, ctx tuirender.RenderContext
 // The tool emits the pattern Go-quoted (%q), so the extracted token is passed
 // through strconv.Unquote to restore the original bytes — otherwise a pattern
 // containing a backslash (e.g. a regex escape like `SelectOption\(`) renders
-// with a doubled backslash (bugs.md item J).
+// with a doubled backslash (item J).
 func findPatternInHeader(header string) string {
 	patternRe := regexp.MustCompile(`\[search:\s*("(?:[^"\\]|\\.)*"|[^]\s]+)\s*\]`)
 	m := patternRe.FindStringSubmatch(header)

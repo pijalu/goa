@@ -21,6 +21,7 @@ func (a *Agent) computeContextStats() ContextStats {
 	}
 
 	estimated := a.estimateContextTokensLocked()
+	projected := a.projectedContextTokensLocked()
 
 	// The UI should always reflect the model's actual capacity. Prefer the
 	// runtime-refreshed context window, then the configured model window, and
@@ -41,13 +42,14 @@ func (a *Agent) computeContextStats() ContextStats {
 
 	usagePercent := 0
 	if maxTokens > 0 {
-		usagePercent = estimated * 100 / maxTokens
+		usagePercent = projected * 100 / maxTokens
 	}
 
 	return ContextStats{
 		Messages:        len(a.history),
 		Characters:      chars,
 		EstimatedTokens: estimated,
+		ProjectedTokens: projected,
 		MaxTokens:       maxTokens,
 		UsagePercent:    usagePercent,
 		AutoMax:         autoMax,
@@ -88,6 +90,13 @@ const (
 // history-shrinking operation (compaction, ceiling enforcement, Clear,
 // SetHistory) invalidates the recording via invalidateContextUsageLocked.
 //
+// This is the CONSERVATIVE full-surface figure for reactive safety nets
+// (ceiling enforcement, context-length recovery) and cost reporting. The
+// projected next-request figure — the anchored provider count plus only the
+// surface delta since it was taken — is computed separately by
+// projectedContextTokensLocked and drives proactive compression and the
+// occupancy displays (CX8/P20).
+//
 // The caller must hold a.mu.
 func (a *Agent) estimateContextTokensLocked() int {
 	estimated := estimateTokensFromHistory(a.history) + a.fixedCostTokens()
@@ -101,6 +110,29 @@ func (a *Agent) estimateContextTokensLocked() int {
 		}
 	}
 	return estimated
+}
+
+// projectedContextTokensLocked returns the projected cost of the NEXT
+// request's prompt (dsh token-meter `projectedTokens`): the last
+// provider-reported gross prompt size (the anchor) plus the heuristic reprice
+// of every message appended since that request. Only the delta is estimated —
+// the anchor carries the provider's exact count for the surface it covered —
+// so the projection reacts the moment content lands (e.g. a large tool result
+// appended to history) instead of waiting for the next request's usage line.
+// Clamped at zero. Falls back to the full heuristic estimate when no provider
+// usage has been recorded. The caller must hold a.mu.
+func (a *Agent) projectedContextTokensLocked() int {
+	if a.lastGrossInputTokens <= 0 {
+		return estimateTokensFromHistory(a.history) + a.fixedCostTokens()
+	}
+	projected := a.lastGrossInputTokens
+	if a.lastUsageHistoryLen < len(a.history) {
+		projected += estimateTokensFromHistory(a.history[a.lastUsageHistoryLen:])
+	}
+	if projected < 0 {
+		return 0
+	}
+	return projected
 }
 
 // recordContextUsageLocked stores the provider-reported occupancy of the

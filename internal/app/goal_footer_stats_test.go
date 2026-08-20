@@ -11,7 +11,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
-// TestGoalTurn_TokenStatsUpdateFooter is the discriminating test for bugs.md
+// TestGoalTurn_TokenStatsUpdateFooter is the discriminating test for
 // "Goal: no status line details". A goal continuation turn drives the agent
 // via agentManagerRunner.Run → agent.Run, NOT via SendUserInput — but the
 // agent emits EventTokenStats/EventContextStats regardless, and those reach
@@ -47,4 +47,28 @@ func TestGoalTurn_TokenStatsUpdateFooter(t *testing.T) {
 		t.Fatalf("footer Stats missing context-window detail: %q", stats)
 	}
 	t.Logf("footer stats after goal turn: %q", stats)
+}
+
+// TestEventContextStats_FooterShowsProjected is P20/CX8 acceptance criterion 2
+// at the app level: an EventContextStats carrying a projected figure must flow
+// into the footer's occupancy display. The projection (80% of the window) must
+// be what the footer renders — not the stale estimate (25%).
+func TestEventContextStats_FooterShowsProjected(t *testing.T) {
+	app := New(testSubsystems())
+	app.handleAgentOutputEvent(&agentic.OutputEvent{
+		Type: agentic.EventContextStats,
+		ContextStats: &agentic.ContextStats{
+			MaxTokens:       10000,
+			EstimatedTokens: 2500, // stale estimate: 25%
+			ProjectedTokens: 8000, // projection: 80%
+		},
+	})
+
+	stats := app.subs.footer.Data().Stats
+	if !strings.Contains(stats, "80.0%/10.0K") {
+		t.Errorf("footer must show the projected figure (80.0%%/10.0K), got %q", stats)
+	}
+	if strings.Contains(stats, "25.0%") {
+		t.Errorf("footer shows the stale estimate (25.0%%) instead of the projection, got %q", stats)
+	}
 }

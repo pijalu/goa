@@ -11,7 +11,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
-// TestFilmstrip_GoalToolCallRenders verifies the unified `goal` tool (bugs.md
+// TestFilmstrip_GoalToolCallRenders verifies the unified `goal` tool
 // S2) renders a widget in the chat when the model calls it, and that the
 // spinner lifecycle is not broken. Regression for the goal-tool consolidation.
 func TestFilmstrip_GoalToolCallRenders(t *testing.T) {

@@ -13,7 +13,7 @@ import (
 )
 
 // ModelValidity is the tri-state probe outcome for a configured model
-// (bugs.md "Model list"). It distinguishes "we don't know" from "we checked
+// (Model list). It distinguishes "we don't know" from "we checked
 // and it's gone" so a transient provider outage (e.g. LM Studio down at probe
 // time) never paints an entry red.
 type ModelValidity int

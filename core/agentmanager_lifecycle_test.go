@@ -52,6 +52,27 @@ func TestAgentManager_LifecycleStartShutdown(t *testing.T) {
 	}
 }
 
+// stubStickyProvider supplies a fixed sticky instruction set.
+type stubStickyProvider struct{ blocks []string }
+
+func (s *stubStickyProvider) StickyInstructions() []string { return s.blocks }
+
+// TestAgentManager_StickyProvider_InheritedBySession verifies the manager's
+// sticky provider is wired into every session agent it builds.
+func TestAgentManager_StickyProvider_InheritedBySession(t *testing.T) {
+	cfg := &config.Config{}
+	am := NewAgentManager(cfg, nil, nil, NewSessionState(internal.ModeState{}), nil, "")
+	am.SetStickyProvider(&stubStickyProvider{blocks: []string{"ALWAYS ON"}})
+
+	if _, err := am.StartSession(agenticprovider.Model{}, agenticprovider.StreamOptions{}, "", nil, cfg); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	got := am.ActiveAgentStickyBlocks()
+	if len(got) != 1 || got[0] != "ALWAYS ON" {
+		t.Errorf("ActiveAgentStickyBlocks = %v, want [ALWAYS ON]", got)
+	}
+}
+
 func TestAgentManager_LifecycleModeEnter(t *testing.T) {
 	cfg := &config.Config{}
 	am := NewAgentManager(cfg, nil, nil, NewSessionState(internal.ModeState{}), nil, "")
@@ -288,7 +309,7 @@ func swapStateStore(am *AgentManager, ss *StateStore) {
 
 // TestOverlayCompressionForModel_StrategiesAndCacheGate verifies per-model
 // overrides of the 3-layer strategies and the cache gate merge over the
-// global section, with inheritance for unset fields (bugs.md compression
+// global section, with inheritance for unset fields (compression
 // directive: cache management configurable globally and per model).
 func TestOverlayCompressionForModel_StrategiesAndCacheGate(t *testing.T) {
 	ccEnabled := true
@@ -296,38 +317,121 @@ func TestOverlayCompressionForModel_StrategiesAndCacheGate(t *testing.T) {
 		Enabled:   &ccEnabled,
 		CacheGate: "on",
 		Strategies: config.CompressionLayerStrategiesConfig{
-			Soft:    "micro",
-			Trigger: "tool_elision",
-			Hard:    "hybrid",
+			Soft: "micro",
+			Hard: "hybrid",
 		},
 		PerModel: map[string]config.ModelCompressionOverride{
-			"local-model": {CacheGate: "off", Strategies: config.CompressionLayerStrategiesConfig{Trigger: "selective"}},
+			"local-model": {CacheGate: "off", Strategies: config.CompressionLayerStrategiesConfig{Hard: "selective"}},
 		},
 	}
 
-	// Per-model override: cache gate off + trigger selective; other fields inherit.
+	// Per-model override: cache gate off + hard selective; other fields inherit.
 	ov := overlayCompressionForModel(cc, "local-model")
 	if ov.cacheGate != "off" {
 		t.Errorf("cacheGate = %q, want off (per-model override)", ov.cacheGate)
 	}
-	if ov.strategies.Trigger != "selective" {
-		t.Errorf("trigger strategy = %q, want selective (per-model override)", ov.strategies.Trigger)
+	if ov.strategies.Hard != "selective" {
+		t.Errorf("hard strategy = %q, want selective (per-model override)", ov.strategies.Hard)
 	}
-	if ov.strategies.Soft != "micro" || ov.strategies.Hard != "hybrid" {
-		t.Errorf("soft/hard = %q/%q, want micro/hybrid (inherited)", ov.strategies.Soft, ov.strategies.Hard)
+	if ov.strategies.Soft != "micro" {
+		t.Errorf("soft = %q, want micro (inherited)", ov.strategies.Soft)
 	}
 
 	// No override: global values.
 	ov2 := overlayCompressionForModel(cc, "other-model")
-	if ov2.cacheGate != "on" || ov2.strategies.Trigger != "tool_elision" {
-		t.Errorf("no-override overlay = gate %q trigger %q, want on/tool_elision (global)", ov2.cacheGate, ov2.strategies.Trigger)
+	if ov2.cacheGate != "on" || ov2.strategies.Hard != "hybrid" {
+		t.Errorf("no-override overlay = gate %q hard %q, want on/hybrid (global)", ov2.cacheGate, ov2.strategies.Hard)
 	}
 
-	// The agentic mapping: per-layer strategies map to the SDK type; the
-	// DisableCacheGate flag derives from the resolved cache gate in
-	// buildCompressionConfig (DisableCacheGate: ov.cacheGate == "off").
+	// The agentic mapping: soft/hard strategies map to the SDK type (no
+	// trigger layer); the DisableCacheGate flag derives from the resolved cache
+	// gate in buildCompressionConfig (DisableCacheGate: ov.cacheGate == "off").
 	ag := agenticLayerStrategies(ov.strategies)
-	if ag.Trigger != agentic.CompressionSelective {
-		t.Errorf("agentic trigger = %q, want selective", ag.Trigger)
+	if ag.Hard != agentic.CompressionSelective {
+		t.Errorf("agentic hard = %q, want selective", ag.Hard)
+	}
+	if ag.Soft != agentic.CompressionMicro {
+		t.Errorf("agentic soft = %q, want micro", ag.Soft)
+	}
+}
+
+// TestBuildCompressionConfig_PerModelHardOverridesTheDefault verifies the
+// per-model contract for the hard layer (user-confirmed, export
+// goa-export-20260814-153156): per_model.<id>.thresholds.hard_percent and
+// per_model.<id>.strategies.hard override the defaults (hard default-on at
+// 95 with the summarize strategy), while zero fields inherit — including a
+// negative hard_percent as an explicit per-model opt-out of the proactive
+// hard tier (the reactive safety net still uses the default 95 via
+// effectiveHard).
+func TestBuildCompressionConfig_PerModelHardOverridesTheDefault(t *testing.T) {
+	ccEnabled := true
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled: &ccEnabled,
+			PerModel: map[string]config.ModelCompressionOverride{
+				"tight-model": {
+					Thresholds: config.CompressionThresholdsConfig{HardPercent: 85},
+					Strategies: config.CompressionLayerStrategiesConfig{Hard: "selective"},
+				},
+				"no-hard-model": {
+					Thresholds: config.CompressionThresholdsConfig{HardPercent: -1},
+				},
+			},
+		},
+	}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+
+	// Per-model hard override: ceiling 85 + hard strategy selective; the
+	// other layers stay off (zero fields inherit the global zeros).
+	cc := am.buildCompressionConfig(cfg, "tight-model", 32768)
+	if cc.Thresholds.HardPercent != 85 {
+		t.Errorf("HardPercent = %d, want 85 (per-model override)", cc.Thresholds.HardPercent)
+	}
+	if cc.Strategies.Hard != agentic.CompressionSelective {
+		t.Errorf("hard strategy = %q, want selective (per-model override)", cc.Strategies.Hard)
+	}
+	if cc.Strategies.Soft != "" {
+		t.Errorf("soft strategy = %q, want empty (inherited unset)", cc.Strategies.Soft)
+	}
+	if cc.Thresholds.SoftPercent != 0 {
+		t.Errorf("soft threshold = %d, want 0 (inherited global zero, opt-in off)", cc.Thresholds.SoftPercent)
+	}
+
+	// Negative per-model hard_percent: an explicit opt-out of the proactive
+	// hard tier (kept as a negative marker through the overlay).
+	ccNeg := am.buildCompressionConfig(cfg, "no-hard-model", 32768)
+	if ccNeg.Thresholds.HardPercent != -1 {
+		t.Errorf("HardPercent = %d, want -1 (per-model explicit opt-out)", ccNeg.Thresholds.HardPercent)
+	}
+
+	// Unknown model: global zeros — the SDK resolves hard=0 to the default
+	// 95 ceiling with the summarize strategy (default-on hard layer).
+	ccDef := am.buildCompressionConfig(cfg, "other-model", 32768)
+	if ccDef.Thresholds.HardPercent != 0 {
+		t.Errorf("HardPercent = %d, want 0 (inherited global zero)", ccDef.Thresholds.HardPercent)
+	}
+	if ccDef.Strategies.Hard != "" {
+		t.Errorf("hard strategy = %q, want empty (SDK default summarize applies)", ccDef.Strategies.Hard)
+	}
+}
+
+// TestTimeContextRefreshInterval parses the time_context refresh interval
+// string (CX6): empty and "0"-equivalent values parse to zero (inject every
+// eligible step), a valid duration parses to the duration, and an unparseable
+// value (rejected earlier by config validation) safely falls back to zero.
+func TestTimeContextRefreshInterval(t *testing.T) {
+	if got := timeContextRefreshInterval(""); got != 0 {
+		t.Errorf("timeContextRefreshInterval(\"\") = %v, want 0", got)
+	}
+	if got := timeContextRefreshInterval("60s"); got != time.Minute {
+		t.Errorf("timeContextRefreshInterval(\"60s\") = %v, want 1m0s", got)
+	}
+	if got := timeContextRefreshInterval("5m"); got != 5*time.Minute {
+		t.Errorf("timeContextRefreshInterval(\"5m\") = %v, want 5m0s", got)
+	}
+	// Unparseable (config validation rejects it earlier; here we only ensure
+	// the builder never panics and treats it as zero).
+	if got := timeContextRefreshInterval("bogus"); got != 0 {
+		t.Errorf("timeContextRefreshInterval(\"bogus\") = %v, want 0 (safe fallback)", got)
 	}
 }

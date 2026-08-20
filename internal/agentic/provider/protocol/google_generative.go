@@ -48,7 +48,7 @@ func (p *googleGenerative) BuildRequest(model schema.Model, ctx schema.Context, 
 	if opts.Temperature != nil {
 		genConfig["temperature"] = *opts.Temperature
 	}
-	if len(ctx.Tools) > 0 {
+	if len(ctx.Tools) > 0 && !ctx.NoTools {
 		body["tools"] = convertGoogleTools(ctx.Tools)
 	}
 	if model.Reasoning {

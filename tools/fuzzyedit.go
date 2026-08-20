@@ -147,7 +147,7 @@ func fuzzyEdit(file, oldStr, newStr string, allowFuzz bool) (*EditResult, error)
 
 // countMatchingLines reports how many of oldStr's non-empty lines appear
 // verbatim in content. It powers the "lines matched M/N" diagnostic attached to
-// edit not-found errors (bugs.md: models reconstruct large blocks from memory
+// edit not-found errors (models reconstruct large blocks from memory
 // and ~25% of lines drift, so a bare "not found" makes them think the tool is
 // broken and reach for bash; showing the real overlap steers them to re-read
 // and make a smaller, anchored edit instead).

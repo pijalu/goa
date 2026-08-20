@@ -55,7 +55,7 @@ func (d *acpAgentDriver) StartSession() error {
 	// ACP consumers read agent events from the internal channel, so enable
 	// forwarding before starting the session.
 	d.subs.agentMgr.SetForwardInternalEvents(true)
-	if _, err := d.subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, d.subs.cfg); err != nil {
+	if _, err := d.subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, d.subs.liveConfig()); err != nil {
 		return fmt.Errorf("failed to start session: %w", err)
 	}
 	if d.subs.foregroundOrch != nil {

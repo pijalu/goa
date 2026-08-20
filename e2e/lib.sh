@@ -37,6 +37,42 @@ warmup_model() {
   echo
 }
 
+# --- Mock LLM (deterministic, no LM Studio needed) -------------------------
+# start_mock_llm [logfile] starts e2e/mockllm/server.py in the background and
+# waits for readiness. Sets MOCK_LLM_PID; URL is $MOCK_LLM_URL. Streams ~30 KB
+# filler per normal turn (grows history past a small compression ceiling
+# fast) and a short reply when the system prompt starts with "Summarize"
+# (Compact). stop_mock_llm tears it down. See e2e/README.md.
+MOCK_LLM_PORT="${MOCK_LLM_PORT:-8017}"
+MOCK_LLM_URL="http://127.0.0.1:${MOCK_LLM_PORT}/v1"
+MOCK_LLM_PID=""
+
+start_mock_llm() {
+  local log="${1:-/tmp/goa-e2e/mock-llm.log}"
+  mkdir -p "$(dirname "$log")"
+  MOCK_LLM_LOG="$log" MOCK_LLM_PORT="$MOCK_LLM_PORT" \
+    python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mockllm/server.py" &
+  MOCK_LLM_PID=$!
+  local i
+  for i in $(seq 1 50); do
+    if curl -s --max-time 1 "$MOCK_LLM_URL/models" >/dev/null 2>&1; then
+      log "mock LLM ready on $MOCK_LLM_URL (pid $MOCK_LLM_PID, log $log)"
+      return 0
+    fi
+    sleep 0.2
+  done
+  fail "mock LLM did not become ready on $MOCK_LLM_URL"
+  return 1
+}
+
+stop_mock_llm() {
+  if [ -n "$MOCK_LLM_PID" ]; then
+    kill "$MOCK_LLM_PID" 2>/dev/null || true
+    wait "$MOCK_LLM_PID" 2>/dev/null || true
+    MOCK_LLM_PID=""
+  fi
+}
+
 # write_base_config <projdir> <active-model> — project-level .goa/config.yaml
 # that pins everything to LM Studio with thinking off (speed).
 write_base_config() {

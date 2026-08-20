@@ -154,3 +154,26 @@ func TestConfigurableTools_IncludesPython(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigurableTools_IncludesRunCode ensures the run_code code-mode tool
+// (gap TL7) is runtime-toggleable and opt-out (default enabled), mirroring
+// python.
+func TestConfigurableTools_IncludesRunCode(t *testing.T) {
+	names := ConfigurableToolNames()
+	found := false
+	for _, n := range names {
+		if n == "run_code" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ConfigurableToolNames missing %q: %v", "run_code", names)
+	}
+
+	for _, tool := range ConfigurableTools() {
+		if tool.Name == "run_code" && !tool.Default {
+			t.Errorf("run_code should default to enabled, got Default=%v", tool.Default)
+		}
+	}
+}

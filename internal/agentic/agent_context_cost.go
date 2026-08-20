@@ -14,10 +14,11 @@ import (
 // percent) systematically underestimated real usage — causing compaction to
 // fire a turn too late, after a large tool result had already blown past 100%.
 //
-// The tool-schema component is computed once and cached: the registry's
-// schemas are stable for the agent's lifetime (Schemas() is itself cached and
-// sorted for prompt-cache stability). The system-prompt component is cheap and
-// recomputed each call (it can carry a small, variable goal reminder).
+// The tool-schema component is recomputed per call: with deferred loading
+// (P1) the loaded-tail grows when the model pulls deferred tools, so the
+// schema payload shipped with each request is not constant across the agent's
+// lifetime. The system-prompt component is cheap and recomputed each call (it
+// can carry a small, variable goal reminder).
 func (a *Agent) fixedCostTokens() int {
 	system := 0
 	if a.cfg.SystemPrompt != "" {
@@ -26,24 +27,23 @@ func (a *Agent) fixedCostTokens() int {
 	return system + a.toolSchemaCost()
 }
 
-// toolSchemaCost returns the cached token estimate of all registered tool
-// schemas. Nil-safe and computed at most once per agent.
+// toolSchemaCost returns the token estimate of the tool schemas currently
+// shipped with each request (the Schemas() view: eager block + loader +
+// loaded-tail when deferral is active). Nil-safe and recomputed per call so
+// deferred-tool loads keep the estimate in sync with the real payload.
 func (a *Agent) toolSchemaCost() int {
-	a.toolSchemaTokensOnce.Do(func() {
-		if a.reg == nil {
-			return
-		}
-		var total int
-		for _, s := range a.reg.Schemas() {
-			total += estimateTokens(s.Name)
-			total += estimateTokens(s.Description)
-			if len(s.Schema) > 0 {
-				if b, err := json.Marshal(s.Schema); err == nil {
-					total += estimateTokens(string(b))
-				}
+	if a.reg == nil {
+		return 0
+	}
+	var total int
+	for _, s := range a.reg.Schemas() {
+		total += estimateTokens(s.Name)
+		total += estimateTokens(s.Description)
+		if len(s.Schema) > 0 {
+			if b, err := json.Marshal(s.Schema); err == nil {
+				total += estimateTokens(string(b))
 			}
 		}
-		a.toolSchemaTokens = total
-	})
-	return a.toolSchemaTokens
+	}
+	return total
 }

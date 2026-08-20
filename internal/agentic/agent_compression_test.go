@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
@@ -123,8 +123,6 @@ func TestCompressToolElision(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			ThresholdPercent:    50,
-			Strategy:            CompressionToolElision,
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -208,8 +206,6 @@ func TestCompressSelective(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			ThresholdPercent:    50,
-			Strategy:            CompressionSelective,
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -243,8 +239,6 @@ func TestCompressToolElision_ReducesTokensOnSmallHistory(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           100000,
-			ThresholdPercent:    80,
-			Strategy:            CompressionToolElision,
 			PreserveRecentTurns: 2,
 		},
 	})
@@ -282,8 +276,6 @@ func TestCompressToolElision_ForcedSixMessages(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           100000,
-			ThresholdPercent:    80,
-			Strategy:            CompressionToolElision,
 			PreserveRecentTurns: 2,
 		},
 	})
@@ -314,10 +306,10 @@ func TestMicroCompactForced_ReducesTokensOnSmallHistory(t *testing.T) {
 	agent := NewAgent(Config{
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:        100000,
-			ThresholdPercent: 80,
-			Strategy:         CompressionMicro,
-			MicroCompaction:  DefaultMicroCompactionConfig,
+			MaxTokens:       100000,
+			Thresholds:      CompressionThresholds{SoftPercent: 80},
+			Strategies:      CompressionLayerStrategies{Soft: CompressionMicro},
+			MicroCompaction: DefaultMicroCompactionConfig,
 		},
 	})
 
@@ -356,7 +348,6 @@ func TestCompressHybrid(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           500,
 			Thresholds:          CompressionThresholds{HardPercent: 15},
-			Strategy:            CompressionHybrid,
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -411,10 +402,13 @@ func TestMaybeCompress_Triggers(t *testing.T) {
 	agent := NewAgent(Config{
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:           500,
-			ThresholdPercent:    10,
-			Strategy:            CompressionSelective,
-			Strategies:          CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer: these tests exercise trigger mechanics offline // selective actually removes messages
+			MaxTokens: 500,
+			// Soft/hard model: no trigger layer. Drive the SOFT layer with a
+			// low soft threshold + selective strategy (selective actually
+			// removes messages). A fresh agent has no hot-cache evidence, so
+			// the soft gate fires rather than deferring.
+			Thresholds:          CompressionThresholds{SoftPercent: 10},
+			Strategies:          CompressionLayerStrategies{Soft: CompressionSelective, Hard: CompressionSelective},
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -453,9 +447,11 @@ func TestMaybeCompress_FallsBackToModelWindow(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		Model:        provider.Model{ContextWindow: 500},
 		ContextCompression: ContextCompressionConfig{
-			ThresholdPercent:    10,
-			Strategy:            CompressionSelective,
-			Strategies:          CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer: these tests exercise trigger mechanics offline
+			// Soft/hard model: no trigger layer. Drive the SOFT layer with a
+			// low soft threshold + selective strategy (selective removes
+			// messages); fresh agent = cold cache, so the soft gate fires.
+			Thresholds:          CompressionThresholds{SoftPercent: 10},
+			Strategies:          CompressionLayerStrategies{Soft: CompressionSelective, Hard: CompressionSelective},
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -592,7 +588,7 @@ type ___testErr string
 func (e ___testErr) Error() string { return string(e) }
 
 // ---------------------------------------------------------------------------
-// Elided tool-call serialization (bugs.md: "Model imitates the [elided]
+// Elided tool-call serialization ("Model imitates the [elided]
 // tool-call placeholder" and "/compress:summarize rejected by provider:
 // elided tool-call arguments are not valid JSON" — shared root cause).
 // ---------------------------------------------------------------------------
@@ -631,8 +627,6 @@ func newElisionAgent() *Agent {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			ThresholdPercent:    50,
-			Strategy:            CompressionToolElision,
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -851,7 +845,7 @@ func TestSummarizeHistoryWithElidedPairs(t *testing.T) {
 	agent.SetHistory(elidedPairHistory())
 	agent.compressToolElision(false)
 
-	summary, err := agent.summarizeHistory(context.Background())
+	summary, _, err := agent.summarizeHistory(context.Background())
 	if err != nil {
 		t.Fatalf("summarizeHistory failed: %v", err)
 	}
@@ -869,19 +863,74 @@ func TestSummarizeHistoryWithElidedPairs(t *testing.T) {
 	}
 }
 
-// --- bugs.md "Provider prefix-cache bust loop" (CM:13) regression tests ---
+// --- Provider prefix-cache bust loop:(CM:13) regression tests ---
 
-// appendElisionPair appends one assistant tool call plus its tool result of
-// the given size — the session shape that drives elision (a long single turn
-// of tool-call rounds).
-func appendElisionPair(a *Agent, resultSize int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	id := fmt.Sprintf("c%d", len(a.history))
-	a.history = append(a.history,
-		Message{Type: Content, Role: Assistant, ToolCalls: []ToolCallInfo{{ID: id, Type: "function", Name: "tool", Arguments: `{"n":1}`}}},
-		Message{Type: Content, Role: ToolRole, Content: strings.Repeat("x", resultSize), ToolCallID: id},
-	)
+// purposeProbeProvider records every StreamOptions it receives so tests can
+// assert what a summarize request actually carried (P13 purpose attribution).
+type purposeProbeProvider struct {
+	api provider.Api
+
+	mu   sync.Mutex
+	opts []provider.StreamOptions
+}
+
+func (p *purposeProbeProvider) API() provider.Api { return p.api }
+
+func (p *purposeProbeProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	p.mu.Lock()
+	p.opts = append(p.opts, opts)
+	p.mu.Unlock()
+
+	result := provider.NewAssistantMessageEventStream(64)
+	go func() {
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextStart, ContentIndex: 0})
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextDelta, ContentIndex: 0, Delta: "compacted summary"})
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextEnd, ContentIndex: 0})
+		result.End(&provider.AssistantMessage{
+			Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "compacted summary"}},
+			StopReason: provider.StopReasonEndTurn,
+		})
+	}()
+	return result, nil
+}
+
+func (p *purposeProbeProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return p.Stream(model, ctx, provider.BuildSimpleOptions(model, opts))
+}
+
+func (p *purposeProbeProvider) recordedOpts() []provider.StreamOptions {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]provider.StreamOptions(nil), p.opts...)
+}
+
+// TestSummarizeHistorySetsCompactionPurpose is the P13 acceptance at the
+// agent layer: the compaction summarize call marks its request purpose as
+// compaction so DeepSeek-compat routes emit x-goa-compact: 1.
+func TestSummarizeHistorySetsCompactionPurpose(t *testing.T) {
+	p := &purposeProbeProvider{api: provider.Api(fmt.Sprintf("summarize-purpose-probe-%d", testProviderCounter.Add(1)))}
+	provider.RegisterApiProvider(p)
+
+	agent := newElisionAgent()
+	agent.cfg.Model = testModel(p.API())
+	agent.cfg.Logger = NewLogger(Error)
+	agent.SetHistory(elidedPairHistory())
+
+	summary, _, err := agent.summarizeHistory(context.Background())
+	if err != nil {
+		t.Fatalf("summarizeHistory failed: %v", err)
+	}
+	if summary == "" {
+		t.Error("summarizeHistory returned an empty summary")
+	}
+
+	opts := p.recordedOpts()
+	if len(opts) != 1 {
+		t.Fatalf("expected 1 summarize request, got %d", len(opts))
+	}
+	if opts[0].Purpose != provider.PurposeCompaction {
+		t.Errorf("summarize request purpose = %q, want %q", opts[0].Purpose, provider.PurposeCompaction)
+	}
 }
 
 // historyHash fingerprints message count, contents and tool-call arguments so
@@ -902,182 +951,125 @@ func historyHash(a *Agent) uint64 {
 	return h.Sum64()
 }
 
-// simulateHotCacheRound marks the per-round provider contact the way a
-// cache-reporting provider does: every completed request reports cache reads
-// (partial hits after a bust still count) and refreshes the activity clock.
-func simulateHotCacheRound(a *Agent) {
-	a.mu.Lock()
-	a.cacheWarmObserved = true
-	a.lastRoundActivity = time.Now()
-	a.mu.Unlock()
-}
+// --- Cache-warm compaction summarization (CA1) regression tests ---
 
-// TestMaybeCompress_ToolElision_HotCacheBudgetHysteresis is the core CM:13
-// regression: above the 85% deferral ceiling with a hot cache, proactive
-// tool_elision used to elide only the ~2 messages that crossed the count
-// boundary per round, so usage stayed at the ceiling and the hot prefix
-// cache busted EVERY round (13 misses in the session export). The hot-cache
-// path must elide by TOKEN BUDGET down to the hysteresis target (hard−20 =
-// 75%) in ONE pass, then stay quiet while usage climbs back.
-func TestMaybeCompress_ToolElision_HotCacheBudgetHysteresis(t *testing.T) {
-	a := NewAgent(Config{
-		Model: testModel(provider.ApiOpenAICompletions),
-		ContextCompression: ContextCompressionConfig{
-			MaxTokens:  10000,
-			Strategy:   CompressionToolElision,
-			Thresholds: CompressionThresholds{TriggerPercent: 80}, // production shape: ceiling = hard−10 = 85
-		},
-	})
-	a.mu.Lock()
-	a.history = append(a.history, Message{Type: Content, Role: System, Content: "sys"})
-	a.mu.Unlock()
-	for i := 0; i < 19; i++ {
-		appendElisionPair(a, 1500) // ~470 est tokens per pair
-	}
-	stats := a.ContextStats()
-	if stats.UsagePercent < 85 || stats.UsagePercent >= 95 {
-		t.Fatalf("setup: usage %d%% must be in the [85,95) ceiling band", stats.UsagePercent)
-	}
-	simulateHotCacheRound(a)
+// prefixStubTool is a minimal tool registered only so the summarize request
+// must carry a tools array identical to the conversation request's.
+type prefixStubTool struct{ BaseTool }
 
-	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress: %v", err)
-	}
-	after := a.ContextStats()
-	target := a.cfg.ContextCompression.resolveThresholds().elisionTargetPercent()
-	if after.UsagePercent > target {
-		t.Errorf("one hot-cache pass must elide down to the hysteresis target: usage %d%% > %d%%",
-			after.UsagePercent, target)
-	}
-	// Hysteresis elides only what the budget needs: the oldest results are
-	// elided but mid-history payloads survive (no wholesale wipe).
-	a.mu.Lock()
-	oldest := a.history[2].Content
-	mid := a.history[20].Content
-	a.mu.Unlock()
-	if oldest != elidedToolResultContent {
-		t.Errorf("oldest tool result not elided: %q", oldest[:min(30, len(oldest))])
-	}
-	if mid == elidedToolResultContent {
-		t.Errorf("budget overshot: mid-history result elided though the budget was met earlier")
-	}
-	// No re-fire while usage is back below the trigger: the next per-round
-	// gate must leave history untouched (that per-round re-fire IS the bust
-	// loop: count-boundary advance rewrote 2 more messages every round).
-	before := historyHash(a)
-	simulateHotCacheRound(a)
-	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress: %v", err)
-	}
-	if historyHash(a) != before {
-		t.Errorf("proactive gate re-fired below the trigger after hysteresis elision (per-round bust loop)")
+func (prefixStubTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        "prefix_stub",
+		Description: "stub tool for prefix-parity tests",
+		Schema:      map[string]any{"type": "object", "properties": map[string]any{}},
 	}
 }
+func (prefixStubTool) Execute(input string) (string, error) { return "ok", nil }
+func (prefixStubTool) IsRetryable(err error) bool           { return false }
 
-// TestMaybeCompress_ToolElision_HotCacheEscalatesWhenBudgetUnmet covers the
-// payload-poor case: at/above the ceiling with a hot cache but almost no
-// elidable tool payload, nibbling every round would bust the cache for
-// near-zero gain — the pass must escalate to selective message removal so the
-// single bust buys real headroom (the entry's "stop nibbling" alternative).
-func TestMaybeCompress_ToolElision_HotCacheEscalatesWhenBudgetUnmet(t *testing.T) {
-	a := NewAgent(Config{
-		Model: testModel(provider.ApiOpenAICompletions),
+// TestSummarizeHistoryReusesConversationPrefix is the CA1 regression: the
+// summarize request must reuse the warm provider prefix cache, so it must be
+// built as the conversation's OWN request prefix — same system prompt, same
+// tools, same migrated history — with the compaction instruction appended as
+// the final user message. The pre-fix shape swapped in a summarizer system
+// prompt and dropped tools, cold-missing the automatic prefix cache (DeepSeek
+// context caching) on the largest history of the session.
+func TestSummarizeHistoryReusesConversationPrefix(t *testing.T) {
+	p := &gateProbeProvider{
+		api:        provider.Api(fmt.Sprintf("summarize-prefix-probe-%d", testProviderCounter.Add(1))),
+		toolRounds: 0,
+	}
+	provider.RegisterApiProvider(p)
+
+	agent := NewAgent(Config{
+		SystemPrompt: "You are helpful.",
+		Tools:        []Tool{prefixStubTool{}},
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:  6200,
-			Strategy:   CompressionToolElision,
-			Strategies: CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer offline
-			Thresholds: CompressionThresholds{TriggerPercent: 80},              // production shape: ceiling = 85
+			MaxTokens:           10000,
+			PreserveRecentTurns: 1,
 		},
 	})
-	a.mu.Lock()
-	a.history = append(a.history, Message{Type: Content, Role: System, Content: "sys"})
-	// Payload-poor history: plain user/assistant text only (~91% usage).
-	for i := 0; i < 30; i++ {
-		a.history = append(a.history,
-			Message{Type: Content, Role: User, Content: strings.Repeat("q", 300)},
-			Message{Type: Content, Role: Assistant, Content: strings.Repeat("a", 300)},
-		)
-	}
-	a.mu.Unlock()
-	stats := a.ContextStats()
-	if stats.UsagePercent < 85 || stats.UsagePercent >= 95 {
-		t.Fatalf("setup: usage %d%% must be in the [85,95) ceiling band", stats.UsagePercent)
-	}
-	simulateHotCacheRound(a)
+	agent.cfg.Model = testModel(p.API())
+	agent.cfg.Logger = NewLogger(Error)
+	agent.SetHistory([]Message{
+		{Type: Content, Role: System, Content: "You are helpful."},
+		{Type: Content, Role: User, Content: "first question"},
+		{Type: Content, Role: Assistant, Content: "first answer"},
+		{Type: Content, Role: User, Content: "second question"},
+		{Type: Content, Role: Assistant, Content: "second answer"},
+	})
 
-	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress: %v", err)
+	summary, _, err := agent.summarizeHistory(context.Background())
+	if err != nil {
+		t.Fatalf("summarizeHistory failed: %v", err)
 	}
-	a.mu.Lock()
-	n := len(a.history)
-	a.mu.Unlock()
-	if n >= 61 {
-		t.Errorf("budget-unmet hot-cache pass did not escalate to selective: %d messages kept", n)
+	if summary == "" {
+		t.Fatal("summarizeHistory returned an empty summary")
 	}
-	after := a.ContextStats()
-	target := a.cfg.ContextCompression.resolveThresholds().elisionTargetPercent()
-	if after.UsagePercent > target {
-		t.Errorf("escalation must buy real headroom: usage %d%% > target %d%%", after.UsagePercent, target)
+
+	ctxs := p.recorded()
+	if len(ctxs) != 1 {
+		t.Fatalf("expected 1 summarize request, got %d", len(ctxs))
+	}
+	got := ctxs[0]
+
+	// 1. The conversation's own system prompt is the request prefix — not a
+	// swapped-in summarizer system prompt.
+	if got.SystemPrompt != agent.cfg.SystemPrompt {
+		t.Errorf("summarize request system prompt = %q, want the conversation system prompt %q (prefix-cache reuse)",
+			got.SystemPrompt, agent.cfg.SystemPrompt)
+	}
+
+	// 2. Tool schemas ride the request exactly as they do on conversation
+	// turns, keeping the cached prefix (system + tools + history) aligned.
+	conversation := agent.buildProviderContext(context.Background())
+	if len(got.Tools) != len(conversation.Tools) {
+		t.Errorf("summarize request carries %d tool schemas, conversation request carries %d",
+			len(got.Tools), len(conversation.Tools))
+	}
+
+	// 3. The message list is the conversation history (leading system prompt
+	// skipped, since it rides SystemPrompt) plus ONE appended user message
+	// carrying the summarize instruction.
+	if len(got.Messages) != len(conversation.Messages)+1 {
+		t.Fatalf("summarize request holds %d messages, want conversation history (%d) + 1 instruction",
+			len(got.Messages), len(conversation.Messages))
+	}
+	for i, m := range conversation.Messages {
+		if got.Messages[i].Role != m.Role || payloadTexts([]provider.Message{got.Messages[i]}) != payloadTexts([]provider.Message{m}) {
+			t.Errorf("message %d diverges from conversation prefix: got role=%v text=%q, want role=%v text=%q",
+				i, got.Messages[i].Role, payloadTexts([]provider.Message{got.Messages[i]}), m.Role, payloadTexts([]provider.Message{m}))
+		}
+	}
+	last := got.Messages[len(got.Messages)-1]
+	if last.Role != provider.RoleUser {
+		t.Errorf("instruction message role = %v, want user", last.Role)
+	}
+	if !strings.Contains(strings.ToLower(payloadTexts([]provider.Message{last})), "summar") {
+		t.Error("final message does not carry the summarize instruction")
 	}
 }
 
-// TestMaybeCompress_ToolElision_CacheBustConvergence replays the CM:13
-// session shape — one long turn, hot cache, usage climbing slowly past the
-// 85% deferral ceiling — and counts cache busts (rounds where the proactive
-// gate mutated history). Pre-fix the count boundary advanced every round and
-// busted the cache on EVERY round above the ceiling (~13 misses per export);
-// post-fix one budgeted bust buys ~40 rounds of headroom, so a 85-round
-// climb busts at most twice (the entry's "≤2 misses" bar).
-func TestMaybeCompress_ToolElision_CacheBustConvergence(t *testing.T) {
-	a := NewAgent(Config{
-		Model: testModel(provider.ApiOpenAICompletions),
-		ContextCompression: ContextCompressionConfig{
-			MaxTokens:  20000,
-			Strategy:   CompressionToolElision,
-			Strategies: CompressionLayerStrategies{Hard: CompressionSelective}, // no LLM in tests
-			Thresholds: CompressionThresholds{TriggerPercent: 80},              // production shape: ceiling = 85
-		},
+// TestSummarizeHistoryEmptyOnToolOnlyReply guards the tools-bearing summarize
+// path: a model that answers the instruction with only a tool call (no text)
+// must yield an error instead of wiping the history with an empty summary.
+func TestSummarizeHistoryEmptyOnToolOnlyReply(t *testing.T) {
+	p := &gateProbeProvider{
+		api:        provider.Api(fmt.Sprintf("summarize-toolonly-probe-%d", testProviderCounter.Add(1))),
+		toolRounds: 99, // always answer with a tool call, never text
+	}
+	provider.RegisterApiProvider(p)
+
+	agent := newElisionAgent()
+	agent.cfg.Model = testModel(p.API())
+	agent.cfg.Logger = NewLogger(Error)
+	agent.SetHistory([]Message{
+		{Type: Content, Role: User, Content: "q"},
+		{Type: Content, Role: Assistant, Content: "a"},
 	})
-	a.mu.Lock()
-	a.history = append(a.history, Message{Type: Content, Role: System, Content: "sys"})
-	a.mu.Unlock()
-	// Seed to ~84% with large tool payloads, then climb slowly (small
-	// results), mirroring the session's 84% → 95% drift over ~180 rounds.
-	for a.ContextStats().UsagePercent < 84 {
-		appendElisionPair(a, 1300)
-	}
 
-	var bustRounds []int
-	usageAfterFirstBust := -1
-	for round := 0; round < 85; round++ {
-		simulateHotCacheRound(a)
-		before := historyHash(a)
-		if err := a.maybeCompress(context.Background()); err != nil {
-			t.Fatalf("maybeCompress round %d: %v", round, err)
-		}
-		if historyHash(a) != before {
-			bustRounds = append(bustRounds, round)
-			if usageAfterFirstBust < 0 {
-				usageAfterFirstBust = a.ContextStats().UsagePercent
-			}
-		}
-		appendElisionPair(a, 110) // ~48 est tokens per round of growth
-	}
-
-	if len(bustRounds) == 0 {
-		t.Fatalf("proactive elision never fired though usage crossed the 85%% ceiling")
-	}
-	if len(bustRounds) > 2 {
-		t.Errorf("cache busted %d times in 85 rounds (rounds %v); budgeted hysteresis must keep it ≤2 "+
-			"(pre-fix the count boundary busted EVERY round above the ceiling)", len(bustRounds), bustRounds)
-	}
-	target := a.cfg.ContextCompression.resolveThresholds().elisionTargetPercent()
-	if usageAfterFirstBust > target {
-		t.Errorf("usage after the first bust = %d%%, want ≤ hysteresis target %d%%", usageAfterFirstBust, target)
-	}
-	for i := 1; i < len(bustRounds); i++ {
-		if gap := bustRounds[i] - bustRounds[i-1]; gap < 10 {
-			t.Errorf("bust gap %d rounds (rounds %v): one bust must buy many rounds of headroom", gap, bustRounds)
-		}
+	summary, _, err := agent.summarizeHistory(context.Background())
+	if err == nil {
+		t.Errorf("summarizeHistory returned %q with nil error for a text-less reply; want an error so Compact cannot wipe history", summary)
 	}
 }

@@ -10,7 +10,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -51,6 +54,135 @@ func PrefixedHexID(prefix string, n int) string {
 		panic(fmt.Sprintf("internal: crypto/rand failed: %v", err))
 	}
 	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixNano(), hex.EncodeToString(b))
+}
+
+// anonymousUserIDFile is the bare-line identity file inside the goa home
+// (~/.goa/.anonymous-user-id), mirroring dsh's
+// @deepseek-ai/dsh-anonymous-user-id storage contract.
+const anonymousUserIDFile = ".anonymous-user-id"
+
+var (
+	anonymousUserIDMu   sync.Mutex
+	anonymousUserIDMemo = map[string]string{}
+)
+
+// AnonymousUserID returns the stable anonymous identifier for this goa
+// install, used to correlate provider requests across sessions without
+// revealing identity (the P13/CA2 correlation header x-goa-user-id). It is
+// a UUID v4 persisted as a bare line at <goa-home>/.anonymous-user-id,
+// memoized per resolved home for the process lifetime.
+//
+// The identity is never derived from the hostname, network address, git
+// remote, or another identifying source (dsh anonymous-user-id contract).
+// Deleting the file mints a new identity on the next process launch.
+// Persistence is best-effort: an unwritable home still yields a process-local
+// UUID rather than blocking the caller.
+func AnonymousUserID() string {
+	dir := GoaHomeDir()
+	anonymousUserIDMu.Lock()
+	defer anonymousUserIDMu.Unlock()
+	if id, ok := anonymousUserIDMemo[dir]; ok {
+		return id
+	}
+	id := loadOrCreateAnonymousUserID(dir)
+	anonymousUserIDMemo[dir] = id
+	return id
+}
+
+// loadOrCreateAnonymousUserID returns the persisted id at
+// <dir>/.anonymous-user-id, or mints and persists a new one. An empty dir
+// (no resolvable goa home) returns a process-local UUID without persistence.
+func loadOrCreateAnonymousUserID(dir string) string {
+	if dir == "" {
+		return uuidV4()
+	}
+	path := filepath.Join(dir, anonymousUserIDFile)
+	if id := readAnonymousUserID(path); id != "" {
+		return id
+	}
+	id := uuidV4()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return id // best-effort: process-local UUID
+	}
+	// Exclusive creation: a concurrent first writer wins and the loser
+	// adopts the persisted winner.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			// A concurrent winner persisted first — adopt it. A corrupt
+			// pre-existing file is replaced with our fresh id.
+			if winner := readAnonymousUserID(path); winner != "" {
+				return winner
+			}
+			_ = os.WriteFile(path, []byte(id+"\n"), 0o600)
+			return id
+		}
+		return id // unwritable home: process-local UUID
+	}
+	if _, werr := f.WriteString(id + "\n"); werr != nil {
+		_ = f.Close()
+		return id
+	}
+	if cerr := f.Close(); cerr != nil {
+		return id
+	}
+	return id
+}
+
+// readAnonymousUserID returns the valid UUID v4 stored at path, or "" when
+// the file is missing, empty, or corrupt (a corrupt file is replaced by
+// loadOrCreateAnonymousUserID).
+func readAnonymousUserID(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	id := strings.TrimSpace(string(b))
+	if !isUUIDv4(id) {
+		return ""
+	}
+	return id
+}
+
+// uuidV4 returns a random RFC 4122 version-4 UUID (lowercase hex).
+func uuidV4() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("internal: crypto/rand failed: %v", err))
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10xx
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// isUUIDv4 reports whether s has the canonical 8-4-4-4-12 lowercase-hex UUID
+// v4 shape.
+func isUUIDv4(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for _, i := range []int{8, 13, 18, 23} {
+		if s[i] != '-' {
+			return false
+		}
+	}
+	if s[14] != '4' {
+		return false
+	}
+	for i := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		if !isHexDigit(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isHexDigit reports whether c is an ASCII hexadecimal digit.
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
 //go:embed data/goal_adjectives.txt

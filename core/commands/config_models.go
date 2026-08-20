@@ -18,7 +18,7 @@ func (m *configMenu) selectModelPage(title, current string, onSelected func(stri
 
 // selectModelPageFull is selectModelPage with a provider-aware callback: the
 // provider bound to the chosen model is reported alongside, so callers can
-// persist provider+model atomically (bugs.md Bug B: companion selection must
+// persist provider+model atomically (Bug B: companion selection must
 // behave like /model — a model cannot be selected without its provider).
 func (m *configMenu) selectModelPageFull(title, current string, onSelected func(modelID, providerID string)) {
 	m.selectModelPageForProviderFull(title, current, onSelected, "")
@@ -157,7 +157,7 @@ func (m *configMenu) resolveModelFull(providerID, modelName string, onSelected f
 }
 
 // promptCustomModelFull reports the provider chosen upstream in the flow so
-// even a free-typed model string keeps its provider binding (bugs.md Bug B).
+// even a free-typed model string keeps its provider binding (Bug B).
 func (m *configMenu) promptCustomModelFull(onSelected func(string, string), baseLen int, providerID string) {
 	m.ctx.ShowInput("Model string:", "", func(value string, ok bool) {
 		if !ok {

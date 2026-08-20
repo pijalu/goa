@@ -64,6 +64,20 @@ type Scene struct {
 	// compose must materialize the FULL canvas (not just the visible window),
 	// because the scrollback reset re-emits every off-screen row from it.
 	WidthChanged bool
+
+	// ClearGen is the Compositor's clear generation at snapshot time. The
+	// snapshot's owner (TUI.buildSnapshot) stamps it from Compositor.ClearGen;
+	// Render DROPS scenes whose generation is older than the compositor's
+	// current one (they predate a Clear and would repaint stale content,
+	// swallowing the pending wipe — the /new blank-screen race).
+	ClearGen uint64
+
+	// MutationGen is the TUI's mutation generation at snapshot time (bumped by
+	// every command). The compositor compares it across frames to detect when
+	// the conversation has settled (no mutation since the last frame) so it can
+	// re-sync a deferred scrollback exactly once instead of on every stream
+	// chunk.
+	MutationGen uint64
 }
 
 // compose builds the virtual-buffer canvas from the Scene's base layers, each
@@ -364,12 +378,48 @@ type Compositor struct {
 	// emitting scrollback rows never moves the pinned chrome below the region.
 	regionBot int
 
+	// clearRequested is set by Clear(): the NEXT Render wipes the screen and
+	// scrollback atomically inside its own CSI-2026 sync, then repaints the
+	// fresh canvas. Deferring the wipe into the frame (instead of writing it
+	// immediately) removes the atomicity gap where a stale pre-clear frame
+	// could be painted after the wipe — the /new blank-screen race.
+	clearRequested bool
+
+	// clearGen is the clear generation: Clear() increments it and Render drops
+	// any scene stamped with an older generation (Scene.ClearGen). A scene
+	// built BEFORE a Clear but rendered after it would repaint the old canvas,
+	// consume clearRequested, and restore the stale scrollback watermark —
+	// leaving a blank screen with the cursor clamped to row 1 until a resize
+	// (the reported /new bugs). Dropping it keeps the wipe pending for the
+	// next, fresh frame; Clear always requests one.
+	clearGen uint64
+
 	// lastScrollCount is the number of rows the current frame's scroll advance
 	// (emitSteadyScroll) wrote at the bottom of the transcript region. It is set
 	// immediately before repaintWindow runs and consumed only by it, then reset
 	// to 0 for the next frame. repaintWindow skips those already-written bottom
 	// rows so a scrolling frame never emits a row twice.
 	lastScrollCount int
+
+	// scrollbackDirty reports that the terminal scrollback diverged from the
+	// canvas: a mid-transcript growth above the visible window (a streaming
+	// block growing above later-appended content, e.g. /goal:list or /quota
+	// landing mid-stream) advanced the watermark without emitting the grown
+	// rows, because a terminal scrollback cannot insert rows in the middle.
+	// The screen stays correct (the growth is above the window), so the
+	// divergence is invisible until the user scrolls up; a single full reset
+	// when the conversation settles (Scene.MutationGen unchanged) re-syncs the
+	// scrollback. This replaces the previous per-chunk full reset, which
+	// re-emitted the ENTIRE transcript on every stream chunk — O(transcript)
+	// per chunk (uniseg width truncation dominates: the CPU >100% storm on
+	// long sessions) that also yanked the terminal viewport with repeated
+	// \x1b[3J scrollback wipes (the reported jump-back / scroll-back-down
+	// during /goal:list while streaming).
+	scrollbackDirty bool
+	// prevMutationGen is the Scene.MutationGen of the previous rendered frame.
+	// When scrollbackDirty and the mutation gen is unchanged, the conversation
+	// has settled and the deferred scrollback sync may run exactly once.
+	prevMutationGen uint64
 
 	// tracer, when non-nil, records one JSONL frame per Render for offline
 	// diagnosis of byte-level rendering bugs. curTrace is the in-progress
@@ -455,7 +505,16 @@ func (c *Compositor) Buffer() []string {
 }
 
 // InitialClear wipes the terminal before the first frame.
+//
+// It runs on the caller's goroutine (TUI.Start), NOT the renderLoop, and
+// writes to the shared terminal — so it must take c.mu like every other
+// Compositor method. Without the lock a concurrent shutdown (Stop→Restore,
+// which holds mu) or an in-flight frame could interleave terminal writes with
+// this clear, corrupting the output stream and tripping the race detector
+// (bugs.md: TestRunWizardWithTerminal_FirstFrameRenders race).
 func (c *Compositor) InitialClear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.terminal.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[3J\x1b[?2026l"))
 }
 
@@ -474,11 +533,25 @@ func (c *Compositor) InitialClear() {
 func (c *Compositor) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.terminal.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[3J\x1b[?2026l"))
+	// Mark state cleared; the next Render performs the actual wipe atomically
+	// with its repaint (see clearRequested). No terminal write happens here, so
+	// a concurrent in-flight frame cannot interleave with the wipe.
 	c.scrollTop = 0
 	c.vt = 0
 	c.prevLines = nil
 	c.regionBot = 0
+	c.scrollbackDirty = false // the wipe re-syncs scrollback to the new canvas
+	c.prevMutationGen = 0
+	c.clearGen++
+	c.clearRequested = true
+}
+
+// ClearGen reports the current clear generation. Snapshot builders stamp it
+// into Scene.ClearGen; see the clearGen field docs for the stale-scene drop.
+func (c *Compositor) ClearGen() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.clearGen
 }
 
 // Restore is called on shutdown: end synchronized output, reset SGR, move the
@@ -524,53 +597,84 @@ func (c *Compositor) Render(scene *Scene) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// A scene older than the last Clear predates the wipe: rendering it would
+	// repaint stale content and swallow clearRequested (the /new race where the
+	// renderLoop holds a pre-clear snapshot across a session reset). Drop it —
+	// Clear's render request produces a fresh, correctly-wiped frame next.
+	if scene.ClearGen != c.clearGen {
+		return
+	}
+
+	// A pending Clear() must be honored by THIS frame: wipe the screen and
+	// scrollback atomically inside the frame's sync, then repaint the fresh
+	// canvas. prevLines is already nil (Clear reset it), so classifyFrame
+	// returns frameFirst below and drawWindow repaints every row.
+	clearPending := c.clearRequested
+	c.clearRequested = false
+
 	kind := c.classifyFrame(scene, width, height)
 	canvas, _ := scene.compose(kind.cullFloor(c.scrollTop))
 	c.beginTrace(scene, canvas, width, height)
 	defer c.emitTrace()
+	if clearPending {
+		c.setTracePath("clear")
+	}
 
 	// Mid-transcript edit guard for the incremental paths: when content above
 	// the new window top changed identity since the previous frame (a
-	// streaming block growing ABOVE later-appended content, e.g. /quota
-	// landing mid-stream), the incremental scroll emission would scroll wrong
-	// row identities into scrollback and skip the real ones. Rebuild
-	// scrollback from the FULL canvas (cullFloor 0 — the steady canvas has
-	// rows below the watermark culled) instead.
-	if kind == frameDiff || kind == frameFullRepaint {
-		vt := c.windowTop(len(canvas), height)
-		if c.scrollOffUnstable(canvas, c.scrollTarget(vt, len(canvas))) {
-			canvas, _ = scene.compose(0)
-			c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
-			c.prevLines = copySlice(canvas)
-			c.prevW = width
-			c.prevH = height
-			return
-		}
+	// streaming block growing ABOVE later-appended content, e.g. /quota or a
+	// screen-filling /goal:list landing mid-stream), the incremental scroll
+	// emission would scroll wrong row identities into scrollback and skip the
+	// real ones. See handleMidTranscriptEdit for the defer-and-sync strategy
+	// that replaced the per-chunk full reset (the CPU storm).
+	if c.handleMidTranscriptEdit(scene, canvas, width, height, kind, clearPending) {
+		return
 	}
 
 	switch kind {
 	case frameFirst:
 		// First frame: InitialClear already wiped screen+scrollback; drawWindow
-		// emits any off-screen rows into scrollback then draws the window.
-		c.drawWindow(canvas, scene.Cursor, width, height)
+		// emits any off-screen rows into scrollback then draws the window. When
+		// this first frame follows a Clear() the wipe has NOT happened yet, so
+		// drawWindow performs it atomically inside the frame's sync.
+		c.drawWindow(canvas, scene.Cursor, width, height, clearPending)
+		c.scrollbackDirty = false
 	case frameGeometryReset:
 		// Width change: the terminal's scrollback no longer corresponds to
 		// the canvas layout (wrap reflowed), so the incremental diff cannot
 		// map it. Reset scrollback and re-emit every off-screen row at the
-		// current geometry, then repaint the window.
+		// current geometry, then repaint the window. The re-emit also
+		// re-syncs any deferred scrollback divergence.
 		c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
+		c.scrollbackDirty = false
 	case frameFullRepaint:
 		// Height-only resize or overlay: drawWindow emits scrolled-off rows
 		// then repaints the visible window in place (no screen wipe — the
 		// per-row repaint already replaces every row; see drawWindow).
-		c.drawWindow(canvas, scene.Cursor, width, height)
+		c.drawWindow(canvas, scene.Cursor, width, height, clearPending)
 	default: // frameDiff
-		c.renderDiff(canvas, scene.Cursor, width, height)
+		// Mid-window shift guard: the diff repaint (repaintWindow →
+		// unchangedRow) assumes the physical screen maps to the previous canvas
+		// by a PURE scroll (prevIdx = i - vt + c.vt). A tool widget growing or
+		// shrinking INSIDE the visible window inserts/deletes rows and shifts
+		// every row below it, breaking that mapping: the line-feed scroll moved
+		// the OLD layout, and unchangedRow then wrongly skips rows that are
+		// actually stale — leaving duplicate and lost rows around the
+		// history↔screen boundary (the reported tool-call duplicate bug). The
+		// scroll-off region is unaffected (the shift is below it), so scrollback
+		// needs no reset — but the window must be repainted in full rather than
+		// diffed. Route to drawWindow (repaints every row) for this frame.
+		if c.windowContentShifted(canvas, c.windowTop(len(canvas), height), height) {
+			c.drawWindow(canvas, scene.Cursor, width, height, clearPending)
+		} else {
+			c.renderDiff(canvas, scene.Cursor, width, height)
+		}
 	}
 
 	c.prevLines = copySlice(canvas)
 	c.prevW = width
 	c.prevH = height
+	c.prevMutationGen = scene.MutationGen
 }
 
 // frameKind classifies a frame so Render dispatches on a single value. The
@@ -591,7 +695,7 @@ const (
 // previous geometry).
 func (c *Compositor) classifyFrame(scene *Scene, width, height int) frameKind {
 	// Track the chrome-band height across frames: prevWindowFull consults
-	// prevChromeH to map the PREVIOUS canvas's content end (bugs.md "Slow
+	// prevChromeH to map the PREVIOUS canvas's content end ("Slow
 	// performance on very large conversations").
 	c.prevChromeH = c.chromeH
 	c.chromeH = max(scene.ChromeHeight, 0)
@@ -671,6 +775,115 @@ func (c *Compositor) appendOverflow(buf *strings.Builder, canvas []string, width
 	c.scrollTop = target
 }
 
+// deferScrollbackSync handles a mid-transcript growth above the visible
+// window without re-emitting the whole transcript. The grown rows belong in
+// terminal scrollback, but a terminal cannot insert rows into the middle of
+// its scrollback — the only exact sync would wipe and re-emit everything
+// (O(transcript) per chunk, the CPU storm). The screen content is unchanged
+// (the growth is above the window), so this frame needs no terminal write for
+// the transcript: advance the watermark bookkeeping to the natural target and
+// repaint the (identical) window cheaply. The caller keeps scrollbackDirty set
+// so a later settled frame performs ONE full reset to re-sync the scrollback.
+//
+// drawWindow skips its scrollback overflow because scrollTop already equals
+// the frame's target; it still repaints the window and chrome (bounded by the
+// terminal height, not the transcript length).
+func (c *Compositor) deferScrollbackSync(canvas []string, cursor *CursorPos, width, height, target int) {
+	c.scrollbackDirty = true
+	c.scrollTop = target
+	c.drawWindow(canvas, cursor, width, height, false)
+}
+
+// handleMidTranscriptEdit is the guard for the incremental paths: when content
+// above the new window top changed identity since the previous frame (a
+// streaming block growing ABOVE later-appended content, e.g. /quota or a
+// screen-filling /goal:list landing mid-stream), the incremental scroll
+// emission would scroll wrong row identities into scrollback and skip the real
+// ones.
+//
+// The previous response was a full scrollback reset (drawWindowResetScrollback)
+// on every hit — O(transcript) per stream chunk (each row re-emitted through
+// uniseg width truncation): the CPU >100% storm on long sessions, and the
+// repeated \x1b[3J wipes that yanked the terminal viewport (the reported
+// jump-back / scroll-back-down during /goal:list while streaming). This
+// replaces it with a defer-and-sync strategy:
+//
+//   - Buried growth (canvas grew, window byte-identical): DEFER the scrollback
+//     sync. The screen is unchanged, so we advance the watermark bookkeeping
+//     and repaint the (identical) window cheaply (O(viewport)); scrollbackDirty
+//     records that the terminal scrollback diverged (the grown rows cannot be
+//     inserted mid-scrollback).
+//   - Any other mid-transcript instability that CHANGED the window (e.g. a
+//     large bottom-append with displaced chrome rows): the window must be
+//     rebuilt and the scrollback re-emitted for the new layout — the full reset
+//     is correct and necessary here.
+//   - While scrollbackDirty: if the conversation settled (Scene.MutationGen
+//     unchanged — the stream stopped mutating) OR the visible window changed
+//     (a new block started after the appended content), ONE full reset
+//     re-syncs the stale scrollback before any further incremental scroll
+//     emission. A buried in-place edit (no height growth, window unchanged)
+//     falls through: the normal diff path no-ops the unchanged window and does
+//     not emit scrollback, so the stale state is preserved for the later sync.
+//
+// Returns true when the frame was fully handled (the caller must return).
+func (c *Compositor) handleMidTranscriptEdit(scene *Scene, canvas []string, width, height int, kind frameKind, clearPending bool) bool {
+	if kind != frameDiff && kind != frameFullRepaint {
+		return false
+	}
+	vt := c.windowTop(len(canvas), height)
+	target := c.scrollTarget(vt, len(canvas))
+	if c.growthAboveWindow(canvas, height) {
+		if clearPending {
+			// A pending Clear wipes the whole screen+scrollback this frame
+			// anyway; the reset path performs it atomically.
+			canvas, _ = scene.compose(0)
+			c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
+			c.scrollbackDirty = false
+		} else {
+			c.deferScrollbackSync(canvas, scene.Cursor, width, height, target)
+		}
+		c.prevMutationGen = scene.MutationGen
+		c.prevLines = copySlice(canvas)
+		c.prevW = width
+		c.prevH = height
+		return true
+	}
+	if c.scrollOffUnstable(canvas, target) {
+		// Mid-transcript edit that also CHANGED the window (e.g. a large
+		// bottom-append whose scroll-off region includes displaced chrome rows):
+		// the window must be rebuilt and the scrollback re-emitted for the new
+		// layout. The per-chunk full reset is correct here — the screen
+		// genuinely changed, so there is no cheaper path.
+		canvas, _ = scene.compose(0)
+		c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
+		c.scrollbackDirty = false
+		c.prevMutationGen = scene.MutationGen
+		c.prevLines = copySlice(canvas)
+		c.prevW = width
+		c.prevH = height
+		return true
+	}
+	if c.scrollbackDirty && (scene.MutationGen == c.prevMutationGen || !c.windowUnchanged(canvas, height)) {
+		// Either the conversation settled (no mutation since the last frame) or
+		// the visible window changed (a new block started after the appended
+		// content): the stale scrollback must be re-synced with ONE full reset
+		// before any further incremental scroll emission, or the wrong rows
+		// would be pushed into scrollback.
+		canvas, _ = scene.compose(0)
+		c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
+		c.scrollbackDirty = false
+		c.prevMutationGen = scene.MutationGen
+		c.prevLines = copySlice(canvas)
+		c.prevW = width
+		c.prevH = height
+		return true
+	}
+	// A buried in-place edit (no height growth, window unchanged) falls through:
+	// the normal diff path no-ops the unchanged window and does not emit
+	// scrollback, so the stale scrollback is preserved for the later sync.
+	return false
+}
+
 // drawWindow redraws the whole visible window top-down with absolute CUP in
 // one synchronized frame. It first emits any newly scrolled-off rows into
 // scrollback (via appendOverflow), then repaints every visible row (CUP +
@@ -680,23 +893,61 @@ func (c *Compositor) appendOverflow(buf *strings.Builder, canvas []string, width
 // harmful: on real terminals it visibly blanks the screen before the
 // rewrite lands (even inside CSI 2026 on several emulators), which produced
 // the black flash / mascot-flicker seen on overlay frames during tool calls
-// (bugs.md "Mascot/logo redraw", HIGH). In-place row replacement — the same
+// (Mascot/logo redraw, HIGH). In-place row replacement — the same
 // strategy renderDiff uses — is flicker-free and leaves no stale content:
 // every row is overwritten, and a shorter canvas shifts the window bottom up
 // rather than leaving residue.
-func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, height int) {
+func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, height int, wipe bool) {
 	c.setTracePath("full")
 	c.fullRedrawCount++
 	vt := c.windowTop(len(canvas), height)
 
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
+	if wipe {
+		// A Clear() requested a screen+scrollback wipe. Fold it into THIS frame's
+		// sync (instead of a separate immediate write) so it commits atomically
+		// with the repaint — a stale pre-clear frame can never be painted on top.
+		buf.WriteString("\x1b[2J\x1b[H\x1b[3J")
+	}
 	c.appendOverflow(&buf, canvas, width, height)
 	// drawWindow repaints every row (first frame / full repaint), so the scroll
 	// advance did not pre-write any bottom rows for repaintWindow to skip.
 	c.lastScrollCount = 0
-	for i := vt; i < len(canvas); i++ {
+	// Two-phase repaint: transcript in [1, windowH], chrome in [windowH+1, height].
+	// This keeps the chrome band pinned at the screen bottom even when vt is
+	// clamped above the natural anchor (windowTop's watermark clamp).
+	windowH := height - c.chromeH
+	if windowH < 1 {
+		windowH = 1
+	}
+	contentEnd := len(canvas) - c.chromeH
+	if contentEnd < 0 {
+		contentEnd = 0
+	}
+	transcriptEnd := vt + windowH
+	if transcriptEnd > contentEnd {
+		transcriptEnd = contentEnd
+	}
+	for i := vt; i < transcriptEnd; i++ {
 		screenRow := i - vt + 1
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
+		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		c.traceWroteRow(screenRow)
+	}
+	// Clear any stale transcript rows between the transcript end and the
+	// chrome band (a clamped window can leave rows the taller previous frame
+	// painted).
+	for screenRow := transcriptEnd - vt + 1; screenRow <= windowH; screenRow++ {
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
+		c.traceWroteRow(screenRow)
+	}
+	// Draw the pinned chrome band in the rows below the transcript region.
+	for i := contentEnd; i < len(canvas); i++ {
+		screenRow := windowH + (i - contentEnd) + 1
+		if screenRow > height {
+			break
+		}
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
 		buf.WriteString(truncateToWidth(canvas[i], width, ""))
 		c.traceWroteRow(screenRow)
@@ -807,7 +1058,7 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 	// when the window top moved but the watermark did NOT advance (canvas
 	// shrank then regrew, e.g. a stream finalizing mid-flip), the scroll wrote
 	// ZERO rows, and counting (target - c.vt) skips a bottom transcript row
-	// that was never repainted — leaving a stale row behind (bugs.md Bug D:
+	// that was never repainted — leaving a stale row behind (Bug D:
 	// a tool widget's last line kept the pending bg after success).
 	c.lastScrollCount = max(0, target-max(c.vt, c.scrollTop))
 	c.repaintWindow(&buf, canvas, vt, width, height)
@@ -826,29 +1077,24 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 // terminal of `height` rows, reconciling the natural bottom anchor with the
 // scrollback watermark.
 //
-// Two regimes:
+// The window top is ALWAYS clamped to the scrollback watermark: rows
+// [0, scrollTop) have been emitted into terminal scrollback exactly once and
+// the terminal offers no "unscroll" — repainting them onto the visible window
+// would duplicate them (the screen-glitching bug at the scrollback boundary).
 //
-//   - Canvas still taller than the terminal (canvasLen > height): the natural
-//     anchor len(canvas)-height is used even when it dips a few rows below
-//     scrollTop. A small mid-transcript shrink then repaints a handful of
-//     already-scrolled rows just above the viewport — imperceptible, since
-//     they read as ordinary scroll-back — and, crucially, keeps the window
-//     full. Clamping to scrollTop here would leave an orphaned blank row at
-//     the bottom of the screen (the "screen shrank one line" regression).
-//
-//   - Canvas fits on screen (canvasLen <= height): the whole canvas is
-//     visible, so rows [0, scrollTop) would visibly pop back onto the screen —
-//     the mascot/logo flash when a tall transcript collapsed to fit for one
-//     frame. Clamp the window top to scrollTop so already-scrolled rows are
-//     never repainted; the top of the window shows blanks until the canvas
-//     regrows.
+// When the natural anchor dips below the watermark — a mid-transcript shrink
+// (a thinking block finalized shorter) or a chrome-band shrink (goal bubble
+// cleared) — the clamped window shows blank rows at the top of the
+// transcript region. repaintWindow's two-phase layout keeps the chrome band
+// pinned at the screen bottom regardless, so the blanks are truthful empty
+// space, never displaced chrome.
 //
 // A deliberate transcript reset (/new, session switch) must call Clear first
 // to zero the watermark; otherwise a from-scratch canvas would be anchored at
 // a stale watermark instead of rendering fully.
 func (c *Compositor) windowTop(canvasLen, height int) int {
 	vt := max(0, canvasLen-height)
-	if canvasLen <= height && vt < c.scrollTop {
+	if vt < c.scrollTop {
 		vt = c.scrollTop
 	}
 	return vt
@@ -884,7 +1130,7 @@ func (c *Compositor) scrollTarget(vt, canvasLen int) int {
 // above the window — a streaming block that grows ABOVE later-appended
 // content, e.g. /quota landing mid-stream — shifts the region and the
 // emission would destroy unscrolled rows and emit shifted duplicates
-// (bugs.md "Slow performance on very large conversations": the quota-stream
+// (Slow performance on very large conversations: the quota-stream
 // regression only stayed hidden because every chrome change force-resynced).
 //
 // Only MALIGNANT instability counts: a row whose content MOVED to a
@@ -929,6 +1175,110 @@ func (c *Compositor) scrollOffUnstable(canvas []string, to int) bool {
 	return false
 }
 
+// growthAboveWindow reports whether the canvas grew while the visible window
+// content stayed byte-identical — the signature of a streaming block growing
+// entirely ABOVE the window (e.g. a buried stream under a screen-filling
+// /goal:list). The incremental scroll is unsound for this even when the
+// shifted rows are byte-identical (goal-list spacer rows): the steady path
+// would scroll the window's top rows into scrollback although they must stay
+// on screen. This is the same mid-transcript-edit condition scrollOffUnstable
+// detects, but it catches the byte-identical-blank case the row-content
+// comparison cannot see.
+func (c *Compositor) growthAboveWindow(canvas []string, height int) bool {
+	return len(canvas) > len(c.prevLines) && c.windowUnchanged(canvas, height)
+}
+
+// windowUnchanged reports whether the visible window content (the last
+// transcript rows plus the chrome band) is byte-identical to the previous
+// frame's window. Used to distinguish a buried mid-transcript edit (stream
+// growing above the window) — where the screen needs no repaint and the
+// incremental scroll must not run — from a genuine window change.
+func (c *Compositor) windowUnchanged(canvas []string, height int) bool {
+	if c.prevLines == nil {
+		return false
+	}
+	// A chrome-band height change alters the window layout (the chrome rows
+	// themselves), so the window is never "unchanged" across it even when the
+	// transcript rows kept their content.
+	if c.chromeH != c.prevChromeH {
+		return false
+	}
+	contentEnd := len(canvas) - c.chromeH
+	prevContentEnd := len(c.prevLines) - c.prevChromeH
+	windowH := height - c.chromeH
+	if windowH < 1 || contentEnd < windowH || prevContentEnd < windowH {
+		return false
+	}
+	for i := 0; i < windowH; i++ {
+		if canvas[contentEnd-windowH+i] != c.prevLines[prevContentEnd-windowH+i] {
+			return false
+		}
+	}
+	return true
+}
+
+// windowContentShifted reports whether any row of the visible window
+// [vt, vt+height) moved POSITION since the previous frame — i.e. the window's
+// content is not a pure scroll of the previous canvas but has an internal
+// insertion/deletion (a tool widget growing or shrinking mid-window). In that
+// case repaintWindow's unchangedRow skip — which maps screen rows to the
+// previous canvas by the pure-scroll delta — is unsound and would leave stale
+// and duplicated rows, so the caller must repaint the whole window instead.
+//
+// Like scrollOffUnstable, only a POSITION shift counts: an in-place edit (a
+// live widget's ticking elapsed text) is benign — repaintWindow repaints that
+// row because its bytes differ at the SAME index. Blank rows and rows whose
+// previous content was in the (now displaced) chrome band are benign too. A
+// pure bottom-append stream does NOT trip the guard: the existing window rows
+// keep their pure-scroll indices (prev == cur), and the newly revealed bottom
+// rows map to indices that held chrome/blank last frame.
+func (c *Compositor) windowContentShifted(canvas []string, vt, height int) bool {
+	if c.prevLines == nil {
+		return false
+	}
+	// Only an insertion/deletion can shift a window row's canvas index; an
+	// in-place edit (no length change — a ticking widget, a same-height text
+	// update) leaves every row at its index and is handled correctly by the
+	// diff repaint. Bail out unless the transcript grew or shrank so the
+	// common in-place streaming/animation case is not misrouted to a full
+	// repaint.
+	if len(canvas)-c.chromeH == len(c.prevLines)-c.prevChromeH {
+		return false
+	}
+	prevContentEnd := len(c.prevLines) - c.prevChromeH
+	windowBottom := min(vt+height, len(canvas)-c.chromeH)
+	curIndex := map[string]int{} // lazily filled on the first in-window diff
+	for i := vt; i < windowBottom; i++ {
+		if i >= prevContentEnd {
+			break // at/above the old content end there was chrome or nothing
+		}
+		// Same-index comparison: under a pure scroll+append the transcript rows
+		// keep their canvas indices (new rows append at the bottom), so canvas[i]
+		// still holds prevLines[i]. A tool widget growing/shrinking INSIDE the
+		// window inserts/deletes rows and shifts every row below it, so canvas[i]
+		// no longer matches prevLines[i] there — the exact condition that breaks
+		// repaintWindow's unchangedRow skip and leaves duplicate/lost rows around
+		// the history↔screen boundary (the reported tool-call duplicate bug).
+		prev := strings.TrimSpace(ansi.Strip(c.prevLines[i]))
+		cur := strings.TrimSpace(ansi.Strip(canvas[i]))
+		if prev == "" || cur == "" || prev == cur {
+			continue
+		}
+		if len(curIndex) == 0 {
+			curIndex = indexCanvasRows(canvas, len(canvas)-c.chromeH)
+		}
+		// The previous content still exists in the transcript but MOVED to a
+		// different index (j != i): an internal insertion/deletion shifted it,
+		// so the window is not a pure scroll and the diff repaint is unsound.
+		// (If it no longer exists anywhere, it was an in-place edit — benign:
+		// repaintWindow repaints that row because its bytes differ at index i.)
+		if j, ok := curIndex[prev]; ok && j != i {
+			return true
+		}
+	}
+	return false
+}
+
 // indexCanvasRows maps each transcript row's normalized content (ANSI
 // stripped, whitespace trimmed) to its canvas index, excluding the chrome
 // band. Rows past contentEnd are chrome, not transcript, so they never
@@ -959,42 +1309,66 @@ func (c *Compositor) advanceScrollback(buf *strings.Builder, canvas []string, ta
 // repaintWindow redraws the visible window with absolute CUP, skipping rows
 // whose bytes are unchanged since the previous frame.
 //
-// The window spans screen rows [1, height] starting at canvas row vt. When the
-// canvas is shorter than vt+height (it transiently shrank below the scrollback
-// watermark), canvas indices past the end render as blank rows — clearing the
-// stale rows the taller previous frame left on the lower screen, without
-// repainting the already-scrolled rows above vt.
+// The window is painted in two phases so the chrome band stays pinned at the
+// screen bottom even when vt is clamped above the natural bottom anchor (a
+// chrome-band shrink, where the watermark prevents revealing already-scrolled
+// rows):
+//
+//  1. Transcript region: screen rows [1, windowH], mapping to canvas rows
+//     [vt, vt+windowH). Rows past contentEnd render as blanks (the transcript
+//     genuinely shrank or the watermark clamped above the natural anchor).
+//  2. Chrome region: screen rows [windowH+1, height], mapping to canvas rows
+//     [contentEnd, len(canvas)). The chrome band is always at the bottom of
+//     the screen regardless of where vt lands.
+//
+// When the canvas is shorter than vt+windowH (it transiently shrank below the
+// scrollback watermark), canvas indices past the transcript end render as
+// blank rows — clearing the stale rows the taller previous frame left on the
+// lower screen, without repainting the already-scrolled rows above vt.
 func (c *Compositor) repaintWindow(buf *strings.Builder, canvas []string, vt, width, height int) {
-	// Skip the row(s) the scroll just wrote at the bottom of the transcript
-	// region: on a scrolling frame the last scrollCount transcript rows were
-	// already emitted by emitSteadyScroll (pushing the old top rows into
-	// scrollback). Redrawing them here would write the same content twice in
-	// one frame — once pushed into scrollback and once on screen — the
-	// transient duplicate-row bug seen at conversation start (and amplified
-	// when a chrome reset follows).
-	//
-	// The skip window is anchored at the transcript band end (contentEnd), NOT
-	// at the bottom of the whole canvas: emitSteadyScroll writes rows
-	// [writeFrom, writeTo) with writeTo clamped to contentEnd, so the freshly
-	// written rows are the last scrollCount rows BELOW the chrome band.
-	// Anchoring at len(canvas) instead would skip the bottom chrome rows
-	// (editor/footer) — which the scroll never wrote — suppressing their
-	// repaint whenever they change on a scrolling frame (e.g. the editor
-	// clearing on submit while the command echo scrolls the transcript: the
-	// stale command then stays visible until the next non-scrolling frame).
 	contentEnd := len(canvas) - c.chromeH
+	windowH := height - c.chromeH
+	if windowH < 1 {
+		windowH = 1
+	}
 	skipFrom := contentEnd - c.lastScrollCount
 	skipTo := contentEnd
-	for screenRow := 1; screenRow <= height; screenRow++ {
+
+	c.repaintTranscriptRows(buf, canvas, vt, windowH, contentEnd, skipFrom, skipTo, width)
+	c.repaintChromeRows(buf, canvas, windowH, height, contentEnd, width)
+}
+
+// repaintTranscriptRows paints screen rows [1, windowH] from canvas transcript
+// rows [vt, vt+windowH), skipping unchanged rows and the scroll-skip window.
+func (c *Compositor) repaintTranscriptRows(buf *strings.Builder, canvas []string, vt, windowH, contentEnd, skipFrom, skipTo, width int) {
+	for screenRow := 1; screenRow <= windowH; screenRow++ {
 		i := vt + screenRow - 1
 		line := ""
-		if i >= 0 && i < len(canvas) {
+		if i >= 0 && i < contentEnd {
 			line = canvas[i]
 		}
 		if c.lastScrollCount > 0 && i >= skipFrom && i < skipTo {
 			continue
 		}
-		if c.unchangedRow(canvas, i, vt) {
+		if c.unchangedRowTranscript(canvas, i, vt) {
+			continue
+		}
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
+		buf.WriteString(truncateToWidth(line, width, ""))
+		c.traceWroteRow(screenRow)
+	}
+}
+
+// repaintChromeRows paints screen rows [windowH+1, height] from the canvas
+// chrome band [contentEnd, len(canvas)), keeping chrome pinned at the bottom.
+func (c *Compositor) repaintChromeRows(buf *strings.Builder, canvas []string, windowH, height, contentEnd, width int) {
+	for screenRow := windowH + 1; screenRow <= height; screenRow++ {
+		i := contentEnd + (screenRow - windowH - 1)
+		line := ""
+		if i >= 0 && i < len(canvas) {
+			line = canvas[i]
+		}
+		if c.unchangedRowChrome(canvas, i, screenRow, windowH) {
 			continue
 		}
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
@@ -1183,18 +1557,41 @@ func (c *Compositor) resetScrollRegion(buf *strings.Builder) {
 	c.regionBot = 0
 }
 
-// unchangedRow reports whether canvas row i (in the current window at viewport
-// top vt) has the same bytes as the row the terminal currently shows there.
-// The previous frame's row that was shown at this screen position was
-// prevLines[i] adjusted by the viewport-top delta between frames.
-// An out-of-range i (canvas shrank below the window) is treated as a blank row.
-func (c *Compositor) unchangedRow(canvas []string, i, vt int) bool {
+// unchangedRowTranscript reports whether transcript canvas row i (at viewport
+// top vt) has the same bytes as the row the terminal currently shows at that
+// screen position. The previous frame's row at the same screen position was
+// prevLines[i - vt + c.vt].
+func (c *Compositor) unchangedRowTranscript(canvas []string, i, vt int) bool {
 	if c.prevLines == nil {
 		return false
 	}
-	// Canvas row i is at screen row i-vt. In the previous frame the same screen
-	// row showed prevLines[i - vt + c.vt].
 	prevIdx := i - vt + c.vt
+	if prevIdx < 0 || prevIdx >= len(c.prevLines) {
+		return false
+	}
+	cur := ""
+	if i >= 0 && i < len(canvas) {
+		cur = canvas[i]
+	}
+	return c.prevLines[prevIdx] == cur
+}
+
+// unchangedRowChrome reports whether chrome canvas row i (at screen row
+// screenRow) has the same bytes as the row the terminal currently shows
+// there. In the previous frame the chrome band was also pinned at the screen
+// bottom, so the same screen row held prevLines at the chrome offset in the
+// PREVIOUS canvas.
+func (c *Compositor) unchangedRowChrome(canvas []string, i, screenRow, windowH int) bool {
+	if c.prevLines == nil {
+		return false
+	}
+	prevChromeH := c.prevChromeH
+	prevWindowH := c.prevH - prevChromeH
+	if prevWindowH < 1 {
+		prevWindowH = 1
+	}
+	prevContentEnd := len(c.prevLines) - prevChromeH
+	prevIdx := prevContentEnd + (screenRow - prevWindowH - 1)
 	if prevIdx < 0 || prevIdx >= len(c.prevLines) {
 		return false
 	}
@@ -1208,6 +1605,15 @@ func (c *Compositor) unchangedRow(canvas []string, i, vt int) bool {
 // appendCursorSeq writes the hardware-cursor positioning into the SAME
 // synced buffer as the frame content (absolute CUP, immune to auto-wrap drift),
 // plus a show/hide transition only when the visibility actually changes.
+//
+// The screen row uses the SAME two-phase mapping as the paint
+// (repaintWindow/drawWindow): transcript rows (below contentEnd) map linearly
+// in the viewport top, while the pinned chrome band maps to the screen
+// bottom regardless of where the window top lands. The two mappings coincide
+// only when vt is the natural bottom anchor (canvasLen == vt+height); during
+// a transient canvas shrink the watermark clamps vt above the anchor, and a
+// linear map would place the cursor ABOVE the editor row — the reported
+// "cursor one line too high / jumps out of the input box" glitches.
 func (c *Compositor) appendCursorSeq(buf *strings.Builder, cp *CursorPos, totalLines, width, vtop, height int) {
 	if cp == nil || totalLines <= 0 {
 		if c.cursorVisible {
@@ -1221,13 +1627,25 @@ func (c *Compositor) appendCursorSeq(buf *strings.Builder, cp *CursorPos, totalL
 	if width > 0 && targetCol >= width {
 		targetCol = width - 1
 	}
-	screenRow := clampRow(targetRow-vtop+1, height)
+	screenRow := clampRow(c.cursorScreenRow(targetRow, totalLines, vtop, height), height)
 	buf.WriteString(fmt.Sprintf("\x1b[%d;%dH", screenRow, targetCol+1))
 	if !c.cursorVisible {
 		buf.WriteString("\x1b[?25h")
 		c.cursorVisible = true
 	}
 	c.hardwareCursorRow = targetRow
+}
+
+// cursorScreenRow maps a canvas row to its 1-indexed screen row under the
+// two-phase layout: chrome-band rows (at/above the transcript end) are pinned
+// to the screen bottom, transcript rows scroll linearly with the viewport top.
+func (c *Compositor) cursorScreenRow(targetRow, totalLines, vtop, height int) int {
+	contentEnd := max(0, totalLines-c.chromeH)
+	if targetRow >= contentEnd && c.chromeH > 0 {
+		windowH := max(1, height-c.chromeH)
+		return windowH + (targetRow - contentEnd) + 1
+	}
+	return targetRow - vtop + 1
 }
 
 // clampRow clamps a 1-indexed screen row to [1, height].

@@ -101,7 +101,7 @@ func TestGoalTool_UpdateCompleteSetsStopTurn(t *testing.T) {
 	}
 }
 
-// TestGoalTool_CompleteRemindsOpenTodos pins the bugs.md requirement: when a
+// TestGoalTool_CompleteRemindsOpenTodos pins the requirement: when a
 // goal is ACHIEVED with pending todos, the framework reminds the model of the
 // open items (todos die with the goal, but unfinished work must not vanish
 // silently — the model can schedule a follow-up goal if it is still needed).
@@ -196,7 +196,7 @@ func TestGoalTool_ActionFieldMismatch(t *testing.T) {
 	}
 }
 
-// TestGoalTool_ActionInferredWhenOmitted pins the bugs.md "Goal management
+// TestGoalTool_ActionInferredWhenOmitted pins the "Goal management
 // tool issue" fix: models frequently omit `action` and pass only the payload
 // fields (export goa-export-20260729-102137.zip: {"status":"blocked",...} →
 // invalid goal action ""). The tool must infer the intended action from the
@@ -315,7 +315,7 @@ func TestGoalTool_ActionInferredWhenOmitted(t *testing.T) {
 }
 
 // TestGoalTool_CreateQueuesBehindPausedOrBlockedGoal pins the second half of
-// the bugs.md "Goal management tool issue": with a PAUSED or BLOCKED goal,
+// the Goal management tool issue: with a PAUSED or BLOCKED goal,
 // create must ADD to the queue (todo-list semantics) instead of failing with
 // "a goal already exists" (GetActiveGoal filters status==active while
 // CreateGoal rejects any state — the trap the model hit in the export).
@@ -382,7 +382,7 @@ func TestGoalTool_CreateQueuesBehindPausedOrBlockedGoal(t *testing.T) {
 	})
 }
 
-// TestGoalTool_Postpone pins the bugs.md "Goal scheduling" feature: the
+// TestGoalTool_Postpone pins the Goal scheduling:feature: the
 // model's deprioritize primitive — demote the active goal to the BACK of the
 // queue so the next scheduled goal starts (the clear event drives the app's
 // auto-promotion, exactly as after a completion).
@@ -442,7 +442,7 @@ func TestGoalTool_Postpone(t *testing.T) {
 	})
 }
 
-// TestGoalTool_Promote pins the bugs.md "Goal scheduling" feature: the
+// TestGoalTool_Promote pins the Goal scheduling:feature: the
 // model's prioritize primitive — activate a queued goal NOW; the current goal
 // is demoted to the FRONT of the queue so it resumes right after.
 func TestGoalTool_Promote(t *testing.T) {
@@ -526,7 +526,7 @@ func TestGoalTool_SchemaListsSchedulingActions(t *testing.T) {
 
 // TestGoalTool_Create_FreshContext verifies the model-facing freshContext
 // argument is threaded into CreateGoalInput and surfaced on the goal snapshot
-// (bugs.md: per-goal clean-context flag).
+// (per-goal clean-context flag).
 func TestGoalTool_Create_FreshContext(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	tool := newGoalTool(mode, func() bool { return true })
@@ -543,7 +543,7 @@ func TestGoalTool_Create_FreshContext(t *testing.T) {
 }
 
 // TestGoalTool_TodoActions verifies the model can add and check off items in
-// the goal's framework-managed todo list via the goal tool (bugs.md:
+// the goal's framework-managed todo list via the goal tool
 // framework-managed todo list for goals).
 func TestGoalTool_TodoActions(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
@@ -871,7 +871,7 @@ func TestGoalTool_CancelNoActiveGoal(t *testing.T) {
 }
 
 // TestGoalTool_Create_FreshContextDefaultOn verifies the flipped default
-// (bugs.md Issue 24): a create WITHOUT freshContext now yields a clean-context
+// (Issue 24): a create WITHOUT freshContext now yields a clean-context
 // goal (default true); the model must explicitly pass false to keep context.
 func TestGoalTool_Create_FreshContextDefaultOn(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
@@ -992,7 +992,10 @@ func TestGoalTool_CreateHandover(t *testing.T) {
 }
 
 // TestGoalTool_CreateHandover_Queued verifies a queued create carries the
-// explicit handover into the durable queue and list exposes it.
+// explicit handover into the durable queue. The handover is full detail, so
+// the compact `list` view no longer exposes it (list is now bounded); the
+// durable handover is verified by promoting the queued goal and reading it
+// back via `get`, the full-detail path.
 func TestGoalTool_CreateHandover_Queued(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	q := &fakeQueue{}
@@ -1007,12 +1010,24 @@ func TestGoalTool_CreateHandover_Queued(t *testing.T) {
 	if len(read) != 1 || read[0].Handoff == nil || *read[0].Handoff != "queued continuity note" {
 		t.Errorf("queued goal handover = %+v", read)
 	}
+	// list is compact and must NOT leak the full handover.
 	out, err := tool.Execute(`{"action":"list"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `"handover":"queued continuity note"`) {
-		t.Errorf("list must expose the queued handover: %q", out)
+	if strings.Contains(out, "queued continuity note") {
+		t.Errorf("compact list must not expose full handover text: %q", out)
+	}
+	// The handover survives promotion and is readable in full via `get`.
+	if _, err := tool.Execute(`{"action":"promote","goalId":"` + read[0].ID + `"}`); err != nil {
+		t.Fatal(err)
+	}
+	getOut, err := tool.Execute(`{"action":"get"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(getOut, `"handover":"queued continuity note"`) {
+		t.Errorf("get must expose the promoted goal's stored handover: %q", getOut)
 	}
 }
 
@@ -1105,7 +1120,7 @@ func TestGoalTool_CreateRejectsOversizedObjective(t *testing.T) {
 }
 
 // TestGoalTool_AccessSerializesConcurrentCalls is the regression test for the
-// goal-tool-call ordering bug (bugs.md must-fix #4): "When multiple goal tool
+// goal-tool-call ordering bug (must-fix #4): "When multiple goal tool
 // calls are executed, the request order should be kept." Because the goal tool
 // mutates shared goal-manager state, concurrent goal calls must be serialized
 // by the tool scheduler — which happens only when the tool declares an access
@@ -1161,4 +1176,90 @@ func goalTeam(g *goal.GoalSnapshot) string {
 		return "<nil>"
 	}
 	return g.Team
+}
+
+// TestGoalTool_CreateReportsTotalQueueDepth pins the create result's
+// totalQueued field: `queued` counts only the objectives queued by THIS call,
+// while totalQueued reports the TOTAL queue depth after the call so the TUI
+// can summarize the whole goal list ("2 queued (5 total)").
+func TestGoalTool_CreateReportsTotalQueueDepth(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	if _, err := tool.Execute(`{"action":"create","objective":"active one"}`); err != nil {
+		t.Fatalf("seed active: %v", err)
+	}
+	// Seed two pre-existing queued goals behind the active one.
+	if _, err := tool.Execute(`{"action":"create","objective":"old 1"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(`{"action":"create","objective":"old 2"}`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := tool.Execute(`{"action":"create","objectives":["new 1","new 2"]}`)
+	if err != nil {
+		t.Fatalf("batch create: %v", err)
+	}
+	var payload struct {
+		Queued      int `json:"queued"`
+		TotalQueued int `json:"totalQueued"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("result must stay JSON: %v (%q)", err, out)
+	}
+	if payload.Queued != 2 {
+		t.Errorf("queued = %d, want 2 (only this call's objectives)", payload.Queued)
+	}
+	if payload.TotalQueued != 4 {
+		t.Errorf("totalQueued = %d, want 4 (2 pre-existing + 2 new)", payload.TotalQueued)
+	}
+}
+
+// TestGoalTool_ListIsCompact verifies `goal list` returns bounded summaries,
+// not full GoalSnapshots: a queue of goals with long objectives/handovers must
+// serialize small (the frigolite session's 33-goal list reached ~50KB), and
+// the large free-text fields (handover) must not appear in the list payload.
+func TestGoalTool_ListIsCompact(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	longObj := strings.Repeat("x", goal.ExcerptObjectiveLen*4)
+	longHand := strings.Repeat("h", goal.ExcerptFieldLen*4)
+	if _, err := tool.Execute(`{"action":"create","objective":"` + longObj + `","handover":"` + longHand + `"}`); err != nil {
+		t.Fatalf("seed active: %v", err)
+	}
+	// Seed many queued goals with long fields to simulate the 33-goal case.
+	for i := 0; i < 33; i++ {
+		if _, err := tool.Execute(`{"action":"create","objective":"` + longObj + `","handover":"` + longHand + `"}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := tool.Execute(`{"action":"list"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Compact: no long run of the padded objective/handover survives.
+	if strings.Contains(out, strings.Repeat("x", goal.ExcerptObjectiveLen+1)) {
+		t.Errorf("list leaked an untruncated objective")
+	}
+	if strings.Contains(out, strings.Repeat("h", goal.ExcerptFieldLen+1)) {
+		t.Errorf("list leaked an untruncated handover")
+	}
+	// Bounded size: 34 goals (1 active + 33 queued) must stay far below the
+	// prior ~50KB. ~34 * (400 objective + small overhead) ≈ 15KB worst case.
+	if len(out) > 20000 {
+		t.Errorf("list result too large: %d chars", len(out))
+	}
+	// Shape preserved: active + queued + count keys present.
+	var payload struct {
+		Active json.RawMessage   `json:"active"`
+		Queued []json.RawMessage `json:"queued"`
+		Count  int               `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("list must stay JSON: %v (%q)", err, out[:200])
+	}
+	if payload.Count != 33 || len(payload.Queued) != 33 {
+		t.Errorf("count=%d queued=%d, want 33/33", payload.Count, len(payload.Queued))
+	}
 }

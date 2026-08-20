@@ -45,12 +45,12 @@ tools:
 		t.Error("Goal = false, want true (home config sets a key absent from embedded defaults)")
 	}
 	// Keys not pinned by the home layer keep their embedded defaults
-	// (embedded: webfetch=true, pty_exec=false).
+	// (embedded: webfetch=true, terminals=true).
 	if !cfg.Tools.Enabled.WebFetch {
 		t.Error("WebFetch = false, want true (embedded default inherited when home is silent)")
 	}
-	if cfg.Tools.Enabled.PTYExec {
-		t.Error("PTYExec = true, want false (embedded default inherited when home is silent)")
+	if !cfg.Tools.Enabled.Terminals {
+		t.Error("Terminals = false, want true (embedded default inherited when home is silent)")
 	}
 }
 
@@ -68,7 +68,7 @@ tools:
   enabled:
     verify: false
     memento: true
-    pty_exec: false
+    terminals: false
 `)
 	writeConfig(t, filepath.Join(projectDir, ".goa", "config.yaml"), `
 tools:
@@ -78,7 +78,7 @@ tools:
 	writeConfig(t, filepath.Join(projectDir, ".goa", "config.local.yaml"), `
 tools:
   enabled:
-    pty_exec: true
+    terminals: true
 `)
 
 	loader := NewCascadeLoader(projectDir, "", nil)
@@ -93,8 +93,8 @@ tools:
 	if !cfg.Tools.Enabled.Memento {
 		t.Error("Memento = false, want true (home default applies: project and local are silent)")
 	}
-	if !cfg.Tools.Enabled.PTYExec {
-		t.Error("PTYExec = false, want true (local pin overrides home default)")
+	if !cfg.Tools.Enabled.Terminals {
+		t.Error("Terminals = false, want true (local pin overrides home default)")
 	}
 }
 

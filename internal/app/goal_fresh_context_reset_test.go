@@ -37,7 +37,7 @@ func (o *contextResetObserver) count() int {
 }
 
 // TestAgentManagerRunner_RunFreshEmitsContextReset is the wiring test for the
-// fresh-context CM bug (bugs.md): the begin turn of a fresh-context goal —
+// fresh-context CM bug: the begin turn of a fresh-context goal —
 // which clears the live context and rotates the provider cache key — must
 // emit exactly one EventContextReset so the cache-bust detector re-arms and
 // the new conversation's cold start is not counted as a cache miss.

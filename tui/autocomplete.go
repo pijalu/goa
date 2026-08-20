@@ -28,7 +28,7 @@ const (
 	CatHistory                      // history-search entries
 	// CatFiles groups @-file completions. It must be explicit: the zero value
 	// is CatMostUsed, so an unset Category used to render files under the
-	// "── Most Used ──" header (bugs.md Issue 8).
+	// "── Most Used ──" header (Issue 8).
 	CatFiles // @-file path completions
 )
 
@@ -45,6 +45,20 @@ type Completion struct {
 // cmdName is the command name (with leading slash), argPrefix is the partial
 // argument text the user has typed so far.
 type ArgCompletionsFunc func(cmdName, argPrefix string) []Completion
+
+const (
+	// minCharsForModifiers is the number of characters the user must type after
+	// the leading '/' before sub-parameter (modifier) completions are expanded.
+	// Bare "/" (and short "/x") would otherwise expand every matched command's
+	// args plus their nested args — hundreds of options for "/" alone.
+	// Deferring until 2 characters keeps the root list to base commands.
+	minCharsForModifiers = 2
+
+	// maxCompletionOptions bounds the total number of options returned by
+	// Complete. The popup renders the top rows with a "(N more)" hint, so an
+	// unbounded list only adds latency; capping keeps typing responsive.
+	maxCompletionOptions = 100
+)
 
 // CommandCompleter completes /command names and their arguments.
 type CommandCompleter struct {
@@ -110,50 +124,86 @@ func (c *CommandCompleter) SetArgCompleter(fn ArgCompletionsFunc) {
 func (c *CommandCompleter) Complete(prefix string) []Completion {
 	// Colon-triggered arg completion: /cmd:argprefix
 	// Only activates when the text before : is a /command, not regular text.
-	colonIdx := strings.Index(prefix, ":")
-	if colonIdx >= 0 && c.argCompleter != nil {
-		cmdName := prefix[:colonIdx]
-		if !strings.HasPrefix(cmdName, "/") {
-			return nil
-		}
-		argPrefix := prefix[colonIdx+1:]
-		results := c.argCompleter(cmdName, argPrefix)
-		var expanded []Completion
-		for _, r := range results {
-			r.Value = cmdName + ":" + r.Value
-			r.Display = r.Value
-			r.Category = CatModifier
-			expanded = append(expanded, r)
-			// Level 2: try to get deeper completions
-			rawVal := strings.TrimPrefix(r.Value, cmdName+":")
-			deeper := c.argCompleter(cmdName, rawVal+":")
-			for _, d := range deeper {
-				d.Value = cmdName + ":" + d.Value
-				d.Display = d.Value
-				d.Category = CatModifier
-				expanded = append(expanded, d)
-			}
-		}
-		return expanded
+	if strings.Contains(prefix, ":") && c.argCompleter != nil {
+		return c.completeArgs(prefix)
 	}
 
 	// Find matching base commands
 	matchedCmds := c.matchCommands(prefix)
 
-	// Build three tiers
+	// Build the Most Used and Commands tiers.
 	mostUsed := c.buildMostUsed(matchedCmds, prefix)
 	commands := c.buildCommands(matchedCmds, mostUsed)
-	modifiers := c.buildModifiers(matchedCmds, mostUsed, prefix)
+
+	// Sub-parameter (modifier) completions are deferred until the user has
+	// typed a couple of characters after '/', so bare "/" stays a compact base
+	// command list instead of expanding every command's args.
+	var modifiers []Completion
+	if len(prefix)-1 >= minCharsForModifiers {
+		modifiers = c.buildModifiers(matchedCmds, mostUsed, prefix)
+	}
 
 	// Sort Most Used by score (descending), keep other tiers in prefix-first order
 	sortCompletions(mostUsed)
 
-	// Concatenate: Most Used → Commands → Modifiers
+	// Concatenate: Most Used → Commands → Modifiers, bounded for responsiveness.
 	var result []Completion
 	result = append(result, mostUsed...)
 	result = append(result, commands...)
 	result = append(result, modifiers...)
+	if len(result) > maxCompletionOptions {
+		result = result[:maxCompletionOptions]
+	}
 	return result
+}
+
+// completeArgs handles colon-triggered argument completion (/cmd:argprefix),
+// expanding one level plus its nested level.
+func (c *CommandCompleter) completeArgs(prefix string) []Completion {
+	colonIdx := strings.Index(prefix, ":")
+	cmdName := prefix[:colonIdx]
+	if !strings.HasPrefix(cmdName, "/") {
+		return nil
+	}
+	argPrefix := prefix[colonIdx+1:]
+	results := c.argCompleter(cmdName, argPrefix)
+	// Fallback for a partially-typed nested segment: /goal:cancel typed as
+	// argPrefix "cancel" (no trailing colon) may complete to nothing at its
+	// own level, while the parent scope ("goal:") still matches it. Complete
+	// the parent and keep the entries that extend the typed text, so a
+	// command's sub-parameters still propose their nested scopes.
+	if len(results) == 0 {
+		if lastColon := strings.LastIndex(argPrefix, ":"); lastColon >= 0 {
+			parent := argPrefix[:lastColon+1]
+			for _, p := range c.argCompleter(cmdName, parent) {
+				if strings.HasPrefix(p.Value, argPrefix) {
+					results = append(results, p)
+				}
+			}
+		}
+	}
+	var expanded []Completion
+	for _, r := range results {
+		expanded = append(expanded, c.expandArg(cmdName, r)...)
+	}
+	return expanded
+}
+
+// expandArg prefixes one argument completion with its command and appends any
+// nested (level-2) completions reachable from it.
+func (c *CommandCompleter) expandArg(cmdName string, r Completion) []Completion {
+	r.Value = cmdName + ":" + r.Value
+	r.Display = r.Value
+	r.Category = CatModifier
+	out := []Completion{r}
+	rawVal := strings.TrimPrefix(r.Value, cmdName+":")
+	for _, d := range c.argCompleter(cmdName, rawVal+":") {
+		d.Value = cmdName + ":" + d.Value
+		d.Display = d.Value
+		d.Category = CatModifier
+		out = append(out, d)
+	}
+	return out
 }
 
 // matchCommands finds base commands matching the prefix.
@@ -348,7 +398,7 @@ func NewFileCompleter(workdir string) *FileCompleter {
 // Only activates when prefix starts with @ (e.g., @src/main.go).
 // Uses `fd` CLI for fast gitignore-aware search, falls back to os.ReadDir.
 // Results are ranked exact > prefix > fuzzy and carry the CatFiles category
-// (bugs.md Issue 8); a token that already names an existing file completes
+// (Issue 8); a token that already names an existing file completes
 // to nothing (popup suppressed — the path is done).
 func (f *FileCompleter) Complete(prefix string) []Completion {
 	if prefix == "" || !strings.HasPrefix(prefix, "@") {
@@ -398,7 +448,7 @@ func isExistingFile(dir, name string) bool {
 // case-insensitive prefix > fuzzy, with shorter basenames first inside a
 // tier (closest to a complete path), and stamps the CatFiles category. fd
 // and readdir return filesystem order, which left exact matches buried
-// under fuzzy ones (bugs.md Issue 8: @plans/plan offered
+// under fuzzy ones (Issue 8: @plans/plan offered
 // PLAN-00-TEST-INFRA.md before plan.md — both are case-insensitive prefix
 // matches, so case sensitivity is the tie-breaker).
 func rankFileCompletions(comps []Completion, partial string) []Completion {

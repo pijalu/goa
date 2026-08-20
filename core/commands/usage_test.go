@@ -19,6 +19,7 @@ type fakeUsageStore struct {
 	sum       usage.Stat
 	busts     int
 	daily     []usage.DayCount
+	rows      []usage.Record
 	lastSince time.Time
 }
 
@@ -36,6 +37,10 @@ func (f *fakeUsageStore) Busts(project string, since time.Time) (int, error) {
 func (f *fakeUsageStore) DailyCounts(project string, days int) ([]usage.DayCount, error) {
 	return f.daily, nil
 }
+
+func (f *fakeUsageStore) Rows(project string, since time.Time, limit int) ([]usage.Record, error) {
+	return f.rows, nil
+}
 func (f *fakeUsageStore) Close() error { return nil }
 
 func dimKey(d usage.Dimension, project string) string {
@@ -46,7 +51,7 @@ func newUsageCtx(buf *strings.Builder, project string) core.Context {
 	return core.Context{OutputBuffer: buf, ProjectDir: project}
 }
 
-// TestUsageCommand_CacheWriteHiddenWhenZero covers bugs.md "Stats: cache
+// TestUsageCommand_CacheWriteHiddenWhenZero covers "Stats: cache
 // write is always 0": OpenAI-style/local providers never report cache writes
 // (only Anthropic does), so the summary line and the Cache R/W column must
 // drop the write half when it is 0 — and keep it when real writes exist.
@@ -137,7 +142,7 @@ func TestUsageCommand_ScopeFiltersSections(t *testing.T) {
 	}
 }
 
-// TestStatsCommand_Verbose covers bugs.md Issue 5: /stats:verbose must list every
+// TestStatsCommand_Verbose covers Issue 5: /stats:verbose must list every
 // known project and, for each, the per-provider and per-model split.
 func TestStatsCommand_Verbose(t *testing.T) {
 	var buf strings.Builder

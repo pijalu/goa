@@ -14,7 +14,7 @@ import (
 
 // streamCapture writes the exact agent stream flow as JSONL (one record per
 // agent output event, in arrival order) so a reported TUI repetition can be
-// replayed/diffed to decide between model-origin and TUI-origin (bugs.md
+// replayed/diffed to decide between model-origin and TUI-origin
 // "TUI shows unexpected repetition" entry). Enabled with the
 // --capture-stream <path> command-line flag (config key logging.capture_stream).
 type streamCapture struct {

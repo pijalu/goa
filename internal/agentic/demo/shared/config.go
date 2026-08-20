@@ -159,9 +159,9 @@ func (c Config) ToCompression() agentic.ContextCompressionConfig {
 
 	return agentic.ContextCompressionConfig{
 		MaxTokens:           maxTokens,
-		ThresholdPercent:    c.Threshold,
+		Thresholds:          agentic.CompressionThresholds{HardPercent: c.Threshold},
+		Strategies:          agentic.CompressionLayerStrategies{Hard: strategy},
 		OnContextError:      true,
-		Strategy:            strategy,
 		PreserveRecentTurns: 2,
 	}
 }

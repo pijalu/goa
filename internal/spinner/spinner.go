@@ -76,7 +76,7 @@ func Names() []string {
 }
 
 // Default returns the name and definition of the default spinner. Hexagon is
-// the default (bugs.md "Hexagon spinner as default"); arc remains the
+// the default (Hexagon spinner as default); arc remains the
 // fallback if hexagon is unavailable (e.g. a user spinner.json without it).
 func Default() (string, Definition) {
 	once.Do(load)

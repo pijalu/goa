@@ -13,14 +13,20 @@ func TestGetEnvAPIKey_KnownProvider(t *testing.T) {
 	os.Setenv("OPENAI_API_KEY", "sk-test-123")
 	defer os.Unsetenv("OPENAI_API_KEY")
 
-	key := GetEnvAPIKey(ProviderOpenAI)
+	key, err := GetEnvAPIKey(ProviderOpenAI)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if key != "sk-test-123" {
 		t.Errorf("expected 'sk-test-123', got %q", key)
 	}
 }
 
 func TestGetEnvAPIKey_LocalProvider(t *testing.T) {
-	key := GetEnvAPIKey(ProviderLMStudio)
+	key, err := GetEnvAPIKey(ProviderLMStudio)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if key != "" {
 		t.Errorf("expected empty for local provider, got %q", key)
 	}
@@ -32,7 +38,10 @@ func TestGetEnvAPIKey_AnthropicPriority(t *testing.T) {
 	defer os.Unsetenv("ANTHROPIC_OAUTH_TOKEN")
 	defer os.Unsetenv("ANTHROPIC_API_KEY")
 
-	key := GetEnvAPIKey(ProviderAnthropic)
+	key, err := GetEnvAPIKey(ProviderAnthropic)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if key != "oat-abc" {
 		t.Errorf("expected OATH token to take priority, got %q", key)
 	}
@@ -42,14 +51,20 @@ func TestGetEnvAPIKey_UnknownProvider(t *testing.T) {
 	os.Setenv("CUSTOM_API_KEY", "custom-key")
 	defer os.Unsetenv("CUSTOM_API_KEY")
 
-	key := GetEnvAPIKey(ProviderCustom)
+	key, err := GetEnvAPIKey(ProviderCustom)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if key != "custom-key" {
 		t.Errorf("expected 'custom-key', got %q", key)
 	}
 }
 
 func TestGetEnvAPIKey_NoEnv(t *testing.T) {
-	key := GetEnvAPIKey(ProviderDeepSeek)
+	key, err := GetEnvAPIKey(ProviderDeepSeek)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if key != "" {
 		t.Errorf("expected empty, got %q", key)
 	}
@@ -115,6 +130,47 @@ func TestBuildBaseOptions_PreservesExplicit(t *testing.T) {
 	}
 	if opts.Transport != TransportWebSocket {
 		t.Errorf("expected websocket transport, got %q", opts.Transport)
+	}
+}
+
+// TestBuildSimpleOptions_SessionTitleForcesThinkingOff is the P13 acceptance
+// at the options layer: purpose=session-title must force thinking off even
+// when the caller requested a high thinking level (mirrors DS-thinking lock).
+func TestBuildSimpleOptions_SessionTitleForcesThinkingOff(t *testing.T) {
+	model := Model{Reasoning: true}
+
+	opts := BuildSimpleOptions(model, SimpleStreamOptions{
+		StreamOptions: StreamOptions{Purpose: PurposeSessionTitle},
+		Reasoning:     ThinkingHigh,
+	})
+	if opts.Reasoning != ThinkingOff {
+		t.Errorf("session-title must force ThinkingOff, got %q", opts.Reasoning)
+	}
+	if opts.Purpose != PurposeSessionTitle {
+		t.Errorf("purpose must survive BuildSimpleOptions, got %q", opts.Purpose)
+	}
+}
+
+// TestBuildSimpleOptions_ConversationKeepsRequestedLevel guards the lock
+// scope: conversation and compaction purposes keep the requested thinking
+// level unchanged.
+func TestBuildSimpleOptions_ConversationKeepsRequestedLevel(t *testing.T) {
+	model := Model{Reasoning: true}
+
+	for _, tc := range []struct {
+		purpose Purpose
+	}{
+		{PurposeConversation},
+		{PurposeCompaction},
+		{""},
+	} {
+		opts := BuildSimpleOptions(model, SimpleStreamOptions{
+			StreamOptions: StreamOptions{Purpose: tc.purpose},
+			Reasoning:     ThinkingHigh,
+		})
+		if opts.Reasoning != ThinkingHigh {
+			t.Errorf("purpose %q must keep ThinkingHigh, got %q", tc.purpose, opts.Reasoning)
+		}
 	}
 }
 

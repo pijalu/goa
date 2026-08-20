@@ -71,7 +71,7 @@ func TestWriteFileRenderer_RenderResult_PreviewLimit(t *testing.T) {
 	}
 }
 
-// TestWriteFileRenderer_CompletedWriteShowsTotalLines reproduces the bugs.md
+// TestWriteFileRenderer_CompletedWriteShowsTotalLines reproduces the
 // "write stats are incorrect" item: buildWritePreview embeds only the first
 // 10 content lines in the result's fenced block. After completion the widget
 // must still report the TOTAL lines written — taken from the retained tool

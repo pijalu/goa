@@ -18,7 +18,7 @@ import (
 
 // Compile-time assertion that GoalTool declares its resource access so the
 // tool scheduler can serialize concurrent goal calls in request order
-// (bugs.md must-fix #4: "When multiple goal tool calls are executed, the
+// (must-fix #4: "When multiple goal tool calls are executed, the
 // request order should be kept"). Goal calls all mutate the same shared
 // goal-manager state, so they share a category and never run in parallel.
 var _ toolaccess.Accessor = (*GoalTool)(nil)
@@ -35,12 +35,12 @@ func (t *GoalTool) Access(_ string) toolaccess.Access {
 // GoalTool is the single goal-management tool exposed to the model. It
 // consolidates create / update / get / set_budget behind one `action`
 // dispatcher so the tool array stays small and stable for prompt caching
-// (bugs.md S2): one fixed schema instead of four.
+// (S2): one fixed schema instead of four.
 type GoalTool struct {
 	Mode *goal.GoalMode
 	// CreateAllowed reports whether autonomous goal creation is permitted. It
 	// gates only the `create` action and only when NO goal is currently active
-	// (bugs.md S2: all goal actions are allowed while a goal is running).
+	// (S2: all goal actions are allowed while a goal is running).
 	CreateAllowed func() bool
 	// AutoUnblock reports whether a model-blocked goal (with justification)
 	// should auto-spawn an unblocking investigation goal in front of it. Nil =
@@ -60,7 +60,7 @@ type GoalTool struct {
 	Queue GoalQueue
 	// VerifyTimeout reports the configured verify-command timeout
 	// (goals.verify_timeout) for the live progress display at completion.
-	// Nil = default 2m (bugs.md Bug A: the timeout must be clear to the user).
+	// Nil = default 2m (Bug A: the timeout must be clear to the user).
 	VerifyTimeout func() time.Duration
 	// challenged tracks that the previous complete request was intercepted
 	// by the done-gate, so the confirming call knows verification is about
@@ -145,85 +145,85 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				},
 				"objective": map[string]any{
 					"type":        "string",
-					"description": "create: the objective to pursue (must have a verifiable end state).",
+					"description": "create: objective",
 				},
 				"objectives": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
-					"description": "create: add several goals at once; first starts active if none is, rest queue.",
+					"description": "create: batch",
 				},
 				"goalId": map[string]any{
 					"type":        "string",
-					"description": "cancel: target — omitted or \"current\" cancels the ACTIVE goal (a queued successor is promoted PAUSED, never auto-started), \"all\" also wipes the queue, otherwise the queued goal's ID or friendly name. reorder: the queued goal's ID or friendly name to act on.",
+					"description": "cancel/reorder: id|name; 'current'=ACTIVE; 'all'=wipe queue",
 				},
 				"direction": map[string]any{
 					"type":        "string",
 					"enum":        []string{"up", "down"},
-					"description": "reorder: move the queued goal up or down one position.",
+					"description": "reorder: up|down",
 				},
 				"priority": map[string]any{
 					"type":        "string",
 					"enum":        []string{"front"},
-					"description": "create: \"front\" = insert at queue FRONT (promoted next) instead of appending; pushes an execution goal ahead of the one it unblocks.",
+					"description": "create: queue front",
 				},
 				"completionCriterion": map[string]any{
 					"type":        "string",
-					"description": "create: how to verify the goal is complete.",
+					"description": "create: verify criterion",
 				},
 				"verifyCommand": map[string]any{
 					"type":        "string",
-					"description": "create: machine-checkable done-condition (e.g. \"go test ./...\"). Done-gate runs it after confirmed completion: exit0=close, else stay active w/ output. Prefer over prose criterion when checkable by command.",
+					"description": "create: shell done-check; exit0=pass",
 				},
 				"replace": map[string]any{
 					"type":        "boolean",
-					"description": "create: replace an existing goal instead of failing.",
+					"description": "create: replace current",
 				},
 				"freshContext": map[string]any{
 					"type":        "boolean",
-					"description": "create: run continuation turns on clean context (objective+handover only), not the current conversation; history kept in transcript, not sent to the agent. Default: goals.fresh_context config (true). false = keep current context.",
+					"description": "create: clean ctx",
 				},
 				"handover": map[string]any{
 					"type":        "string",
-					"description": "create: free-text continuity note for the successor goal — what makes clean context sufficient. Recommended structure: State (done/verified w/ evidence), Decisions (constraints), Next steps (first actions), Risks/open questions, Carried limits (budget, verify command, completion criterion). Shown to the next goal as untrusted data (\"<untrusted_handover>\"), never instructions. Max 4096 chars.",
+					"description": "create: note — what makes clean context sufficient; untrusted; max 4096 chars",
 				},
 				"team": map[string]any{
 					"type":        "string",
-					"description": "create: bind this goal to a named agent team (TEAMS.md §5.1) — while active, the team's overlay is applied. Empty/omitted = inherit the session-level team.",
+					"description": "create: team",
 				},
 				"status": map[string]any{
 					"type":        "string",
 					"enum":        []string{"active", "complete", "paused", "blocked"},
-					"description": "update: the lifecycle status to set.",
+					"description": "update: status",
 				},
 				"reason": map[string]any{
 					"type":        "string",
-					"description": "update: justification for the transition. REQUIRED for `paused` (why the goal must yield) and `blocked` (the concrete blocker). For `complete`, carries the verification evidence and is required when the done-gate asks for it.",
+					"description": "update: justification; required for paused/blocked",
 				},
 				"expectation": map[string]any{
 					"type":        "string",
-					"description": "update: REQUIRED for `blocked` — exactly what input or change from the user/environment will unblock the goal.",
+					"description": "blocked: exact unblocking input",
 				},
 				"value": map[string]any{
 					"type":        "number",
-					"description": "set_budget: the positive numeric budget value.",
+					"description": "set_budget: value",
 				},
 				"unit": map[string]any{
 					"type":        "string",
 					"enum":        []string{"turns", "tokens", "milliseconds", "seconds", "minutes", "hours"},
-					"description": "set_budget: the unit for the budget value.",
+					"description": "set_budget: unit",
 				},
 				"todoTitle": map[string]any{
 					"type":        "string",
-					"description": "add_todo: title of the task to add to the goal's todo list.",
+					"description": "add_todo: title",
 				},
 				"todoId": map[string]any{
 					"type":        "string",
-					"description": "update_todo: ID of the todo item to update.",
+					"description": "update_todo: id",
 				},
 				"todoStatus": map[string]any{
 					"type":        "string",
 					"enum":        []string{"pending", "in_progress", "done"},
-					"description": "update_todo: the new status for the todo item.",
+					"description": "update_todo: status",
 				},
 			},
 			"additionalProperties": false,
@@ -243,7 +243,7 @@ func (t *GoalTool) Execute(input string) (string, error) {
 // ExecuteContextWithResult implements agentic.ContextResultTool: the ctx
 // carries the execution-progress emitter so a goal completion can ANNOUNCE
 // the verify command it is about to run (exact command + timeout) instead of
-// sitting silent for up to 2 minutes (bugs.md Bug A), while the ToolResult
+// sitting silent for up to 2 minutes (Bug A), while the ToolResult
 // keeps the StopTurn signal for terminal statuses.
 func (t *GoalTool) ExecuteContextWithResult(ctx context.Context, input string) (agentic.ToolResult, error) {
 	return t.executeWithResult(ctx, input)
@@ -296,7 +296,7 @@ func (t *GoalTool) actionHandlers() map[string]func(context.Context, goalArgs) (
 // when present; when omitted (a common model slip — e.g. sending only
 // {"status":"blocked",...}), the intended action is inferred from whichever
 // payload fields are set, so the call does what the model obviously meant
-// instead of erroring (bugs.md "Goal management tool issue").
+// instead of erroring (Goal management tool issue).
 func inferAction(args goalArgs) string {
 	if args.Action != "" {
 		return args.Action
@@ -361,7 +361,7 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
 			fmt.Errorf("action \"create\" requires \"objective\" or a non-empty \"objectives\" array"))
 	}
-	// Execution-time gate (bugs.md S2): autonomous creation is blocked only
+	// Execution-time gate (S2): autonomous creation is blocked only
 	// when the feature flag is off AND no goal is active. All actions are
 	// allowed while a goal is running.
 	if t.CreateAllowed != nil && !t.CreateAllowed() {
@@ -381,7 +381,7 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 	// (not just active status) matters: GetActiveGoal hides paused/blocked
 	// goals while CreateGoal rejects any existing state, so an active-only
 	// check makes create fail with "a goal already exists" behind a parked
-	// goal (bugs.md "Goal management tool issue").
+	// goal (Goal management tool issue).
 	var activated *goal.GoalSnapshot
 	queued := 0
 	for _, obj := range objectives {
@@ -464,10 +464,11 @@ func (t *GoalTool) enqueue(objective string, criterion *string, verifyCommand *s
 	return err
 }
 
-// createResult builds the create result, reporting the active goal and how
-// many objectives were queued.
+// createResult builds the create result, reporting the active goal, how many
+// objectives were queued by THIS call (queued) and the TOTAL queue depth after
+// the call (totalQueued) so the TUI can summarize the whole goal list.
 func (t *GoalTool) createResult(activated *goal.GoalSnapshot, queued int) (agentic.ToolResult, error) {
-	payload := map[string]any{"queued": queued}
+	payload := map[string]any{"queued": queued, "totalQueued": t.queueDepth()}
 	if activated != nil {
 		payload["goal"] = goal.ForModel(*activated)
 	}
@@ -475,11 +476,35 @@ func (t *GoalTool) createResult(activated *goal.GoalSnapshot, queued int) (agent
 	return agentic.ToolResult{Output: string(out)}, nil
 }
 
-// handleList returns the active goal plus the queued goals as a todo-like list.
+// queueDepth returns the current number of queued goals, 0 when no queue is
+// wired. A read error reports the depth as unknown → 0 (the summary is
+// informational; a failed queue read must not fail a successful create).
+func (t *GoalTool) queueDepth() int {
+	if t.Queue == nil {
+		return 0
+	}
+	goals, err := t.Queue.Read()
+	if err != nil {
+		return 0
+	}
+	return len(goals)
+}
+
+// handleList returns a COMPACT view of the goal state: the active goal and
+// every queued goal are summarized (identity, status, counters, a bounded
+// objective excerpt, todo roll-up) rather than serialized as full
+// GoalSnapshots. Full snapshots carry the unbounded free-text fields
+// (completion criterion, verify command, handover, terminal reason) that made
+// a multi-goal list result balloon — a 33-goal list reached ~50KB / ~12.5k
+// tokens, which bloats the context and enlarges the divergent suffix a
+// content-prefix cache (Z.AI/DeepSeek) must recompute. Full detail for one
+// goal stays available via handleGet. The summary shape keeps the keys the
+// TUI renderer reads (name/objective/status/counters/todos) so the display is
+// unchanged.
 func (t *GoalTool) handleList() (agentic.ToolResult, error) {
 	payload := map[string]any{}
 	if g := t.Mode.GetGoal().Goal; g != nil {
-		payload["active"] = goal.ForModel(*g)
+		payload["active"] = goal.SummarizeSnapshot(*g)
 	} else {
 		payload["active"] = nil
 	}
@@ -489,8 +514,12 @@ func (t *GoalTool) handleList() (agentic.ToolResult, error) {
 			queued = q
 		}
 	}
-	payload["queued"] = queued
-	payload["count"] = len(queued)
+	summaries := make([]goal.UpcomingGoalSummary, len(queued))
+	for i := range queued {
+		summaries[i] = goal.SummarizeUpcoming(queued[i])
+	}
+	payload["queued"] = summaries
+	payload["count"] = len(summaries)
 	out, _ := json.Marshal(payload)
 	return agentic.ToolResult{Output: string(out)}, nil
 }
@@ -585,7 +614,7 @@ func (t *GoalTool) handleReorder(args goalArgs) (agentic.ToolResult, error) {
 }
 
 // handlePostpone demotes the active goal to the BACK of the queue so the next
-// scheduled goal starts (bugs.md "Goal scheduling"). It is the model's
+// scheduled goal starts (Goal scheduling). It is the model's
 // deprioritize primitive: the demoted goal keeps its objective, criterion,
 // verify command and context mode, and the clear event drives the host's
 // auto-promotion of the new queue head — exactly as after a completion.
@@ -624,7 +653,7 @@ func (t *GoalTool) handlePostpone(args goalArgs) (agentic.ToolResult, error) {
 	}, nil
 }
 
-// handlePromote activates a queued goal NOW (bugs.md "Goal scheduling"): the
+// handlePromote activates a queued goal NOW (Goal scheduling): the
 // model's prioritize primitive. The current goal (if any) is demoted to the
 // FRONT of the queue so it resumes right after, and the chosen queued goal
 // becomes active atomically (replace semantics inside GoalMode).
@@ -858,7 +887,7 @@ Your ONLY job is to determine whether this blocker can be solved without user in
 // active with the failure detail, escalating to blocked at the configured
 // streak cap. Without a criterion (or gate off), completion is immediate.
 //
-// Transparency (bugs.md Bug A): the confirming call ANNOUNCES the verify
+// Transparency (Bug A): the confirming call ANNOUNCES the verify
 // command before running it (exact command + timeout, via the execution
 // progress emitter), and a successful completion returns the full evidence
 // block (command, exit, elapsed, timeout, output tail) so the user can
@@ -911,7 +940,7 @@ func (t *GoalTool) announceVerification(ctx context.Context) {
 }
 
 // formatOpenTodosReminder appends the open-todos reminder to a completion
-// result (bugs.md "when a goal is achieved: if there are pending todos, the
+// result ("when a goal is achieved: if there are pending todos, the
 // framework should remind the model of the open todos"). A gated completion
 // (recorded criterion) already requires every todo done, so this fires for
 // criterion-less completions. Todos are contained by the goal and die with

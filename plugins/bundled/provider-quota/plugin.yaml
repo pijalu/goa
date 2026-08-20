@@ -6,3 +6,4 @@ entry: plugin.js
 goa_min_version: 0.1.0
 permissions:
   - provider-keys
+  - oauth-token

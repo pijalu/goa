@@ -27,7 +27,7 @@ func newTodoTestCmd(t *testing.T) (*TodoCommand, *goal.GoalMode) {
 	return &TodoCommand{Mode: mode}, mode
 }
 
-// TestTodoCommand_Parse covers the positional colon forms (bugs.md Issue 5).
+// TestTodoCommand_Parse covers the positional colon forms (Issue 5).
 func TestTodoCommand_Parse(t *testing.T) {
 	cmd := &TodoCommand{}
 	cases := []struct {
@@ -160,7 +160,7 @@ func TestTodoCommand_EditDirect(t *testing.T) {
 }
 
 // TestTodoCommand_EditInteractive opens the input line PREFILLED with the
-// todo's current title and a prompt naming the todo (bugs.md Issue 5: "the
+// todo's current title and a prompt naming the todo (Issue 5: "the
 // edit should use the inputline with a title matching the todo being worked
 // on").
 func TestTodoCommand_EditInteractive(t *testing.T) {

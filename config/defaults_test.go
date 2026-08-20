@@ -18,22 +18,25 @@ func TestDefaultConfigYAML(t *testing.T) {
 	if yaml == "" {
 		t.Fatal("DefaultConfigYAML returned empty")
 	}
-	if !containsStr(yaml, "solo") {
-		t.Error("Default config should contain solo mode")
+	if !containsStr(yaml, "yolo") {
+		t.Error("Default config should contain yolo mode")
 	}
 	if !containsStr(yaml, "dark") {
 		t.Error("Default config should contain dark theme")
 	}
 }
 
+// TestDefaultConfig_AutoHealToolCalls verifies the embedded default keeps
+// auto-heal OFF (adopted tuned default): auto-healing malformed XML tool
+// calls is only wanted for local models that need it.
 func TestDefaultConfig_AutoHealToolCalls(t *testing.T) {
 	loader := NewCascadeLoader(t.TempDir(), "", nil)
 	cfg, err := loader.Load()
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if !cfg.Execution.AutoHealToolCalls {
-		t.Errorf("Execution.AutoHealToolCalls = %v, want true", cfg.Execution.AutoHealToolCalls)
+	if cfg.Execution.AutoHealToolCalls {
+		t.Errorf("Execution.AutoHealToolCalls = true, want false")
 	}
 }
 
@@ -117,8 +120,8 @@ func TestDefaultSkillDirs(t *testing.T) {
 }
 
 // TestDefaultConfig_VerifyToolEnabled verifies the verify tool is opt-OUT:
-// enabled by default via the embedded config, so the model can run the test
-// suite unless the user explicitly disables it.
+// enabled via the embedded config — but is opt-in per the tuned default
+// adoption: users enable it via /tools when they want machine verification.
 func TestDefaultConfig_VerifyToolEnabled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	loader := NewCascadeLoader(t.TempDir(), "", nil)
@@ -126,16 +129,16 @@ func TestDefaultConfig_VerifyToolEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if !cfg.Tools.Enabled.Verify {
-		t.Errorf("Tools.Enabled.Verify = false, want true (verify is opt-out)")
+	if cfg.Tools.Enabled.Verify {
+		t.Errorf("Tools.Enabled.Verify = true, want false (opt-in per tuned default)")
 	}
 }
 
 // TestDefaultConfig_AgentDrivenToolsEnabled verifies the agent-driven
-// companion tools (request_review, delegate_to) are registered by default via
-// the embedded config: companion mode gates their EXECUTION (tool.Enabled),
-// so their schemas must always be registered or /companion:on can never arm
-// them (e2e T2: the main agent reported request_review missing).
+// companion tools (request_review, delegate_to) are OFF in the embedded
+// default (tuned adoption). Companion mode arms them at runtime via the
+// companion-active override in registerAgentDrivenTools, so a user who turns
+// companion on still gets the tools regardless of the persisted default.
 func TestDefaultConfig_AgentDrivenToolsEnabled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	loader := NewCascadeLoader(t.TempDir(), "", nil)
@@ -143,11 +146,11 @@ func TestDefaultConfig_AgentDrivenToolsEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if !cfg.Tools.Enabled.RequestReview {
-		t.Errorf("Tools.Enabled.RequestReview = false, want true (execution is companion-gated)")
+	if cfg.Tools.Enabled.RequestReview {
+		t.Errorf("Tools.Enabled.RequestReview = true, want false (opt-in per tuned default)")
 	}
-	if !cfg.Tools.Enabled.DelegateTo {
-		t.Errorf("Tools.Enabled.DelegateTo = false, want true (execution is companion-gated)")
+	if cfg.Tools.Enabled.DelegateTo {
+		t.Errorf("Tools.Enabled.DelegateTo = true, want false (opt-in per tuned default)")
 	}
 }
 

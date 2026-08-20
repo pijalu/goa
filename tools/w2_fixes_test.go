@@ -330,12 +330,12 @@ func TestFuzzyFindFile_SkipsGoaDir(t *testing.T) {
 }
 
 // --- BUG-08: pty ansi stripping handled via internal/ansi (tested here indirectly
-// via ansi.Strip; the pty_exec test that uses the PTY manager is separate). ---
-// (Direct pty_exec strip behavior is covered by internal/ansi tests + a unit
+// via ansi.Strip; the terminals tool test that uses the PTY manager is separate). ---
+// (Direct pty strip behavior is covered by internal/ansi tests + a unit
 // test on the shared stripper below.)
 
 func TestAnsiStripBugsFromPtyInput(t *testing.T) {
-	// Uses the shared internal/ansi stripper now wired into pty_exec.
+	// Uses the shared internal/ansi stripper now wired into terminals read.
 	got := ansi.Strip("\x1b]0;hello\x07visible\x1b[31mred\x1b[0m")
 	if got != "visiblered" {
 		t.Errorf("strip = %q, want %q", got, "visiblered")

@@ -40,7 +40,7 @@ func newCacheControl(retention provider.CacheRetention, supportsLong bool) *cach
 // (LM Studio, Ollama) do automatic longest-prefix caching — any marker that
 // moves between requests rewrites that history message's bytes and kills the
 // prefix match at that point, forcing a full re-parse of everything after it
-// (bugs.md "cache-hit-first": a moving marker was caught in the request
+// (cache-hit-first: a moving marker was caught in the request
 // capture diverging between rounds while the message text was identical).
 // Pinned to the opening turn, every request stays a strict append of the
 // previous one and the whole history is cache-served.

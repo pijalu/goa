@@ -106,7 +106,7 @@ func TestHTTPTransportTimeoutKeepsBodyAlive(t *testing.T) {
 	assert.Contains(t, string(body), "hello")
 }
 
-// TestHTTPTransportHeaderTimeoutFiresOnHang reproduces the bugs.md
+// TestHTTPTransportHeaderTimeoutFiresOnHang reproduces the
 // "stuck in sending" hang: the server accepts the connection but never writes
 // a response header. The connection-phase timeout must abort the request
 // instead of letting it hang forever.

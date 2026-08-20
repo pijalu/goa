@@ -15,8 +15,10 @@ import (
 )
 
 // /config → Teams: full team-definition CRUD (TEAMS.md §8.3), mirroring the
-// orchestrator-roles editor (config_orchestrator.go). All mutations persist
-// via saveHomeSection on the "teams" section and are revalidated per §3.5.
+// orchestrator-roles editor (config_orchestrator.go). Definition mutations
+// persist via saveHomeSection on the "teams" section and are revalidated
+// per §3.5; the active-team selection persists to the project LOCAL layer
+// (see saveTeamsActive).
 
 func teamsLabel(cfg *config.Config) string {
 	n := len(cfg.Teams.Definitions)
@@ -34,24 +36,57 @@ func (m *configMenu) saveTeamsSection() {
 	}
 }
 
-// openTeams is the entry point for /config → Teams.
+// saveTeamsActive persists ONLY teams.active to the project local layer
+// (.goa/config.local.yaml — gitignored, per-developer), matching /team
+// activation (persistActiveTeam): a team is a project-scoped working set, so
+// its selection must neither leak across projects (home layer) nor dirty the
+// committed project config.
+func (m *configMenu) saveTeamsActive() {
+	if m.ctx.ConfigSaver == nil {
+		return
+	}
+	if err := m.ctx.ConfigSaver.SaveLocalFieldValue([]string{"teams", "active"}, m.ctx.Config.Teams.Active); err != nil {
+		m.flash("Failed to save config: " + err.Error())
+	}
+	if err := m.ctx.Config.Validate(); err != nil {
+		m.flash("Saved with validation warning: " + err.Error())
+	}
+}
+
+// openTeams is the entry point for /config → Teams. It presents one flat,
+// wizard-forward list (mirroring /config → Models): — add team — first (the
+// creation wizard), then every defined team (select to edit/remove), then the
+// active-team row. Creation is one tap instead of buried under a definitions
+// submenu; selecting a team opens its detail for edit/remove.
 func (m *configMenu) openTeams() {
 	m.current = m.openTeams
 	cfg := m.ctx.Config
 	items := []tui.SelectorItem{
-		{Value: "active", Label: "Active team", Description: orNone(cfg.Teams.Active)},
-		{Value: "definitions", Label: "Team definitions", Description: fmt.Sprintf("%d defined", len(cfg.Teams.Definitions))},
+		{Value: "__add__", Label: "— add team —", Description: "define a new team (wizard)"},
 	}
-	m.ctx.SelectOption("Teams settings:", items, "", func(selected string, ok bool) {
-		if !ok {
+	for _, name := range cfg.TeamNames() {
+		def := cfg.Teams.Definitions[name]
+		desc := teamOneLiner(def)
+		if cfg.Teams.Active == name {
+			desc += " · active"
+		}
+		items = append(items, tui.SelectorItem{Value: name, Label: name, Description: desc})
+	}
+	items = append(items, tui.SelectorItem{Value: "active", Label: "Active team", Description: orNone(cfg.Teams.Active)})
+	m.ctx.SelectOption("Teams:", items, "", func(selected string, ok bool) {
+		if !ok || selected == "" {
 			m.back()
 			return
 		}
 		switch selected {
+		case "__add__":
+			m.open(m.addTeamWizard)
 		case "active":
 			m.open(m.openTeamsActive)
-		case "definitions":
-			m.open(m.openTeamsDefinitions)
+		default:
+			// Push the Teams list so ESC from the detail returns here (one
+			// level up) instead of closing the menu.
+			m.open(func() { m.openTeamDetail(selected) })
 		}
 	})
 }
@@ -78,31 +113,8 @@ func (m *configMenu) openTeamsActive() {
 			return
 		}
 		cfg.Teams.Active = selected
-		m.saveTeamsSection()
+		m.saveTeamsActive()
 		m.openTeams()
-	})
-}
-
-// openTeamsDefinitions lists defined teams with add entry point.
-func (m *configMenu) openTeamsDefinitions() {
-	m.current = m.openTeamsDefinitions
-	cfg := m.ctx.Config
-	var items []tui.SelectorItem
-	for _, name := range cfg.TeamNames() {
-		def := cfg.Teams.Definitions[name]
-		items = append(items, tui.SelectorItem{Value: name, Label: name, Description: teamOneLiner(def)})
-	}
-	items = append(items, tui.SelectorItem{Value: "__add__", Label: "— add team —", Description: "define a new team"})
-	m.ctx.SelectOption("Team definitions:", items, "", func(v string, ok bool) {
-		if !ok || v == "" {
-			m.back()
-			return
-		}
-		if v == "__add__" {
-			m.open(m.addTeamWizard)
-			return
-		}
-		m.openTeamDetail(v)
 	})
 }
 
@@ -127,17 +139,19 @@ func (m *configMenu) openTeamDetail(name string) {
 			m.back()
 			return
 		}
+		// Push the detail page so ESC from any sub-page returns here (one
+		// level up) instead of closing the menu.
 		switch field {
 		case "description":
-			m.promptTeamField(name, "description")
+			m.open(func() { m.promptTeamField(name, "description") })
 		case "review":
-			m.openTeamReviewPolicy(name)
+			m.open(func() { m.openTeamReviewPolicy(name) })
 		case "gates":
-			m.openTeamGates(name)
+			m.open(func() { m.openTeamGates(name) })
 		case "members":
-			m.openTeamMembers(name)
+			m.open(func() { m.openTeamMembers(name) })
 		case "remove":
-			m.confirmRemoveTeam(name)
+			m.open(func() { m.confirmRemoveTeam(name) })
 		}
 	})
 }
@@ -164,6 +178,7 @@ func teamMembersSummary(def config.TeamDefinition) string {
 
 // promptTeamField edits a scalar team field (description).
 func (m *configMenu) promptTeamField(name, field string) {
+	m.current = func() { m.promptTeamField(name, field) }
 	cfg := m.ctx.Config
 	def := cfg.Teams.Definitions[name]
 	m.ctx.ShowInput("Team "+field+":", def.Description, func(value string, ok bool) {
@@ -174,7 +189,8 @@ func (m *configMenu) promptTeamField(name, field string) {
 		def.Description = strings.TrimSpace(value)
 		cfg.Teams.Definitions[name] = def
 		m.saveTeamsSection()
-		m.openTeamDetail(name)
+		// Return to the (already-pushed) team detail page.
+		m.back()
 	})
 }
 
@@ -197,7 +213,8 @@ func (m *configMenu) openTeamReviewPolicy(name string) {
 		def.Review = v
 		cfg.Teams.Definitions[name] = def
 		m.saveTeamsSection()
-		m.openTeamDetail(name)
+		// Return to the (already-pushed) team detail page.
+		m.back()
 	})
 }
 
@@ -225,7 +242,8 @@ func (m *configMenu) openTeamGates(name string) {
 				def.ReviewGates.Triggers = splitTrim(value, ",")
 				cfg.Teams.Definitions[name] = def
 				m.saveTeamsSection()
-				m.openTeamDetail(name)
+				// Return to the (already-pushed) team detail page.
+				m.back()
 			})
 		case "quorum":
 			m.ctx.SelectOption("Quorum:", []tui.SelectorItem{
@@ -239,7 +257,8 @@ func (m *configMenu) openTeamGates(name string) {
 				def.ReviewGates.Quorum = q
 				cfg.Teams.Definitions[name] = def
 				m.saveTeamsSection()
-				m.openTeamDetail(name)
+				// Return to the (already-pushed) team detail page.
+				m.back()
 			})
 		}
 	})
@@ -488,6 +507,11 @@ func (m *configMenu) addTeamMember(teamName string) {
 		name := strings.TrimSpace(value)
 		cfg := m.ctx.Config
 		def := cfg.Teams.Definitions[teamName]
+		if !config.IsValidMemberName(name) {
+			m.flash("Invalid member name " + name + " — must match [a-z0-9][a-z0-9-]{0,63} (members become pool roles)")
+			m.addTeamMember(teamName)
+			return
+		}
 		if _, exists := teamMemberByName(def, name); exists {
 			m.flash("Member " + name + " already exists")
 			m.openTeamMembers(teamName)
@@ -566,7 +590,7 @@ func (m *configMenu) confirmRemoveTeam(name string) {
 		}
 		delete(cfg.Teams.Definitions, name)
 		m.saveTeamsSection()
-		m.openTeamsDefinitions()
+		m.openTeams()
 	})
 }
 
@@ -574,17 +598,36 @@ func (m *configMenu) confirmRemoveTeam(name string) {
 // model (when policy ≠ off) → save (§8.3). N-member teams are reachable by
 // adding members afterwards in the detail view.
 func (m *configMenu) addTeamWizard() {
+	m.addTeamWizardPrompt("")
+}
+
+// addTeamWizardPrompt asks for the team name, pre-filling the input with
+// prefill (a normalized suggestion after an invalid attempt). An invalid name
+// flashes the rule and re-prompts with the suggested correction so one Enter
+// accepts it.
+func (m *configMenu) addTeamWizardPrompt(prefill string) {
 	m.current = m.addTeamWizard
-	m.ctx.ShowInput("New team name ([a-z0-9-]):", "", func(name string, ok bool) {
+	m.ctx.ShowInput("New team name (letters, digits, spaces, -, _, .):", prefill, func(name string, ok bool) {
 		if !ok {
 			m.back()
 			return
 		}
 		name = strings.TrimSpace(name)
 		cfg := m.ctx.Config
+		if !config.IsValidTeamName(name) {
+			slug := config.NormalizeTeamNameSlug(name)
+			if slug != "" && slug != name {
+				m.flash("Invalid team name " + name + " — suggested: " + slug)
+				m.addTeamWizardPrompt(slug)
+				return
+			}
+			m.flash("Invalid team name " + name + " — use letters, digits, spaces, -, _, . (start/end alphanumeric)")
+			m.addTeamWizardPrompt("")
+			return
+		}
 		if _, exists := cfg.Teams.Definitions[name]; exists {
 			m.flash("Team " + name + " already exists")
-			m.openTeamsDefinitions()
+			m.openTeams()
 			return
 		}
 		m.wizardMainModel(name)

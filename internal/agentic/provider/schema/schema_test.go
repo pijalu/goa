@@ -43,7 +43,7 @@ func TestResolveProfile_KimiProvidersHaveAuth(t *testing.T) {
 }
 
 // TestResolveProfile_UnmatchedProvidersGetDefaultAuth is the regression test for
-// bugs.md Issue 9: providers without a dedicated variant profile (poolside, groq,
+// Issue 9: providers without a dedicated variant profile (poolside, groq,
 // fireworks, perplexity, zai-api, custom) previously resolved to an empty profile,
 // so AuthHook dropped the API key and the request went out with no Authorization
 // header (401). The resolver must now fall back to a sane default profile that
@@ -250,7 +250,7 @@ func TestEvalExpression(t *testing.T) {
 
 // TestMergeProfiles_ReasoningContentFlagOR verifies mergeCompat carries the
 // reasoning-content requirement with OR semantics: an override can turn it
-// ON for DeepSeek-class models (bugs.md thinking-mode 400); a false override
+// ON for DeepSeek-class models (thinking-mode 400); a false override
 // cannot explicitly clear a base requirement (plain bool, no tri-state).
 func TestMergeProfiles_ReasoningContentFlagOR(t *testing.T) {
 	base := VariantProfile{Compat: CompatFlags{RequiresReasoningContentOnAssistantMessages: false}}

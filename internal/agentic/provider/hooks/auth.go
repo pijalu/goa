@@ -32,7 +32,11 @@ func (h *AuthHook) Init(profile schema.VariantProfile) error {
 	return nil
 }
 
-// ApplyRequest resolves the API key and injects auth headers.
+// ApplyRequest resolves the API key and injects auth headers. Every resolved
+// key is validated before first use (DS5/P15): a set-but-malformed key yields
+// an *schema.InvalidCredentialError naming the config entry point it came
+// from (never the key itself); a required-but-absent key yields an
+// *schema.MissingCredentialError listing every source that was checked.
 func (h *AuthHook) ApplyRequest(ctx *RequestContext) error {
 	if ctx.Headers == nil {
 		ctx.Headers = make(map[string]string)
@@ -42,9 +46,14 @@ func (h *AuthHook) ApplyRequest(ctx *RequestContext) error {
 		ctx.Headers["User-Agent"] = userAgent()
 	}
 
-	// If options provide an explicit API key, use it.
+	// If options provide an explicit API key, use it. The key is validated
+	// before first use; the config entry point is the explicit option.
 	if ctx.Options.APIKey != "" {
-		injectAuth(ctx.Headers, h.profile.Auth, ctx.Options.APIKey)
+		key, err := schema.ValidateAPIKey("options.api_key", ctx.Options.APIKey)
+		if err != nil {
+			return err
+		}
+		injectAuth(ctx.Headers, h.profile.Auth, key)
 		h.applyProviderHeaders(ctx)
 		return nil
 	}
@@ -56,17 +65,29 @@ func (h *AuthHook) ApplyRequest(ctx *RequestContext) error {
 		return nil
 	}
 
-	// Resolve from env vars declared in the profile.
+	// Resolve from env vars declared in the profile. Each candidate is
+	// validated before use: a set-but-malformed value is an InvalidCredential
+	// naming the variable; a silent lookup is a checked-but-unset source and
+	// is listed if the provider requires a credential.
+	checked := []string{"options.api_key"}
 	for _, env := range h.profile.Auth.EnvVars {
-		if v := os.Getenv(env); v != "" {
-			injectAuth(ctx.Headers, h.profile.Auth, v)
+		checked = append(checked, env)
+		if raw := os.Getenv(env); raw != "" {
+			key, err := schema.ValidateAPIKey(env, raw)
+			if err != nil {
+				return err
+			}
+			injectAuth(ctx.Headers, h.profile.Auth, key)
 			h.applyProviderHeaders(ctx)
 			return nil
 		}
 	}
 
 	if h.profile.Auth.Required {
-		return fmt.Errorf("no API key found for provider %q", ctx.Model.Provider)
+		return &schema.MissingCredentialError{
+			Provider: string(ctx.Model.Provider),
+			Sources:  checked,
+		}
 	}
 	return nil
 }
@@ -95,6 +116,35 @@ func (h *AuthHook) applyProviderHeaders(ctx *RequestContext) {
 
 	if ctx.Model.Provider == schema.ProviderOpenAI && h.profile.Auth.Method == schema.AuthMethodOAuth {
 		ctx.Profile.Compat.SystemAsInstructions = true
+	}
+
+	if ctx.Model.Api == schema.ApiOpenAICodexResponses {
+		applyCodexHeaders(ctx)
+	}
+}
+
+// applyCodexHeaders sets the Codex identity headers on the subscription
+// transport, mirroring Pi's buildBaseCodexHeaders/buildSSEHeaders and
+// OpenCode's codex fetch wrapper: both transports tag the originator; the
+// OAuth transport (opts.CodexAccountID set) additionally carries the ChatGPT
+// account id, the responses beta flag, and — when a session is active — the
+// session-id affinity header the codex backend uses for cache locality.
+func applyCodexHeaders(ctx *RequestContext) {
+	if !hasHeader(ctx.Headers, "originator") {
+		ctx.Headers["originator"] = "goa"
+	}
+	if ctx.Options.SessionID != "" && !hasHeader(ctx.Headers, "session-id") {
+		ctx.Headers["session-id"] = ctx.Options.SessionID
+	}
+	if ctx.Options.CodexAccountID == "" {
+		return
+	}
+	ctx.Headers["chatgpt-account-id"] = ctx.Options.CodexAccountID
+	if !hasHeader(ctx.Headers, "OpenAI-Beta") {
+		ctx.Headers["OpenAI-Beta"] = "responses=experimental"
+	}
+	if !hasHeader(ctx.Headers, "accept") {
+		ctx.Headers["accept"] = "text/event-stream"
 	}
 }
 

@@ -33,8 +33,9 @@ func TestToolStreaming_AllRenderersSupportPartialArgs(t *testing.T) {
 		{"edit", map[string]any{"path": "main.go", "operation": "replace"}, map[string]any{"path": "main.go"}, "- old\n+ new\n", nil},
 		{"bash", map[string]any{"command": "echo hi"}, map[string]any{"command": "echo"}, "hi\nDuration: 0.01s\n", nil},
 		{"python", map[string]any{"code": "print(1)\n"}, map[string]any{"code": "print(1)\n"}, "1\n", map[string]any{"code": "print(1)\n"}},
+		{"run_code", map[string]any{"code": "print(tools.read({}))\n", "description": "Read a file"}, map[string]any{"code": "print(tools.read({}))\n", "description": "Read"}, "content\n", map[string]any{"code": "print(tools.read({}))\n", "description": "Read"}},
 		{"verify", map[string]any{"command": "go test ./...", "args": []string{"-run", "TestFoo"}}, map[string]any{"command": "go test"}, "PASS\n", nil},
-		{"terminal", map[string]any{"command": "ls"}, map[string]any{"command": "ls"}, "file.txt\n", nil},
+		{"terminals", map[string]any{"action": "send", "text": "ls"}, map[string]any{"action": "send"}, "file.txt\n", nil},
 		{"webfetch", map[string]any{"url": "https://example.com"}, map[string]any{"url": "https://example.com"}, "<html></html>", nil},
 		{"search", map[string]any{"pattern": "foo", "path": "."}, map[string]any{"pattern": "foo"}, "a.go:1:foo", nil},
 		{"smartsearch", map[string]any{"query": "foo", "path": "."}, map[string]any{"query": "foo"}, "a.go:1:foo", nil},
@@ -43,6 +44,11 @@ func TestToolStreaming_AllRenderersSupportPartialArgs(t *testing.T) {
 		{"agent_swarm", map[string]any{"task": "Fix bugs", "items": []string{"a", "b"}}, map[string]any{"task": "Fix bugs"}, "Done\n", nil},
 		{"plan", map[string]any{"action": "get"}, map[string]any{"action": "get"}, "# Plan: test\n\n**Objective:** test\n", nil},
 		{"task_outcome", map[string]any{"status": "done", "summary": "completed"}, map[string]any{"status": "done"}, `{"status":"done","summary":"completed"}`, nil},
+		{"session_search", map[string]any{"query": "postgres"}, map[string]any{"query": "post"}, "Session search results (1):\n1. Session s1\n", nil},
+		{"session_event_read", map[string]any{"session_id": "s1", "seq": float64(2), "before": float64(1)}, map[string]any{"seq": float64(2)}, "Session s1\nTarget event seq 2:\n```json\n{}", nil},
+		{"schedule_create", map[string]any{"prompt": "commit", "after_seconds": float64(60)}, map[string]any{"prompt": "com"}, `{"id":"schedule-1","state":"scheduled"}`, nil},
+		{"schedule_delete", map[string]any{"id": "schedule-1"}, map[string]any{"id": "schedule"}, `{"id":"schedule-1","deleted":true}`, nil},
+		{"schedule_list", map[string]any{}, map[string]any{}, `[]`, nil},
 	}
 
 	for _, tc := range cases {
@@ -90,9 +96,10 @@ func TestToolStreaming_RegistryIsComplete(t *testing.T) {
 		required[name] = false
 	}
 	cases := []string{
-		"read", "write", "edit", "bash", "python", "verify", "terminal",
+		"read", "write", "edit", "bash", "python", "run_code", "verify", "terminals",
 		"webfetch", "search", "smartsearch", "goal", "agent", "agent_swarm",
-		"plan", "task_outcome",
+		"plan", "task_outcome", "session_search", "session_event_read",
+		"schedule_create", "schedule_delete", "schedule_list",
 	}
 	for _, name := range cases {
 		if _, ok := required[name]; !ok {

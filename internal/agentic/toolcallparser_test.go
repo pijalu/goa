@@ -5,6 +5,7 @@
 package agentic
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -139,5 +140,66 @@ func TestParseToolCalls_CompleteFunctionRequiresClose(t *testing.T) {
 	calls := parseToolCallsFromText(content, 0, false)
 	if len(calls) != 0 {
 		t.Fatalf("expected 0 calls for unclosed function, got %d", len(calls))
+	}
+}
+
+// TestParseToolCalls_DSMLRecoveredUnconditionally reproduces the 2026-08-16
+// deepseek-v4-flash export: on a tool_choice:"none" collapse round the model
+// emitted its native DSML markup as text; with no parser the goal-create call
+// was silently dropped. DSML must parse regardless of the auto-heal opt-in.
+func TestParseToolCalls_DSMLRecoveredUnconditionally(t *testing.T) {
+	content := `Queue cleared. Now recreate merged batch — 11 goals from 29.
+<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="goal">
+<｜｜DSML｜｜parameter name="action" string="true">create</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="objectives" string="false">["P6.FTS-REST — snippet, ranking", "P6.JSON — JSON1 functions"]</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>`
+
+	calls := parseDSMLToolCallsFromText(content, 0, true)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 DSML call, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].name != "goal" {
+		t.Errorf("name = %q, want goal", calls[0].name)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(calls[0].arguments), &args); err != nil {
+		t.Fatalf("arguments not valid JSON: %v (%q)", err, calls[0].arguments)
+	}
+	if args["action"] != "create" {
+		t.Errorf("action = %v, want create", args["action"])
+	}
+	obj, _ := args["objectives"].(string)
+	if !strings.Contains(obj, "P6.FTS-REST") || !strings.Contains(obj, "P6.JSON") {
+		t.Errorf("objectives mangled: %q", obj)
+	}
+	// The JSON array value must survive verbatim (string="false").
+	var arr []string
+	if err := json.Unmarshal([]byte(obj), &arr); err != nil || len(arr) != 2 {
+		t.Errorf("objectives should be a 2-element JSON array, got %q (err %v)", obj, err)
+	}
+}
+
+// TestParseToolCalls_DSMLStripFromDisplay ensures DSML markup is removed from
+// the user-visible text once recovered.
+func TestParseToolCalls_DSMLStripFromDisplay(t *testing.T) {
+	content := `Working. <｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="bash"><｜｜DSML｜｜parameter name="command" string="true">ls</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>`
+	stripped := stripToolMarkup(content, true)
+	if strings.Contains(stripped, "DSML") {
+		t.Errorf("DSML markup not stripped: %q", stripped)
+	}
+	if !strings.Contains(stripped, "Working.") {
+		t.Errorf("surrounding text lost: %q", stripped)
+	}
+}
+
+// TestParseToolCalls_DSMLIncompleteStreamTolerated verifies a truncated DSML
+// block (stream cut mid-call) still yields the call under allowIncomplete.
+func TestParseToolCalls_DSMLIncompleteStreamTolerated(t *testing.T) {
+	content := `<｜｜DSML｜｜invoke name="read"><｜｜DSML｜｜parameter name="path" string="true">/tmp/x.go</｜｜DSML｜｜parameter>`
+	calls := parseDSMLToolCallsFromText(content, 0, true)
+	if len(calls) != 1 || calls[0].name != "read" {
+		t.Fatalf("incomplete DSML not recovered: %+v", calls)
 	}
 }

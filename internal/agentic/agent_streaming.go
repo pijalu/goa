@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -19,6 +18,10 @@ func (a *Agent) processTurnWithStream(ctx context.Context) error {
 	// Strip transient (ephemeral) system nudges at turn end so recovery/repeat
 	// hints inform the model during this turn but do not pollute future turns.
 	defer a.stripEphemeralSystemMessages()
+	// Safety net: the thinking-stall timers are already disarmed on content/
+	// tool progress and at every round boundary; stop them here too so an
+	// early error return can never leak a live timer past the turn.
+	defer a.stopThinkingStallTimers()
 
 	model, opts, initCtx := a.prepareTurn(ctx)
 	if err := a.checkContextLimit(); err != nil {
@@ -73,7 +76,7 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		return true, nil
 	}
 
-	// Convergence is message-driven, NOT a numeric round cap (bugs.md Issue 13).
+	// Convergence is message-driven, NOT a numeric round cap (Issue 13).
 	// trackToolCallingRound reports true only when the model has gone silent for
 	// the configured number of consecutive rounds (no message AND no thinking
 	// anywhere in the turn). A model still producing messages/reasoning never
@@ -162,16 +165,31 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		// Per-round compression gate: prepareTurn gates once per user turn,
 		// but a long tool-call turn can climb past the trigger/hard ceiling
 		// between rounds — a TC:436 session sailed past 100% unchecked until
-		// the provider rejected the request (bugs.md compression entry).
+		// the provider rejected the request (compression entry).
 		// Re-check before every re-stream so no request leaves oversized.
-		if err := a.maybeCompress(ctx); err != nil {
-			a.cfg.Logger.Log(Error, "per-round compression failed: %v", err)
+		compressErr := a.maybeCompress(ctx)
+		if compressErr != nil {
+			a.cfg.Logger.Log(Error, "per-round compression failed: %v", compressErr)
 		}
-		a.enforceContextCeiling()
+		// Same dead-turn guard as prepareTurn: a canceled round must not
+		// trigger the destructive ceiling fallback.
+		a.enforceContextCeilingUnlessCanceled(ctx, compressionCauseFromErr(compressErr))
 		a.mu.Lock()
 		a.resetStreamRoundState()
 		a.mu.Unlock()
-		return provider.Stream(model, a.buildProviderContext(ctx), opts)
+		// Later-step entry: inject the per-turn temporal context reading
+		// (CX6) before the re-stream request is derived.
+		a.injectTimeContextIfDue(time.Now())
+		pCtx := a.buildProviderContext(ctx)
+		// Final-step collapse (P7): a pending stop-turn signal marks this
+		// round text-only — no tools, tool_choice none — so the model
+		// produces its summary instead of calling more tools. The flag is
+		// consumed here; the next round (or turn) restores the full set.
+		if a.toolCollapseNextRound {
+			pCtx.NoTools = true
+			a.toolCollapseNextRound = false
+		}
+		return provider.Stream(model, pCtx, opts)
 	}
 	a.logProviderContext(initCtx, 0)
 	return provider.Stream(model, initCtx, opts)
@@ -240,7 +258,14 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 	const maxRecoveryRounds = 3
 
 	for round := 0; round < maxRecoveryRounds; round++ {
+		// Recovery-step entry: inject the per-turn temporal context reading
+		// (CX6) before the recovery request is derived.
+		a.injectTimeContextIfDue(time.Now())
 		pCtx := a.buildProviderContext(ctx)
+		// Final-step collapse (P7): recovery rounds are the turn's last
+		// step — the model must answer with what it has gathered, so the
+		// request carries no tools and tool_choice none.
+		pCtx.NoTools = true
 		a.logProviderContext(pCtx, limit+1+round)
 
 		recoveryStream, err := provider.Stream(model, pCtx, opts)
@@ -476,7 +501,7 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 	a.lastRoundActivity = time.Now()
 	if result.Usage != nil {
 		if a.cfg.Logger != nil {
-			// bugs.md round-17 anomaly forensics: correlate cache_read drops
+			// round-17 anomaly forensics: correlate cache_read drops
 			// with request-shape changes (tool-set re-registration changes
 			// tools_hash) vs provider-side eviction (hash stable).
 			a.cfg.Logger.Log(Debug, "request usage: cache_read %d -> %d, tools_hash=%08x",
@@ -503,21 +528,18 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 	a.drainCacheMissNotices()
 }
 
-// toolListHashLocked returns a cheap fingerprint of the registered tool set
-// (sorted schema names) so cache-drop forensics can discriminate provider-side
-// partial eviction from request-shape changes: a tool-set re-registration
-// alters the provider request shape and busts the prefix cache exactly like
-// an in-place history mutation (bugs.md round-17 anomaly). The caller must
-// hold a.mu (reads a.cfg.Tools, replaced under mu by SetTools).
+// toolListHashLocked returns a cheap fingerprint of the tool schemas actually
+// shipped with each request (the Schemas() view) so cache-drop forensics can
+// discriminate provider-side partial eviction from request-shape changes: a
+// deferred-tool load grows the loaded-tail and alters the provider request
+// shape exactly like a tool-set re-registration busts the prefix cache
+// (round-17 anomaly). Hashing the exposed view (rather than the full
+// registered set) makes the fingerprint track the real wire shape. The caller
+// must hold a.mu (reads a.reg, replaced under mu by SetTools).
 func (a *Agent) toolListHashLocked() uint32 {
-	names := make([]string, 0, len(a.cfg.Tools))
-	for _, t := range a.cfg.Tools {
-		names = append(names, t.Schema().Name)
-	}
-	sort.Strings(names)
 	h := fnv.New32a()
-	for _, n := range names {
-		h.Write([]byte(n))
+	for _, s := range a.reg.Schemas() {
+		h.Write([]byte(s.Name))
 		h.Write([]byte{0})
 	}
 	return h.Sum32()
@@ -527,13 +549,23 @@ func (a *Agent) handleStreamError(ctx context.Context, stream *provider.Assistan
 	return true, false, a.resolveStreamError(ctx, stream, event.Error)
 }
 
-// tryAutoHealToolCalls parses the accumulated assistant text for XML tool
-// calls when AutoHealToolCalls is enabled and no native tool calls were
-// buffered.  Discovered calls are run through the ToolLoopController and
-// either buffered for execution or recorded as no-ops with a nudge message.
-// It returns true when at least one call was discovered.
+// tryAutoHealToolCalls recovers tool calls the model emitted as text instead
+// of as structured tool_calls, when no native tool calls were buffered.
+//
+// DSML (DeepSeek's native markup) is ALWAYS recovered: DeepSeek-family models
+// fall back to it precisely when the request suppresses structured tool calls
+// (tool_choice "none", e.g. the post-StopTurn collapse round), so a well-formed
+// DSML call would otherwise be silently dropped — losing the user's work with
+// no recourse. That is not the "malformed local model" case the opt-in exists
+// for; it is a first-class provider format and must never be refused.
+//
+// The generic <tool_call>/<function=name> forms remain gated behind
+// AutoHealToolCalls (opt-in for weak local models). Discovered calls are run
+// through the ToolLoopController and either buffered for execution or recorded
+// as no-ops with a nudge message. It returns true when at least one call was
+// discovered.
 func (a *Agent) tryAutoHealToolCalls() bool {
-	if !a.cfg.AutoHealToolCalls || len(a.bufferedToolCalls) > 0 {
+	if len(a.bufferedToolCalls) > 0 {
 		return false
 	}
 
@@ -546,7 +578,9 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 		}
 		combined += thinking
 	}
-	if !hasToolSignal(combined) {
+	// DSML is recovered unconditionally; the generic XML forms only when the
+	// operator opted in to healing malformed local-model output.
+	if !hasDSMLSignal(combined) && !(a.cfg.AutoHealToolCalls && hasToolSignal(combined)) {
 		return false
 	}
 
@@ -555,7 +589,14 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 		Text: "Decoding tool calls...",
 	})
 
-	calls := parseToolCallsFromText(combined, 0, true)
+	// Parse path: full multi-form recovery when auto-heal is on; DSML-only when
+	// it is off (generic XML healing stays opt-in, DSML never is).
+	var calls []parsedToolCall
+	if a.cfg.AutoHealToolCalls {
+		calls = parseToolCallsFromText(combined, 0, true)
+	} else {
+		calls = parseDSMLToolCallsFromText(combined, 0, true)
+	}
 	if len(calls) == 0 {
 		return false
 	}
@@ -639,14 +680,18 @@ func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 		a.emitTurnStats()
 		a.checkSilentOverflow()
 		// Decide whether the loop will stream another round. The turn continues
-		// only when a real tool executed and the batch was not asked to stop.
+		// only when a real tool executed. A stop-turn signal (StopTurn tool
+		// result) does not end the turn outright: it stops the current tool
+		// batch and marks the next round text-only, so the model's summary
+		// response comes immediately without further tool calls (P7, TC6).
 		// EventEnd is emitted exclusively on the finishing path so mid-turn UI
 		// consumers never observe a premature turn end (which previously dropped
 		// the status spinner after the first tool call).
-		turnContinues := hadRealExecution && !a.stopBatchAfterThis
 		if a.stopBatchAfterThis {
 			a.stopBatchAfterThis = false
+			a.toolCollapseNextRound = true
 		}
+		turnContinues := hadRealExecution
 		if !turnContinues {
 			a.emitEvent(OutputEvent{Type: EventEnd})
 		}
@@ -877,7 +922,24 @@ func (a *Agent) handleTextDelta(event provider.AssistantMessageEvent) {
 	a.mu.Unlock()
 	a.contentBuf.WriteString(event.Delta)
 	a.checkStreamLoop(a.contentBuf.String())
-	a.emitEvent(OutputEvent{Type: EventContent, State: StateContent, Role: Assistant, Text: event.Delta, IsDelta: true})
+
+	// Display path: stream live until a tool-call markup signal appears; from
+	// then on, buffer and emit only markup-free text so multi-delta tool-call
+	// markup (DSML on tool_choice:"none" collapse rounds, or healed XML) is
+	// never rendered raw. The raw contentBuf is untouched for healing/finalize.
+	if !a.contentMarkupSeen && hasToolSignal(event.Delta) {
+		a.contentMarkupSeen = true
+	}
+	if !a.contentMarkupSeen {
+		a.emitEvent(OutputEvent{Type: EventContent, State: StateContent, Role: Assistant, Text: event.Delta, IsDelta: true})
+		return
+	}
+	a.contentDisplayBuf.WriteString(event.Delta)
+	clean := stripToolMarkup(a.contentDisplayBuf.String(), true)
+	if clean != "" && !containsToolXMLTag(clean) {
+		a.emitEvent(OutputEvent{Type: EventContent, State: StateContent, Role: Assistant, Text: clean, IsDelta: true})
+		a.contentDisplayBuf.Reset()
+	}
 }
 
 func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
@@ -893,6 +955,15 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 	// (/config:temp:thinking_stall_detection:off or
 	// execution.disable_thinking_stall_detection); checked per delta so a
 	// mid-stream toggle takes effect immediately.
+	//
+	// A thinking delta is itself progress: the stall clock measures the gap
+	// since the LAST received thinking delta, so a slow model that streams
+	// reasoning tokens continuously for longer than the stop threshold is
+	// never stopped (session export 2026-08-15: the pre-fix code measured
+	// from the first delta of the phase and killed an actively-streaming
+	// locallm exactly thinking_stall_stop_seconds later). Because a true
+	// no-delta hang delivers no further deltas that could re-run this check,
+	// re-armed timers detect the gap even when the stream goes silent.
 	if stallDisabled := a.cfg.ThinkingStallDisabled != nil && a.cfg.ThinkingStallDisabled(); !stallDisabled {
 		warnAfter := a.cfg.ThinkingStallWarn
 		if warnAfter <= 0 {
@@ -902,23 +973,15 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 		if stopAfter <= 0 {
 			stopAfter = defaultThinkingStallStop
 		}
-		if a.thinkingStallStart.IsZero() {
-			a.thinkingStallStart = time.Now()
-		}
-		elapsed := time.Since(a.thinkingStallStart)
-		if elapsed > stopAfter {
-			a.cfg.Logger.Log(Warn, "Stopping stream: thinking stalled for %v without progress", elapsed)
-			a.thinkingStalled = true
-			a.thinkingStallElapsed = elapsed
+		now := time.Now()
+		// First delta after a silence gap longer than the stop threshold:
+		// the timer should have fired but cannot be relied on when the gap
+		// crosses a round/reset boundary, so evaluate the gap inline too.
+		if !a.thinkingStallStart.IsZero() && now.Sub(a.thinkingStallStart) > stopAfter {
+			a.markThinkingStalled(now.Sub(a.thinkingStallStart))
 			return
 		}
-		if elapsed > warnAfter && !a.thinkingStallWarned {
-			a.thinkingStallWarned = true
-			a.emitEvent(OutputEvent{
-				Type: EventProgress,
-				Text: "The agent has been thinking for over " + warnAfter.Round(time.Second).String() + " without producing output.",
-			})
-		}
+		a.armThinkingStallTimers(now, warnAfter, stopAfter)
 	}
 
 	// Strip tool-call XML from the visible thinking stream. Local
@@ -979,7 +1042,7 @@ func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, contentIndex int
 	// Do not emit until the tool name is known: OpenAI-style streams ship the
 	// call id/index in the first chunk and the name only in a later one, and a
 	// nameless delta made the TUI create a blank-header tool widget that never
-	// updated (bugs.md "Empty tool TUI"). Args accumulate here and are emitted
+	// updated (Empty tool TUI). Args accumulate here and are emitted
 	// cumulative, so the first named delta carries the full prefix.
 	if emitName == "" {
 		return
@@ -1015,7 +1078,7 @@ func (a *Agent) handleToolCallDeltaByIndex(contentIndex int, delta string) {
 	emitName := ptc.toolName
 	a.mu.Unlock()
 
-	// Same nameless guard as handleToolCallPartial (bugs.md "Empty tool TUI").
+	// Same nameless guard as handleToolCallPartial (Empty tool TUI).
 	if emitName == "" {
 		return
 	}
@@ -1049,6 +1112,7 @@ func containsToolXMLTag(text string) bool {
 		"<tool_call>", "</tool_call>",
 		"<function=", "</function>",
 		"<parameter=", "</parameter>",
+		"<｜｜DSML｜｜", // any DSML delimiter (open or close) suppresses display
 	} {
 		if strings.Contains(text, tag) {
 			return true
@@ -1057,11 +1121,118 @@ func containsToolXMLTag(text string) bool {
 	return false
 }
 
+// armThinkingStallTimers records a thinking delta as forward progress and
+// (re)arms the warn/stop timers. Every received delta pushes the deadlines
+// out, so the timers only fire after warnAfter/stopAfter of continuous
+// thinking silence — never while deltas are still arriving.
+func (a *Agent) armThinkingStallTimers(now time.Time, warnAfter, stopAfter time.Duration) {
+	a.mu.Lock()
+	a.thinkingStallStart = now
+	a.mu.Unlock()
+
+	if a.thinkingStallWarnTimer == nil {
+		a.thinkingStallWarnTimer = time.AfterFunc(warnAfter, a.onThinkingStallWarn)
+	} else {
+		a.thinkingStallWarnTimer.Reset(warnAfter)
+	}
+	if a.thinkingStallStopTimer == nil {
+		a.thinkingStallStopTimer = time.AfterFunc(stopAfter, a.onThinkingStallStop)
+	} else {
+		a.thinkingStallStopTimer.Reset(stopAfter)
+	}
+}
+
+// onThinkingStallWarn emits the "still thinking" progress warning after
+// warnAfter of continuous thinking silence. It re-checks the actual gap under
+// the mutex because Reset can race with an in-flight timer callback: a delta
+// that landed just before the fire must suppress the stale warning.
+func (a *Agent) onThinkingStallWarn() {
+	a.mu.Lock()
+	if a.thinkingStallStart.IsZero() || a.thinkingStallWarned {
+		a.mu.Unlock()
+		return
+	}
+	elapsed := time.Since(a.thinkingStallStart)
+	warnAfter := a.cfg.ThinkingStallWarn
+	if warnAfter <= 0 {
+		warnAfter = defaultThinkingStallWarn
+	}
+	if elapsed < warnAfter {
+		a.mu.Unlock()
+		return
+	}
+	a.thinkingStallWarned = true
+	a.mu.Unlock()
+
+	a.emitEvent(OutputEvent{
+		Type: EventProgress,
+		Text: "The agent has been thinking for over " + warnAfter.Round(time.Second).String() + " without producing output.",
+	})
+}
+
+// onThinkingStallStop declares the stall after stopAfter of continuous
+// thinking silence. The stale-fire guard mirrors onThinkingStallWarn: a
+// delta arriving just before the fire invalidates the callback.
+func (a *Agent) onThinkingStallStop() {
+	a.mu.Lock()
+	if a.thinkingStallStart.IsZero() {
+		a.mu.Unlock()
+		return
+	}
+	elapsed := time.Since(a.thinkingStallStart)
+	stopAfter := a.cfg.ThinkingStallStop
+	if stopAfter <= 0 {
+		stopAfter = defaultThinkingStallStop
+	}
+	a.mu.Unlock()
+	if elapsed < stopAfter {
+		return
+	}
+	a.markThinkingStalled(elapsed)
+}
+
+// markThinkingStalled records the stall: the stream is stopped and the error
+// surfaces on the next handled event (see handleStreamEvent).
+func (a *Agent) markThinkingStalled(elapsed time.Duration) {
+	a.mu.Lock()
+	if a.thinkingStalled {
+		a.mu.Unlock()
+		return
+	}
+	a.thinkingStalled = true
+	a.thinkingStallElapsed = elapsed
+	a.mu.Unlock()
+	a.cfg.Logger.Log(Warn, "Stopping stream: thinking stalled for %v without progress", elapsed)
+}
+
 // resetThinkingStall clears the thinking-stall tracking whenever the model
 // produces content or a tool call, indicating forward progress.
 func (a *Agent) resetThinkingStall() {
+	a.mu.Lock()
+	a.resetThinkingStallLocked()
+	a.mu.Unlock()
+	a.stopThinkingStallTimers()
+}
+
+// resetThinkingStallLocked is resetThinkingStall for callers that already
+// hold a.mu (e.g. resetStreamRoundState via startStreamRound). Timer Stop is
+// safe under the lock, so the timers are disarmed inline.
+func (a *Agent) resetThinkingStallLocked() {
 	a.thinkingStallStart = time.Time{}
 	a.thinkingStallWarned = false
+	a.stopThinkingStallTimers()
+}
+
+// stopThinkingStallTimers disarms the warn/stop timers. Stale callbacks that
+// lose the Stop race are harmless: both re-check thinkingStallStart (zeroed
+// by the reset) under the mutex before acting.
+func (a *Agent) stopThinkingStallTimers() {
+	if a.thinkingStallWarnTimer != nil {
+		a.thinkingStallWarnTimer.Stop()
+	}
+	if a.thinkingStallStopTimer != nil {
+		a.thinkingStallStopTimer.Stop()
+	}
 }
 
 // resetStreamRoundState clears per-round buffers and flags before a re-stream
@@ -1078,7 +1249,7 @@ func (a *Agent) resetStreamRoundState() {
 	a.streamLoopStrikeThisRound = false
 	a.thinkingStalled = false
 	a.thinkingStallElapsed = 0
-	a.resetThinkingStall()
+	a.resetThinkingStallLocked()
 	a.streamingToolCalls = nil
 	a.streamingToolCallsByIndex = nil
 	a.toolCallDeltasThisRound = 0
@@ -1102,10 +1273,10 @@ func (a *Agent) checkStreamLoop(text string) {
 	}
 	// Normalize: strip punctuation, symbols, box-drawing chars, collapse spaces
 	clean := streamLoopNormalize(text)
-	if period, repeats, sample, ok := streamLoopScan(clean, a.streamLoopMaxRepeats()); ok {
+	if period, repeats, sample, ok := streamLoopScan(clean, a.streamLoopMaxRepeats(), a.streamLoopMinPeriod()); ok {
 		a.streamLoopDetected = true
 		// Keep the repeated sequence as evidence so the strike warning/stop
-		// messages can show WHAT was judged a loop (bugs.md runaway-loop
+		// messages can show WHAT was judged a loop (runaway-loop
 		// visibility).
 		a.streamLoopSample = sample
 		a.cfg.Logger.Log(Warn, "Stream loop detected: %d-byte period repeated %d times", period, repeats)
@@ -1124,6 +1295,20 @@ func (a *Agent) streamLoopMaxRepeats() int {
 		return n
 	}
 	return defaultMaxRepeats
+}
+
+// streamLoopMinPeriod resolves the smallest repeated unit Detector A treats
+// as a loop: the user-configured value (execution.stream_loop_min_period via
+// the live loop detector) when set, otherwise the built-in default. Values
+// below the absolute scan floor (streamLoopSmallPeriod) fall back to the
+// default because such periods are never scanned.
+func (a *Agent) streamLoopMinPeriod() int {
+	if a.cfg.StreamLoopMinPeriod != nil {
+		if n := a.cfg.StreamLoopMinPeriod(); n >= streamLoopSmallPeriod {
+			return n
+		}
+	}
+	return streamLoopExactMinPeriod
 }
 
 const (
@@ -1250,14 +1435,15 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 //
 // Detection policy (count-based rewrite after field failures in BOTH
 // directions — a false positive on exploratory Option A/B/C analysis and a
-// false negative on a ~90-copy paraphrase loop; see bugs.md 2026-08-01):
+// false negative on a ~90-copy paraphrase loop; see 2026-08-01):
 //
 //   - Detector A (exact chain): the trailing unit of length P
-//     (P ≥ streamLoopExactMinPeriod) is a loop when it repeats BYTE-EXACT
-//     ≥ maxRepeats times (≥ 2 for P ≥ streamLoopLongPeriod), allowing ≤
-//     streamLoopMaxGap interlude bytes between copies. No fuzzy matching, no
-//     progression analysis: exploratory paragraphs never repeat 60+ exact
-//     bytes, and connector noise ("the the the …") lives below the floor.
+//     (P ≥ the configured min period, default streamLoopExactMinPeriod) is a
+//     loop when it repeats BYTE-EXACT ≥ maxRepeats times (≥ 2 for
+//     P ≥ streamLoopLongPeriod), allowing ≤ streamLoopMaxGap interlude bytes
+//     between copies. No fuzzy matching, no progression analysis: exploratory
+//     paragraphs never repeat 50+ exact bytes, and connector noise
+//     ("the the the …") lives below the floor.
 //   - Detector B (paraphrase coverage): a loop whose copies drift in wording
 //     has no exact unit, but its words are almost all inside a handful of
 //     repeated shingles. Fire when ≥ streamLoopMinHotShingles distinct
@@ -1269,10 +1455,10 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 //     per-delta cost.
 //
 // The returned sample is the repeated sequence evidence surfaced in
-// warning/stop messages (bugs.md runaway-loop visibility): for Detector A it
+// warning/stop messages (runaway-loop visibility): for Detector A it
 // is one byte-exact repeat unit; for Detector B — a paraphrase loop has no
 // exact unit — it is the scanned tail, which the hot shingles dominate.
-func streamLoopScan(clean string, maxRepeats int) (period, repeats int, sample string, ok bool) {
+func streamLoopScan(clean string, maxRepeats, minPeriod int) (period, repeats int, sample string, ok bool) {
 	if maxRepeats < 2 {
 		maxRepeats = 2
 	}
@@ -1286,7 +1472,7 @@ func streamLoopScan(clean string, maxRepeats int) (period, repeats int, sample s
 		// least three distinct words to have an opinion.
 		return 0, 0, "", false
 	}
-	if period, repeats, ok := streamExactChain(tail, maxRepeats); ok {
+	if period, repeats, ok := streamExactChain(tail, maxRepeats, minPeriod); ok {
 		return period, repeats, exactChainSample(tail, period), true
 	}
 	if period, repeats, ok := streamParaphraseLoop(tail, maxRepeats); ok {
@@ -1309,12 +1495,13 @@ func uniqueWordCount(s string) int {
 }
 
 const (
-	// streamLoopExactMinPeriod is the smallest repeated unit Detector A
-	// considers: shorter exact repeats are punctuation/connector noise. All
-	// field false positives were NON-exact, so exact-only matching is safe
-	// at this floor; a genuine micro-loop with a shorter unit also repeats
+	// streamLoopExactMinPeriod is the default smallest repeated unit
+	// Detector A considers (execution.stream_loop_min_period overrides it):
+	// shorter exact repeats are punctuation/connector noise. All field
+	// false positives were NON-exact, so exact-only matching is safe at
+	// this floor; a genuine micro-loop with a shorter unit also repeats
 	// at a multiple of the unit, which qualifies.
-	streamLoopExactMinPeriod = 60
+	streamLoopExactMinPeriod = 50
 	// streamLoopLongPeriod is the unit size from which two byte-exact copies
 	// already count as a loop: nobody legitimately repeats a kilobyte twice.
 	streamLoopLongPeriod = 1024
@@ -1373,13 +1560,13 @@ func exactChainSample(tail string, period int) string {
 //
 // Required copy count (certainty rises with unit size and count):
 //   - P ≥ streamLoopLongPeriod: 2 copies (nobody repeats a kilobyte twice)
-//   - streamLoopExactMinPeriod ≤ P < long: max(maxRepeats, 3) — a pair of
+//   - minPeriod ≤ P < long: max(maxRepeats, 3) — a pair of
 //     sub-kilobyte quotes is evidence, not a loop, at any knob setting
-//   - streamLoopSmallPeriod ≤ P < exactMin: max(maxRepeats, 8) — micro-loops
+//   - streamLoopSmallPeriod ≤ P < minPeriod: max(maxRepeats, 8) — micro-loops
 //     need overwhelming count
-func streamExactChain(tail string, maxRepeats int) (period, repeats int, ok bool) {
+func streamExactChain(tail string, maxRepeats, minPeriod int) (period, repeats int, ok bool) {
 	for p := streamLoopSmallPeriod; p <= len(tail)/2; p++ {
-		required, gap, skip := chainRules(tail, p, maxRepeats)
+		required, gap, skip := chainRules(tail, p, maxRepeats, minPeriod)
 		if skip {
 			continue
 		}
@@ -1392,11 +1579,11 @@ func streamExactChain(tail string, maxRepeats int) (period, repeats int, ok bool
 
 // chainRules returns the required copy count and interlude gap for a
 // candidate period, and whether the period must be skipped entirely.
-func chainRules(tail string, p, maxRepeats int) (required, gap int, skip bool) {
+func chainRules(tail string, p, maxRepeats, minPeriod int) (required, gap int, skip bool) {
 	switch {
 	case p >= streamLoopLongPeriod:
 		return 2, streamLoopMaxGap, false
-	case p >= streamLoopExactMinPeriod:
+	case p >= minPeriod:
 		if maxRepeats < 3 {
 			maxRepeats = 3
 		}
@@ -1526,12 +1713,15 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.contentBuf.Reset()
 	a.thinkingBuf.Reset()
 	a.thinkingDisplayBuf.Reset()
+	a.contentDisplayBuf.Reset()
+	a.contentMarkupSeen = false
 	a.turnStatsEmitted = false
 	a.turnStartHistoryLen = len(a.history)
 	a.bufferedToolCalls = nil
 	a.bufferedToolCallCount = 0
 	a.budgetToolCalls = make(map[string]string)
 	a.stopBatchAfterThis = false
+	a.toolCollapseNextRound = false
 	a.providerUsage = nil
 	a.recentToolCalls = nil
 	a.lastCallKey = ""
@@ -1551,12 +1741,23 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.toolRoundNudgeFired = false
 	a.autoContinueCount = 0
 	a.lastStopReason = ""
+	a.turnStep = 0
 	a.mu.Unlock()
 
-	if err := a.maybeCompress(ctx); err != nil {
-		a.cfg.Logger.Log(Error, "proactive compression failed: %v", err)
+	compressErr := a.maybeCompress(ctx)
+	if compressErr != nil {
+		a.cfg.Logger.Log(Error, "proactive compression failed: %v", compressErr)
 	}
-	a.enforceContextCeiling()
+	// Never cut history for a turn that is already dead: the destructive
+	// ceiling fallback exists to let the NEXT request go out, and a canceled
+	// context means no request will — dropping messages would be silent data
+	// loss. The cause threads the real summarize outcome so a false "did not
+	// fit the window" is never reported.
+	a.enforceContextCeilingUnlessCanceled(ctx, compressionCauseFromErr(compressErr))
+
+	// Step 1 entry: inject the per-turn temporal context reading (CX6) before
+	// the first provider request of the turn is derived.
+	a.injectTimeContextIfDue(time.Now())
 
 	pCtx := a.buildProviderContext(ctx)
 
@@ -1614,7 +1815,7 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	// The parent context is passed so that context.Canceled from a transport
 	// abort (ctx still alive) is retried, while user-cancel (ctx also done)
 	// is surfaced immediately.
-	if !shouldRetryStreamError(ctx, streamErr) {
+	if !shouldRetryStreamError(ctx, streamErr, opts.RetryPolicy) {
 		a.cfg.Logger.Log(Warn, "stream error not retryable; surfacing immediately: %v", streamErr)
 		a.emitEvent(OutputEvent{
 			Type:     EventContent,
@@ -1636,7 +1837,7 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	// bubble: this retry resets contentBuf and re-streams the answer from the
 	// start, so without a retraction the partial pre-retry bubble and the
 	// re-streamed bubble would both remain, duplicating the text on screen
-	// (bugs.md Issue 4 — streaming repeats that shift on scroll).
+	// (Issue 4 — streaming repeats that shift on scroll).
 	a.emitEvent(OutputEvent{
 		Type:     EventContent,
 		Role:     System,
@@ -1666,46 +1867,79 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	return true, fmt.Errorf("LLM connection lost after retries: %w", streamErr)
 }
 
-// retryStream attempts to reconnect up to two times after a stream error.
-// Returns whether any retry succeeded and whether a tool call was encountered.
-// On context cancellation the function returns promptly instead of sleeping
-// through the full backoff window.
+// retryStream attempts to reconnect after a stream error. In normal mode it
+// retries up to the policy's finite budget; in always mode it retries every
+// model-request failure until success or cancellation. Returns whether any
+// retry succeeded and whether a tool call was encountered. On context
+// cancellation the function returns promptly instead of sleeping through the
+// full backoff window.
 func (a *Agent) retryStream(ctx context.Context, originalErr error, model provider.Model, opts provider.StreamOptions) (toolCallEncountered bool, retried bool) {
-	var streamErr error
-	for retry := 0; retry < opts.MaxRetries; retry++ {
-		a.cfg.Logger.Log(Info, "retry attempt %d/%d after stream error", retry+1, opts.MaxRetries)
-		a.emitEvent(OutputEvent{Type: EventProgress, Text: fmt.Sprintf("Reconnecting (attempt %d/%d)...", retry+1, opts.MaxRetries)})
-
-		// Sleep with context awareness so Ctrl+C isn't ignored during backoff.
-		// retryBackoff honors a server-supplied Retry-After for rate limits and
-		// otherwise uses bounded exponential backoff with jitter.
-		select {
-		case <-time.After(retryBackoff(originalErr, retry)):
-		case <-ctx.Done():
+	plan := resolveRetryPlan(opts)
+	for retry := 0; ; retry++ {
+		if !plan.always && retry >= plan.maxRetries {
+			break
+		}
+		// Wait for the scheduled delay with context awareness so Ctrl+C isn't
+		// ignored during backoff. Emits the "scheduled" agent-log event before
+		// the wait and the "started" event after it (dsh llm/retry analog).
+		if !a.scheduleRetryAttempt(ctx, originalErr, model, plan, retry) {
 			return false, false
 		}
+		stop, tc, retried := a.runRetryAttempt(ctx, model, opts, plan, retry)
+		if stop {
+			return tc, retried
+		}
+	}
+	return false, false
+}
 
-		pCtx := a.buildProviderContext(ctx)
-		stream, err := provider.Stream(model, pCtx, opts)
-		if err != nil {
-			a.cfg.Logger.Log(Warn, "retry stream failed: %v", err)
-			continue
+// retryPlan is the resolved retry budget for one stream-failure episode:
+// the effective policy, the finite normal-mode budget, and whether always
+// mode is active.
+type retryPlan struct {
+	policy     *provider.RetryPolicy
+	maxRetries int
+	always     bool
+}
+
+// resolveRetryPlan derives the retry plan from the stream options: the
+// resolved policy (or the legacy scalar-derived default) and the effective
+// finite budget (policy > scalar > 5).
+func resolveRetryPlan(opts provider.StreamOptions) retryPlan {
+	policy := opts.RetryPolicy
+	if policy == nil {
+		policy = defaultRetryPolicy(opts)
+	}
+	maxRetries := policy.MaxRetries
+	if maxRetries <= 0 && policy.Mode != provider.RetryModeAlways {
+		maxRetries = opts.MaxRetries
+	}
+	return retryPlan{
+		policy:     policy,
+		maxRetries: maxRetries,
+		always:     policy.Mode == provider.RetryModeAlways,
+	}
+}
+
+// runRetryAttempt executes one retry attempt and reports whether retryStream
+// should stop (returning tc/retried) or continue the loop. Failed attempts
+// are cleaned up here so the next attempt starts fresh.
+func (a *Agent) runRetryAttempt(ctx context.Context, model provider.Model, opts provider.StreamOptions, plan retryPlan, retry int) (stop bool, tc bool, retried bool) {
+	outcome, tc, attemptErr := a.executeRetryAttempt(ctx, model, opts, retry, plan.maxRetries, plan.always)
+	switch outcome {
+	case retryAttemptSuccess:
+		return true, tc, true
+	case retryAttemptOpenError:
+		// A context-length error on a retry attempt means the overflow
+		// recovery (bounded once per turn in handleStreamFailure) freed
+		// insufficient space: repeating the same request cannot succeed.
+		// Without this, always mode would retry an overflowing request
+		// forever.
+		if isContextLengthError(attemptErr) {
+			return true, false, false
 		}
-		toolCallEncountered, streamErr = a.consumeStream(ctx, stream, opts)
-		if streamErr == nil {
-			a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
-			// Durable confirmation so the retry lifecycle is visible in chat
-			// history — failure bubble (episode start) + spinner attempts
-			// (live) + this restored bubble (success) — not only a transient
-			// spinner line (bugs.md Issue 17).
-			a.emitEvent(OutputEvent{
-				Type:     EventContent,
-				Role:     System,
-				Text:     fmt.Sprintf("Connection restored (attempt %d/%d) — resuming.", retry+1, opts.MaxRetries),
-				Metadata: map[string]string{"category": "system-notification"},
-			})
-			return toolCallEncountered, true
-		}
+		return false, false, false
+	case retryAttemptStreamError:
 		// Clean up after the failed retry so the next attempt (or error path)
 		// does not inherit partial tokens, buffered tool calls, or a spurious
 		// assistant message.
@@ -1713,9 +1947,126 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 		a.resetStreamRoundState()
 		a.mu.Unlock()
 		a.undoLastAssistantMessage()
-		a.cfg.Logger.Log(Warn, "retry attempt %d also failed: %v", retry+1, streamErr)
+		a.cfg.Logger.Log(Warn, "retry attempt %d also failed: %v", retry+1, attemptErr)
+		// A context-length error on a retry attempt stops the loop regardless
+		// of mode (overflow recovery is bounded once per turn; see the
+		// open-error case above).
+		if isContextLengthError(attemptErr) {
+			return true, false, false
+		}
+		// A retry attempt that fails with a non-eligible (or canceled) error
+		// stops the loop: the next failure is surfaced by handleStreamFailure.
+		if !plan.always && !shouldRetryStreamError(ctx, attemptErr, plan.policy) {
+			return true, false, false
+		}
+		return false, false, false
 	}
-	return false, false
+	return false, false, false
+}
+
+// scheduleRetryAttempt emits the durable "retry scheduled" agent-log event
+// with the computed delay, surfaces the progress bubble, then waits for the
+// backoff delay (aborting on cancellation). After the wait it emits the
+// "retry started" event. Returns false when the wait was canceled.
+func (a *Agent) scheduleRetryAttempt(ctx context.Context, originalErr error, model provider.Model, plan retryPlan, retry int) bool {
+	delay := retryBackoff(originalErr, retry, plan.policy)
+	a.emitRetryScheduledLog(originalErr, model, plan.policy, retry, plan.maxRetries, plan.always, delay)
+	a.emitEvent(OutputEvent{Type: EventProgress, Text: fmt.Sprintf("Reconnecting (attempt %d%s)...", retry+1, retryTotalSuffix(plan.always, plan.maxRetries))})
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+		return false
+	}
+	a.cfg.Logger.Log(Info, "retry started: provider=%s mode=%s attempt=%d%s",
+		model.Provider, plan.policy.Mode, retry+1, retryTotalSuffix(plan.always, plan.maxRetries))
+	return true
+}
+
+// retryAttemptOutcome classifies the result of one retry attempt.
+type retryAttemptOutcome int
+
+const (
+	// retryAttemptSuccess means the attempt streamed to completion.
+	retryAttemptSuccess retryAttemptOutcome = iota
+	// retryAttemptOpenError means provider.Stream failed before any events
+	// (no partial state to clean up).
+	retryAttemptOpenError
+	// retryAttemptStreamError means consumeStream failed mid-stream (partial
+	// state may need cleanup).
+	retryAttemptStreamError
+)
+
+// executeRetryAttempt runs one retry attempt: opens the stream and consumes
+// it.
+func (a *Agent) executeRetryAttempt(ctx context.Context, model provider.Model, opts provider.StreamOptions, retry, maxRetries int, always bool) (retryAttemptOutcome, bool, error) {
+	pCtx := a.buildProviderContext(ctx)
+	stream, err := provider.Stream(model, pCtx, opts)
+	if err != nil {
+		a.cfg.Logger.Log(Warn, "retry stream failed: %v", err)
+		return retryAttemptOpenError, false, err
+	}
+	toolCallEncountered, streamErr := a.consumeStream(ctx, stream, opts)
+	if streamErr != nil {
+		return retryAttemptStreamError, toolCallEncountered, streamErr
+	}
+	a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
+	// Durable confirmation so the retry lifecycle is visible in chat
+	// history — failure bubble (episode start) + spinner attempts
+	// (live) + this restored bubble (success) — not only a transient
+	// spinner line (Issue 17).
+	a.emitEvent(OutputEvent{
+		Type:     EventContent,
+		Role:     System,
+		Text:     fmt.Sprintf("Connection restored (attempt %d%s) — resuming.", retry+1, retryTotalSuffix(always, maxRetries)),
+		Metadata: map[string]string{"category": "system-notification"},
+	})
+	return retryAttemptSuccess, toolCallEncountered, nil
+}
+
+// retryTotalSuffix renders the "/max" budget suffix for progress bubbles.
+// Always mode has no finite budget, so it renders the empty suffix (the
+// display shows "attempt N" without a total).
+func retryTotalSuffix(always bool, maxRetries int) string {
+	if always {
+		return ""
+	}
+	return fmt.Sprintf("/%d", maxRetries)
+}
+
+// emitRetryScheduledLog writes the durable "retry scheduled" agent-log event
+// (dsh llm/retry analog) before the backoff wait.
+func (a *Agent) emitRetryScheduledLog(originalErr error, model provider.Model, policy *provider.RetryPolicy, retry, maxRetries int, always bool, delay time.Duration) {
+	code := retryCodeOf(originalErr)
+	if code == "" {
+		code = "UNKNOWN"
+	}
+	if always {
+		a.cfg.Logger.Log(Info, "retry scheduled: provider=%s mode=%s attempt=%d (unbounded) delay=%v code=%s err=%v",
+			model.Provider, policy.Mode, retry+1, delay, code, originalErr)
+		return
+	}
+	a.cfg.Logger.Log(Info, "retry scheduled: provider=%s mode=%s attempt=%d/%d delay=%v code=%s err=%v",
+		model.Provider, policy.Mode, retry+1, maxRetries, delay, code, originalErr)
+}
+
+// defaultRetryPolicy derives a normal-mode policy from the legacy scalar
+// StreamOptions fields when no policy was resolved at provider construction.
+// It mirrors the historical budget (MaxRetries scalar, MaxRetryDelay cap).
+func defaultRetryPolicy(opts provider.StreamOptions) *provider.RetryPolicy {
+	maxRetries := opts.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 5
+	}
+	maxDelay := opts.MaxRetryDelay
+	if maxDelay <= 0 {
+		maxDelay = 30 * time.Second
+	}
+	return &provider.RetryPolicy{
+		Mode:       provider.RetryModeNormal,
+		MaxRetries: maxRetries,
+		Backoff:    provider.RetryBackoff{InitialDelay: time.Second, MaxDelay: maxDelay, Jitter: 0},
+		Codes:      nil,
+	}
 }
 
 func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
@@ -1727,7 +2078,7 @@ func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
 		Context:      ctx,
 		SystemPrompt: sp,
 		Messages:     msgs,
-		Tools:        migrateSchemas(a.reg.Schemas()),
+		Tools:        migrateSchemas(a.reg.Schemas(), a.cfg.Model),
 	}
 }
 
@@ -1770,7 +2121,7 @@ func (a *Agent) buildSystemPrompt() string {
 	// The system prompt is the provider-cached prefix: it must stay
 	// byte-identical across the whole session, including goal create/destroy/
 	// status-flips. Goal text therefore does NOT belong here — it is injected
-	// as volatile slot messages by mergeGoalProgress instead (bugs.md
+	// as volatile slot messages by mergeGoalProgress instead
 	// "CRITICAL: /goal destroy caching": a goal reminder in this prefix busted
 	// the entire prompt cache on every goal transition).
 	return a.cfg.SystemPrompt
@@ -1791,7 +2142,7 @@ func (a *Agent) buildSystemPrompt() string {
 // message after the first with HTTP 400 "System message must be at the
 // beginning".
 //
-// Trade-offs (decided 2026-07-21, bugs.md): reminders persist, so a
+// Trade-offs (decided 2026-07-21): reminders persist, so a
 // cancelled goal's text stays in history — accepted per kimi-code; the
 // engine already appends an explicit "Goal cancelled/paused" history note on
 // transitions, which supersedes them. Progress counters are per-turn fresh
@@ -1831,6 +2182,98 @@ func (a *Agent) persistGoalReminder() {
 // request stays a strict append of the previous one.
 func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) []provider.Message {
 	return msgs
+}
+
+// deliverPreTurnMessages appends the PreTurnProvider's claimed user-role
+// content to history ahead of the current turn's user message. The provider is
+// expected to consume what it returns (the schedule store claims due jobs
+// atomically), so a provider that returns content is only invoked once per
+// delivery — a second call in the same turn returns nothing.
+//
+// Concurrency: caller holds no lock (same as the user-message append);
+// emitMessage is invoked outside a.mu like the neighboring call.
+func (a *Agent) deliverPreTurnMessages() {
+	p := a.cfg.PreTurnProvider
+	if p == nil {
+		return
+	}
+	for _, text := range p.PreTurnMessages() {
+		if text == "" {
+			continue
+		}
+		msg := Message{Type: Content, Role: User, Content: text}
+		a.history = append(a.history, msg)
+		a.emitMessage(msg)
+	}
+}
+
+// persistStickyInstructions appends always-on instruction blocks (sticky
+// knowledge skills) to a.history as ordinary USER-role messages, using the
+// same kimi-code parity contract as persistGoalReminder: append-only history,
+// provider-cache-friendly, never system role (strict chat templates reject
+// mid-conversation system messages with HTTP 400; Anthropic/Google
+// serializers silently drop them).
+//
+// All blocks are joined into a single message and deduped by string compare:
+// re-appending is skipped while the sticky set is unchanged. Compression
+// passes call InvalidateStickyInstructions after mutating history so the
+// next turn re-persists the block when elision/selective/summarize dropped
+// it.
+func (a *Agent) persistStickyInstructions() {
+	p := a.cfg.StickyProvider
+	if p == nil {
+		return
+	}
+	joined := strings.Join(p.StickyInstructions(), "\n\n")
+	if joined == "" {
+		return
+	}
+	// Dedup against ACTUAL history, not just in-memory state: the append-only
+	// contract means a sticky block present anywhere in the conversation is
+	// still in effect (elision only mutates tool payloads, and selective/
+	// summarize/ceiling all reset lastPersistedSticky via emitCompaction).
+	// Scanning also covers session restore (SetHistory), where a restored
+	// history may already carry the identical block.
+	if a.lastPersistedSticky == joined || historyContains(a.history, joined) {
+		a.lastPersistedSticky = joined
+		return
+	}
+	msg := Message{Type: Content, Role: User, Content: "[sticky instructions — always active]\n" + joined}
+	a.history = append(a.history, msg)
+	a.emitMessage(msg)
+	a.lastPersistedSticky = joined
+}
+
+// historyContains reports whether any history message's content contains
+// the given text. Used for sticky-instruction dedup.
+func historyContains(history []Message, text string) bool {
+	for _, m := range history {
+		if strings.Contains(m.Content, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// InvalidateStickyInstructions resets the sticky dedup state so the next
+// turn re-persists the sticky blocks. Every compression pass that mutates
+// history (elision, selective, summarize, ceiling, overflow, truncation)
+// must call this — the previously persisted sticky message may have been
+// elided or dropped, and sticky skills must survive context compression.
+func (a *Agent) InvalidateStickyInstructions() {
+	a.lastPersistedSticky = ""
+}
+
+// StickyBlocks returns the sticky instruction blocks this agent was
+// configured with, or nil when no StickyProvider is set. Exposed for wiring
+// verification (pool propagation tests) and diagnostics.
+func (a *Agent) StickyBlocks() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg.StickyProvider == nil {
+		return nil
+	}
+	return a.cfg.StickyProvider.StickyInstructions()
 }
 
 // logProviderContext writes a concise summary of the context to the debug log.

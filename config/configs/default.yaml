@@ -16,12 +16,12 @@ mode:
   defaults: {}
 
 execution:
-  mode: "solo"
-  retries: 5
+  mode: "yolo"
+  retries: 2
   token_warning: 70
   token_critical: 90
-  loop_warning: 3
-  loop_interrupt: 5
+  loop_warning: 10
+  loop_interrupt: 15
   activity_timeout: "30s"
   error_threshold: 0.5
   worktree_mode: "multi_agent"
@@ -37,7 +37,7 @@ execution:
   # rolling window below. Different tool calls do NOT count toward this limit.
   # The window only spans the current "state epoch": a successful edit/write/
   # shell call resets it, so legitimate re-runs after a change are not flagged.
-  max_tool_calls: 3
+  max_tool_calls: 200
   # Maximum number of CONSECUTIVE failing calls of the SAME tool (any args)
   # tolerated before a loop guard fires once, telling the model to stop and
   # change approach. This catches a model retrying one tool with ever-changing
@@ -57,7 +57,11 @@ execution:
   # markup inside content or reasoning streams instead of native tool_calls.
   # Auto-heal extracts and executes these malformed calls so the turn keeps
   # progressing.
-  auto_heal_tool_calls: true
+  auto_heal_tool_calls: false
+  # Stream-loop guard: number of stream-loop detections after which the
+  # turn is aborted. Code default is 3; the embedded default raises it to 5
+  # to tolerate chatty local models.
+  stream_loop_max_strikes: 5
 
 providers: []
 
@@ -68,36 +72,59 @@ context_compression:
   # 0 means "auto": use the active model's advertised context window.
   max_tokens: 0
   # Fill levels (percent of the effective window) at which PROACTIVE
-  # compression escalates. Every layer is OPT-IN (0 = disabled): proactive
-  # threshold compression busts the provider prefix cache and re-bills most
-  # of the context for modest headroom, so it is OFF by default. Enable a
-  # layer by setting a positive percent.
-  #   soft: early cheap maintenance; trigger: the configured strategy fires;
-  #   hard: proactive emergency ceiling (gate bypass + hard-layer strategy).
+  # compression escalates. Every layer is OPT-IN: 0 disables it — there is
+  # no implicit engine default. The embedded default enables only the hard
+  # ceiling: at 95% the hard-layer strategy (strategies.hard, default
+  # "summarize") runs with the cache gate bypassed — a full-window LLM
+  # summarize. If that summarize itself overflows the window, a micro
+  # pre-compression is applied and the summarize retried; the destructive
+  # message-drop ("ceiling") is only a last resort when summarize cannot
+  # run at all.
   # The legacy "threshold_percent" key still works and, when set, overrides
   # thresholds.trigger_percent (backwards compatibility).
   thresholds:
     soft_percent: 0
     trigger_percent: 0
-    hard_percent: 0
+    hard_percent: 95
   # Optional per-model overrides keyed by models[].id, e.g.:
   # per_model:
   #   "local-qwen3-8b":
   #     max_tokens: 24576
   #     strategy: "hybrid"
   #     thresholds: { soft_percent: 40, trigger_percent: 65, hard_percent: 90 }
-  # Reactive safety net (always on): on a context-length error the hybrid
-  # strategy runs — tool_elision → selective → summarize (last resort) — and
-  # the hard-ceiling enforcer drops oldest messages to keep the request valid.
+  # Reactive safety net: on a context-length error the on-error strategy
+  # runs — "hybrid" means tool_elision → selective → summarize (last
+  # resort) — and the hard-ceiling enforcer drops oldest messages to keep
+  # the request valid.
   on_context_error: true
-  strategy: "micro"
-  preserve_recent_turns: 4
+  on_error_strategy: "hybrid"
+  strategy: ""
+  preserve_recent_turns: 0
   micro_compaction:
+    # OPT-IN (default: off). Micro compaction is a pre-summarize step on a full
+    # window. When OFF, summarize is always the default compaction path. When
+    # ON, micro first runs as a DRY-RUN (estimation only, never mutates) to
+    # validate it can meet the required shrink; summarize still runs on the
+    # ORIGINAL history (preserving the provider prefix cache), and micro is
+    # only applied for real if that summarize fails with a context-overflow
+    # error (to create enough room to compress).
+    enabled: false
     keep_recent_messages: 20
     min_content_tokens: 100
     cache_miss_threshold: "1h"
     truncated_marker: "[Old tool result content cleared]"
     min_context_ratio: 0.5
+
+# time_context controls the per-turn temporal context injection (CX6): a
+# durable context message carrying a zoned timestamp and elapsed-since-last
+# reading, injected at model step preparation. Off by default. Enable it to
+# give the model a clock when interpreting otherwise-unqualified dates and
+# times.
+time_context:
+  enabled: false
+  # time_zone: "Asia/Shanghai"  # IANA zone; omit to use the local zone.
+  # refresh_interval: "60s"     # minimum gap between readings; omit or "0" =
+  #                             # inject at every eligible step entry.
 
 telegram:
   enabled: true
@@ -168,6 +195,12 @@ skills:
   embedded: true
 
 tools:
+  # max_inline_bytes caps the model-facing size of any single plain-text tool
+  # result (spill policy, gap CX2). A result over the cap is saved verbatim to
+  # ~/.goa/spill/<session>/ and replaced by a bounded head/tail preview plus a
+  # locator notice ("Full result stored at: ..."). 0 (default) disables the
+  # policy entirely.
+  max_inline_bytes: 0
   bash:
     blocked_commands:
       - "rm -rf /"
@@ -182,12 +215,19 @@ tools:
       - "*TOKEN*"
       - "*SECRET*"
       - "*PASSWORD*"
-    compress_output:  # null = auto-detect based on provider (local=on, remote=off)
+    compress_output: false
     jail: false
   ssh:
     hosts: []
   python:
     timeout_seconds: 60
+  run_code:
+    timeout_seconds: 60
+    # The run_code worker is jailed by default: the program's own os file
+    # API is confined to the project directory. Set false to allow the
+    # program's file operations outside the project (sub-calls still respect
+    # their own tools' jails).
+    jail: true
   edit:
     allow_fuzz_on_edits: true
     fuzzy_match: true
@@ -227,20 +267,21 @@ tools:
       default_prompt: |
         Summarize the following web page in 3-5 concise paragraphs. Preserve key facts, names, numbers, and any URLs that are central to the content.
   enabled:
-    bg_exec: true
-    delegate_to: true
+    bg_exec: false
+    delegate_to: false
     memento: false
-    pty_exec: false
-    request_review: true
+    terminals: true
+    request_review: false
     ssh_bash: false
     webfetch: true
-    verify: true
+    verify: false
     python: true
-    agent: true
-    agent_swarm: true
-    goa: true
-    lsp: true
-    todo_list: true
+    run_code: true
+    agent: false
+    agent_swarm: false
+    goa: false
+    lsp: false
+    todo_list: false
   search:
     threads: 4
     max_results: 30

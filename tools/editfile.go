@@ -82,21 +82,20 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 					"description": "replacement text",
 				},
 				"operation": map[string]any{
-					"type":        "string",
-					"description": "replace|replace_lines|replace_pattern|insert_after|insert_before|delete_lines",
+					"type": "string",
 					"enum":        []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
 				},
 				"start_line": map[string]any{
 					"type":        "integer",
-					"description": "start line (1-indexed, for replace_lines/insert_after/insert_before)",
+					"description": "start line (1-indexed) for line ops",
 				},
 				"end_line": map[string]any{
 					"type":        "integer",
-					"description": "end line (1-indexed, for replace_lines/delete_lines)",
+					"description": "end line (1-indexed) for line ops",
 				},
 				"pattern": map[string]any{
 					"type":        "string",
-					"description": "regex for replace_pattern/insert_after/insert_before",
+					"description": "regex for pattern-based ops",
 				},
 				"pattern_flags": map[string]any{
 					"type":        "string",
@@ -108,62 +107,35 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"new_content": map[string]any{
 					"type":        "string",
-					"description": "replacement content for replace_lines/insert_after/insert_before",
+					"description": "replacement content for line ops",
 				},
 				"indent_mode": map[string]any{
-					"type":        "string",
-					"description": "preserve (default)|normalize|as-is",
+					"type": "string",
 					"enum":        []string{"preserve", "normalize", "as-is"},
 				},
 				"edits": map[string]any{
 					"type": "array",
-					"description": "batch of edits applied in order against the same file, atomically (all or nothing) in a single write. " +
-						"Each element takes the same fields as a single edit (operation/old_string/new_string, or operation + start_line/end_line/pattern/occurrence/new_content/indent_mode). " +
-						"Edits see the result of the previous ones, so line numbers in later edits refer to the already-edited content.",
+					"description": "Batch of edits to the same file, applied in order, atomically (all or nothing); each element mirrors single-edit fields and sees earlier results.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
+							// Field docs intentionally omitted: names/types/enums mirror the
+							// flat single-edit properties documented above (context budget).
 							"operation": map[string]any{
-								"type":        "string",
-								"description": "replace|replace_lines|replace_pattern|insert_after|insert_before|delete_lines",
-								"enum":        []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
+								"type": "string",
+								"enum": []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
 							},
-							"old_string": map[string]any{
-								"type":        "string",
-								"description": "text to match (with new_string)",
-							},
-							"new_string": map[string]any{
-								"type":        "string",
-								"description": "replacement text",
-							},
-							"start_line": map[string]any{
-								"type":        "integer",
-								"description": "start line (1-indexed, for replace_lines/insert_after/insert_before)",
-							},
-							"end_line": map[string]any{
-								"type":        "integer",
-								"description": "end line (1-indexed, for replace_lines/delete_lines)",
-							},
-							"pattern": map[string]any{
-								"type":        "string",
-								"description": "regex for replace_pattern/insert_after/insert_before",
-							},
-							"pattern_flags": map[string]any{
-								"type":        "string",
-								"description": "regex flags (e.g. 'i')",
-							},
-							"occurrence": map[string]any{
-								"type":        "integer",
-								"description": "occurrence for replace_pattern (default: 1)",
-							},
-							"new_content": map[string]any{
-								"type":        "string",
-								"description": "replacement content for replace_lines/insert_after/insert_before",
-							},
+							"old_string":    map[string]any{"type": "string"},
+							"new_string":    map[string]any{"type": "string"},
+							"start_line":    map[string]any{"type": "integer"},
+							"end_line":      map[string]any{"type": "integer"},
+							"pattern":       map[string]any{"type": "string"},
+							"pattern_flags": map[string]any{"type": "string"},
+							"occurrence":    map[string]any{"type": "integer"},
+							"new_content":   map[string]any{"type": "string"},
 							"indent_mode": map[string]any{
-								"type":        "string",
-								"description": "preserve (default)|normalize|as-is",
-								"enum":        []string{"preserve", "normalize", "as-is"},
+								"type": "string",
+								"enum": []string{"preserve", "normalize", "as-is"},
 							},
 						},
 					},
@@ -553,7 +525,7 @@ func (t *EditFileTool) MutatesState() bool { return true }
 var editfileDocs embed.FS
 
 // notifyLSP forwards the edited document to its language server (any file
-// type the manager supports — bugs.md Issue LSP: not just .go) and returns a
+// type the manager supports — Issue LSP: not just.go) and returns a
 // formatted diagnostics block for the tool result. The notification never
 // blocks on a server start (async spawn); diagnostics appear once the server
 // is up and has processed the change.
@@ -566,7 +538,7 @@ func (t *EditFileTool) notifyLSP(ctx context.Context, resolvedPath string) strin
 		return ""
 	}
 	_ = t.LSPManager.DidChange(ctx, resolvedPath, string(content))
-	// Diagnostics are published asynchronously; poll until they settle (bugs.md L1).
+	// Diagnostics are published asynchronously; poll until they settle (L1).
 	diags := collectLSPDiagnostics(ctx, t.LSPManager, resolvedPath)
 	return formatLSPDiagnostics(resolvedPath, diags, t.LSPManager.ServerIDFor(resolvedPath))
 }
@@ -1002,7 +974,7 @@ func (t *EditFileTool) searchReplaceError(path, oldStr string, err error, matche
 			message = "Text %q not found in %s (tried exact, trailing whitespace, and fuzzy matching)"
 		}
 		detail := fmt.Sprintf(message, truncateStr(oldStr, 40), path)
-		// bugs.md: surface how much of the block actually matched so the model
+		// surface how much of the block actually matched so the model
 		// understands this is content drift (not a broken tool) and recovers by
 		// re-reading + making a smaller anchored edit, instead of switching to bash.
 		if total > 0 {

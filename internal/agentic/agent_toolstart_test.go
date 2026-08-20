@@ -51,7 +51,7 @@ func runAgentCollectEvents(t *testing.T, st *streamTestProvider, tools []Tool) [
 }
 
 // TestAgent_NamelessToolCallDeltaNotEmitted is the agent-side guard for
-// bugs.md "Empty tool TUI": OpenAI-style streams ship the call id before the
+// Empty tool TUI: OpenAI-style streams ship the call id before the
 // tool name; a nameless delta must NOT reach observers (the TUI would create
 // a blank-header widget that never updates). The first emitted delta carries
 // the name and the full accumulated args prefix.
@@ -104,7 +104,7 @@ func TestAgent_NamelessToolCallDeltaNotEmitted(t *testing.T) {
 
 // TestAgent_EmitsToolStartBeforeResult verifies the scheduler-driven
 // EventToolStart arrives for each executed call and before its result
-// (bugs.md Bug W).
+// (Bug W).
 func TestAgent_EmitsToolStartBeforeResult(t *testing.T) {
 	st := &streamTestProvider{api: "test-tool-start", events: []provider.AssistantMessageEvent{
 		{Type: provider.EventToolCallEnd, ToolCall: &provider.ContentBlock{

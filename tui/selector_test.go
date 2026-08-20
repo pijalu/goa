@@ -53,7 +53,7 @@ func TestNewSelector_SortsCaseInsensitive(t *testing.T) {
 }
 
 // TestNewSelector_PreserveOrder pins the opt-out from alphabetical sorting
-// (bugs.md "Session command: list ordering"): when every item sets
+// (Session command: list ordering): when every item sets
 // PreserveOrder, the caller's order is kept and the cursor starts on item 0
 // — the newest-first session list stays newest-on-top and preselected.
 func TestNewSelector_PreserveOrder(t *testing.T) {
@@ -1083,7 +1083,7 @@ func TestSelector_GoalManagerSentinelsNotDeletable(t *testing.T) {
 
 // TestSelector_DefaultKeymapUnchanged is the regression guard for the
 // /provider and /model pickers after the per-instance keymap was added
-// (bugs.md goal manager): with the zero keymap, '+' emits __add__, '-'
+// (goal manager): with the zero keymap, '+' emits __add__, '-'
 // emits __delete__+value, and the Delete key emits __delete__+value.
 // Backspace is no longer a delete trigger (it only edits the search filter);
 // see TestSelector_BackspaceEmptyFilterConsumedNotDelete.

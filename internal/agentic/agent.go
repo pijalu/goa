@@ -87,7 +87,7 @@ type Agent struct {
 
 	// turnSawContent / turnSawThinking record whether the model produced any
 	// visible content or any thinking tokens at any earlier point in the current
-	// turn (bugs.md Issue 13). They let the consecutive-tool-rounds streak treat
+	// turn (Issue 13). They let the consecutive-tool-rounds streak treat
 	// a model that reasoned earlier in the turn as productive, rather than
 	// demanding fresh reasoning in every single round.
 	turnSawContent  bool
@@ -124,6 +124,17 @@ type Agent struct {
 	// content sent before a tool call (or in a text-only response) is lost.
 	contentBuf strings.Builder
 
+	// contentDisplayBuf accumulates content tokens held back from display once
+	// a tool-call markup signal (tool_call/function/DSML) appears mid-stream,
+	// so multi-delta markup (esp. DSML emitted on tool_choice:"none" collapse
+	// rounds) is never rendered raw to the user. Flushed (stripped) once the
+	// buffer is clean. Text streamed before any signal is emitted live.
+	contentDisplayBuf strings.Builder
+	// contentMarkupSeen latches true once a tool-call markup signal appears in
+	// the content stream, switching display from live deltas to the buffered
+	// (markup-suppressing) path for the rest of the response.
+	contentMarkupSeen bool
+
 	// turnStatsEmitted tracks whether the provider already sent real token
 	// stats during this turn. If true, we skip emitting estimated stats at
 	// turn end to avoid double-counting.
@@ -145,6 +156,15 @@ type Agent struct {
 	// has not been initialized (e.g. tests that call undoLastAssistantMessage
 	// directly), in which case the function falls back to the last user message.
 	turnStartHistoryLen int
+
+	// turnCounter counts completed user turns for the temporal context
+	// injection (CX6) message ("turn N"). Incremented once per user input in
+	// runInternal. turnStep counts step entries within the current turn
+	// ("step M"): reset to 0 in prepareTurn, incremented on every step entry
+	// (round 0 via prepareTurn, later rounds, recovery rounds) regardless of
+	// whether an injection was due.
+	turnCounter int
+	turnStep    int
 
 	// providerUsage stores the Usage from EventDone (stream_options.include_usage).
 	// When set, emitTurnStats uses these real token counts instead of estimates.
@@ -171,7 +191,7 @@ type Agent struct {
 	// steeringSource, when set, is polled between stream rounds (after a round's
 	// tool results are appended, before the next runStreamRound) so mid-turn
 	// steering is woven into the CURRENT turn instead of delivered as a late,
-	// separate turn (bugs.md steering-lateness; pi parity). Drained messages are
+	// separate turn (steering-lateness; pi parity). Drained messages are
 	// appended as user messages at the current history tail — a strict
 	// prefix-extension of the prior request (guideline #9 cache-safe).
 	steeringSource SteeringSource
@@ -194,20 +214,30 @@ type Agent struct {
 	// concurrent readers (e.g. effectiveMaxTokens) can read it without taking mu.
 	contextWindow atomic.Int64
 
-	// toolSchemaTokens caches the token cost of the registered tool schemas,
-	// computed once (the registry is stable for the agent's lifetime). Used by
-	// fixedCostTokens to include the per-turn fixed cost in context usage.
-	toolSchemaTokensOnce sync.Once
-	toolSchemaTokens     int
-
-	// thinkingStall records when the current thinking-only phase started
-	// (zero value = not in a thinking stall). Used to detect models that
-	// emit reasoning tokens indefinitely without producing content or tool calls.
-	// Reset whenever a content token or tool call is received.
+	// thinkingStallStart records when the last thinking delta of the current
+	// thinking-only phase was received (zero value = not in a thinking-only
+	// phase). A stall is declared when NO thinking delta has arrived for
+	// longer than ThinkingStallStop — a true stream hang — never because a
+	// long but actively-streaming reasoning phase crossed a cumulative
+	// duration budget (session export 2026-08-15: a slow locallm streaming
+	// reasoning tokens for minutes was killed 5m0s after its FIRST delta
+	// despite 2603 subsequent deltas — "no stall but marked as stall").
+	// Refreshed on every thinking delta; reset whenever a content token or
+	// tool call is received.
 	thinkingStallStart time.Time
 	// thinkingStallWarned is set after the first stall warning is emitted
 	// so we don't flood the event stream.
 	thinkingStallWarned bool
+	// thinkingStallWarnTimer fires when no thinking delta has arrived for
+	// longer than ThinkingStallWarn, emitting the "still thinking" progress
+	// warning; thinkingStallStopTimer fires after ThinkingStallStop of
+	// silence and stops the turn. Both are re-armed on every thinking delta
+	// so only continuous silence trips them, and stopped on content/tool
+	// progress or round reset. The stop timer is required because a true
+	// no-delta hang delivers no further deltas that could re-evaluate the
+	// per-delta check.
+	thinkingStallWarnTimer *time.Timer
+	thinkingStallStopTimer *time.Timer
 	// thinkingStalled is set by the thinking-stall watchdog when the model
 	// emits only reasoning tokens for longer than ThinkingStallStop. It is
 	// separate from streamLoopDetected: the two guards stop the stream for
@@ -233,7 +263,7 @@ type Agent struct {
 
 	// bashReuse detects when the model re-runs the same expensive upstream
 	// command (e.g. `go test ...`) within a single state epoch while only
-	// changing the trailing filter — a wasteful pattern (bugs.md). It resets
+	// changing the trailing filter — a wasteful pattern. It resets
 	// whenever the state epoch advances (a mutating tool succeeded), so
 	// re-running a test after an edit is never flagged. Keyed off bash calls
 	// as they are buffered; the flagged call IDs live in bashNearDup.
@@ -276,6 +306,13 @@ type Agent struct {
 	// appended to history.
 	stopBatchAfterThis bool
 
+	// toolCollapseNextRound marks the NEXT stream round as the turn's final
+	// step (P7): the request carries no tools and tool_choice "none", so the
+	// model must produce its summary response text-only. Set by completeStreamTurn
+	// when a stop-turn signal is pending; consumed by startStreamRound when it
+	// builds the round's provider context.
+	toolCollapseNextRound bool
+
 	// overflowRecoveryAttempted tracks whether an overflow-triggered
 	// context compression + stream retry has already been attempted in
 	// the current turn. Prevents infinite retry loops when compression
@@ -311,13 +348,13 @@ type Agent struct {
 	// turn END, so during a long single turn it goes stale and the idle-gap
 	// logic would flip the gate cold mid-turn while rounds still complete
 	// every few seconds — busting a provably hot cache BELOW the ceiling
-	// (bugs.md prefix-cache bust loop companion defect). lastTurnEnd stays
+	// (prefix-cache bust loop companion defect). lastTurnEnd stays
 	// for inter-turn idle bookkeeping. Cleared by Clear.
 	lastRoundActivity time.Time
 
 	// lastCacheReadTokens is the previous completed request's cache_read
 	// count, kept so the per-request debug log can show cache_read deltas
-	// (bugs.md round-17 anomaly forensics: discriminate provider-side
+	// (round-17 anomaly forensics: discriminate provider-side
 	// partial eviction from request-shape changes). Cleared by Clear.
 	lastCacheReadTokens int
 
@@ -336,7 +373,7 @@ type Agent struct {
 	// checkStreamLoop when the detector fired (one exact repeat unit for the
 	// exact-chain detector, the scanned tail for the paraphrase detector;
 	// normalized text) so the strike warning/stop messages can show WHAT was
-	// judged a loop (bugs.md runaway-loop visibility). Reset per round
+	// judged a loop (runaway-loop visibility). Reset per round
 	// alongside streamLoopDetected.
 	streamLoopSample string
 
@@ -358,7 +395,7 @@ type Agent struct {
 	// are rejected instead of continuing the runaway exchange. The latch is
 	// cleared by ResetLoopStop (genuine new user input / goal resume) and
 	// auto-expires after loopStopCooldown — a guardrail must never
-	// permanently brick a session (bugs.md runaway-loop bricking).
+	// permanently brick a session (runaway-loop bricking).
 	loopStopped bool
 	// loopStoppedAt records when the latch was set, for cooldown expiry.
 	loopStoppedAt time.Time
@@ -398,6 +435,11 @@ type Agent struct {
 	// contract), so re-appending it every turn just bloats the append-only
 	// context (E5, ENHANCE.md): it is re-persisted only when it changes.
 	lastPersistedGoalReminder string
+	// lastPersistedSticky is the joined sticky-instruction text most recently
+	// appended to history by persistStickyInstructions. Re-appending is
+	// skipped until the sticky set changes (skill enabled/disabled/edited)
+	// or a compression pass invalidates it via InvalidateStickyInstructions.
+	lastPersistedSticky string
 }
 
 // partialToolCall tracks a tool call whose arguments are still being
@@ -413,8 +455,10 @@ type partialToolCall struct {
 // ContextStats holds the current context window usage of an Agent.
 //
 // EstimatedTokens uses a language-aware heuristic (ASCII ≈ 0.25 tokens,
-// CJK ≈ 1 token) and is accurate enough for compression decisions without
-// adding external dependencies.
+// CJK ≈ 1 token) and is the conservative full-surface estimate used by the
+// reactive safety nets (ceiling enforcement, context-length recovery) and
+// cost/event reporting. Proactive compression decisions and occupancy
+// displays read ProjectedTokens instead (CX8/P20).
 type ContextStats struct {
 	// Messages is the number of messages in the conversation history.
 	Messages int
@@ -422,9 +466,20 @@ type ContextStats struct {
 	Characters int
 	// EstimatedTokens is a rough token count (chars / 4 for English, chars / 2 for CJK).
 	EstimatedTokens int
+	// ProjectedTokens is the projected cost of the NEXT request's prompt:
+	// the last provider-reported gross prompt size (the anchor) plus the
+	// heuristic reprice of every message appended since that request. Only
+	// the delta is estimated — the anchor carries the provider's exact count
+	// — so the figure reacts the moment content lands (e.g. a large tool
+	// result) instead of waiting for the next usage line. Falls back to the
+	// full heuristic estimate when no provider usage has been recorded
+	// (EstimatedTokens == ProjectedTokens in that case).
+	ProjectedTokens int
 	// MaxTokens is the configured context window limit (0 = unknown/unlimited).
 	MaxTokens int
-	// UsagePercent is EstimatedTokens / MaxTokens * 100 (0 if MaxTokens is 0).
+	// UsagePercent is ProjectedTokens / MaxTokens * 100 (0 if MaxTokens is 0).
+	// Occupancy displays and the proactive compaction trigger read the
+	// projection (P20 / CX8), never the stale full-surface estimate.
 	UsagePercent int
 	// AutoMax is true when MaxTokens was inferred from model metadata rather
 	// than an explicit user configuration.
@@ -472,33 +527,42 @@ const (
 	SkillExecutionModeInline SkillExecutionMode = "inline"
 )
 
+// TimeContextConfig controls the per-turn temporal context injection (CX6):
+// a durable context message carrying a zoned timestamp and elapsed since the
+// last reading, injected at model step preparation. A zero value (Enabled
+// false) disables injection; RefreshInterval zero or negative injects at
+// every eligible step entry.
+type TimeContextConfig struct {
+	// Enabled turns on per-step temporal context injection.
+	Enabled bool
+	// TimeZone is the IANA display zone used to format timestamps and
+	// reported to the model. Empty uses the local zone.
+	TimeZone string
+	// RefreshInterval is the minimum wall-clock gap between injections.
+	// Zero or negative injects at every eligible step entry.
+	RefreshInterval time.Duration
+}
+
 // ContextCompressionConfig controls automatic conversation history compression.
 //
-// A zero value disables automatic compression. Use this to manage context
-// window limits, especially important when using inline skill execution mode.
+// A zero value disables automatic compression entirely: every layer is
+// opt-in, so the thresholds default to disabled and no reactive recovery
+// runs (OnContextError false). Use this to manage context window limits,
+// especially important when using inline skill execution mode.
 type ContextCompressionConfig struct {
 	// MaxTokens is the context window limit. When estimated tokens
 	// exceed ThresholdPercent of this, compression is triggered.
 	// 0 disables token-based triggering.
 	MaxTokens int
 
-	// ThresholdPercent triggers compression when usage exceeds this
-	// percentage of MaxTokens. 0 = default 90.
-	// Recommended for inline mode: 75-80.
-	//
-	// Deprecated: use Thresholds.TriggerPercent. When both are set,
-	// ThresholdPercent wins (backwards compatibility).
-	ThresholdPercent int
-
 	// Thresholds configures the fill levels at which compression escalates:
-	// early cheap maintenance (soft), the main strategy trigger, and the
-	// emergency ceiling (hard). See CompressionThresholds.
+	// early cheap maintenance (soft) and the emergency ceiling (hard). The
+	// model is exactly soft / hard / on-error — there is no trigger layer.
+	// See CompressionThresholds.
 	Thresholds CompressionThresholds
 
 	// Strategies selects the compression strategy per escalation layer
-	// (soft/trigger/hard). See CompressionLayerStrategies. The legacy
-	// Strategy field maps to the trigger layer when Strategies.Trigger is
-	// unset.
+	// (soft/hard). See CompressionLayerStrategies.
 	Strategies CompressionLayerStrategies
 
 	// DisableCacheGate turns the prefix-cache gate off entirely: proactive
@@ -512,13 +576,21 @@ type ContextCompressionConfig struct {
 	// context-length / token-limit error. Default: true.
 	OnContextError bool
 
+	// OnErrorStrategy selects the strategy applied by the on-context-error
+	// recovery (see handleContextError). Empty = CompressionHybrid
+	// (tool_elision → selective → summarize as last resort).
+	OnErrorStrategy CompressionStrategy
+
 	// MicroCompaction configures the micro compaction strategy.
 	// Only used when Strategy == CompressionMicro.
 	MicroCompaction MicroCompactionConfig
 
-	// Strategy selects the compression algorithm.
-	// Default: CompressionToolElision.
-	Strategy CompressionStrategy
+	// ToolResultPruning configures the pre-compaction tool-result pruner:
+	// a model-free pass that runs ahead of summarizeHistory and rewrites
+	// over-budget historical tool results in place (head + marker + tail),
+	// so a compaction-triggering request can fall back under pressure without
+	// an LLM call when pruning alone resolves it. Zero value = defaults.
+	ToolResultPruning ToolResultPruningConfig
 
 	// PreserveRecentTurns keeps the last N user/assistant/tool turns
 	// uncompressed. Default: 2.
@@ -549,6 +621,12 @@ type Config struct {
 	// delta so runtime changes take effect mid-stream). Nil or values < 2
 	// mean the default of 5.
 	StreamLoopMaxRepeats func() int
+	// StreamLoopMinPeriod, when non-nil, returns the smallest repeated unit
+	// (in characters) the streaming loop detector treats as a loop
+	// (execution.stream_loop_min_period, queried per scan so runtime changes
+	// take effect mid-stream). Nil or values below the absolute scan floor
+	// mean the default of 50.
+	StreamLoopMinPeriod func() int
 	// StreamLoopMaxStrikes is the number of stream-loop detections after
 	// which the turn is stopped (execution.stream_loop_max_strikes). Earlier
 	// detections are soft: the looped round is abandoned, the model is
@@ -570,6 +648,11 @@ type Config struct {
 	// ContextCompression controls automatic history compression.
 	// Zero value disables automatic compression.
 	ContextCompression ContextCompressionConfig
+	// TimeContext controls the per-turn temporal context injection (CX6):
+	// a durable context message carrying a zoned timestamp and elapsed
+	// since the last reading, injected at model step preparation. Zero
+	// value (Enabled false) disables injection.
+	TimeContext TimeContextConfig
 	// MaxToolRepeatTotal is the maximum number of identical tool calls (same
 	// tool + same arguments) allowed within a single turn, including the first
 	// call. When the count exceeds this threshold across any streaming rounds
@@ -632,6 +715,15 @@ type Config struct {
 	// GoalStateProvider injects goal context into the system prompt at each
 	// turn boundary. Nil disables goal injection.
 	GoalStateProvider GoalStateProvider
+	// StickyProvider supplies always-on instruction blocks (sticky knowledge
+	// skills). Non-empty blocks are persisted into history as user-role
+	// messages once per content change — never into the system prompt, which
+	// is the provider-cached prefix. Nil disables sticky injection.
+	StickyProvider StickyProvider
+	// PreTurnProvider supplies additional user-role content delivered at the
+	// start of every turn ahead of the user message (e.g. due schedule
+	// reminders). Nil disables pre-turn delivery.
+	PreTurnProvider PreTurnProvider
 	// AutoHealToolCalls enables parsing of malformed XML tool calls emitted
 	// by local models.  When true, the agent extracts <tool_call> and
 	// <function=name> markup from the assistant text and treats it as a tool
@@ -640,6 +732,9 @@ type Config struct {
 	// ProjectDir is the root of the codebase. It is used by SOLO mode to
 	// restrict file-system and shell access to the project directory.
 	ProjectDir string
+	// SessionID is the current session identifier, forwarded into Claude Code
+	// dialect hook payloads (session_id). Empty when no session is active.
+	SessionID string
 	// GetAutonomy returns the current autonomy level. When non-nil and it
 	// returns AutonomySolo, tool calls are validated against the SOLO policy.
 	GetAutonomy func() internal.AutonomyLevel
@@ -673,6 +768,19 @@ type Config struct {
 	// sessionStart, sessionEnd). When nil, no hooks run.
 	HookEngine hooks.AgentHookEngine
 
+	// SpillPolicy bounds oversized plain-text tool results (gap CX2): a final
+	// result over the configured cap is saved verbatim to the session spill
+	// dir and replaced by a budgeted head/tail preview + locator notice.
+	// Error results never reach the policy. Nil disables spilling entirely.
+	SpillPolicy SpillPolicy
+
+	// InstructionTracker tracks loaded workspace instruction files
+	// (AGENTS.md/CLAUDE.md) and their lifecycle changes after successful
+	// read/write/edit touches (gap CX5). It is seeded with the baseline
+	// context files already rendered into the system prompt. Nil disables
+	// the workspace-instruction lifecycle messages.
+	InstructionTracker *internal.InstructionTracker
+
 	// AllowEmptyResponse when true disables the empty-response guard that
 	// treats a clean stream end with zero events as a transient error.
 	// Companion and sub-agents (multiagent pool, orchestration specialists)
@@ -688,7 +796,10 @@ func NewAgent(cfg Config) *Agent {
 	// the caller left MicroCompaction at zero. Without this, DefaultMicroCompaction
 	// Config's values (KeepRecentMessages=20, MinContextRatio=0.5, ...) are
 	// silently never applied and microCompactForced reads zero values.
-	if cfg.ContextCompression.Strategy == CompressionMicro && cfg.ContextCompression.MicroCompaction == (MicroCompactionConfig{}) {
+	// Apply only when micro is the EXPLICIT soft-layer strategy: the resolved
+	// softStrategy defaults to micro even with the soft layer disabled, which
+	// would otherwise populate MicroCompaction for non-micro configs.
+	if cfg.ContextCompression.Strategies.Soft == CompressionMicro && cfg.ContextCompression.MicroCompaction == (MicroCompactionConfig{}) {
 		cfg.ContextCompression.MicroCompaction = DefaultMicroCompactionConfig
 	}
 	a := &Agent{
@@ -733,7 +844,10 @@ func (a *Agent) SetHistory(history []Message) {
 
 	a.history = history
 	// History was replaced wholesale (session restore): any recorded provider
-	// prompt size belongs to the previous conversation.
+	// prompt size belongs to the previous conversation, and the sticky dedup
+	// state no longer reflects what's in history — re-persist on next turn
+	// when the restored conversation lacks the current sticky set.
+	a.lastPersistedSticky = ""
 	a.invalidateContextUsageLocked()
 }
 
@@ -884,7 +998,7 @@ const metaSteeringDrained = "steering_drained"
 // InjectSystemMessage for durable runtime notices (tool changes).
 //
 // The message is also surfaced to the user as a durable chat bubble so every
-// nudge sent to the model is visible and part of the chat history (bugs.md:
+// nudge sent to the model is visible and part of the chat history
 // the user MUST be aware of nudges). Host control notes (prefixed "[goa-system]")
 // are emitted as a system-notification content event, which the app renders as
 // a persistent bubble (the same path used for "Error: 401" notices).
@@ -900,7 +1014,7 @@ func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	a.mu.Unlock()
 
 	// Surface the FULL nudge text to the user as a persistent chat bubble
-	// (bugs.md: the user MUST be aware of every nudge sent to the model).
+	// (the user MUST be aware of every nudge sent to the model).
 	// Previously only a transient EventProgress ("System guardrail…") was shown,
 	// hiding the actual content/numbers and leaving the user unable to tell what
 	// the model was told. Now every host control note (prefixed "[goa-system]")
@@ -947,6 +1061,14 @@ func (a *Agent) StreamOptions() provider.StreamOptions {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.cfg.StreamOptions
+}
+
+// SpillPolicy returns the configured tool-result spill policy (nil when the
+// policy is disabled).
+func (a *Agent) SpillPolicy() SpillPolicy {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.SpillPolicy
 }
 
 // SetStreamOptions replaces the stream options for subsequent turns.
@@ -1119,6 +1241,13 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 	var err error
 
 	for {
+		// One turn per user input; the temporal-context reading (CX6) uses
+		// the count in its "turn N" label.
+		a.turnCounter++
+		// Deliver pre-turn provider content (e.g. due schedule reminders) as
+		// user-role messages ahead of the user's actual input. The provider
+		// claims what it returns, so each delivery happens exactly once.
+		a.deliverPreTurnMessages()
 		// Add user message to history and emit event
 		userMsg := Message{
 			Type:     Content,
@@ -1134,6 +1263,10 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 		// reminder becomes ordinary append-only history, so the provider
 		// request sequence is strictly append-only and fully prefix-cacheable.
 		a.persistGoalReminder()
+
+		// Persist always-on sticky skill instructions under the same
+		// contract — deduped, user-role, re-persisted after compression.
+		a.persistStickyInstructions()
 
 		// Process one turn
 		err = a.processTurn(ctx)
@@ -1247,7 +1380,7 @@ func (a *Agent) processTurn(ctx context.Context) error {
 // before auto-expiring. A guardrail stops a runaway exchange, never the
 // session: genuine recovery paths (ResetLoopStop on new user input or goal
 // resume) clear it immediately, and this backstop covers driven paths that
-// bypass both (bugs.md runaway-loop bricking).
+// bypass both (runaway-loop bricking).
 const loopStopCooldown = 10 * time.Minute
 
 // checkLoopStopped enforces the runaway-loop latch at turn start. The latch
@@ -1270,7 +1403,7 @@ func (a *Agent) checkLoopStopped() error {
 // called when a genuine new user message starts a turn (human input, or a
 // goal resumed after a runaway pause with a varied recovery prompt): the
 // pause/interrupt was the guardrail's stop, and the new input is a deliberate
-// attempt to recover — the session must be allowed to proceed (bugs.md).
+// attempt to recover — the session must be allowed to proceed.
 func (a *Agent) ResetLoopStop() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1294,13 +1427,13 @@ func (a *Agent) clearLoopStopLocked() {
 // the same meaningful message across consecutive turns without progress.
 // On the first repeat it injects a warning hint AND surfaces a visible TUI
 // warning naming the repeated response; on the second repeat it stops the
-// session with an error carrying the same evidence (bugs.md runaway-loop
+// session with an error carrying the same evidence (runaway-loop
 // visibility: the user must be able to judge whether the loop was real).
 //
 // The strike only counts when this turn produced a NEW assistant message:
 // when the last assistant message predates turnStartHistoryLen (stream
 // error, retry, pause), comparing the stale message against itself would
-// score a false strike with zero actual repetition (bugs.md).
+// score a false strike with zero actual repetition.
 func (a *Agent) checkProgressLoop() error {
 	warnSample, err := a.scanProgressLoop()
 	if warnSample != "" {
@@ -1433,6 +1566,7 @@ func (a *Agent) Clear() {
 	a.processing = false
 	a.lastRoundActivity = time.Time{}
 	a.lastCacheReadTokens = 0
+	a.lastPersistedSticky = ""
 	a.clearLoopStopLocked()
 	a.invalidateContextUsageLocked()
 	a.mu.Unlock()

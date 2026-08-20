@@ -267,6 +267,101 @@ func TestBuildStreamOptions_WithProvider(t *testing.T) {
 	}
 }
 
+// TestBuildStreamOptions_RetryPolicyBeatsGlobal verifies the P8 (DS4)
+// acceptance criterion: a per-provider retry_policy.max_retries beats the
+// global execution.retries, and the resolved policy is carried in
+// opts.RetryPolicy.
+func TestBuildStreamOptions_RetryPolicyBeatsGlobal(t *testing.T) {
+	cfg := &config.Config{
+		Execution:      config.ExecutionConfig{Retries: 9},
+		ActiveProvider: "openai",
+		Providers: []config.ProviderConfig{
+			{
+				ID: "openai", Endpoint: "https://api.openai.com/v1", Provider: "openai",
+				RetryPolicy: &config.RetryPolicyConfig{
+					Mode:       "normal",
+					MaxRetries: 1,
+					Backoff:    config.RetryBackoffConfig{InitialMS: 500, MaxMS: 2000, Jitter: 0},
+					Codes:      []string{"RATE_LIMIT"},
+				},
+			},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	opts := pm.BuildStreamOptions()
+
+	if opts.MaxRetries != 9 {
+		t.Errorf("legacy MaxRetries = %d, want global 9 (unused when RetryPolicy set)", opts.MaxRetries)
+	}
+	if opts.RetryPolicy == nil {
+		t.Fatal("expected resolved RetryPolicy on StreamOptions")
+	}
+	if opts.RetryPolicy.Mode != agenticprovider.RetryModeNormal {
+		t.Errorf("RetryPolicy.Mode = %q, want normal", opts.RetryPolicy.Mode)
+	}
+	if opts.RetryPolicy.MaxRetries != 1 {
+		t.Errorf("RetryPolicy.MaxRetries = %d, want 1 (per-provider beats global 9)", opts.RetryPolicy.MaxRetries)
+	}
+	if opts.RetryPolicy.Backoff.InitialDelay != 500*time.Millisecond {
+		t.Errorf("RetryPolicy.Backoff.InitialDelay = %v, want 500ms", opts.RetryPolicy.Backoff.InitialDelay)
+	}
+	if opts.RetryPolicy.Backoff.MaxDelay != 2*time.Second {
+		t.Errorf("RetryPolicy.Backoff.MaxDelay = %v, want 2s", opts.RetryPolicy.Backoff.MaxDelay)
+	}
+	if len(opts.RetryPolicy.Codes) != 1 || opts.RetryPolicy.Codes[0] != "RATE_LIMIT" {
+		t.Errorf("RetryPolicy.Codes = %v, want [RATE_LIMIT]", opts.RetryPolicy.Codes)
+	}
+}
+
+// TestBuildStreamOptions_RetryPolicyAlways verifies an always-mode
+// retry_policy resolves through provider construction.
+func TestBuildStreamOptions_RetryPolicyAlways(t *testing.T) {
+	cfg := &config.Config{
+		Execution:      config.ExecutionConfig{Retries: 9},
+		ActiveProvider: "deepseek",
+		Providers: []config.ProviderConfig{
+			{
+				ID: "deepseek", Endpoint: "https://api.deepseek.com", Provider: "deepseek",
+				RetryPolicy: &config.RetryPolicyConfig{Mode: "always"},
+			},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	opts := pm.BuildStreamOptions()
+	if opts.RetryPolicy == nil {
+		t.Fatal("expected resolved RetryPolicy")
+	}
+	if opts.RetryPolicy.Mode != agenticprovider.RetryModeAlways {
+		t.Errorf("RetryPolicy.Mode = %q, want always", opts.RetryPolicy.Mode)
+	}
+	// Always mode ignores the finite budget: MaxRetries defaults to the package
+	// default even though execution.retries is 9.
+	if opts.RetryPolicy.MaxRetries == 0 {
+		t.Error("RetryPolicy.MaxRetries should be defaulted")
+	}
+}
+
+// TestBuildStreamOptions_NoRetryPolicyKeepsLegacy verifies that omitting
+// retry_policy leaves opts.RetryPolicy nil so the legacy scalar behavior
+// (MaxRetries/MaxRetryDelay) applies unchanged.
+func TestBuildStreamOptions_NoRetryPolicyKeepsLegacy(t *testing.T) {
+	cfg := &config.Config{
+		Execution:      config.ExecutionConfig{Retries: 3},
+		ActiveProvider: "openai",
+		Providers: []config.ProviderConfig{
+			{ID: "openai", Endpoint: "https://api.openai.com/v1", Provider: "openai", MaxRetries: 4},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	opts := pm.BuildStreamOptions()
+	if opts.RetryPolicy != nil {
+		t.Errorf("RetryPolicy = %+v, want nil (legacy scalar behavior)", opts.RetryPolicy)
+	}
+	if opts.MaxRetries != 4 {
+		t.Errorf("MaxRetries = %d, want 4 (per-provider scalar)", opts.MaxRetries)
+	}
+}
+
 func TestInferProviderIdentity_Presets(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -274,7 +369,8 @@ func TestInferProviderIdentity_Presets(t *testing.T) {
 		wantProv agenticprovider.Provider
 		wantAPI  agenticprovider.Api
 	}{
-		{"openai", "openai", agenticprovider.ProviderOpenAI, agenticprovider.ApiOpenAICompletions},
+		{"openai", "openai", agenticprovider.ProviderOpenAI, agenticprovider.ApiOpenAIResponses},
+		{"openai-codex", "openai-codex", agenticprovider.ProviderOpenAICodex, agenticprovider.ApiOpenAICodexResponses},
 		{"lmstudio", "lmstudio", agenticprovider.ProviderLMStudio, agenticprovider.ApiOpenAICompletions},
 		{"ollama", "ollama", agenticprovider.ProviderOllama, agenticprovider.ApiOpenAICompletions},
 		{"deepseek", "deepseek", agenticprovider.ProviderDeepSeek, agenticprovider.ApiOpenAICompletions},
@@ -1075,7 +1171,7 @@ func TestActive_NilReceiver(t *testing.T) {
 
 // TestResolveAPIKey_AuthStoreFallback verifies ResolveAPIKey returns the key
 // from the auth store when ProviderConfig.APIKey is empty (the /login case),
-// so plugins see the provider as authenticated (bugs.md z.ai #6).
+// so plugins see the provider as authenticated (z.ai #6).
 func TestResolveAPIKey_AuthStoreFallback(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.ProviderConfig{{ID: "zai", Provider: "zai"}},
@@ -1114,5 +1210,148 @@ func TestResolveAPIKey_ConfigKeyWins(t *testing.T) {
 	pm.SetAuthStore(store)
 	if got := pm.ResolveAPIKey("zai"); got != "config-key" {
 		t.Errorf("ResolveAPIKey = %q, want config key %q", got, "config-key")
+	}
+}
+
+// TestSetConfig_HotReloadSwapsActiveProvider verifies SetConfig swaps the
+// config the next request resolves: after a hot reload, Active() and
+// BuildStreamOptions() reflect the new provider profile (P22/DS6).
+func TestSetConfig_HotReloadSwapsActiveProvider(t *testing.T) {
+	oldCfg := &config.Config{
+		ActiveProvider: "old-provider",
+		ActiveModel:    "old-model",
+		Providers: []config.ProviderConfig{{
+			ID:       "old-provider",
+			Endpoint: "https://old.example/v1",
+		}},
+		Models: []config.ModelConfig{{ID: "old-model", ProviderID: "old-provider", Model: "old-model"}},
+	}
+	pm := NewProviderManager(oldCfg)
+
+	oldProvider, oldModel := pm.Active()
+	if oldProvider == nil || oldProvider.ID != "old-provider" || oldModel != "old-model" {
+		t.Fatalf("boot Active() = (%v, %q), want (old-provider, old-model)", oldProvider, oldModel)
+	}
+
+	newCfg := &config.Config{
+		ActiveProvider: "new-provider",
+		ActiveModel:    "new-model",
+		Providers: []config.ProviderConfig{{
+			ID:       "new-provider",
+			Endpoint: "https://new.example/v1",
+		}},
+		Models: []config.ModelConfig{{ID: "new-model", ProviderID: "new-provider", Model: "new-model"}},
+	}
+	pm.SetConfig(newCfg)
+
+	// Next request sees the new profile.
+	newProvider, newModel := pm.Active()
+	if newProvider == nil || newProvider.ID != "new-provider" || newModel != "new-model" {
+		t.Errorf("after SetConfig Active() = (%v, %q), want (new-provider, new-model)", newProvider, newModel)
+	}
+	if pm.Config() != newCfg {
+		t.Errorf("Config() did not return the reloaded config")
+	}
+
+	mdl, err := pm.ResolveActiveModel()
+	if err != nil {
+		t.Fatalf("ResolveActiveModel: %v", err)
+	}
+	if mdl.BaseURL != "https://new.example/v1/chat/completions" {
+		t.Errorf("ResolveActiveModel BaseURL = %q, want new-provider endpoint", mdl.BaseURL)
+	}
+}
+
+// TestSetConfig_NilConfigSafe verifies SetConfig(nil) and Config() are safe.
+func TestSetConfig_NilConfigSafe(t *testing.T) {
+	pm := NewProviderManager(&config.Config{})
+	pm.SetConfig(nil)
+	if pm.Config() != nil {
+		t.Errorf("Config() after SetConfig(nil) = %v, want nil", pm.Config())
+	}
+	if p, m := pm.Active(); p != nil || m != "" {
+		t.Errorf("Active() after SetConfig(nil) = (%v, %q), want (nil, \"\")", p, m)
+	}
+}
+
+// TestListRegistryModels_OpenAICodexServesCodexFamily pins the codex registry
+// alias: the openai-codex subscription provider has no models.dev mapping of
+// its own and its endpoint serves no /models route, so ListRegistryModels
+// must alias to the openai catalog filtered to the codex family (the picker
+// showed ONLY "custom model" before the alias, behind a misleading "using
+// known models" flash).
+func TestListRegistryModels_OpenAICodexServesCodexFamily(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{
+			{ID: "codex", Name: "OpenAI Codex", Endpoint: "https://chatgpt.com/backend-api"},
+			{ID: "openai", Name: "OpenAI", Endpoint: "https://api.openai.com/v1"},
+		},
+	}
+	pm := NewProviderManager(cfg)
+
+	codex := pm.ListRegistryModels("codex")
+	if len(codex) == 0 {
+		t.Fatal("ListRegistryModels(openai-codex endpoint) returned no models; the picker can only offer a custom row")
+	}
+	hasSpark := false
+	for _, m := range codex {
+		if m.ID == "gpt-5.3-codex-spark" {
+			hasSpark = true
+		}
+		if !isCodexFamilyModel(m.ID) {
+			t.Errorf("non-codex-family model %q leaked into the openai-codex list", m.ID)
+		}
+	}
+	if !hasSpark {
+		t.Errorf("codex list missing gpt-5.3-codex-spark (Pi codex catalog); got %v", codex)
+	}
+
+	// The plain openai provider list must be unaffected by the alias.
+	openai := pm.ListRegistryModels("openai")
+	if len(openai) == 0 {
+		t.Fatal("ListRegistryModels(openai) returned no models")
+	}
+	hasGPT4o := false
+	for _, m := range openai {
+		if m.ID == "gpt-4o" {
+			hasGPT4o = true
+		}
+	}
+	if !hasGPT4o {
+		t.Error("openai registry list lost gpt-4o — the codex alias must not narrow the openai list")
+	}
+}
+
+// TestIsCodexFamilyModel pins the codex-served model filter: the codex
+// subscription endpoint serves the explicit codex models plus the gpt-5.4+
+// generations (Pi scripts/generate-models.ts codexModels).
+func TestIsCodexFamilyModel(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"gpt-5.3-codex-spark", true},
+		{"gpt-5.3-codex", true},
+		{"gpt-5.4", true},
+		{"gpt-5.4-mini", true},
+		{"gpt-5.5", true},
+		{"gpt-5.6-luna", true},
+		{"gpt-5.6-sol", true},
+		{"gpt-5.6-terra", true},
+		{"gpt-5", false},
+		{"gpt-5.1", false},
+		{"gpt-5.2", false},
+		{"gpt-5.2-chat-latest", false},
+		{"gpt-5.4-pro", false},
+		{"gpt-5.4-nano", false},
+		{"gpt-4o", false},
+		{"gpt-4.1", false},
+		{"o3", false},
+		{"chatgpt-image-latest", false},
+	}
+	for _, tt := range tests {
+		if got := isCodexFamilyModel(tt.id); got != tt.want {
+			t.Errorf("isCodexFamilyModel(%q) = %v, want %v", tt.id, got, tt.want)
+		}
 	}
 }

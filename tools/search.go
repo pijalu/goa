@@ -78,15 +78,15 @@ func (t *SearchTool) Schema() agentic.ToolSchema {
 				},
 				"context_lines": map[string]any{
 					"type":        "integer",
-					"description": "Context lines shown around each match (grep -C style).",
+					"description": "Context lines around each match (grep -C).",
 				},
 				"max_lines": map[string]any{
 					"type":        "integer",
-					"description": "Cap on output content lines (match + context); truncates with a marker like '| head -N'.",
+					"description": "Cap on output lines; truncates with a marker.",
 				},
 				"showing": map[string]any{
 					"type":        "integer",
-					"description": "Content lines per file (default: 10% of max_results; 0 = line numbers only).",
+					"description": "Lines per file (default: 10% of max_results; 0 = numbers only).",
 				},
 				"exclude_glob": map[string]any{
 					"type":        "string",

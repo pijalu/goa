@@ -13,7 +13,7 @@ import (
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
-// TestOrchestrate_SubAgentWorkPersisted is the bugs.md item K regression: an
+// TestOrchestrate_SubAgentWorkPersisted is the item K regression: an
 // orchestration run's sub-agent turns must be written to the session store,
 // so a saved/restored session contains the full run — not just the bare
 // /orchestrate command line.

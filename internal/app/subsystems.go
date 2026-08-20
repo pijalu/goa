@@ -46,6 +46,7 @@ import (
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tools/common"
 	goaltools "github.com/pijalu/goa/tools/goal"
 	toolsSwarm "github.com/pijalu/goa/tools/swarm"
 	"github.com/pijalu/goa/tui"
@@ -95,6 +96,7 @@ type subsystems struct {
 	orchActive        *orchestrator.ActiveRuntime
 	orchCmd           *commands.OrchestrateCommand
 	trustMgr          *trust.Manager
+	authStore         *auth.Store
 	lifecycleRegistry *plugins.LifecycleRegistry
 	pluginMgr         *plugins.Manager
 	// pluginRT holds loaded plugin bridges, set by loadEnabledPlugins. It is
@@ -175,9 +177,87 @@ type subsystems struct {
 	// mcpManager owns MCP server connections and their registered tools;
 	// closed on shutdown. Nil when no MCP servers are configured.
 	mcpManager *mcp.Manager
+
+	// configWatcher watches the writable config cascade layers and hot-applies
+	// reloaded provider profiles. Started for the interactive TUI session and
+	// closed on shutdown (no goroutine leaks). configWatchWG tracks the change
+	// consumer goroutine so stopConfigWatcher can wait for it to exit.
+	configWatcher *config.ConfigWatcher
+	configWatchWG sync.WaitGroup
 }
 
 func (s *subsystems) getInput() *tui.Editor { return s.inputEditor }
+
+// liveConfig returns the config for the next request: the hot-reloaded config
+// once the config watcher has published one, otherwise the boot config. The
+// request path (StartSession) must read through here — never the static
+// subs.cfg — so an external config edit applies on the next request without a
+// restart (P22/DS6).
+func (s *subsystems) liveConfig() *config.Config {
+	if s == nil {
+		return nil
+	}
+	if s.providerMgr != nil {
+		if c := s.providerMgr.Config(); c != nil {
+			return c
+		}
+	}
+	return s.cfg
+}
+
+// startConfigWatcher begins watching the writable config cascade layers and
+// hot-applies reloaded provider profiles. It is enabled only for the
+// interactive TUI session, where the acceptance path lives; one-shot modes
+// (headless, ACP, dream, export) run a single request and close before a
+// hot reload could matter. Idempotent.
+func (s *subsystems) startConfigWatcher() {
+	if s == nil || s.configWatcher != nil || s.loader == nil || s.providerMgr == nil {
+		return
+	}
+	w, err := config.NewConfigWatcher(s.loader, log.Printf)
+	if err != nil {
+		log.Printf("config hot-reload disabled: %v", err)
+		return
+	}
+	w.Start()
+	s.configWatcher = w
+	s.configWatchWG.Add(1)
+	go func() {
+		defer s.configWatchWG.Done()
+		for cfg := range w.Changes() {
+			s.applyReloadedConfig(cfg)
+		}
+	}()
+}
+
+// stopConfigWatcher shuts the watcher down and waits for the consumer
+// goroutine to exit, so no goroutine leaks across restarts. Idempotent.
+func (s *subsystems) stopConfigWatcher() {
+	if s == nil || s.configWatcher == nil {
+		return
+	}
+	s.configWatcher.Close()
+	s.configWatchWG.Wait()
+	s.configWatcher = nil
+}
+
+// applyReloadedConfig swaps the live provider profile to a freshly reloaded
+// config so the next request resolves the new provider/model/effort. The
+// boot-time subs.cfg is intentionally not replaced: it is read from many
+// goroutines without synchronization, and the request path already reads the
+// live config via liveConfig.
+func (s *subsystems) applyReloadedConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if s.providerMgr != nil {
+		s.providerMgr.SetConfig(cfg)
+	}
+	if s.agentPool != nil {
+		s.agentPool.SetGoaConfig(cfg)
+	}
+	log.Printf("config hot-reloaded: provider profile updated from disk")
+}
 
 // effectiveModeState returns the live session mode — the value restored from
 // state.json on startup or changed at runtime via /mode — falling back to the
@@ -205,6 +285,10 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	agentBundle := initAgentBundle(cfg, projectDir)
 	initHookEngine(cfg, projectDir, agentBundle.agentMgr)
 
+	// Scheduler delivery (P18/TL2): due jobs become user messages at the
+	// start of the next turn (user turns and goal continuation turns alike).
+	wireScheduleDelivery(agentBundle.agentMgr, subs.scheduleStore)
+
 	// Steering queue: shared between AgentManager (consumes at turn end) and
 	// TUI submit handler (appends while a turn is running).
 	steeringQueue := core.NewSteeringQueue()
@@ -230,18 +314,19 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	swarmState := swarm.NewState()
 	taskBus := tasks.NewBus(tasks.NopStore{}, agentBundle.eventBus)
 	goalManager, goalDriver := initGoalSystem(cfg, projectDir, agentBundle.eventBus, agentBundle.agentMgr, swarmState, subs.providerMgr)
-	// Goal tools are always registered (stable tool array, bugs.md S2). The
+	// Goal tools are always registered (stable tool array, S2). The
 	// tools.enabled.goal flag gates only AUTONOMOUS creation at execution time:
 	// `create` is allowed when the flag is on OR a goal is already active.
 	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal, cfg.Goals.AutoUnblockEnabled, cfg.Goals.FreshContextEnabled,
 		func() time.Duration { return cfg.Goals.VerifyTimeoutOr(defaultGoalVerifyTimeout) })
-	// The standalone todo_list tool (bugs.md: available outside of goal). It is
+	// The standalone todo_list tool (available outside of goal). It is
 	// linked to the goal's own todo list while a goal is active and falls back
 	// to its session list otherwise; tools.enabled.todo gates registration.
 	if cfg.Tools.Enabled.Todo {
 		subs.toolRegistry.Register(&tools.TodoListTool{Mode: goalManager.Mode})
 	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
+	registerSessionQueryTools(subs.toolRegistry, agentBundle.sessionStore)
 	registry := core.NewCommandRegistry()
 	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry, !opts.NoPlugins)
 	promptReg, workflowReg := initPromptAndWorkflowLayer(cfg, projectDir)
@@ -281,6 +366,15 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 			restoreSessionState(agentBundle.agentMgr, agentBundle.stateSnapshot, requestReviewTool, delegateTool, cfg)
 			wireAgentBus(agentBundle.agentMgr, agentPool, foregroundOrch, cfg.MultiAgent.MaxCompanionCycles)
 			attachAgentDrivenToolPools(agentDrivenTools, agentPool)
+			// Sticky knowledge skills (sticky: true frontmatter): always-on
+			// instruction blocks persisted into every agent's history — main
+			// agent and all pool-created sub-agents ("new context" agents).
+			// They survive /new (fresh persist), session restore (history-scan
+			// dedup), and context compression (re-persist via emitCompaction).
+			sticky := &stickySkillProvider{}
+			agentBundle.stickyProvider = sticky
+			agentBundle.agentMgr.SetStickyProvider(sticky)
+			agentPool.SetStickyProvider(sticky)
 		}
 	}
 
@@ -315,9 +409,24 @@ func initBaseSubsystems(cfg *config.Config, projectDir string, headless bool) ba
 
 	toolRegistry := tools.NewToolRegistry()
 	lspMgr, mcpMgr := registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr, headless)
-	if cfg.Tools.Enabled.PTYExec {
-		toolRegistry.Register(&tools.PTYExecTool{Mgr: ptyMgr})
+	if cfg.Tools.Enabled.Terminals {
+		toolRegistry.Register(&tools.TerminalsTool{
+			Mgr:        ptyMgr,
+			Blocked:    cfg.Tools.Terminal.Sandbox.BlockedCommands,
+			Allowed:    cfg.Tools.Terminal.Sandbox.AllowedCommands,
+			Bypass:     !cfg.Tools.Terminal.Sandbox.Enabled,
+			ProjectDir: projectDir,
+		})
 	}
+
+	// Scheduler tools (P18/TL2): persistent job store + model-facing
+	// schedule_create/delete/list. Always registered — they are harmless
+	// read/write tools over a durable file, matching the dsh schedule package
+	// which exposes them for every session.
+	scheduleStore := newScheduleStore(scheduleStorePath(projectDir))
+	toolRegistry.Register(&tools.ScheduleCreateTool{Store: scheduleStore})
+	toolRegistry.Register(&tools.ScheduleDeleteTool{Store: scheduleStore})
+	toolRegistry.Register(&tools.ScheduleListTool{Store: scheduleStore})
 
 	return baseSubsystems{
 		worktreeMgr:       worktreeMgr,
@@ -331,6 +440,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string, headless bool) ba
 		bgMgr:             bgMgr,
 		lspMgr:            lspMgr,
 		mcpManager:        mcpMgr,
+		scheduleStore:     scheduleStore,
 	}
 }
 
@@ -346,6 +456,7 @@ type baseSubsystems struct {
 	bgMgr             *background.Manager
 	lspMgr            *lsp.Manager
 	mcpManager        *mcp.Manager
+	scheduleStore     tools.ScheduleStore
 }
 
 func createBackgroundManager(projectDir string) *background.Manager {
@@ -388,6 +499,7 @@ func loopDetectorConfigFrom(cfg *config.Config) core.LoopDetectorConfig {
 		ldCfg.StallDisabled = true
 	}
 	ldCfg.MaxStreamRepeats = cfg.Execution.StreamLoopMaxRepeats
+	ldCfg.MinStreamPeriod = cfg.Execution.StreamLoopMinPeriod
 	return ldCfg
 }
 
@@ -406,6 +518,22 @@ func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
 	sessionState := core.NewSessionState(initialMode)
 	agentMgr := core.NewAgentManager(cfg, sessionStore, loopDetector, sessionState, eventBus, projectDir)
 	agentMgr.SetStateStore(stateStore)
+	// Tool-result spill policy (gap CX2): when tools.max_inline_bytes is set,
+	// oversized plain-text tool results spill verbatim into the session-scoped
+	// dir ~/.goa/spill/<session>/ and the model sees a bounded preview+notice.
+	if cfg.Tools.MaxInlineBytes > 0 {
+		maxInline := cfg.Tools.MaxInlineBytes
+		agentMgr.SetSpillPolicyFactory(func(sessionID string) agentic.SpillPolicy {
+			if sessionID == "" {
+				return nil // no session owner: keep results inline
+			}
+			dir := common.SessionSpillDir(internal.GoaHomeDir(), sessionID)
+			return &tools.SpillPolicy{
+				MaxInlineBytes: maxInline,
+				Store:          common.NewSpillStore(dir),
+			}
+		})
+	}
 	agentLogger := initAgentLogger(cfg, projectDir, agentMgr)
 	execCtrl := core.NewExecutionController(cfg, sessionState)
 
@@ -421,13 +549,14 @@ func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
 }
 
 type agentBundle struct {
-	sessionStore  *core.SessionStore
-	stateStore    *core.StateStore
-	stateSnapshot core.SessionStateSnapshot
-	agentMgr      *core.AgentManager
-	execCtrl      *core.ExecutionController
-	eventBus      *event.Bus
-	agentLogger   *agentic.Logger
+	sessionStore   *core.SessionStore
+	stateStore     *core.StateStore
+	stateSnapshot  core.SessionStateSnapshot
+	agentMgr       *core.AgentManager
+	execCtrl       *core.ExecutionController
+	eventBus       *event.Bus
+	agentLogger    *agentic.Logger
+	stickyProvider *stickySkillProvider
 }
 
 func initAgentLogger(cfg *config.Config, projectDir string, agentMgr *core.AgentManager) *agentic.Logger {
@@ -445,6 +574,9 @@ func initHookEngine(cfg *config.Config, projectDir string, agentMgr *core.AgentM
 	if err != nil {
 		log.Printf("Warning: failed to load hooks config: %v\n", err)
 		return
+	}
+	for _, w := range hookCfg.Warnings {
+		log.Printf("Warning: hooks config: %s\n", w)
 	}
 	if hookCfg == nil || len(hookCfg.Hooks) == 0 {
 		return
@@ -610,7 +742,7 @@ func wireDreamScheduler(agentMgr *core.AgentManager, scheduler *dreamScheduler) 
 }
 
 // goalEventPublisher delivers goal state changes to the app's Agent bus.
-// Delivery is lossless and ordered (bugs.md Issue 1): a non-blocking send
+// Delivery is lossless and ordered (Issue 1): a non-blocking send
 // used to silently drop updates when the bus was full — exactly the
 // mid-turn situation where a goal create/resume/complete happens — leaving
 // the goal bubble hidden (create dropped) or stale (clear dropped). When
@@ -688,7 +820,7 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 	// Never run a goal turn while a user turn owns the agent: agent.Run's
 	// queue-on-busy semantics would return instantly and the drive loop
 	// would hot-spin, queueing hundreds of phantom continuation prompts
-	// (bugs.md Issue 7). The in-flight turn's post-turn hook re-starts the
+	// (Issue 7). The in-flight turn's post-turn hook re-starts the
 	// drive once the agent is idle.
 	if r.agentMgr.IsRunning() {
 		return core.ErrAgentBusy
@@ -711,7 +843,7 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 // ResetLoopStop clears the runaway-loop latch on the active agent. The goal
 // driver calls this (via optional interface) when resuming a goal paused by
 // the loop guardrail, pairing the latch reset with its varied recovery
-// prompt (bugs.md runaway-loop bricking).
+// prompt (runaway-loop bricking).
 func (r *agentManagerRunner) ResetLoopStop() {
 	if agent := r.agentMgr.CurrentAgent(); agent != nil {
 		agent.ResetLoopStop()
@@ -729,7 +861,7 @@ func (r *agentManagerRunner) ResetLoopStop() {
 // the goal carries only its objective forward.
 func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin bool) error {
 	// Same busy guard as Run — a fresh-context goal must never queue-storm
-	// either (bugs.md Issue 7).
+	// either (Issue 7).
 	if r.agentMgr.IsRunning() {
 		return core.ErrAgentBusy
 	}
@@ -742,13 +874,13 @@ func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin b
 		// Rotate the conversation id so the clean context also gets a fresh
 		// provider cache key (prompt_cache_key / previous_response_id /
 		// session-affinity) — a clean context pinned to the old SessionID would
-		// keep reading the prior conversation's cache (bugs.md Issue 8).
+		// keep reading the prior conversation's cache (Issue 8).
 		r.agentMgr.ResetConversationID()
 		r.agentMgr.InjectSystemMessage("⟡ Context reset: this goal is running on a clean context. The prior conversation is preserved in the transcript but is not sent to the agent for this goal.")
 		// Re-arm the cache-bust detector for the new conversation: its cold
 		// start (zero or tiny cache reads on the fresh provider cache key)
 		// must not count as a bust against the prior conversation's
-		// established cache (bugs.md: fresh-context goal start counted as a
+		// established cache (fresh-context goal start counted as a
 		// cache miss).
 		agent.EmitContextReset()
 	}
@@ -769,12 +901,12 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 // autoUnblock gates the auto-spawning of an unblocking investigation goal when
 // the model blocks a goal with justification (goals.auto_unblock; nil = on).
 // verifyTimeout feeds the live display of the verify-command bound at goal
-// completion (goals.verify_timeout; nil = default 2m) — bugs.md Bug A.
+// completion (goals.verify_timeout; nil = default 2m) — Bug A.
 func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) agentic.Tool {
 	// Autonomous `create` is allowed when the feature flag is on, or whenever a
-	// goal exists (bugs.md S2: all goal actions work during a goal). Existence
+	// goal exists (S2: all goal actions work during a goal). Existence
 	// — not just active status — matters: a paused/blocked goal still means
-	// "during a goal", and the tool queues behind it (bugs.md "Goal management
+	// "during a goal", and the tool queues behind it ("Goal management
 	// tool issue").
 	createAllowed := func() bool {
 		return createFlagOn || manager.Mode.GetGoal().Goal != nil
@@ -820,6 +952,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 		log.Printf("Warning: auth store unavailable, falling back to in-memory: %v", err)
 		authStore, _ = auth.NewStore("")
 	}
+
 	if providerMgr != nil {
 		providerMgr.SetAuthStore(authStore)
 	}
@@ -865,6 +998,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 		cmdRouter:     cmdRouter,
 		goaTool:       goaTool,
 		pluginMgr:     pluginMgr,
+		authStore:     authStore,
 	}
 }
 
@@ -881,6 +1015,14 @@ func newSkillRegistry(cfg *config.Config, projectDir string, pluginMgr *plugins.
 	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
 	skillRegistry.SetDisabled(cfg.Skills.Disabled)
 	skillRegistry.SetEnabled(cfg.Skills.Enabled)
+	// Embedded skills are OFF by default except telegram; the user
+	// opts individual ones back in via skills.embedded_enabled (or the global
+	// allowlist). File-based skills are never affected by the default-off set.
+	skillRegistry.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
+	skillRegistry.SetEmbeddedEnabled(cfg.Skills.EmbeddedEnabled)
+	// Config-level sticky overrides (skills.sticky / skills.sticky_off),
+	// persisted at project level and toggled via /skill:sticky and /config.
+	skillRegistry.SetStickyOverrides(cfg.Skills.Sticky, cfg.Skills.StickyOff)
 	if err := skillRegistry.LoadAll(); err != nil {
 		log.Printf("Warning: failed to load skills: %v\n", err)
 	} else if n := len(skillRegistry.List()); n > 0 {
@@ -948,6 +1090,7 @@ type skillCommandBundle struct {
 	modeRegistry  *core.ModeRegistry
 	goaTool       *core.GoaCommandTool
 	pluginMgr     *plugins.Manager
+	authStore     *auth.Store
 }
 
 func initPromptAndWorkflowLayer(cfg *config.Config, projectDir string) (*prompts.Registry, *multiagent.WorkflowRegistry) {
@@ -1155,9 +1298,19 @@ func restoreSessionState(agentMgr *core.AgentManager, snap core.SessionStateSnap
 		}
 	})
 
-	if snap.MinorMode == "companion" || snap.AgentDrivenEnabled {
+	// Only an explicit companion minor mode restores the companion minor-mode
+	// label. A bare AgentDrivenEnabled (e.g. left over from a team review
+	// apply) must NOT force the companion minor mode — agent-driven tools
+	// being on is independent of the companion minor-mode display, and
+	// treating it as companion made it impossible to disable (bug).
+	if snap.MinorMode == "companion" {
 		if err := agentMgr.SetMinorMode("companion", true); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to restore minor mode: %v\n", err)
+		}
+	} else if snap.AgentDrivenEnabled {
+		// Restore agent-driven tool availability without the companion label.
+		if err := agentMgr.SetAgentDrivenEnabled(true); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to restore agent-driven state: %v\n", err)
 		}
 	}
 
@@ -1239,6 +1392,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		logger:            ab.agentLogger,
 		lifecycleRegistry: base.lifecycleRegistry,
 		pluginMgr:         sc.pluginMgr,
+		authStore:         sc.authStore,
 		noPlugins:         opts.NoPlugins,
 		MemoryEnabled:     !opts.NoMemory,
 		MemoryBudget:      opts.MemoryBudget,
@@ -1255,6 +1409,13 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	// applies the team's overlay for its duration). The driver no-ops the
 	// overlay when this is nil.
 	s.goalDriver.TeamOverlay = s.teamManager
+	// Re-bind the sticky skill provider to the assembled subsystems: it must
+	// read the LIVE registry (subsystem field), because /reload swaps the
+	// registry object and a provider pinned to the startup copy would keep
+	// serving a stale sticky set after a /skill:sticky toggle.
+	if ab.stickyProvider != nil {
+		ab.stickyProvider.subs = s
+	}
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })
 	}

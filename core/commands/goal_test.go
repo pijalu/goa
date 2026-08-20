@@ -602,7 +602,7 @@ func TestGoalCommand_NextAndReorder(t *testing.T) {
 
 // TestGoalCommand_ManageEmpty: with no active goal and an empty queue the
 // manager still opens — framed by the add-at-start/add-at-end sentinels and
-// the Done row — so goals can be created from it (bugs.md goal manager: the
+// the Done row — so goals can be created from it (goal manager: the
 // manager previously just printed "No queued goals.").
 func TestGoalCommand_ManageEmpty(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
@@ -801,6 +801,48 @@ func testContext() core.Context {
 	}
 }
 
+// queuePublishRecorder captures goal publish events so a test can assert that
+// a durable-queue mutation re-published the goal snapshot (the footer ◈ count
+// depends on it — queue ops emit no lifecycle event of their own).
+type queuePublishRecorder struct {
+	snaps   int
+	changes int
+}
+
+func (p *queuePublishRecorder) Publish(snap *goal.GoalSnapshot, change *goal.GoalChange) {
+	p.snaps++
+	if change != nil {
+		p.changes++
+	}
+}
+
+// TestGoalCommand_QueueOpsPublishRefresh pins the footer-count fix: every
+// durable-queue mutation (next/last/reorder) re-publishes the goal snapshot
+// with NO change (no chat marker), so the footer's ◈ count (1 active +
+// queued) stays current instead of waiting for the next lifecycle event.
+func TestGoalCommand_QueueOpsPublishRefresh(t *testing.T) {
+	pub := &queuePublishRecorder{}
+	mode := goal.NewGoalMode(nil, pub, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"seed-active"}); err != nil {
+		t.Fatal(err)
+	}
+	base := pub.snaps // the create lifecycle publish
+
+	if err := cmd.Run(ctx, []string{"next", "queued-one"}); err != nil {
+		t.Fatal(err)
+	}
+	if pub.snaps != base+1 {
+		t.Errorf("queue insert published %d snaps (base %d), want exactly one refresh", pub.snaps, base)
+	}
+	if pub.changes != 0 {
+		t.Errorf("queue insert published %d changes, want 0 (no chat marker)", pub.changes)
+	}
+}
+
 type testAutonomySwitcher struct {
 	level internal.AutonomyLevel
 }
@@ -858,7 +900,7 @@ func (a *fakeAgentSignalsRun) Run(ctx context.Context, prompt string) error {
 	return nil
 }
 
-// Regression for bugs.md: /goal:resume must re-activate a paused goal AND
+// Regression for /goal:resume must re-activate a paused goal AND
 // schedule a continuation turn with no user message. Previously resume only
 // flipped state to active; the goal sat idle until the user typed something.
 func TestGoalCommand_Resume_StartsDriver(t *testing.T) {
@@ -1661,7 +1703,7 @@ func TestGoalCommand_List(t *testing.T) {
 // TestGoalCommand_ListShowsAllInfo verifies /goal:list renders ALL recorded
 // goal information — context run type (fresh/reuse), completion criterion,
 // verify command, handover, budget, terminal state and todos — for both the
-// current and the queued goals (bugs.md: goal list shows all information).
+// current and the queued goals (goal list shows all information).
 func TestGoalCommand_ListShowsAllInfo(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
@@ -1869,11 +1911,11 @@ func assertManagerEditableItems(t *testing.T, items []tui.SelectorItem) {
 }
 
 // TestGoalCommand_ManageDeleteHotkey covers the Delete hotkey in /goal:manage
-// (bugs.md goal manager): the "__delete__"+id emit must open a confirmation
+// (goal manager): the "__delete__"+id emit must open a confirmation
 // selector and only "yes" removes the goal. Previously deletion fired
 // immediately; and before that, the sentinel-prefixed string reached
 // Queue.Remove and failed with "queued goal \"__delete__…\" not found"
-// (bugs.md Issue 23).
+// (Issue 23).
 func TestGoalCommand_ManageDeleteHotkey(t *testing.T) {
 	cmd, queue := newManagerCommand(t, "")
 	ids := appendQueued(t, queue, "first queued goal", "second queued goal")
@@ -2096,7 +2138,7 @@ func assertAllPreserveOrder(t *testing.T, items []tui.SelectorItem) {
 }
 
 // TestGoalCommand_ManageListExecutionOrder pins the manager's list layout
-// (bugs.md goal manager): the add-at-start sentinel, the ACTIVE goal
+// (goal manager): the add-at-start sentinel, the ACTIVE goal
 // (marked, not movable), the queued goals in run order, the add-at-end
 // sentinel and Done — every row PreserveOrder — and the manager requests
 // the reorder keymap ('+'/'-' = move up/down).
@@ -2196,6 +2238,72 @@ func runManageMoveCase(t *testing.T, tc manageMoveCase) {
 	}
 	assertQueueIDs(t, queue, ids, tc.wantOrder)
 	expectManagerCursor(t, opens, 2, cursor, ids[tc.wantCursor])
+}
+
+// TestGoalCommand_ManageReorderKeyedRealSelector is the integration regression
+// for "goal manage '+'/'-' do not reorder": it drives the manager through the
+// KEYED selector path — a real tui.Selector with ReorderMode, fed the actual
+// '+'/'-' bytes — rather than fabricating the "__moveup__" emit. This covers
+// the wiring the legacy tests bypass (they set only SelectOptionFunc, which
+// makes Context.SelectOptionKeyed fall back to default add/delete bindings).
+func TestGoalCommand_ManageReorderKeyedRealSelector(t *testing.T) {
+	cases := []struct {
+		name      string
+		key       string // "+" or "-"
+		selectIdx int    // which queued goal to highlight (0-based)
+		wantOrder []int  // expected queue order as indices into original ids
+	}{
+		{"plus moves second up", "+", 1, []int{1, 0, 2}},
+		{"minus moves first down", "-", 0, []int{1, 0, 2}},
+		{"plus on first is a no-op", "+", 0, []int{0, 1, 2}},
+		{"minus on last is a no-op", "-", 2, []int{0, 1, 2}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, queue := newManagerCommand(t, "")
+			ids := appendQueued(t, queue, "g0", "g1", "g2")
+
+			ctx := testContext()
+			opens := 0
+			// Mimic the production host (internal/app wireInteractiveCallbacks):
+			// build a real selector, apply the keyed bindings, then drive it.
+			ctx.SelectOptionKeyedFunc = func(_ string, items []tui.SelectorItem, current string, keys tui.SelectorKeymap, cb func(string, bool)) {
+				opens++
+				if opens > 1 {
+					cb("", false) // close the reopened manager
+					return
+				}
+				result := make(chan string, 1)
+				sel := tui.NewSelector("Goal manager — execution order", items, current, result)
+				sel.SetKeymap(keys)
+				if !keys.ReorderMode {
+					t.Error("manager must open the selector in ReorderMode")
+				}
+				// Highlight the target queued goal. Manager rows are:
+				// [__add_first__, (no active), g0, g1, g2, __add_last__, __done__].
+				// Row 0 is the add-at-start sentinel, so goal selectIdx sits at row
+				// selectIdx+1 → press Down selectIdx+1 times. The TUI decodes
+				// terminal bytes into named keys (tui.KeyDown) and passes printable
+				// runes ("+"/"-") through unchanged.
+				for i := 0; i <= tc.selectIdx; i++ {
+					sel.HandleInput(tui.KeyDown)
+				}
+				sel.HandleInput(tc.key) // the real '+'/'-' printable key
+				select {
+				case v := <-result:
+					cb(v, v != "")
+				default:
+					t.Errorf("'%s' on a goal row produced no emit — reorder hotkey not firing", tc.key)
+					cb("", false)
+				}
+			}
+
+			if err := cmd.showQueueManager(ctx); err != nil {
+				t.Fatal(err)
+			}
+			assertQueueIDs(t, queue, ids, tc.wantOrder)
+		})
+	}
 }
 
 // TestGoalCommand_ManageActiveRowRejected: move/delete emits and plain Enter
@@ -2326,7 +2434,7 @@ func runManageAddRowCase(t *testing.T, tc manageAddRowCase) {
 
 // TestGoalCommand_ManageGenericAddEmit is the regression for the generic
 // '__add__' emit reaching the queue-action menu and failing with
-// "queued goal … not found" (bugs.md goal manager item 4): it must open the
+// "queued goal … not found" (goal manager item 4): it must open the
 // create-goal flow instead. Reachable via a host without the reorder keymap
 // (SelectOptionKeyed fallback).
 func TestGoalCommand_ManageGenericAddEmit(t *testing.T) {
@@ -2405,7 +2513,7 @@ func TestGoalCommand_ManageEnterOnGoalRow(t *testing.T) {
 }
 
 // TestGoalCommand_ParseContextToken covers /goal:new:fresh|reuse parsing
-// (bugs.md Issue 24): the leading token selects the context mode, and /goal:new
+// (Issue 24): the leading token selects the context mode, and /goal:new
 // without a token defers to the configured default.
 func TestGoalCommand_ParseContextToken(t *testing.T) {
 	cmd := &GoalCommand{}

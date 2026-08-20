@@ -16,7 +16,7 @@ import (
 )
 
 // TestAgentManagerRunner_BusyReturnsErrAgentBusy is the app-level guard for
-// bugs.md Issue 7 ("goal cannot be stopped"): while a user turn owns the
+// Issue 7 ("goal cannot be stopped"): while a user turn owns the
 // agent, the goal driver's runner must refuse with core.ErrAgentBusy (clean
 // stop, re-driven by the post-turn hook) instead of queueing a continuation
 // prompt into the busy agent — the queue-on-busy + hot-loop was what flooded

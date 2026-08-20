@@ -1,19 +1,23 @@
 //go:build ignore
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Copyright (C) 2026 Pierre Poissinger
 
 // Demo: planner agent and reviewer agent talking to each other via AgentBus.
 // Flow:
-//   1. User asks planner to create a plan
-//   2. Planner sends the draft plan to reviewer via send_message
-//   3. Reviewer critiques the plan and sends feedback to planner
-//   4. Planner revises based on feedback and sends final plan to reviewer
-//   5. Reviewer approves the final plan
+//  1. User asks planner to create a plan
+//  2. Planner sends the draft plan to reviewer via send_message
+//  3. Reviewer critiques the plan and sends feedback to planner
+//  4. Planner revises based on feedback and sends final plan to reviewer
+//  5. Reviewer approves the final plan
+//
 // Usage:
-//   go run demo/plan-review/main.go                           # live LLM
-//   go run demo/plan-review/main.go -endpoint=http://host:port # custom endpoint
+//
+//	go run demo/plan-review/main.go                           # live LLM
+//	go run demo/plan-review/main.go -endpoint=http://host:port # custom endpoint
 package main
+
 import (
 	"context"
 	"encoding/json"

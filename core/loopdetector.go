@@ -38,7 +38,7 @@ type LoopDetector struct {
 	mu sync.Mutex
 
 	// Tool call tracking — drives RecordToolCall loop detection.
-	// Consecutive-streak model (bugs.md "Tool call loop detector: false
+	// Consecutive-streak model ("Tool call loop detector: false
 	// positives"): a true runaway loop repeats the same call(s) back-to-back
 	// endlessly, while legitimate work REUSES an identical call across a long
 	// session with other work in between (edit → `go build ./...` → edit →
@@ -68,11 +68,11 @@ type LoopDetector struct {
 	// state must persist across lines and deltas — stripping per single line
 	// (after splitting on '\n') never sees the fence and let quoted code lines
 	// count as repeated reasoning, killing legitimate deep-debugging turns
-	// (bugs.md: thinking-loop false positive, exports 20260721-142256/142545).
+	// (thinking-loop false positive, exports 20260721-142256/142545).
 	thinkInCodeBlock bool
 
 	// Diversity-based loop detection. The exact-line counter above misses two
-	// production failure modes (bugs.md Issue 6): (a) the model ALTERNATES two
+	// production failure modes (Issue 6): (a) the model ALTERNATES two
 	// phrasings of the same intent ("Let me check the full file." / "Let me
 	// read the full file."), so neither line's individual count crosses the
 	// threshold; and (b) the looping lines are short (< minThinkWordCount
@@ -120,6 +120,10 @@ type LoopDetector struct {
 	// maxStreamRepeats is the live repeat threshold for the streaming text
 	// loop detector (see LoopDetectorConfig.MaxStreamRepeats).
 	maxStreamRepeats int
+	// minStreamPeriod is the live minimum repeat-unit length (in characters)
+	// for the streaming text loop detector (see
+	// LoopDetectorConfig.MinStreamPeriod).
+	minStreamPeriod int
 }
 
 // LoopDetectorConfig holds configurable parameters for the loop detector.
@@ -152,6 +156,10 @@ type LoopDetectorConfig struct {
 	// block required before the streaming loop detector stops the turn
 	// (0 = default 5). From execution.stream_loop_max_repeats.
 	MaxStreamRepeats int
+	// MinStreamPeriod is the smallest repeated unit (in characters) the
+	// streaming loop detector treats as a loop (0 = default 50). From
+	// execution.stream_loop_min_period.
+	MinStreamPeriod int
 }
 
 // defaultStreamLoopMaxRepeats is the built-in repeat threshold for the
@@ -159,6 +167,12 @@ type LoopDetectorConfig struct {
 // repetition (quoting evidence, comparing similar snippets) while still
 // stopping a runaway loop after only a few hundred wasted tokens.
 const defaultStreamLoopMaxRepeats = 5
+
+// defaultStreamLoopMinPeriod is the built-in smallest repeated unit (in
+// characters) the streaming text loop detector treats as a loop. Shorter
+// exact repeats are punctuation/connector noise. The absolute scan floor is
+// 8: below it periods are never scanned at all.
+const defaultStreamLoopMinPeriod = 50
 
 // DefaultLoopDetectorConfig returns sensible defaults for the loop detector.
 func DefaultLoopDetectorConfig() LoopDetectorConfig {
@@ -203,6 +217,9 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 	if cfg.MaxStreamRepeats < 2 {
 		cfg.MaxStreamRepeats = defaultStreamLoopMaxRepeats
 	}
+	if cfg.MinStreamPeriod < 8 {
+		cfg.MinStreamPeriod = defaultStreamLoopMinPeriod
+	}
 	return &LoopDetector{
 		toolStreaks:             make(map[string]int),
 		errorHistory:            make([]bool, loopErrorHistorySize),
@@ -218,7 +235,29 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 		persistStreamDisabled:   cfg.StreamDisabled,
 		persistStallDisabled:    cfg.StallDisabled,
 		maxStreamRepeats:        cfg.MaxStreamRepeats,
+		minStreamPeriod:         cfg.MinStreamPeriod,
 	}
+}
+
+// StreamMinPeriod returns the live minimum repeat-unit length (in
+// characters) for the streaming text loop detector.
+func (ld *LoopDetector) StreamMinPeriod() int {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	return ld.minStreamPeriod
+}
+
+// SetStreamMinPeriod updates the live minimum repeat-unit length for the
+// streaming text loop detector. Values below 8 (the absolute scan floor)
+// restore the default; called when execution.stream_loop_min_period changes
+// via /config set.
+func (ld *LoopDetector) SetStreamMinPeriod(n int) {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	if n < 8 {
+		n = defaultStreamLoopMinPeriod
+	}
+	ld.minStreamPeriod = n
 }
 
 // StreamMaxRepeats returns the live repeat threshold for the streaming text
@@ -543,7 +582,7 @@ func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 
 		// Diversity tracking runs on the raw prose line (normalized), BEFORE the
 		// minThinkWordCount filter drops short lines — a short-line loop is still
-		// a loop (bugs.md Issue 6). Code/tool blocks and structural lines are
+		// a loop (Issue 6). Code/tool blocks and structural lines are
 		// excluded so legitimate output never lowers diversity.
 		ld.trackProseForDiversity(raw)
 
@@ -626,7 +665,7 @@ func (ld *LoopDetector) trackProseForDiversity(raw string) {
 	}
 	// Require a minimum of substance so list markers ("- yes", "1. no"), bullets
 	// and short genuine sentences that legitimately recur across iterative code
-	// quotes (bugs.md: a real reasoning sentence repeated while re-quoting a
+	// quotes (a real reasoning sentence repeated while re-quoting a
 	// code block is NOT a loop) do not dominate the window. Five words is low
 	// enough to capture short filler loops ("let me check the full file") while
 	// leaving longer genuine reasoning to the exact-line counter.
@@ -671,11 +710,11 @@ func (ld *LoopDetector) diversityLevel() LoopWarningLevel {
 	}
 	distinct := len(ld.thinkRecentCounts)
 	// Diversity detection targets CYCLING among a small set of phrasings (the
-	// A/B alternation that per-line exact matching cannot see, bugs.md Issue 6)
+	// A/B alternation that per-line exact matching cannot see, Issue 6)
 	// and the single-SHORT-line loop that falls under the exact counter's
 	// minThinkWordCount floor. A single repeated LONG genuine sentence is left
 	// to the exact-line counter (one real reasoning line repeated while
-	// re-quoting code is not a loop — bugs.md fence false positive).
+	// re-quoting code is not a loop — fence false positive).
 	if distinct == 1 {
 		if !ld.singleShortLineLoop() {
 			return LoopOK
@@ -697,7 +736,7 @@ func (ld *LoopDetector) diversityLevel() LoopWarningLevel {
 // never sees it) recurring CONSECUTIVELY. A genuine reasoning sentence repeated
 // across iterative code quotes is interleaved with the (skipped) fenced content
 // and other prose, so its occurrences are not back-to-back; a filler loop
-// repeats the same short line with nothing in between (bugs.md Issue 6). We
+// repeats the same short line with nothing in between (Issue 6). We
 // detect the loop only when the single short line also forms a long run.
 func (ld *LoopDetector) singleShortLineLoop() bool {
 	for line := range ld.thinkRecentCounts {
@@ -813,7 +852,7 @@ func isStructuralLine(line string) bool {
 	// keywords that collide with common English prose openers ("let me", "do
 	// not", "new information", "type of", "final answer") are intentionally
 	// omitted: treating them as code disabled thinking-loop detection for the
-	// most frequent reasoning-filler prefixes (bugs.md Issue 6 — the
+	// most frequent reasoning-filler prefixes (Issue 6 — the
 	// "Let me check/read the full file." loop went undetected because every
 	// "Let me …" line matched the JS "let " keyword). Go declarations are still
 	// caught by startsWithIdentifierAndCode below; other languages' code is

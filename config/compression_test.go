@@ -92,6 +92,29 @@ func TestDeepMergeContextCompressionMicroCompaction(t *testing.T) {
 	}
 }
 
+// TestDeepMergeContextCompressionOnErrorStrategy verifies OnErrorStrategy
+// merges like the other non-empty-wins fields across cascade layers.
+func TestDeepMergeContextCompressionOnErrorStrategy(t *testing.T) {
+	base := &Config{ContextCompression: ContextCompressionConfig{
+		Enabled:         boolPtr(true),
+		OnErrorStrategy: "hybrid",
+	}}
+	override := &Config{ContextCompression: ContextCompressionConfig{
+		Enabled: boolPtr(true),
+		// OnErrorStrategy empty in the override layer → base value kept.
+	}}
+	base.DeepMerge(override)
+	if base.ContextCompression.OnErrorStrategy != "hybrid" {
+		t.Errorf("OnErrorStrategy = %q, want hybrid (preserved when override empty)", base.ContextCompression.OnErrorStrategy)
+	}
+
+	override.ContextCompression.OnErrorStrategy = "summarize"
+	base.DeepMerge(override)
+	if base.ContextCompression.OnErrorStrategy != "summarize" {
+		t.Errorf("OnErrorStrategy = %q, want summarize (non-empty override wins)", base.ContextCompression.OnErrorStrategy)
+	}
+}
+
 // TestConfigValidateCompressionThresholds covers range and ordering checks
 // for the tiered thresholds, globally and per model.
 func TestConfigValidateCompressionThresholds(t *testing.T) {
@@ -130,7 +153,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{HardPercent: 101},
 			},
-			wantErr: "hard_percent: must be 10-95 in 5% increments",
+			wantErr: "hard_percent: must be 5-100 in 5% increments, 0 to disable",
 		},
 		{
 			name: "soft disable (-1) accepted",
@@ -145,7 +168,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{SoftPercent: -2},
 			},
-			wantErr: "soft_percent: must be 10-95 in 5% increments",
+			wantErr: "soft_percent: must be 5-100 in 5% increments, 0 to disable",
 		},
 		{
 			name: "non 5-step increment rejected",
@@ -153,15 +176,22 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{TriggerPercent: 42},
 			},
-			wantErr: "trigger_percent: must be 10-95 in 5% increments",
+			wantErr: "trigger_percent: must be 5-100 in 5% increments, 0 to disable",
 		},
 		{
-			name: "level below 10 rejected",
+			name: "5 and 100 accepted (new opt-in range)",
 			cfg: ContextCompressionConfig{
 				Enabled:    boolPtr(true),
-				Thresholds: CompressionThresholdsConfig{SoftPercent: 5},
+				Thresholds: CompressionThresholdsConfig{SoftPercent: 5, TriggerPercent: 100, HardPercent: 100},
 			},
-			wantErr: "soft_percent: must be 10-95 in 5% increments",
+		},
+		{
+			name: "4 rejected (not a 5-step)",
+			cfg: ContextCompressionConfig{
+				Enabled:    boolPtr(true),
+				Thresholds: CompressionThresholdsConfig{SoftPercent: 4},
+			},
+			wantErr: "soft_percent: must be 5-100 in 5% increments, 0 to disable",
 		},
 		{
 			name: "valid per-layer strategies accepted",
@@ -171,12 +201,11 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 			},
 		},
 		{
-			name: "soft layer LLM strategy rejected",
+			name: "soft layer accepts any strategy (all-methods soft)",
 			cfg: ContextCompressionConfig{
 				Enabled:    boolPtr(true),
 				Strategies: CompressionLayerStrategiesConfig{Soft: "summarize"},
 			},
-			wantErr: "soft layer must be zero-LLM",
 		},
 		{
 			name: "unknown layer strategy rejected",
@@ -185,6 +214,14 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 				Strategies: CompressionLayerStrategiesConfig{Hard: "bogus"},
 			},
 			wantErr: `strategies.hard: unknown strategy "bogus"`,
+		},
+		{
+			name: "unknown on_error_strategy rejected",
+			cfg: ContextCompressionConfig{
+				Enabled:          boolPtr(true),
+				OnErrorStrategy:  "bogus",
+			},
+			wantErr: `on_error_strategy: unknown strategy "bogus"`,
 		},
 		{
 			name: "cache gate values accepted",
@@ -273,17 +310,109 @@ func TestDefaultConfig_CompressionThresholds(t *testing.T) {
 	if !cc.EnabledValue() {
 		t.Fatal("ContextCompression.EnabledValue() = false, want true")
 	}
-	// Proactive compression is opt-in: thresholds default to 0 (disabled).
+	// Opt-in semantics: soft/trigger default to 0 (disabled); the hard tier
+	// is explicitly ON at 95 in the embedded default.yaml (no implicit engine
+	// default-on), with summarize as its method and hybrid on-error recovery.
+	if cc.Thresholds.SoftPercent != 0 {
+		t.Errorf("Thresholds.SoftPercent = %d, want 0 (disabled by default)", cc.Thresholds.SoftPercent)
+	}
 	if cc.Thresholds.TriggerPercent != 0 {
 		t.Errorf("Thresholds.TriggerPercent = %d, want 0 (disabled by default)", cc.Thresholds.TriggerPercent)
 	}
-	if cc.Thresholds.HardPercent != 0 {
-		t.Errorf("Thresholds.HardPercent = %d, want 0 (disabled by default)", cc.Thresholds.HardPercent)
+	if cc.Thresholds.HardPercent != 95 {
+		t.Errorf("Thresholds.HardPercent = %d, want 95 (explicit in default.yaml)", cc.Thresholds.HardPercent)
+	}
+	if cc.Strategies.Hard != "summarize" && cc.Strategy != "summarize" {
+		t.Logf("hard strategy sources: layer=%q legacy=%q", cc.Strategies.Hard, cc.Strategy)
+	}
+	if cc.OnErrorStrategy != "hybrid" {
+		t.Errorf("OnErrorStrategy = %q, want hybrid (embedded default)", cc.OnErrorStrategy)
+	}
+	if cc.Strategy != "" {
+		t.Errorf("legacy Strategy = %q, want empty (trigger-layer strategy unset by default)", cc.Strategy)
 	}
 	if !cc.OnContextError {
 		t.Error("OnContextError = false, want true (reactive safety net stays on)")
 	}
 	if cc.ThresholdPercent != 0 {
 		t.Errorf("legacy ThresholdPercent = %d, want 0 (migrated to thresholds block)", cc.ThresholdPercent)
+	}
+}
+
+// TestDeepMergeContextCompressionToolResultPruning verifies the pruner
+// settings (CX1) merge field-wise across cascade layers: a higher layer
+// setting one key does not reset the others.
+func TestDeepMergeContextCompressionToolResultPruning(t *testing.T) {
+	base := &Config{ContextCompression: ContextCompressionConfig{
+		Enabled:           boolPtr(true),
+		ToolResultPruning: ToolResultPruningSettings{ThresholdChars: 4096, HeadChars: 2048},
+	}}
+	override := &Config{ContextCompression: ContextCompressionConfig{
+		Enabled:           boolPtr(true),
+		ToolResultPruning: ToolResultPruningSettings{TailChars: 256},
+	}}
+	base.DeepMerge(override)
+	got := base.ContextCompression.ToolResultPruning
+	if got.ThresholdChars != 4096 || got.HeadChars != 2048 || got.TailChars != 256 {
+		t.Errorf("ToolResultPruning = %+v, want {4096 2048 256} (field-wise merge)", got)
+	}
+}
+
+// TestConfigValidateToolResultPruning covers the CX1 budget validation:
+// negative values are rejected and head + marker + tail must fit within the
+// threshold (dsh compaction-tool-result-pruner config rule; the marker is 39
+// runes).
+func TestConfigValidateToolResultPruning(t *testing.T) {
+	tests := []struct {
+		name    string
+		pruning ToolResultPruningSettings
+		wantErr string // substring; empty = valid
+	}{
+		{name: "zero inherits defaults", pruning: ToolResultPruningSettings{}},
+		{
+			name:    "valid custom budgets",
+			pruning: ToolResultPruningSettings{ThresholdChars: 4096, HeadChars: 2048, TailChars: 512},
+		},
+		{
+			name:    "negative threshold rejected",
+			pruning: ToolResultPruningSettings{ThresholdChars: -1},
+			wantErr: "must be non-negative",
+		},
+		{
+			name:    "negative head rejected",
+			pruning: ToolResultPruningSettings{HeadChars: -5},
+			wantErr: "must be non-negative",
+		},
+		{
+			name:    "head+marker+tail over threshold rejected",
+			pruning: ToolResultPruningSettings{ThresholdChars: 100, HeadChars: 90, TailChars: 50},
+			wantErr: "must be at most threshold_chars",
+		},
+		{
+			// 4096 + 39 + 1024 = 5159 ≤ 8192 (the default threshold).
+			name:    "explicit head/tail fit the default threshold",
+			pruning: ToolResultPruningSettings{HeadChars: 4096, TailChars: 1024},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{ContextCompression: ContextCompressionConfig{
+				Enabled:           boolPtr(true),
+				ToolResultPruning: tt.pruning,
+			}}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() = nil, want error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }

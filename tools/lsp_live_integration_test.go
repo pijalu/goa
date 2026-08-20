@@ -19,7 +19,7 @@ import (
 // These are LIVE integration tests: they spawn real language servers (gopls
 // from PATH; pyright / typescript-language-server via npx when the PATH binary
 // is absent — first run downloads the package, ~1 minute) and drive the real
-// write/edit → LSP → diagnostics pipeline end to end. They verify the bugs.md
+// write/edit → LSP → diagnostics pipeline end to end. They verify the
 // Issue LSP directive: edit/write must be LSP-wired for ALL supported file
 // types (go, py, js) and surface correctly-labeled hints.
 //

@@ -124,7 +124,7 @@ func TestBubble_UnderThreeLinesNoEllipsis(t *testing.T) {
 	}
 }
 
-// TestBubble_MultiLineObjective pins the bugs.md "Corruption on goal change"
+// TestBubble_MultiLineObjective pins the Corruption on goal change:
 // fix: objectives with embedded newlines must render one visual row per line
 // — ansi.Wrap's contract is single-paragraph, so the bubble must split
 // paragraphs itself; a surviving "\n" corrupts the rows above the input line.

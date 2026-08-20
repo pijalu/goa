@@ -10,7 +10,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
-// TestNewSessionClearsTranscript reproduces bugs.md Issue 3: after /new the screen
+// TestNewSessionClearsTranscript reproduces Issue 3: after /new the screen
 // must be cleanly redrawn — none of the pre-/new conversation may linger in the
 // chat viewport or the rendered frame.
 func TestNewSessionClearsTranscript(t *testing.T) {

@@ -153,7 +153,7 @@ func TestIsPresetID(t *testing.T) {
 func TestPresetProviders_StableOrder(t *testing.T) {
 	presets := PresetProviders()
 	expected := []string{
-		"openai", "lmstudio", "ollama", "openrouter",
+		"openai", "openai-codex", "lmstudio", "ollama", "openrouter",
 		"opencode", "opencode-go", "deepseek", "kimi", "kimi-code",
 		"zai", "zai-api", "poolside",
 		"anthropic", "google", "mistral",

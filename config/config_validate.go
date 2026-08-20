@@ -27,10 +27,40 @@ func (c *Config) Validate() error {
 	c.validateGoals(&ve)
 	c.validatePlan(&ve)
 	c.validateMCP(&ve)
+	c.validateTools(&ve)
+	c.validateTimeContext(&ve)
 	if ve.HasErrors() {
 		return &ve
 	}
 	return nil
+}
+
+// validateTimeContext rejects invalid temporal-context settings at load: a
+// malformed refresh interval or an unsupported IANA zone would otherwise fail
+// later, silently at injection time.
+func (c *Config) validateTimeContext(ve *internal.ValidationError) {
+	tc := c.TimeContext
+	if !tc.Enabled {
+		return
+	}
+	if tc.RefreshInterval != "" {
+		if _, err := time.ParseDuration(tc.RefreshInterval); err != nil {
+			ve.Add(fmt.Sprintf("time_context.refresh_interval: must be a duration (e.g. 60s, 5m), got %q", tc.RefreshInterval))
+		}
+	}
+	if tc.TimeZone != "" {
+		if _, err := time.LoadLocation(tc.TimeZone); err != nil {
+			ve.Add(fmt.Sprintf("time_context.time_zone: unsupported IANA zone %q", tc.TimeZone))
+		}
+	}
+}
+
+// validateTools rejects invalid tool-policy values at load: a negative
+// max_inline_bytes would otherwise spill every result.
+func (c *Config) validateTools(ve *internal.ValidationError) {
+	if c.Tools.MaxInlineBytes < 0 {
+		ve.Add(fmt.Sprintf("tools.max_inline_bytes: must be a non-negative integer (got %d)", c.Tools.MaxInlineBytes))
+	}
 }
 
 func (c *Config) validateMode(ve *internal.ValidationError) {
@@ -122,6 +152,13 @@ func (c *Config) validateTimeout(ve *internal.ValidationError) {
 }
 
 func (c *Config) validateLoopThresholds(ve *internal.ValidationError) {
+	c.validateLoopWarningOrder(ve)
+	c.validateToolRepeatThresholds(ve)
+	c.validateStreamLoopThresholds(ve)
+}
+
+// validateLoopWarningOrder checks warning < interrupt when both are set.
+func (c *Config) validateLoopWarningOrder(ve *internal.ValidationError) {
 	if c.Execution.LoopWarning <= 0 || c.Execution.LoopInterrupt <= 0 {
 		return
 	}
@@ -129,17 +166,31 @@ func (c *Config) validateLoopThresholds(ve *internal.ValidationError) {
 		ve.Add(fmt.Sprintf("execution.loop_warning (%d) must be less than loop_interrupt (%d)",
 			c.Execution.LoopWarning, c.Execution.LoopInterrupt))
 	}
-	// Validate tool repeat thresholds: consecutive must not exceed total.
+}
+
+// validateToolRepeatThresholds checks consecutive must not exceed total.
+func (c *Config) validateToolRepeatThresholds(ve *internal.ValidationError) {
 	if c.Execution.MaxToolRepeatConsecutive > 0 && c.Execution.MaxToolRepeatTotal > 0 &&
 		c.Execution.MaxToolRepeatConsecutive > c.Execution.MaxToolRepeatTotal {
 		ve.Add(fmt.Sprintf("execution.max_tool_repeat_consecutive (%d) must not exceed execution.max_tool_repeat_total (%d)",
 			c.Execution.MaxToolRepeatConsecutive, c.Execution.MaxToolRepeatTotal))
 	}
+}
+
+// validateStreamLoopThresholds checks the stream-loop detector knobs.
+func (c *Config) validateStreamLoopThresholds(ve *internal.ValidationError) {
 	// Stream-loop repeat threshold must be a sane repeat count when set
 	// (0 means "use the default"); a single occurrence can never be a loop.
 	if c.Execution.StreamLoopMaxRepeats != 0 && c.Execution.StreamLoopMaxRepeats < 2 {
 		ve.Add(fmt.Sprintf("execution.stream_loop_max_repeats (%d) must be 0 (default) or >= 2",
 			c.Execution.StreamLoopMaxRepeats))
+	}
+	// Stream-loop minimum period must stay at or above the detector's
+	// absolute scan floor (8 chars): below it periods are never scanned, so
+	// a smaller configured floor would silently do nothing.
+	if c.Execution.StreamLoopMinPeriod != 0 && c.Execution.StreamLoopMinPeriod < 8 {
+		ve.Add(fmt.Sprintf("execution.stream_loop_min_period (%d) must be 0 (default 50) or >= 8",
+			c.Execution.StreamLoopMinPeriod))
 	}
 }
 
@@ -149,6 +200,7 @@ func (c *Config) validateAgenticProviders(ve *internal.ValidationError) {
 		c.validateProviderTransport(ve, p)
 		c.validateProviderCache(ve, p)
 		c.validateProviderRetryDelay(ve, p)
+		c.validateProviderRetryPolicy(ve, p)
 	}
 }
 
@@ -185,6 +237,65 @@ func (c *Config) validateProviderRetryDelay(ve *internal.ValidationError, p Prov
 	}
 }
 
+// validateProviderRetryPolicy validates the optional per-provider retry_policy
+// block: mode must be normal|always, max_retries non-negative, backoff values
+// positive with initial ≤ max and jitter in [0,1], codes non-empty and
+// duplicate-free.
+func (c *Config) validateProviderRetryPolicy(ve *internal.ValidationError, p ProviderConfig) {
+	rp := p.RetryPolicy
+	if rp == nil {
+		return
+	}
+	prefix := fmt.Sprintf("providers.%s.retry_policy", p.ID)
+	validateRetryPolicyMode(ve, prefix, rp.Mode)
+	if rp.MaxRetries < 0 {
+		ve.Add(fmt.Sprintf("%s.max_retries: must be >= 0, got %d", prefix, rp.MaxRetries))
+	}
+	validateRetryPolicyBackoff(ve, prefix, rp.Backoff)
+	validateRetryPolicyCodes(ve, prefix, rp.Codes)
+}
+
+// validateRetryPolicyMode validates the mode field.
+func validateRetryPolicyMode(ve *internal.ValidationError, prefix, mode string) {
+	if mode != "" && mode != "normal" && mode != "always" {
+		ve.Add(fmt.Sprintf("%s.mode: must be %q or %q, got %q", prefix, "normal", "always", mode))
+	}
+}
+
+// validateRetryPolicyBackoff validates the backoff schedule fields.
+func validateRetryPolicyBackoff(ve *internal.ValidationError, prefix string, b RetryBackoffConfig) {
+	if b.InitialMS < 0 {
+		ve.Add(fmt.Sprintf("%s.backoff.initial_ms: must be >= 0, got %d", prefix, b.InitialMS))
+	}
+	if b.MaxMS < 0 {
+		ve.Add(fmt.Sprintf("%s.backoff.max_ms: must be >= 0, got %d", prefix, b.MaxMS))
+	}
+	if b.InitialMS > 0 && b.MaxMS > 0 && b.InitialMS > b.MaxMS {
+		ve.Add(fmt.Sprintf("%s.backoff.initial_ms: must be <= max_ms (%d > %d)", prefix, b.InitialMS, b.MaxMS))
+	}
+	if b.Jitter < 0 || b.Jitter > 1 {
+		ve.Add(fmt.Sprintf("%s.backoff.jitter: must be between 0 and 1, got %v", prefix, b.Jitter))
+	}
+}
+
+// validateRetryPolicyCodes validates the eligible failure-code list.
+func validateRetryPolicyCodes(ve *internal.ValidationError, prefix string, codes []string) {
+	if len(codes) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(codes))
+	for _, code := range codes {
+		if code == "" {
+			ve.Add(fmt.Sprintf("%s.codes: must contain only non-empty strings", prefix))
+			continue
+		}
+		if _, dup := seen[code]; dup {
+			ve.Add(fmt.Sprintf("%s.codes: duplicate code %q", prefix, code))
+		}
+		seen[code] = struct{}{}
+	}
+}
+
 func (c *Config) validateAgenticModels(ve *internal.ValidationError) {
 	for _, m := range c.Models {
 		if !IsValidAgenticAPI(m.API) {
@@ -207,24 +318,49 @@ func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	if !validCompressionStrategy(cc.Strategy) {
 		ve.Add(fmt.Sprintf("context_compression.strategy: unknown strategy %q", cc.Strategy))
 	}
+	if !validCompressionStrategy(cc.OnErrorStrategy) {
+		ve.Add(fmt.Sprintf("context_compression.on_error_strategy: unknown strategy %q", cc.OnErrorStrategy))
+	}
 	validateLayerStrategies(ve, "context_compression.strategies", cc.Strategies)
 	validateCacheGate(ve, "context_compression.cache_gate", cc.CacheGate)
 	if cc.ThresholdPercent < 0 || cc.ThresholdPercent > 100 {
 		ve.Add(fmt.Sprintf("context_compression.threshold_percent: must be 0-100 (got %d)", cc.ThresholdPercent))
 	}
 	validateCompressionThresholds(ve, "context_compression.thresholds", cc.Thresholds)
+	validateToolResultPruning(ve, "context_compression.tool_result_pruning", cc.ToolResultPruning)
 	for id, o := range cc.PerModel {
 		c.validateCompressionOverride(ve, id, o)
 	}
 }
 
-// validateLayerStrategies checks the per-layer strategy names; the soft
-// layer additionally must be zero-LLM (micro|tool_elision|inherit).
+// validateToolResultPruning checks the tool-result pruner budgets (CX1):
+// negative values are rejected, and head + marker + tail must fit within the
+// threshold so every pruned result lands within budget and the pass stays
+// idempotent (dsh compaction-tool-result-pruner config rule). The marker is
+// 39 runes ("\n\n[... tool result middle pruned ...]\n\n"); the constant
+// mirrors agentic.PruneMarker to keep config free of an SDK import.
+func validateToolResultPruning(ve *internal.ValidationError, path string, s ToolResultPruningSettings) {
+	const markerChars = 39
+	if s.ThresholdChars < 0 || s.HeadChars < 0 || s.TailChars < 0 {
+		ve.Add(fmt.Sprintf("%s: values must be non-negative (got threshold=%d head=%d tail=%d)",
+			path, s.ThresholdChars, s.HeadChars, s.TailChars))
+		return
+	}
+	threshold := s.ThresholdChars
+	if threshold == 0 {
+		threshold = 8192
+	}
+	if s.HeadChars+markerChars+s.TailChars > threshold {
+		ve.Add(fmt.Sprintf("%s: head_chars + marker + tail_chars (%d) must be at most threshold_chars (%d)",
+			path, s.HeadChars+markerChars+s.TailChars, threshold))
+	}
+}
+
+// validateLayerStrategies checks the per-layer strategy names; any strategy
+// is allowed on any layer (the soft layer defaults to micro).
 func validateLayerStrategies(ve *internal.ValidationError, path string, s CompressionLayerStrategiesConfig) {
 	if !validCompressionStrategy(s.Soft) {
 		ve.Add(fmt.Sprintf("%s.soft: unknown strategy %q", path, s.Soft))
-	} else if s.Soft != "" && s.Soft != AgenticCompressionMicro && s.Soft != AgenticCompressionToolElision {
-		ve.Add(fmt.Sprintf("%s.soft: soft layer must be zero-LLM (micro or tool_elision, got %q)", path, s.Soft))
 	}
 	if !validCompressionStrategy(s.Trigger) {
 		ve.Add(fmt.Sprintf("%s.trigger: unknown strategy %q", path, s.Trigger))
@@ -268,32 +404,26 @@ func (c *Config) validateCompressionOverride(ve *internal.ValidationError, id st
 	}
 }
 
-// validateCompressionThresholds checks levels (10-95 in 5% increments, or 0
-// to inherit the SDK default; soft additionally accepts -1 to disable the
-// layer) and ordering (soft ≤ trigger ≤ hard) for a thresholds block.
+// validateCompressionThresholds checks levels (5-100 in 5% increments, 0 to
+// disable the layer, -1 accepted as a legacy disable spelling) and ordering
+// (soft ≤ trigger ≤ hard) for a thresholds block.
 func validateCompressionThresholds(ve *internal.ValidationError, path string, t CompressionThresholdsConfig) {
-	validateCompressionLevel(ve, path+".soft_percent", t.SoftPercent, true)
-	validateCompressionLevel(ve, path+".trigger_percent", t.TriggerPercent, false)
-	validateCompressionLevel(ve, path+".hard_percent", t.HardPercent, false)
+	validateCompressionLevel(ve, path+".soft_percent", t.SoftPercent)
+	validateCompressionLevel(ve, path+".trigger_percent", t.TriggerPercent)
+	validateCompressionLevel(ve, path+".hard_percent", t.HardPercent)
 	validateThresholdOrder(ve, path, "soft_percent", t.SoftPercent, "trigger_percent", t.TriggerPercent)
 	validateThresholdOrder(ve, path, "trigger_percent", t.TriggerPercent, "hard_percent", t.HardPercent)
 	validateThresholdOrder(ve, path, "soft_percent", t.SoftPercent, "hard_percent", t.HardPercent)
 }
 
-// validateCompressionLevel checks one compression level: 0 = inherit, -1 =
-// disable (soft layer only), otherwise 10-95 in 5% increments.
-func validateCompressionLevel(ve *internal.ValidationError, path string, v int, allowDisable bool) {
-	if v == 0 || (allowDisable && v == -1) {
+// validateCompressionLevel checks one compression level: 0 disables the
+// layer, -1 is a legacy disable spelling, otherwise 5-100 in 5% increments.
+func validateCompressionLevel(ve *internal.ValidationError, path string, v int) {
+	if v == 0 || v == -1 {
 		return
 	}
-	if v < 10 || v > 95 || v%5 != 0 {
-		ve.Add(fmt.Sprintf("%s: must be 10-95 in 5%% increments (got %d)", path, v))
-	}
-}
-
-func validatePercentRange(ve *internal.ValidationError, path string, v int) {
-	if v < 0 || v > 100 {
-		ve.Add(fmt.Sprintf("%s: must be 0-100 (got %d)", path, v))
+	if v < 5 || v > 100 || v%5 != 0 {
+		ve.Add(fmt.Sprintf("%s: must be 5-100 in 5%% increments, 0 to disable (got %d)", path, v))
 	}
 }
 

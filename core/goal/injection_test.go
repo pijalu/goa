@@ -373,7 +373,7 @@ func intPtr(i int) *int       { return &i }
 func int64Ptr(i int64) *int64 { return &i }
 
 // TestDynamicProgress_SurfacesTodos verifies the per-turn goal reminder
-// surfaces the managed todo list so the model works the next item (bugs.md:
+// surfaces the managed todo list so the model works the next item
 // framework-managed todo list for goals).
 func TestDynamicProgress_SurfacesTodos(t *testing.T) {
 	snap := GoalSnapshot{
@@ -390,5 +390,54 @@ func TestDynamicProgress_SurfacesTodos(t *testing.T) {
 	}
 	if !strings.Contains(got, "next pending todo") {
 		t.Errorf("progress missing todo guidance: %q", got)
+	}
+}
+
+// TestBuildStaticGoalReminder_BoundsLongFields verifies a goal with very long
+// objective/criterion/verify/handover produces a bounded reminder: the fields
+// are excerpted (full text stays retrievable via `goal get`), so a pathological
+// goal cannot blow up the per-turn context on a content-prefix cache.
+func TestBuildStaticGoalReminder_BoundsLongFields(t *testing.T) {
+	big := strings.Repeat("o", 5000)
+	criterion := strings.Repeat("c", 3000)
+	verify := strings.Repeat("v", 3000)
+	handover := strings.Repeat("h", 3000)
+	snap := GoalSnapshot{
+		Objective:           big,
+		CompletionCriterion: &criterion,
+		VerifyCommand:       &verify,
+		Handoff:             &handover,
+		Status:              GoalActive,
+	}
+	r := BuildStaticGoalReminder(snap)
+	if strings.Contains(r, strings.Repeat("o", 500)) {
+		t.Errorf("objective not excerpted (full 500-char run present)")
+	}
+	// The reminder must stay small: fixed guidance (~2.2KB) + bounded excerpts.
+	// 400 (obj) + 3*280 (criterion/verify/handover) + guidance, plus slack.
+	if len(r) > 6000 {
+		t.Errorf("reminder too large: %d chars", len(r))
+	}
+}
+
+// TestBuildBlockedNote_BoundsLongFields verifies the blocked-note path bounds
+// the nested objective and terminal reason/expectation (the case that produced
+// a 7.6KB reminder in the frigolite fts4merge4 session).
+func TestBuildBlockedNote_BoundsLongFields(t *testing.T) {
+	reason := strings.Repeat("r", 4000)
+	objective := strings.Repeat("o", 6000)
+	expect := strings.Repeat("e", 3000)
+	snap := GoalSnapshot{
+		Objective:           objective,
+		Status:              GoalBlocked,
+		TerminalReason:      &reason,
+		TerminalExpectation: &expect,
+	}
+	note := BuildBlockedNote(snap)
+	if strings.Contains(note, strings.Repeat("o", 500)) {
+		t.Errorf("blocked-note objective not excerpted")
+	}
+	if len(note) > 4000 {
+		t.Errorf("blocked note too large: %d chars", len(note))
 	}
 }

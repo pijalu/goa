@@ -281,7 +281,7 @@ func TestOrchestrateCommand_ResumeRebindsGoal(t *testing.T) {
 	// doResume→NewRuntime (before Run returns). Reading c.Active.Get() here
 	// instead is racy: the launch goroutine can complete the (instant) fake run
 	// and clear Active before this line runs, flakily returning nil
-	// (bugs.md must-fix #2).
+	// (must-fix #2).
 	b.mu.Lock()
 	rt := b.rt
 	b.mu.Unlock()

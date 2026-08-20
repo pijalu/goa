@@ -11,7 +11,7 @@ import (
 	"github.com/pijalu/goa/core"
 )
 
-// TestSlashCommand_ExecutingPlaceholderFilmstrip filmstrip-validates bugs.md
+// TestSlashCommand_ExecutingPlaceholderFilmstrip filmstrip-validates
 // "Session: slow commands need an executing placeholder": the status line must
 // show "executing /slowfilm ..." while the command's Run is in flight, and be
 // cleared by the time the command result is rendered in the chat viewport.

@@ -492,6 +492,11 @@ func showToolDetail(out core.OutputWriter, reg core.ToolRegistry, name string) e
 	schema := tool.Schema()
 	writeFmt(out, "🔧 Tool: %s\n", schema.Name)
 	writeStr(out, "────────────────────────────────────────\n")
+	if isDeferredTool(tool) {
+		writeStr(out, "  🔍 Must use search — schema withheld from the prompt; the model loads it via tool_search before calling.\n")
+	} else {
+		writeStr(out, "  Default part of prompt — schema always shipped to the model.\n")
+	}
 	writeFmt(out, "  %s\n\n", schema.Description)
 
 	printToolParams(out, schema)
@@ -580,7 +585,7 @@ func listTools(out core.OutputWriter, reg core.ToolRegistry) error {
 	writeStr(out, "────────────────────────────────────────\n\n")
 
 	if reg == nil {
-		knownTools := []string{"read", "write", "edit", "search", "bash", "ssh_bash", "bg_exec", "memento", "goa_command", "run_skill"}
+		knownTools := []string{"read", "write", "edit", "search", "bash", "python", "run_code", "ssh_bash", "bg_exec", "memento", "goa_command", "run_skill"}
 		for _, t := range knownTools {
 			writeFmt(out, "  %-20s (use /tools %s for details)\n", t, t)
 		}
@@ -588,17 +593,53 @@ func listTools(out core.OutputWriter, reg core.ToolRegistry) error {
 		return nil
 	}
 
-	tools := reg.All()
-	for _, t := range tools {
-		schema := t.Schema()
-		desc := toolSummaryLine(schema.Description)
-		if len(desc) > 60 {
-			desc = desc[:57] + "..."
+	all := reg.All()
+
+	// Partition into the eager set (schema shipped in the system prompt on
+	// every request) and the deferred set (schema withheld; the model loads
+	// it on demand via the tool_search tool).
+	var eager, deferred []agentic.Tool
+	for _, t := range all {
+		if isDeferredTool(t) {
+			deferred = append(deferred, t)
+		} else {
+			eager = append(eager, t)
 		}
-		writeFmt(out, "  %-20s %s\n", schema.Name, desc)
 	}
-	writeFmt(out, "\n%d tool(s) available. Use /tools:name for details, or /docs:TOOLS for the full reference.\n", len(tools))
+
+	// Render a markdown table: one tool per row, names in a code column,
+	// descriptions in their own column. The TUI renders this via the
+	// MDStreamRenderer (renderGoaPanel), giving aligned columns and no
+	// mid-sentence wrapping — the fix for the unreadable wall-of-text list.
+	writeStr(out, "**Default part of prompt** (always available)\n\n")
+	writeStr(out, "| Tool | Description |\n| --- | --- |\n")
+	for _, t := range eager {
+		writeFmt(out, "| `%s` | %s |\n", t.Schema().Name, mdTableCell(toolSummaryLine(t.Schema().Description)))
+	}
+
+	if len(deferred) > 0 {
+		writeStr(out, "\n**Must use search** (load via tool_search before calling)\n\n")
+		writeStr(out, "| Tool | Description |\n| --- | --- |\n")
+		for _, t := range deferred {
+			writeFmt(out, "| `%s` | 🔍 via tool_search — %s |\n", t.Schema().Name, mdTableCell(toolSummaryLine(t.Schema().Description)))
+		}
+	}
+
+	writeFmt(out, "\n%d tool(s) available (%d in prompt, %d via tool_search). Use /tools:name for details, or /docs:TOOLS for the full reference.\n", len(all), len(eager), len(deferred))
 	return nil
+}
+
+// mdTableCell makes a string safe for a markdown table cell: a literal `|`
+// would break the column split, so it is escaped as `\|`.
+func mdTableCell(s string) string {
+	return strings.ReplaceAll(s, "|", "\\|")
+}
+
+// isDeferredTool reports whether a tool's schema is withheld from the
+// per-request eager block and exposed only through the tool_search loader.
+func isDeferredTool(t agentic.Tool) bool {
+	d, ok := t.(agentic.Deferred)
+	return ok && d.Deferred()
 }
 
 func listDocs(out core.OutputWriter, dp core.DocsProvider) error {

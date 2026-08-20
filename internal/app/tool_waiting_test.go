@@ -24,7 +24,7 @@ func waitingToolWidgets(chat *tui.ChatViewport) []*tui.ToolExecutionComponent {
 	return out
 }
 
-// TestUI_NamelessToolCallDeltaNoBlankWidget reproduces bugs.md "Empty tool
+// TestUI_NamelessToolCallDeltaNoBlankWidget reproduces "Empty tool
 // TUI" end-to-end: an OpenAI-style stream ships the call id first and the
 // tool name in a later chunk. The app must create exactly ONE widget (at the
 // first named delta) — never a blank-header box.
@@ -64,7 +64,7 @@ func TestUI_NamelessToolCallDeltaNoBlankWidget(t *testing.T) {
 	}
 }
 
-// TestUI_QueuedToolsShowWaiting reproduces bugs.md Bug W end-to-end: in a
+// TestUI_QueuedToolsShowWaiting reproduces Bug W end-to-end: in a
 // multi-call batch, calls the scheduler has NOT started yet stay Pending and
 // render ⧖ "waiting Ns…" — only the executing call shows "elapsed".
 func TestUI_QueuedToolsShowWaiting(t *testing.T) {

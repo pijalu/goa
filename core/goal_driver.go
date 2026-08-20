@@ -63,7 +63,7 @@ const (
 // RunawayRecoveryPrompt replaces the byte-identical ContinuationPrompt for
 // the first turn after a goal resumes from a runaway-loop pause. Resuming
 // into the same prompt would deterministically re-enter the conditions that
-// tripped the guardrail (bugs.md runaway-loop bricking); the varied prompt
+// tripped the guardrail (runaway-loop bricking); the varied prompt
 // forces a diagnosis and a different approach instead.
 const RunawayRecoveryPrompt = `The previous goal turn was stopped by a runaway-loop guardrail: the same
 response repeated across consecutive turns without progress. Do NOT repeat
@@ -79,7 +79,7 @@ goal with action "update", status "blocked" with reason+expectation.`
 // drive started mid-turn hits the agent's queue-on-busy semantics: Run
 // returns instantly, the loop hot-spins, and hundreds of continuation
 // prompts flood the agent's input queue — phantom turns that keep arriving
-// even after the goal is cleared (bugs.md Issue 7: "goal cannot be
+// even after the goal is cleared (Issue 7: "goal cannot be
 // stopped").
 var ErrAgentBusy = errors.New("goal driver: agent busy with another turn")
 
@@ -106,7 +106,7 @@ type AgentRunner interface {
 }
 
 // FreshAgentRunner is an optional extension of AgentRunner. When the active
-// goal carries the fresh-context flag (bugs.md: per-goal clean-context), the
+// goal carries the fresh-context flag (per-goal clean-context), the
 // driver routes its continuation turns through RunFresh so they execute on a
 // clean context (objective + handover only) instead of the full conversation.
 // History is preserved by the implementation and restored when the goal ends.
@@ -130,7 +130,7 @@ type GoalDriver struct {
 	// passes begin=true. Reset whenever the active goal changes or clears.
 	freshBegunFor string
 	// stop cancels the current drive loop's context. Set by Drive while a
-	// loop is active; called by Stop (ESC hard stop — bugs.md "ESC: hard
+	// loop is active; called by Stop (ESC hard stop — "ESC: hard
 	// stop for ALL ongoing activities"). Nil when no loop is running.
 	stop context.CancelFunc
 
@@ -154,7 +154,7 @@ type GoalDriver struct {
 	// the runaway-loop guardrail. The first continuation after that resume
 	// swaps the byte-identical ContinuationPrompt for RunawayRecoveryPrompt
 	// and resets the agent's loop latch, so pause → resume cannot blindly
-	// re-enter the conditions that tripped the guardrail (bugs.md).
+	// re-enter the conditions that tripped the guardrail.
 	// Written by handleTurnError, consumed by runTurn — both run on the
 	// single Drive loop goroutine, so no extra locking is needed.
 	runawayPausedFor string
@@ -166,8 +166,8 @@ type GoalDriver struct {
 	// overlay is currently bound to so it is applied once per goal. Nil =
 	// team overlays disabled (no TeamManager wired). Both fields are only
 	// touched from the single Drive loop.
-	TeamOverlay    TeamOverlayManager
-	overlayGoalID  string
+	TeamOverlay   TeamOverlayManager
+	overlayGoalID string
 }
 
 // TeamOverlayManager is the subset of the TeamManager the goal drive loop needs
@@ -294,7 +294,7 @@ func (d *GoalDriver) syncTeamOverlay(active *goal.GoalSnapshot) {
 // handleTurnError maps a turn failure to the drive-loop verdict. ErrAgentBusy
 // is a CLEAN stop (nil): another turn owns the agent, so the goal stays
 // active and the in-flight turn's post-turn hook re-starts the drive once
-// the agent is idle (bugs.md Issue 7). Any other error pauses the goal with
+// the agent is idle (Issue 7). Any other error pauses the goal with
 // a mapped reason and propagates.
 func (d *GoalDriver) handleTurnError(err error) error {
 	if errors.Is(err, ErrAgentBusy) {
@@ -308,7 +308,7 @@ func (d *GoalDriver) handleTurnError(err error) error {
 	if reason == PauseRunawayLoop {
 		// The guardrail error carries the (elided) repeated sequence; keep it
 		// in the stored pause reason so the TUI stop surface and the goal
-		// events log show WHAT was judged a loop (bugs.md runaway-loop
+		// events log show WHAT was judged a loop (runaway-loop
 		// visibility).
 		pauseReason = reason + ": " + err.Error()
 	}
@@ -399,7 +399,7 @@ func (d *GoalDriver) checkSilentStop() error {
 // agent's loop latch is reset — resuming with the byte-identical
 // ContinuationPrompt would deterministically re-enter the conditions that
 // tripped the guardrail, and the still-latched agent would reject the turn
-// outright (bugs.md runaway-loop bricking).
+// outright (runaway-loop bricking).
 func (d *GoalDriver) turnPrompt(active *goal.GoalSnapshot) string {
 	if d.runawayPausedFor == "" || d.runawayPausedFor != active.GoalID {
 		return ContinuationPrompt
@@ -425,7 +425,7 @@ func (d *GoalDriver) Start(ctx context.Context) {
 
 // Stop cancels the active drive loop: the in-flight turn's context is
 // cancelled and no further continuation turns are launched. It is the goal
-// half of the ESC hard stop (bugs.md "ESC: hard stop for ALL ongoing
+// half of the ESC hard stop ("ESC: hard stop for ALL ongoing
 // activities") — App.handleEscape pairs it with AgentManager.Interrupt so the
 // current turn dies AND the loop cannot continue. No-op when no loop runs.
 func (d *GoalDriver) Stop() {

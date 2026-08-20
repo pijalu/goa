@@ -196,7 +196,7 @@ func (a *App) maybeSteerAgent(engine *tui.TUI, chat *tui.ChatViewport, text stri
 // resend / discard text they typed mid-turn. It is a no-op when there is no
 // agent, an empty queue, or no input editor. The restored text is NOT sent.
 // Shared by Alt+E (handleEditSteering) and ESC (handleEscape) so the two paths
-// cannot diverge (bugs.md S1).
+// cannot diverge (S1).
 func (a *App) restoreSteeringToInput(chat *tui.ChatViewport) {
 	subs := a.subs
 	if subs.agentMgr == nil {
@@ -296,11 +296,47 @@ func (a *App) sendToAgentWithImages(input string, images []string) {
 	input = a.expandSkillInput(input)
 	// Expand @file references to absolute paths so the model can read them.
 	input = a.expandAtRefs(input)
+	// Expand @[label](goa-session:<id>) cross-session references (P24 / CX7)
+	// into a bounded, read-only, untrusted snapshot prepended to the model
+	// message. Invalid references reject the send (dsh: any invalid
+	// reference, failed read, or budget failure rejects before the host
+	// calls followup).
+	var err error
+	input, err = expandSessionReferences(subs, input)
+	if err != nil {
+		a.handleSendError(err)
+		return
+	}
 
 	a.showSendingStatus(modelName)
 	if err := subs.agentMgr.SendUserInputWithImages(input, images); err != nil {
 		a.handleSendError(err)
 	}
+}
+
+// expandSessionReferences parses @[label](goa-session:<id>) mentions in the
+// input, resolves each referenced session to a bounded read-only snapshot,
+// and prepends the untrusted <referenced-sessions> warning frame to the
+// model-facing message. The TUI bubble keeps showing the raw user text; the
+// snapshot is model-facing only (dsh model-hidden display content). Returns
+// the input unchanged when the session store is unavailable or no references
+// are present.
+func expandSessionReferences(subs *subsystems, input string) (string, error) {
+	if subs.sessionStore == nil {
+		return input, nil
+	}
+	currentSessionID := ""
+	if subs.agentMgr != nil {
+		currentSessionID = subs.agentMgr.SessionID()
+	}
+	rewritten, frame, err := subs.sessionStore.ResolveSessionReferenceMentions(input, currentSessionID)
+	if err != nil {
+		return "", err
+	}
+	if frame == "" {
+		return rewritten, nil
+	}
+	return frame + "\n\n" + rewritten, nil
 }
 
 // recordInputHistory records a user input in the current session's input
@@ -558,7 +594,7 @@ func (a *App) handleSlashCommand(input string) {
 		}
 	}
 
-	// Immediate feedback for slow commands (bugs.md "Session: slow commands
+	// Immediate feedback for slow commands ("Session: slow commands
 	// need an executing placeholder"): show the spinner line before the
 	// synchronous Run so there is no silent gap between submit and output.
 	showPlaceholder := a.beginCommandPlaceholder(result, trimmed)
@@ -708,6 +744,18 @@ func (a *App) echoCommandResult(result *core.RouteResult, input, output string) 
 	}
 
 	if output != "" {
+		// Finalize any in-progress streaming block before the command result
+		// lands, so the result is appended AFTER a complete block and the
+		// next streamed content starts a fresh block after it. Without this,
+		// a screen-filling result (e.g. /goal:list with complete objectives)
+		// echoed mid-stream leaves the streaming block buried under it; the
+		// stream keeps growing that off-screen block, and every chunk forces
+		// the compositor's mid-transcript scrollback-reset path — CPU >100%
+		// and repeated terminal viewport yanks until a new block finally
+		// starts after the result. Ending the block here makes the very next
+		// stream chunk start after the result (bottom append — the fast,
+		// O(viewport) path).
+		a.endCurrentStream()
 		subs.chat.AddSystemMessage(fmt.Sprintf("> %s", input))
 		subs.chat.AddSystemMessage(output)
 		subs.tuiEngine.RequestRender()

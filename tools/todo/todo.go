@@ -20,7 +20,7 @@ import (
 
 // TodoListTool manages an in-session todo list.
 //
-// Goal linkage (bugs.md): when a goal is ACTIVE the tool operates on the
+// Goal linkage: when a goal is ACTIVE the tool operates on the
 // goal's linked todo list instead of the session list — the goal starts with
 // a blank list, items added during it are contained by it (the stall
 // watchdog fingerprints their transitions and the completion reminder
@@ -65,8 +65,7 @@ func (t *TodoListTool) Schema() agentic.ToolSchema {
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
-					"type":        "string",
-					"description": "add|update|complete|remove|list|clear",
+					"type": "string",
 					"enum":        []string{"add", "update", "complete", "remove", "list", "clear"},
 				},
 				"id": map[string]any{
@@ -78,8 +77,7 @@ func (t *TodoListTool) Schema() agentic.ToolSchema {
 					"description": "todo description for add",
 				},
 				"status": map[string]any{
-					"type":        "string",
-					"description": "pending|in_progress|done",
+					"type": "string",
 					"enum":        []string{"pending", "in_progress", "done"},
 				},
 			},

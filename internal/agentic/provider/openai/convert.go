@@ -119,6 +119,7 @@ func convertAssistantMessage(msg provider.Message, compat provider.OpenAIComplet
 
 	// Collect text and tool calls from content blocks.
 	var textContent string
+	var thinking string
 	var toolCalls []map[string]interface{}
 
 	for _, block := range msg.Content {
@@ -126,8 +127,8 @@ func convertAssistantMessage(msg provider.Message, compat provider.OpenAIComplet
 		case provider.ContentBlockText:
 			textContent += block.Text
 		case provider.ContentBlockThinking:
-			// DeepSeek-style reasoning in a separate field.
-			result["reasoning_content"] = block.Thinking
+			// DeepSeek-style reasoning; emitted below on tool-call turns only.
+			thinking += block.Thinking
 		case provider.ContentBlockToolCall:
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"id":   block.ToolCallID,
@@ -145,21 +146,21 @@ func convertAssistantMessage(msg provider.Message, compat provider.OpenAIComplet
 		result["tool_calls"] = toolCalls
 		if textContent == "" {
 			// Some providers require non-null content even for tool call messages.
-			// We also need reasoning_content for DeepSeek.
 			result["content"] = ""
 		} else {
 			result["content"] = textContent
 		}
-	} else {
-		result["content"] = textContent
-	}
-
-	// DeepSeek: always include reasoning_content for assistant messages
-	// when reasoning has been used.
-	if provider.ToBool(compat.RequiresReasoningContentOnAssistantMessages, false) {
-		if _, ok := result["reasoning_content"]; !ok {
+		// DeepSeek passback rule (dsh serialize.ts): reasoning_content must
+		// return on tool-call turns; it is ignored on plain turns, so drop it
+		// there to save tokens. The flag forces the key (empty when the turn
+		// carries no thinking) — the API 400s without it in thinking mode.
+		if thinking != "" {
+			result["reasoning_content"] = thinking
+		} else if provider.ToBool(compat.RequiresReasoningContentOnAssistantMessages, false) {
 			result["reasoning_content"] = ""
 		}
+	} else {
+		result["content"] = textContent
 	}
 
 	return result

@@ -5,6 +5,7 @@
 package plugins
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"sync/atomic"
@@ -35,6 +36,9 @@ type ExtendContext struct {
 	// Nil disables coloring (segment text renders unstyled). Wired by the
 	// app layer to the active TUI theme so plugins never emit console codes.
 	SegmentColor func(name string) string
+	// OAuthToken returns an opaque, Goa-managed OAuth access token. Plugins do
+	// not receive refresh tokens or direct access to the credential store.
+	OAuthToken func(ctx context.Context, provider string) (map[string]any, error)
 }
 
 // setupExtendedGlobals wires the optional goa.* APIs onto the goa object.
@@ -53,6 +57,26 @@ func (b *JSBridge) setupExtendedGlobals(goaObj *goja.Object) {
 	b.setupOutput(goaObj, ext.Output)
 	b.setupSessionUsage(goaObj, ext.SessionUsage)
 	b.setupSegmentColor(goaObj, ext.SegmentColor)
+	b.setupOAuth(goaObj, ext.OAuthToken)
+}
+
+// setupOAuth exposes only Goa-owned access tokens to trusted plugins.
+func (b *JSBridge) setupOAuth(goaObj *goja.Object, tokenFn func(context.Context, string) (map[string]any, error)) {
+	if tokenFn == nil {
+		return
+	}
+	authObj := b.vm.NewObject()
+	authObj.Set("oauthToken", func(call goja.FunctionCall) goja.Value {
+		provider := call.Argument(0).String()
+		var result map[string]any
+		var err error
+		runOutsideVMLock(func() { result, err = tokenFn(context.Background(), provider) })
+		if err != nil {
+			return b.vm.ToValue(map[string]any{"error": err.Error()})
+		}
+		return b.vm.ToValue(result)
+	})
+	goaObj.Set("auth", authObj)
 }
 
 // setupHTTP registers goa.http.fetch(url, opts). The actual request goes
@@ -68,7 +92,7 @@ func (b *JSBridge) setupHTTP(goaObj *goja.Object, httpB *HTTPBridge) {
 		// endpoint can block for the full request timeout; holding vmMu
 		// across it starves every other JS entry point (segment renders,
 		// hotkeys, /quota) — the input freeze that landed exactly when the
-		// quota segment appeared (bugs.md Start-up). vmMu serializes goja
+		// quota segment appeared (Start-up). vmMu serializes goja
 		// access only; the bridge Do is pure Go and needs no VM.
 		// This function is only ever invoked from JS execution, which by
 		// contract holds vmMu, so the unlock/lock pair is balanced.

@@ -83,6 +83,9 @@ jobs:
           check-latest: true
           cache: true
 
+      - name: Refresh models catalog
+        run: go run ./cmd/genmodels -out internal/agentic/provider/models/api.json
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}

@@ -6,7 +6,7 @@ package tools
 
 import "testing"
 
-// Probes for bugs.md item 3: does the SOLO jail catch every way a command can
+// Probes for item 3: does the SOLO jail catch every way a command can
 // reference /tmp (outside the project)? The concern was that a bash command
 // writing to /tmp "passes" under SOLO.
 func TestBashJail_TmpWriteVariants(t *testing.T) {

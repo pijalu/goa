@@ -9,5 +9,6 @@ Copyright (C) 2026 Pierre Poissinger
 <available_skills>
 {{range .Skills}}
   <skill name="{{.Name}}" category="{{.Category}}" tool="{{.ExecuteTool}}" location="{{.FilePath}}">{{.Description}}</skill>
-{{end}}
+{{end}}{{if .Summary}}
+  {{.Summary}}{{end}}
 </available_skills>

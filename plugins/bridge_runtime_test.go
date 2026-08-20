@@ -209,7 +209,7 @@ func TestJS_UIRefreshSegmentDoesNotBlock(t *testing.T) {
 // hanging quota endpoint) must NOT keep the global VM lock, otherwise every
 // other JS entry point — including the command loop's segment render — stalls
 // behind the fetch and the input line freezes exactly when the quota segment
-// lands (bugs.md "Start-up: delay matches the status bar quota appearing").
+// lands (Start-up: delay matches the status bar quota appearing).
 func TestJS_HTTPFetchReleasesVMLock(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})

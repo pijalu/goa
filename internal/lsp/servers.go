@@ -27,7 +27,7 @@ type NpxSpec struct {
 	// Binary is the executable to run from Package. Defaults to Package —
 	// required when they differ, e.g. package "pyright" ships the
 	// "pyright-langserver" bin, package "svelte-language-server" ships
-	// "svelteserver" (bugs.md Issue LSP: bare `npx <pkg>` guessed wrong bins).
+	// "svelteserver" (Issue LSP: bare `npx <pkg>` guessed wrong bins).
 	Binary string `yaml:"binary,omitempty"`
 	// ExtraPackages are additional npm packages the server needs alongside it
 	// (e.g. typescript-language-server requires typescript@5 — v6+ removed the

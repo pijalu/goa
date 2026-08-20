@@ -915,16 +915,17 @@ func (r *Runtime) Pool() *BoundedAgentPool { return r.pool }
 
 func statsPayload(s AgentStatsSnapshot) map[string]any {
 	return map[string]any{
-		"turns":            s.Turns,
-		"tokens_in":        s.TokensIn,
-		"tokens_out":       s.TokensOut,
-		"cache_read":       s.CacheRead,
-		"cache_creation":   s.CacheCreation,
-		"tool_calls":       s.ToolCalls,
-		"status":           string(s.Status),
-		"context_estimate": s.ContextEstimate,
-		"context_max":      s.ContextMax,
-		"context_auto_max": s.ContextAutoMax,
+		"turns":             s.Turns,
+		"tokens_in":         s.TokensIn,
+		"tokens_out":        s.TokensOut,
+		"cache_read":        s.CacheRead,
+		"cache_creation":    s.CacheCreation,
+		"tool_calls":        s.ToolCalls,
+		"status":            string(s.Status),
+		"context_estimate":  s.ContextEstimate,
+		"context_projected": s.ContextProjected,
+		"context_max":       s.ContextMax,
+		"context_auto_max":  s.ContextAutoMax,
 	}
 }
 

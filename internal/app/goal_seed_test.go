@@ -14,7 +14,7 @@ import (
 	goaltui "github.com/pijalu/goa/tui/goal"
 )
 
-// TestSeedGoalUI_RestoresBubbleAndFooter reproduces bugs.md Issue 1: an app
+// TestSeedGoalUI_RestoresBubbleAndFooter reproduces Issue 1: an app
 // restarted with a persisted goal never shows the goal bubble, because the
 // bubble is only fed by live GoalUpdate bus events and no event fires at
 // startup. Seeding from the goal manager must restore both the bubble and
@@ -71,7 +71,7 @@ func TestSeedGoalUI_NoGoalKeepsUIClear(t *testing.T) {
 	}
 }
 
-// TestGoalEventPublisher_FullBusDoesNotDrop reproduces bugs.md Issue 1(b):
+// TestGoalEventPublisher_FullBusDoesNotDrop reproduces Issue 1(b):
 // goalEventPublisher.Publish used a non-blocking send and silently dropped
 // the update when the Agent bus was full — exactly the mid-turn situation
 // where a goal create/resume happens. The update must eventually arrive.

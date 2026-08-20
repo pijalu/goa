@@ -29,7 +29,7 @@ type LSPQueryManager interface {
 
 // LSPTool lets the model query the language server for precise code navigation:
 // go-to-definition, find-references, hover, and document symbols. This replaces
-// grep-and-guess with exact, compiler-grade locations (bugs.md Issue 7).
+// grep-and-guess with exact, compiler-grade locations (Issue 7).
 type LSPTool struct {
 	agentic.BaseTool
 	WorktreeMgr *internal.WorktreeManager
@@ -59,26 +59,25 @@ func lspErr(errType, format string, args ...any) *internal.ToolError {
 func (t *LSPTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "lsp",
-		Description: "Language-server navigation: definition|references|hover|symbols. Any configured language (Go/gopls, Python/pyright, TS, Rust…); server auto-selected per file. Prefer over grep for exact symbol defs/refs.",
+		Description: "Language-server navigation: definition|references|hover|symbols (any configured language).",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"op": map[string]any{
-					"type":        "string",
+					"type": "string",
 					"enum":        []string{"definition", "references", "hover", "symbols"},
-					"description": "operation: definition | references | hover | symbols",
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "source file path (relative to project root or absolute)",
+					"description": "source file path",
 				},
 				"line": map[string]any{
 					"type":        "integer",
-					"description": "0-indexed line of the symbol (not needed for symbols)",
+					"description": "0-indexed symbol line (not for symbols)",
 				},
 				"character": map[string]any{
 					"type":        "integer",
-					"description": "0-indexed column of the symbol (not needed for symbols)",
+					"description": "0-indexed symbol column (not for symbols)",
 				},
 			},
 			"required": []string{"op", "path"},

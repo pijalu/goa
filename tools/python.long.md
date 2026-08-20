@@ -16,8 +16,34 @@ are auto-rewritten to `%` formatting).
 Output is truncated automatically when it exceeds the configured limits; the
 full output is saved to a file in those cases.
 
+## dict keys are strings
+
+Dictionaries accept **string keys only**:
+
+- `d.get(key, default=None)` accepts **any key type** — a non-string key is
+  normalized through `str(key)` before lookup, so `d.get(200, 0)` returns the
+  value stored under `'200'`, or the default when absent (CPython-compatible
+  for the tally idiom `by_status[str(st)] = by_status.get(st, 0) + 1`).
+- `d[key] = value`, `d[key]`, `key in d`, and dict literals with non-string
+  keys raise `KeyError`. Store values under `str(key)` — e.g.
+  `by_status[str(st)] = 1` — then read them back with `.get(key)`.
+
 The tool is enabled by default. Disable it via `/config` → Tools, or with
 `/tools python:off`.
+
+## bytes.decode
+
+`bytes` supports `.decode(encoding='utf-8', errors='strict')`, so the
+byte-oriented read idiom works:
+
+```python
+text = open(path, 'rb').read().decode('utf-8')
+```
+
+`errors` may be `'strict'` (raise `UnicodeDecodeError`), `'ignore'` (skip
+invalid bytes), or `'replace'` (substitute U+FFFD). Only the UTF-8 codec
+family is supported; any other encoding raises `LookupError`. Note: `str`
+has no `.encode` — build `bytes` literals directly (e.g. `b'...'`) instead.
 
 ## File access
 
@@ -66,14 +92,14 @@ in every `python` tool invocation.
 
 | Module | Notes |
 | --- | --- |
-| `re` | `compile`, `search`, `match`, `findall`, `sub`, `split`, `escape`; `I`/`IGNORECASE`; `Pattern` and `Match` objects. Backed by Go's RE2 engine: no lookarounds or backreferences, and `re.sub` uses literal replacement only. |
-| `json` | `loads`, `dumps(obj, indent=None)`. Supports dicts with string keys and JSON scalar types. |
+| `re` | `compile`, `search`, `match`, `findall`, `sub`, `split`, `escape`; `I`/`IGNORECASE`; `Pattern` and `Match` objects. Backed by Go's RE2 engine: no lookarounds or backreferences. `re.sub`/`Pattern.sub` accept a callable replacement (invoked per match with the `Match`) or a template string with `\1`/`\g<1>`/`\g<name>` group references and `\\` escapes. |
+| `json` | `loads`, `dumps(obj, indent=None)`. Supports dicts with string keys and JSON scalar types (see "dict keys are strings" above). |
 | `datetime` | `datetime`, `date`, `timedelta`; `now`, `today`, `fromtimestamp`, `strptime`, `isoformat`, `strftime`; basic arithmetic with `timedelta`. |
 | `random` | `random`, `randint`, `choice`, `shuffle`, `sample`, `uniform`, `seed`. |
 | `hashlib` | `md5`, `sha1`, `sha256`, `sha512`; `Hash.hexdigest()` / `Hash.digest()`. |
 | `base64` | `b64encode`, `b64decode`, `urlsafe_b64encode`, `urlsafe_b64decode`. Returns strings, not bytes. |
 | `urllib.parse` | `quote`, `quote_plus`, `unquote`, `unquote_plus`, `urlencode`, `urlparse`, `urlunparse`, `parse_qs`, `parse_qsl`. |
-| `collections` | `Counter` with `update`, `subtract`, `elements`, `most_common`, and dict-like access. |
+| `collections` | `Counter` with `update`, `subtract`, `elements`, `most_common`, `get(key, default=None)`, and dict-like access. Keys are normalized to strings via `str(key)`, so `c[200]` and `c['200']` share the same bucket. |
 | `itertools` | `count`, `cycle`, `repeat`, `chain`, `islice`, `combinations`, `permutations`, `product`. |
 | `stat` | Constants (`S_IFREG`, `S_IFDIR`, permission bits) and `S_IMODE`/`S_IFMT`. |
 

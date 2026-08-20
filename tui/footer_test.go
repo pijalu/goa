@@ -564,7 +564,7 @@ func TestFooter_Render_NoCompanionShowsMainOnly(t *testing.T) {
 	}
 }
 
-// TestFooter_Render_GoalMarker (bugs.md Issue 3): an active goal shows the ◈
+// TestFooter_Render_GoalMarker (Issue 3): an active goal shows the ◈
 // marker next to the mode ("◈ coding-posture │ YOLO"); no goal → no marker.
 func TestFooter_Render_GoalMarker(t *testing.T) {
 	f := NewFooter()
@@ -581,10 +581,55 @@ func TestFooter_Render_GoalMarker(t *testing.T) {
 	}
 
 	// Explicit clear (the app clears goal state via SetGoalStatus).
-	f.SetGoalStatus("")
+	f.SetGoalStatus("", 0, 0)
 	firstLine = ansi.Strip(f.Render(80)[0])
 	if strings.Contains(firstLine, "◈") {
 		t.Errorf("no goal → no ◈ marker, got %q", firstLine)
+	}
+}
+
+// TestFooter_Render_GoalCountMarkers: the ◈ sign follows the todo-marker
+// shape — one ◈ per goal up to 3, then a numeric prefix for the overflow:
+// 1 → "◈", 3 → "◈◈◈", 25 → "25◈". An active goal with no recorded count
+// still marks (backward-compatible default).
+func TestFooter_Render_GoalCountMarkers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		count int
+		want  string
+	}{
+		{"zero-fallback", 0, "◈ p │ YOLO"},
+		{"one", 1, "◈ p │ YOLO"},
+		{"two", 2, "◈◈ p │ YOLO"},
+		{"three", 3, "◈◈◈ p │ YOLO"},
+		{"four", 4, "4◈ p │ YOLO"},
+		{"twenty-five", 25, "25◈ p │ YOLO"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewFooter()
+			f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
+			f.SetGoalStatus("active", tc.count, 0)
+			firstLine := ansi.Strip(f.Render(80)[0])
+			if !strings.Contains(firstLine, tc.want) {
+				t.Errorf("count=%d: want %q in first line, got %q", tc.count, tc.want, firstLine)
+			}
+		})
+	}
+}
+
+// TestFooter_Render_GoalCountMarkersRequireGoal: the ◈ count sign decorates
+// an ACTIVE goal only — paused/blocked goals must not render it regardless of
+// the recorded count.
+func TestFooter_Render_GoalCountMarkersRequireGoal(t *testing.T) {
+	for _, status := range []string{"", "paused", "blocked"} {
+		f := NewFooter()
+		f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
+		f.SetGoalStatus(status, 25, 0)
+		for i, line := range f.Render(80) {
+			if strings.Contains(line, "◈") {
+				t.Errorf("goal status %q: line %d renders ◈ markers: %q", status, i, ansi.Strip(line))
+			}
+		}
 	}
 }
 
@@ -603,6 +648,50 @@ func TestFooter_Render_NoGoalDetail(t *testing.T) {
 			}
 			if i > 0 && strings.Contains(line, "◈") {
 				t.Errorf("goal status %q: line %d must not carry a goal segment: %q", status, i, ansi.Strip(line))
+			}
+		}
+	}
+}
+
+// TestFooter_Render_GoalTodoMarkers (Issue 4): an active goal shows
+// one ⬩ per pending todo after the profile label (max 3 glyphs, then a +n
+// counter for the overflow): "◈ coding-posture ⬩⬩⬩+2 │ YOLO".
+func TestFooter_Render_GoalTodoMarkers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pending int
+		want    string
+	}{
+		{"zero", 0, "◈ p │ YOLO"},
+		{"one", 1, "◈ p ⬩ │ YOLO"},
+		{"two", 2, "◈ p ⬩⬩ │ YOLO"},
+		{"three", 3, "◈ p ⬩⬩⬩ │ YOLO"},
+		{"five", 5, "◈ p ⬩⬩⬩+2 │ YOLO"},
+		{"seven", 7, "◈ p ⬩⬩⬩+4 │ YOLO"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewFooter()
+			f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
+			f.SetGoalStatus("active", 1, tc.pending)
+			firstLine := ansi.Strip(f.Render(80)[0])
+			if !strings.Contains(firstLine, tc.want) {
+				t.Errorf("pending=%d: want %q in first line, got %q", tc.pending, tc.want, firstLine)
+			}
+		})
+	}
+}
+
+// TestFooter_Render_TodoMarkersRequireGoal (Issue 4): the ⬩ markers
+// decorate an ACTIVE goal only — no goal (or a paused/blocked goal) renders
+// no markers, even with pending todos recorded.
+func TestFooter_Render_TodoMarkersRequireGoal(t *testing.T) {
+	for _, status := range []string{"", "paused", "blocked"} {
+		f := NewFooter()
+		f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
+		f.SetGoalStatus(status, 1, 4)
+		for i, line := range f.Render(80) {
+			if strings.Contains(line, "⬩") {
+				t.Errorf("goal status %q: line %d renders ⬩ markers: %q", status, i, ansi.Strip(line))
 			}
 		}
 	}

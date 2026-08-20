@@ -14,9 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/core/plan"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/review"
 	"github.com/pijalu/goa/multiagent"
@@ -37,6 +39,7 @@ func (a *App) setupEventHandlers(engine *tui.TUI, chat *tui.ChatViewport, inp *t
 	go a.runChatEventReader(done, bus.Chat)
 	go a.runFooterEventReader(done, bus.Footer)
 	go a.runGitRefreshLoop(done, gitRefreshInterval)
+	go a.runPeakRefreshLoop(done, peakRefreshInterval)
 
 	// Forward foreground orchestrator events to the TUI event bus, so that
 	// companion post-turn output and other orchestrator-managed workflows
@@ -187,6 +190,11 @@ func (a *App) runFooterEventReader(done chan struct{}, ch <-chan event.FooterEve
 // so branch switches or commits done outside goa show up without a restart.
 const gitRefreshInterval = 2 * time.Second
 
+// peakRefreshInterval is how often the footer re-checks the provider peak
+// window coloring so the red/orange/green transitions appear at window edges
+// even when no other event forces a redraw.
+const peakRefreshInterval = 30 * time.Second
+
 // runGitRefreshLoop periodically refreshes the footer's git branch/dirty
 // state. Gathering spawns git subprocesses, so it runs off the commandLoop;
 // the result is applied on the loop only when it actually changed.
@@ -225,6 +233,46 @@ func (a *App) refreshFooterGitOnce(footer *tui.Footer, dir string) {
 			a.subs.tuiEngine.RequestRender()
 		}
 	})
+}
+
+// runPeakRefreshLoop periodically requests a footer re-render so the provider
+// peak indicator stays current. It is a no-op (no render request) when the
+// active provider has no peak windows, so sessions on other providers never
+// tick. The render itself re-evaluates time.Now() and is differential, so a
+// request with unchanged peak color costs one no-op frame.
+func (a *App) runPeakRefreshLoop(done chan struct{}, interval time.Duration) {
+	footer := a.subs.footer
+	if footer == nil {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if !a.activeProviderHasPeak() {
+				continue
+			}
+			a.apply(func() {
+				if a.subs.tuiEngine != nil {
+					a.subs.tuiEngine.RequestRender()
+				}
+			})
+		}
+	}
+}
+
+// activeProviderHasPeak reports whether the active provider is one of the
+// catalog entries with peak-pricing windows, i.e. the footer peak indicator
+// can actually change color over time.
+func (a *App) activeProviderHasPeak() bool {
+	if a.subs == nil || a.subs.cfg == nil {
+		return false
+	}
+	def := schema.LookupProviderDefByID(a.subs.cfg.ActiveProvider)
+	return def != nil && len(def.PeakHours) > 0
 }
 
 func (a *App) handleControlEvent(ev event.ControlEvent) bool {
@@ -381,6 +429,8 @@ func (a *App) handleChatEvent(ev event.ChatEvent) {
 		a.handleInterAgentEvent(ev.InterAgent)
 	case ev.Flash != nil:
 		a.showFlash(ev.Flash)
+	case ev.SystemMessage != nil:
+		a.showSystemMessage(ev.SystemMessage)
 	case ev.ShowOutputModal != nil:
 		a.showOutputModal(ev.ShowOutputModal)
 	case ev.ShowReviewPager != nil:
@@ -429,6 +479,22 @@ func (a *App) showFlash(f *event.Flash) {
 		return
 	}
 	a.subs.chat.AddFlashMessage("⚡ " + f.Text)
+}
+
+// showSystemMessage appends a durable system message posted from a background
+// goroutine (e.g. the async OAuth flow surfacing its auth URL / device code).
+func (a *App) showSystemMessage(m *event.SystemMessage) {
+	if a.subs.chat == nil || m == nil || m.Text == "" {
+		return
+	}
+	if m.Preformatted {
+		a.subs.chat.AddSystemMessagePreformatted(m.Text)
+	} else {
+		a.subs.chat.AddSystemMessage(m.Text)
+	}
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.RequestRender()
+	}
 }
 
 func (a *App) showOutputModal(m *event.ShowOutputModal) {
@@ -736,7 +802,7 @@ func (a *App) makeReviewExportHandler(handlePtr **tui.OverlayHandle, pager *tui.
 			a.reviewSetTitle("Cannot export: " + err.Error())
 			return
 		}
-		if err := pager.Session.Export(pager.Diff, path); err != nil {
+		if err := pager.Session.Export(path); err != nil {
 			a.reviewSetTitle("Cannot export: " + err.Error())
 			return
 		}
@@ -934,7 +1000,7 @@ func (a *App) handleGoalUpdate(update *event.GoalUpdate) {
 // current state at startup. The durable goal store is replayed before the
 // TUI exists, so no GoalUpdate bus event covers an already-persisted goal —
 // without this seed the bubble stays hidden until the next live goal event
-// (bugs.md Issue 1).
+// (Issue 1).
 func (a *App) seedGoalUI() {
 	if a.subs.goalManager == nil {
 		return
@@ -953,18 +1019,50 @@ func (a *App) updateGoalFooter(update *event.GoalUpdate) {
 	if a.subs.footer == nil {
 		return
 	}
-	// SetGoalStatus is the explicit writer of the footer's goal field
-	// (routine SetData rebuilds preserve it — a stats tick must never clear
-	// the ◈ marker, bugs.md Issues 3-4). The footer carries no goal detail:
-	// objective/status/todos are the goal bubble's job.
+	// SetGoalStatus is the explicit writer of the footer's goal fields
+	// (routine SetData rebuilds preserve them — a stats tick must never clear
+	// the ◈ marker, Issues 3-4). The footer carries no other goal
+	// detail: objective/status/todo titles are the goal bubble's job.
+	// The goal count is 1 (the current goal) + queued goals, so the ◈ sign
+	// follows the todo-marker shape: 1 → "◈", 3 → "◈◈◈", 25 → "25◈".
 	if update.Snapshot == nil {
-		a.subs.footer.SetGoalStatus("")
+		a.subs.footer.SetGoalStatus("", 0, 0)
 	} else {
-		a.subs.footer.SetGoalStatus(string(update.Snapshot.Status))
+		a.subs.footer.SetGoalStatus(
+			string(update.Snapshot.Status),
+			1+countQueuedGoals(a.subs.goalManager),
+			countPendingGoalTodos(update.Snapshot.Todos))
 	}
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()
 	}
+}
+
+// countQueuedGoals returns the number of goals waiting in the queue (the
+// current goal is counted separately by the caller). A nil manager or a
+// failed queue read yields 0 — the footer must keep rendering even when the
+// queue store is unavailable.
+func countQueuedGoals(mgr *core.GoalManager) int {
+	if mgr == nil {
+		return 0
+	}
+	queued, err := mgr.Queue.Read()
+	if err != nil {
+		return 0
+	}
+	return len(queued)
+}
+
+// countPendingGoalTodos returns the number of todos not yet done on a goal
+// snapshot — the count behind the footer's ⬩ markers next to the mode.
+func countPendingGoalTodos(todos []goal.GoalTodoItem) int {
+	pending := 0
+	for _, t := range todos {
+		if t.Status != goal.TodoDone {
+			pending++
+		}
+	}
+	return pending
 }
 
 // cancelClearPausesPromotion reports whether the clear event comes from an

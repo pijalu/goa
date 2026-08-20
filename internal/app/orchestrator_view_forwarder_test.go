@@ -140,7 +140,7 @@ func TestOrchestratorViewForwarder_RendersSimplifiedView(t *testing.T) {
 	checkAbsent(t, frame, "orchestrator.AgentTabBar", "tab bar should not appear in simplified UI")
 	checkAbsent(t, frame, "orchestrator.AgentContent", "stats panel should not appear in simplified UI")
 	checkNodeText(t, frame, "ChatViewport", []string{"hello"})
-	checkNodeText(t, frame, "Footer", []string{"CH", "Coder"})
+	checkNodeText(t, frame, "Footer", []string{"▸", "Coder"})
 
 	if sc.app.subs.agentView == nil || !sc.app.subs.agentView.Finished() {
 		t.Error("view not attached or not marked finished")
@@ -254,7 +254,7 @@ func TestOrchestratorViewForwarder_DrainsWithoutRace(t *testing.T) {
 	if frame.FindNode("ChatViewport") == nil {
 		t.Error("chat should be visible after drain")
 	}
-	if footer := frame.FindNode("Footer"); footer == nil || !strings.Contains(footer.Text, "CH") {
+	if footer := frame.FindNode("Footer"); footer == nil || !strings.Contains(footer.Text, "▸") {
 		t.Errorf("footer should show per-model stats after drain; footer=%v", footer)
 	}
 }

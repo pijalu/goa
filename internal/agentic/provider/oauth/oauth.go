@@ -39,6 +39,10 @@ type Tokens struct {
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at,omitempty"`
 	TokenType    string    `json:"token_type"`
+	// AccountID carries the provider account identifier when the issuer embeds
+	// one (OpenAI Codex: chatgpt_account_id JWT claim). Empty for providers
+	// without account identity.
+	AccountID string `json:"account_id,omitempty"`
 }
 
 // IsExpired returns true if the token is expired or expires within 5 minutes.
@@ -364,48 +368,16 @@ func (g *GitHubCopilotOAuth) PollForToken(ctx context.Context, deviceCode string
 // OpenAI Codex OAuth
 // ---------------------------------------------------------------------------
 
-// OpenAICodexOAuth implements OAuth for OpenAI Codex.
+// OpenAICodexOAuth implements OAuth for OpenAI Codex (ChatGPT subscription).
+// The full login flows live in codex.go; this type handles refresh/token
+// source duties and acts as the provider identity.
 type OpenAICodexOAuth struct {
 	ClientID string
-	pkce     *PKCEParams
 }
 
 // NewOpenAICodexOAuth creates a new OpenAI Codex OAuth handler.
 func NewOpenAICodexOAuth() (*OpenAICodexOAuth, error) {
-	pkce, err := GeneratePKCE()
-	if err != nil {
-		return nil, err
-	}
-	return &OpenAICodexOAuth{ClientID: "codex", pkce: pkce}, nil
-}
-
-func (o *OpenAICodexOAuth) Exchange(ctx context.Context, code string) (*Tokens, error) {
-	data := url.Values{
-		"client_id":     {o.ClientID},
-		"code":          {code},
-		"code_verifier": {o.pkce.CodeVerifier},
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://github.com/login/oauth/access_token", strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("codex token exchange: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		AccessToken string `json:"access_token"`
-		TokenType   string `json:"token_type"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return &Tokens{AccessToken: result.AccessToken, TokenType: result.TokenType}, nil
+	return &OpenAICodexOAuth{ClientID: codexClientID}, nil
 }
 
 func (g *GitHubCopilotOAuth) Name() string { return "github" }
@@ -426,20 +398,18 @@ func (g *GitHubCopilotOAuth) TokenSource(ctx context.Context, tokens *Tokens) (*
 	return NewTokenSource(g, tokens), nil
 }
 
-func (o *OpenAICodexOAuth) Name() string { return "codex" }
+func (o *OpenAICodexOAuth) Name() string { return "openai" }
 
+// AuthURL is not used directly for Codex: the browser flow (codex.go) builds
+// the URL per-attempt with fresh PKCE parameters and state.
 func (o *OpenAICodexOAuth) AuthURL(ctx context.Context) (string, error) {
-	params := url.Values{
-		"response_type":         {"code"},
-		"client_id":             {o.ClientID},
-		"code_challenge":        {o.pkce.CodeChallenge},
-		"code_challenge_method": {"S256"},
-	}
-	return "https://github.com/login/oauth/authorize?" + params.Encode(), nil
+	return "", fmt.Errorf("OpenAI Codex builds auth URLs per login attempt; use the browser login flow")
 }
 
-func (o *OpenAICodexOAuth) Refresh(ctx context.Context, refreshToken string) (*Tokens, error) {
-	return nil, fmt.Errorf("OpenAI Codex does not support refresh tokens")
+// Exchange is not used directly for Codex: code exchange happens inside the
+// browser/device flows with per-attempt PKCE verifiers.
+func (o *OpenAICodexOAuth) Exchange(ctx context.Context, code string) (*Tokens, error) {
+	return nil, fmt.Errorf("OpenAI Codex exchanges codes inside the browser/device login flows")
 }
 
 func (o *OpenAICodexOAuth) TokenSource(ctx context.Context, tokens *Tokens) (*TokenSource, error) {

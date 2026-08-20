@@ -18,16 +18,22 @@ func init() {
 	RegisterToolRenderer("edit", tools.NewEditFileRenderer())
 	RegisterToolRenderer("bash", tools.NewBashRenderer())
 	RegisterToolRenderer("python", tools.NewPythonRenderer())
+	RegisterToolRenderer("run_code", tools.NewRunCodeRenderer())
 	RegisterToolRenderer("verify", tools.NewVerifyRenderer())
-	RegisterToolRenderer("terminal", tools.TerminalRenderer{})
+	RegisterToolRenderer("terminals", tools.TerminalsRenderer{})
 	RegisterToolRenderer("webfetch", tools.NewWebFetchRenderer())
 	RegisterToolRenderer("search", tools.NewSearchRenderer())
 	RegisterToolRenderer("smartsearch", tools.NewSmartSearchRenderer())
+	RegisterToolRenderer("session_search", &tools.SessionSearchRenderer{})
+	RegisterToolRenderer("session_event_read", &tools.SessionEventReadRenderer{})
 	RegisterToolRenderer("goal", goaltui.GoalRenderer{})
 	RegisterToolRenderer("agent", &tools.AgentToolRenderer{})
 	RegisterToolRenderer("agent_swarm", &swarm.AgentSwarmRenderer{})
 	RegisterToolRenderer("plan", &plantools.PlanToolRenderer{})
 	RegisterToolRenderer("task_outcome", &plantools.TaskOutcomeRenderer{})
+	RegisterToolRenderer("schedule_create", &tools.ScheduleRenderer{})
+	RegisterToolRenderer("schedule_delete", &tools.ScheduleRenderer{})
+	RegisterToolRenderer("schedule_list", &tools.ScheduleRenderer{})
 }
 
 // SyncToolTheme updates the theme provider used by tool renderers. Call this

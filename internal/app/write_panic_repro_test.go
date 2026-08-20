@@ -20,6 +20,9 @@ import (
 // in production (2026-07-16, writing internal/app/*.go). Each sub-case runs
 // with a recover that prints the full stack so the failing line is visible.
 func TestWritePanicRepro(t *testing.T) {
+	if isRaceDetector() {
+		t.Skip("skipping under -race: live LSP startup is too slow for the 30s suite budget")
+	}
 	projectDir := "/Users/muaddib/dev/goa"
 	content, _ := os.ReadFile(projectDir + "/internal/app/write_stream_lag_repro_test.go")
 	goPayload := func(path string) string {
@@ -46,7 +49,7 @@ func TestWritePanicRepro(t *testing.T) {
 	run("nil_lsp", &tools.WriteFileTool{}, goPayload("/tmp/zz_b.go"))
 
 	// C: live LSP, real content, .go file in the repo. The tool flag must be
-	// on for a manager to exist (bugs.md Issue LSP: off means off).
+	// on for a manager to exist (Issue LSP: off means off).
 	liveCfg := &config.Config{}
 	liveCfg.Tools.Enabled.LSP = true
 	live := newLSPManager(projectDir, liveCfg)

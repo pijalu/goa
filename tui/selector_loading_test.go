@@ -11,7 +11,7 @@ import (
 // TestShowSelectorLoading_ShowsPlaceholderThenUpdates verifies the loading
 // selector opens with a "Loading…" placeholder and replaces it when the async
 // fetch pushes real items via Apply(SetItems) — the TUI loading-indicator
-// feature for remotely-fetched lists (bugs.md).
+// feature for remotely-fetched lists.
 func TestShowSelectorLoading_ShowsPlaceholderThenUpdates(t *testing.T) {
 	term := &fakeTerminal{w: 80, h: 24}
 	eng := NewTUI(term)

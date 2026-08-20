@@ -13,7 +13,7 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// TestUI_ToolWidgetRowsKeepStatusBgAfterStreamShrink is the bugs.md Bug D
+// TestUI_ToolWidgetRowsKeepStatusBgAfterStreamShrink is the Bug D
 // regression: two parallel reads at the bottom of a scrolled chat, flipping
 // pending → success while an assistant stream finalizes nearby (the
 // finalize SHRINKS the canvas, bouncing the compositor's viewport top).

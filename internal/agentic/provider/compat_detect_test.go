@@ -313,7 +313,7 @@ func TestDetectOpenAICompat_SupportsCacheRetention(t *testing.T) {
 }
 
 // TestDetectOpenAICompat_DeepSeekModelViaProxy is the regression test for
-// bugs.md thinking-mode 400: a DeepSeek model proxied under another provider
+// thinking-mode 400: a DeepSeek model proxied under another provider
 // (opencode zen) must inherit RequiresReasoningContentOnAssistantMessages
 // even though the provider/URL fingerprint knows nothing about DeepSeek.
 func TestDetectOpenAICompat_DeepSeekModelViaProxy(t *testing.T) {

@@ -43,12 +43,12 @@ func TestMaybeCompress_ToolElision_DefersWhileCacheHot(t *testing.T) {
 		return Config{
 			Model: testModel(provider.ApiOpenAICompletions),
 			ContextCompression: ContextCompressionConfig{
-				// Large enough ceiling that the ~4KB history sits between the
-				// proactive threshold (10%) and the 95% hard-ceiling override,
-				// so the cache gate — not the emergency override — decides.
-				MaxTokens:        20000,
-				ThresholdPercent: 10,
-				Strategy:         CompressionToolElision,
+				// Soft layer at 10% (the only sub-hard proactive tier): the ~4KB
+				// history sits between it and the 95% hard ceiling, so the cache
+				// gate — not the hard override — decides whether soft elision runs.
+				MaxTokens:  20000,
+				Strategies: CompressionLayerStrategies{Soft: CompressionToolElision},
+				Thresholds: CompressionThresholds{SoftPercent: 10, HardPercent: 95},
 			},
 		}
 	}
@@ -77,7 +77,7 @@ func TestMaybeCompress_ToolElision_DefersWhileCacheHot(t *testing.T) {
 			// First turn (zero lastTurnEnd): the cold presumption must expire
 			// once a completed request reports cache_read > 0 — otherwise the
 			// gate fails open for the entire first turn and churns a
-			// demonstrably hot cache (bugs.md "Micro-compaction cache gate
+			// demonstrably hot cache ("Micro-compaction cache gate
 			// fails open during the entire first turn").
 			name: "first turn with warm observation defers proactive elision",
 			// lastTurnEnd zero: still in the session's first turn, but round
@@ -109,12 +109,13 @@ func TestMaybeCompress_ToolElision_DefersWhileCacheHot(t *testing.T) {
 	}
 }
 
-// The cache-hot deferral must stop protecting the cache near the window:
-// above the deferral ceiling (hard−10 = 85% with defaults), overflow risk
-// beats cache churn. Regression test for the deepseek-v4 incident, where a
-// permanently-hot cache (99.7% hit) suppressed every proactive compression
-// from the 50% trigger all the way to a provider-side rejection at 100%.
-func TestMicroCompaction_DeferralCeilingOverridesHotCache(t *testing.T) {
+// TestMicroCompaction_SoftDefersWhenHotCache covers the simplified cache gate
+// (soft/hard/error model): micro is the SOFT-layer strategy, so it defers while
+// the provider cache is hot regardless of any derived level (the old
+// deferralCeiling = hard−10 magic is removed). The HARD layer always fires —
+// that is the deepseek-v4 overflow guarantee — but it is a different layer and
+// does not route through micro's soft deferral.
+func TestMicroCompaction_SoftDefersWhenHotCache(t *testing.T) {
 	long := strings.Repeat("x", 5000) // ≈ 1519 est tokens incl. overhead
 	makeHistory := func() []Message {
 		return []Message{
@@ -130,8 +131,9 @@ func TestMicroCompaction_DeferralCeilingOverridesHotCache(t *testing.T) {
 		return Config{
 			Model: testModel(provider.ApiOpenAICompletions),
 			ContextCompression: ContextCompressionConfig{
-				MaxTokens: maxTokens,
-				Strategy:  CompressionMicro,
+				MaxTokens:  maxTokens,
+				Strategies: CompressionLayerStrategies{Soft: CompressionMicro},
+				Thresholds: CompressionThresholds{SoftPercent: 50},
 				MicroCompaction: MicroCompactionConfig{
 					KeepRecentMessages: 1,
 					MinContentTokens:   10,
@@ -143,9 +145,9 @@ func TestMicroCompaction_DeferralCeilingOverridesHotCache(t *testing.T) {
 		}
 	}
 
-	t.Run("above ceiling applies despite hot cache", func(t *testing.T) {
-		// ratio ≈ 1539/1700 = 90% — above the 85% deferral ceiling, below the
-		// 95% hard ceiling, with a turn that JUST finished (cache hot).
+	t.Run("hot cache defers soft micro (no deferral ceiling)", func(t *testing.T) {
+		// ratio ≈ 1539/1700 = 90% — above soft (50%) but the cache is hot, so the
+		// soft micro pass defers (the hard ceiling is not crossed at 90% < 95%).
 		a := NewAgent(newMicroCfg(1700))
 		a.history = makeHistory()
 		a.lastTurnEnd = time.Now()
@@ -153,23 +155,23 @@ func TestMicroCompaction_DeferralCeilingOverridesHotCache(t *testing.T) {
 		if err := a.maybeCompress(context.Background()); err != nil {
 			t.Fatalf("maybeCompress: %v", err)
 		}
-		if a.history[2].Content != "[cleared]" {
-			t.Errorf("micro compaction must apply above the deferral ceiling even with a hot cache; content=%q",
+		if a.history[2].Content != long {
+			t.Errorf("soft micro must defer while the cache is hot; content=%q",
 				a.history[2].Content[:min(40, len(a.history[2].Content))])
 		}
 	})
 
-	t.Run("below ceiling still defers with hot cache", func(t *testing.T) {
-		// ratio ≈ 1539/1900 = 81% — below the 85% deferral ceiling.
-		a := NewAgent(newMicroCfg(1900))
+	t.Run("cold cache applies soft micro", func(t *testing.T) {
+		a := NewAgent(newMicroCfg(1700))
 		a.history = makeHistory()
-		a.lastTurnEnd = time.Now()
+		a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold
 
 		if err := a.maybeCompress(context.Background()); err != nil {
 			t.Fatalf("maybeCompress: %v", err)
 		}
-		if a.history[2].Content != long {
-			t.Errorf("micro compaction must keep deferring below the deferral ceiling when the cache is hot")
+		if a.history[2].Content != "[cleared]" {
+			t.Errorf("soft micro must apply when the cache is cold; content=%q",
+				a.history[2].Content[:min(40, len(a.history[2].Content))])
 		}
 	})
 }

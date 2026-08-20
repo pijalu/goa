@@ -25,7 +25,7 @@ func NewCompletion(snapshot *goal.GoalSnapshot) *CompletionComponent {
 // may span several paragraphs (e.g. unblocking-investigation goals); it is
 // wrapped per paragraph so every returned row is a single visual line —
 // an embedded "\n" would print the continuation at the column where the
-// previous line ended (bugs.md "Goal completion screen corruption").
+// previous line ended (Goal completion screen corruption).
 func (c *CompletionComponent) Render(width int) []string {
 	if c.snapshot == nil {
 		return nil

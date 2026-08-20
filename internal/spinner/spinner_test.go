@@ -18,7 +18,7 @@ func TestBuiltinSpinnersLoad(t *testing.T) {
 	}
 }
 
-// TestRequestedSpinners covers bugs.md "Additional spinner animation":
+// TestRequestedSpinners covers Additional spinner animation:
 // the three unicode animations must exist with the exact frames requested.
 func TestRequestedSpinners(t *testing.T) {
 	cases := map[string][]string{
@@ -61,7 +61,7 @@ func TestNamesIncludesRequested(t *testing.T) {
 	}
 }
 
-// TestHexagonSpinner covers bugs.md "Hexagon spinner as default": the hexagon
+// TestHexagonSpinner covers Hexagon spinner as default: the hexagon
 // animation must exist with the exact frames ⬡⬢⬣⬢ at a slow interval, and
 // must be the default spinner.
 func TestHexagonSpinner(t *testing.T) {
@@ -96,7 +96,7 @@ func TestHexagonIsDefault(t *testing.T) {
 	}
 }
 
-// TestHexagonBlackSpinner covers bugs.md "Create a hexagon-black sequence":
+// TestHexagonBlackSpinner covers Create a hexagon-black sequence:
 // the two-frame ⬢⬣ animation must exist at a slow interval.
 func TestHexagonBlackSpinner(t *testing.T) {
 	want := []string{"⬢", "⬣"}

@@ -11,7 +11,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
-// TestEscapeReachesInterruptWhileToolRuns is the bugs.md regression for
+// TestEscapeReachesInterruptWhileToolRuns is the regression for
 // "ESC must cancel a running tool exec/bash": while a bash tool call is in
 // flight (widget running, spinner active), pressing ESC must reach the app's
 // escape handler — i.e. the key is NOT swallowed by the running-tool state,

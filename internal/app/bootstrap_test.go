@@ -6,9 +6,12 @@ package app
 
 import (
 	"os"
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +34,7 @@ func TestRegisterTools_ClarifyDisabled(t *testing.T) {
 	}
 }
 
-// TestRegisterTools_HeadlessSkipsAskUser pins bugs.md Bug C: headless mode
+// TestRegisterTools_HeadlessSkipsAskUser pins Bug C: headless mode
 // has no user at the input line, so the ask_user_question tool must not be
 // registered — regardless of the clarify_disabled flag.
 func TestRegisterTools_HeadlessSkipsAskUser(t *testing.T) {
@@ -80,6 +83,45 @@ func TestAttachClarifyTool_NilSafe(t *testing.T) {
 	attachClarifyTool(reg, nil) // must not panic
 }
 
+// TestAttachEscalationApprover verifies the sandbox escalation approver is
+// injected into the registered bash tool.
+func TestAttachEscalationApprover(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, false)
+	called := false
+	attachEscalationApprover(reg, func(ctx context.Context, req sandbox.EscalationRequest) (bool, error) {
+		called = true
+		return true, nil
+	})
+	tt, ok := reg.Get("bash")
+	if !ok {
+		t.Fatal("bash tool missing")
+	}
+	bt, ok := tt.(*tools.BashTool)
+	if !ok {
+		t.Fatalf("bash tool is %T", tt)
+	}
+	if bt.EscalationApprover == nil {
+		t.Fatal("escalation approver was not wired")
+	}
+	// The approver must actually be invoked through the tool's escalation path.
+	project := t.TempDir()
+	bt.ProjectDir = project
+	bt.Jail = true
+	// Widen to danger-full-access and reject; a nil approver would have the
+	// same denial, so assert the callback ran via the flag.
+	_, _ = bt.Execute(fmt.Sprintf(`{"command": "cat /etc/passwd", "sandbox_permissions": %q, "justification": "read system info"}`, sandbox.ModeDangerFullAccess))
+	if !called {
+		t.Error("escalation approver was not invoked")
+	}
+}
+
+func TestAttachEscalationApprover_NilSafe(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, false)
+	attachEscalationApprover(reg, nil) // must not panic
+}
+
 func TestRegisterTools_SmartSearchRespectsEnabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Tools.SmartSearch.Enabled = false
@@ -95,6 +137,67 @@ func TestRegisterTools_SmartSearchRespectsEnabled(t *testing.T) {
 	registerTools(reg, nil, nil, t.TempDir(), cfg, nil, false)
 	if _, ok := reg.Get("smartsearch"); !ok {
 		t.Fatal("smartsearch should be registered when enabled")
+	}
+}
+
+// TestRegisterTools_RunCodeRespectsEnabled pins the run_code code-mode tool
+// (gap TL7) registration gating: opt-out by default (mirroring python), so the
+// model can submit a multi-tool program unless the user disables it.
+func TestRegisterTools_RunCodeRespectsEnabled(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// Enabled (embedded default): the tool is registered and wired with the
+	// app registry as its sub-call surface plus a dispatch log dir under the
+	// project.
+	cfg, err := config.NewCascadeLoader(projectDir, "", nil).Load()
+	if err != nil {
+		t.Fatalf("load default config: %v", err)
+	}
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, projectDir, cfg, nil, false)
+	rc, ok := reg.Get("run_code")
+	if !ok {
+		t.Fatal("run_code should be registered by default (opt-out like python)")
+	}
+	rcTool, ok := rc.(*tools.RunCodeTool)
+	if !ok {
+		t.Fatalf("run_code tool has type %T, want *tools.RunCodeTool", rc)
+	}
+	if rcTool.Registry == nil {
+		t.Error("run_code tool must be wired with the app registry for its sub-call surface")
+	}
+	if rcTool.DispatchDir != projectDir+"/.goa/dispatch" {
+		t.Errorf("DispatchDir = %q, want %q", rcTool.DispatchDir, projectDir+"/.goa/dispatch")
+	}
+	if !rcTool.Jail {
+		t.Error("run_code worker must be jailed by default (gap TL7 jailed worker)")
+	}
+
+	// Disabled: absent from the registry.
+	cfg.Tools.Enabled.SetEnabled("run_code", false)
+	reg = tools.NewToolRegistry()
+	registerTools(reg, nil, nil, projectDir, cfg, nil, false)
+	if _, ok := reg.Get("run_code"); ok {
+		t.Fatal("run_code should NOT be registered when disabled")
+	}
+}
+
+// TestRegisterTools_RunCodeDispatchDirEmptyWithoutProject pins that a
+// project-less registration disables dispatch-log persistence rather than
+// writing into a relative directory.
+func TestRegisterTools_RunCodeDispatchDirEmptyWithoutProject(t *testing.T) {
+	cfg, err := config.NewCascadeLoader("", "", nil).Load()
+	if err != nil {
+		t.Fatalf("load default config: %v", err)
+	}
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, "", cfg, nil, false)
+	rc, ok := reg.Get("run_code")
+	if !ok {
+		t.Fatal("run_code should be registered")
+	}
+	if rcTool := rc.(*tools.RunCodeTool); rcTool.DispatchDir != "" {
+		t.Errorf("DispatchDir = %q, want empty when there is no project dir", rcTool.DispatchDir)
 	}
 }
 

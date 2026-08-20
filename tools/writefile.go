@@ -130,7 +130,7 @@ func (t *WriteFileTool) Execute(input string) (string, error) {
 // lspDiagnostics notifies the LSP server of a document change (open or edit)
 // and returns a formatted diagnostics block for the tool result. Every file
 // type is forwarded — the manager itself selects the right server per file
-// and no-ops unsupported extensions (bugs.md Issue LSP: LSP must cover ALL
+// and no-ops unsupported extensions (Issue LSP: LSP must cover ALL
 // supported files, not just .go). The notification never blocks the tool on a
 // server start (manager spawns asynchronously); diagnostics appear once the
 // server is up and has processed the document. The open flag selects DidOpen
@@ -147,7 +147,7 @@ func (t *WriteFileTool) lspDiagnostics(ctx context.Context, resolvedPath, conten
 	} else {
 		_ = t.LSPManager.DidChange(ctx, resolvedPath, content)
 	}
-	// Diagnostics are published asynchronously; poll until they settle (bugs.md L1).
+	// Diagnostics are published asynchronously; poll until they settle (L1).
 	diags := collectLSPDiagnostics(ctx, t.LSPManager, resolvedPath)
 	return formatLSPDiagnostics(resolvedPath, diags, t.LSPManager.ServerIDFor(resolvedPath))
 }

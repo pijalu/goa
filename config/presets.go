@@ -76,14 +76,17 @@ func wizardPresetAddable(d *schema.ProviderDef) bool {
 }
 
 // presetFromDef converts a catalog definition into a wizard preset. The
-// preset endpoint is always the OpenAI-completions base URL and the preset
-// API is openai-completions, regardless of the catalog's default API: the
-// setup wizard configures providers for the chat-completions flow.
+// preset carries the catalog's wire identity (Provider + API) verbatim so
+// that inferProviderIdentity resolves the correct protocol at stream time.
+//
+// The stored provider config only records endpoint + key; the wire identity
+// is inferred from the preset at resolve time. Forcing the API to
+// openai-completions here would silently downgrade non-completions providers
+// (openai, openai-codex, anthropic, google, mistral) to the chat-completions
+// protocol — e.g. the Codex subscription endpoint
+// (https://chatgpt.com/backend-api/codex/responses) would be hit at
+// /chat/completions and return 404.
 func presetFromDef(d *schema.ProviderDef) ProviderPreset {
-	api := d.API
-	if api != schema.ApiOpenAICompletions {
-		api = schema.ApiOpenAICompletions
-	}
 	return ProviderPreset{
 		ID:           d.ID,
 		Name:         d.Name,
@@ -91,7 +94,7 @@ func presetFromDef(d *schema.ProviderDef) ProviderPreset {
 		DefaultModel: d.DefaultModel,
 		NeedsAPIKey:  d.NeedsAPIKey(),
 		Provider:     string(d.Provider),
-		API:          string(api),
+		API:          string(d.API),
 		Extra:        d.Extra,
 	}
 }

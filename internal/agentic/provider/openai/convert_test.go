@@ -116,6 +116,74 @@ func TestConvertAssistantMessage_SanitizesMalformedToolArguments(t *testing.T) {
 	}
 }
 
+// TestConvertAssistantMessage_ReasoningContentToolCallTurnsOnly pins the DS1
+// passback rule (dsh serialize.ts:85-101): reasoning_content is emitted only
+// on tool-call turns; plain assistant turns drop it (the API ignores it
+// there, so sending it wastes tokens). The compat flag forces the key (empty
+// when the turn carries no thinking) on tool-call turns only — DeepSeek's
+// thinking mode 400s when a tool-call turn lacks the field.
+func TestConvertAssistantMessage_ReasoningContentToolCallTurnsOnly(t *testing.T) {
+	toolCallBlock := provider.ContentBlock{
+		Type:          provider.ContentBlockToolCall,
+		ToolCallID:    "call_1",
+		ToolName:      "read",
+		ToolArguments: `{"path":"PLAN.md"}`,
+	}
+	thinkingBlock := provider.ContentBlock{Type: provider.ContentBlockThinking, Thinking: "chain of thought"}
+	textBlock := provider.ContentBlock{Type: provider.ContentBlockText, Text: "answer"}
+
+	t.Run("plain turn with thinking drops reasoning_content", func(t *testing.T) {
+		msg := provider.NewAssistantMessage([]provider.ContentBlock{thinkingBlock, textBlock})
+		got := convertAssistantMessage(msg, provider.OpenAICompletionsCompat{})
+		if _, ok := got["reasoning_content"]; ok {
+			t.Errorf("plain turn: reasoning_content must be dropped, got %v", got["reasoning_content"])
+		}
+		if got["content"] != "answer" {
+			t.Errorf("expected content answer, got %q", got["content"])
+		}
+	})
+
+	t.Run("plain turn with thinking and flag on still drops reasoning_content", func(t *testing.T) {
+		msg := provider.NewAssistantMessage([]provider.ContentBlock{thinkingBlock, textBlock})
+		got := convertAssistantMessage(msg, provider.OpenAICompletionsCompat{
+			RequiresReasoningContentOnAssistantMessages: provider.BoolPtr(true),
+		})
+		if _, ok := got["reasoning_content"]; ok {
+			t.Errorf("plain turn: flag must not resurrect reasoning_content, got %v", got["reasoning_content"])
+		}
+	})
+
+	t.Run("tool-call turn passes thinking back verbatim", func(t *testing.T) {
+		msg := provider.NewAssistantMessage([]provider.ContentBlock{thinkingBlock, toolCallBlock})
+		got := convertAssistantMessage(msg, provider.OpenAICompletionsCompat{})
+		if got["reasoning_content"] != "chain of thought" {
+			t.Errorf("tool-call turn: expected reasoning_content passback, got %v", got["reasoning_content"])
+		}
+	})
+
+	t.Run("tool-call turn without thinking gets forced empty key when flag on", func(t *testing.T) {
+		msg := provider.NewAssistantMessage([]provider.ContentBlock{toolCallBlock})
+		got := convertAssistantMessage(msg, provider.OpenAICompletionsCompat{
+			RequiresReasoningContentOnAssistantMessages: provider.BoolPtr(true),
+		})
+		rc, ok := got["reasoning_content"]
+		if !ok {
+			t.Fatal("flag on: tool-call turn must carry the reasoning_content key")
+		}
+		if rc != "" {
+			t.Errorf("expected forced empty reasoning_content, got %v", rc)
+		}
+	})
+
+	t.Run("tool-call turn without thinking and flag off omits key", func(t *testing.T) {
+		msg := provider.NewAssistantMessage([]provider.ContentBlock{toolCallBlock})
+		got := convertAssistantMessage(msg, provider.OpenAICompletionsCompat{})
+		if _, ok := got["reasoning_content"]; ok {
+			t.Errorf("flag off + no thinking: reasoning_content must be absent, got %v", got["reasoning_content"])
+		}
+	})
+}
+
 func TestConvertMessages_ToolCallFollowedByResult(t *testing.T) {
 	compat := provider.OpenAICompletionsCompat{ToolResultAsUser: provider.BoolPtr(true)}
 	msgs := []provider.Message{

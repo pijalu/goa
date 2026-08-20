@@ -68,7 +68,7 @@ func TestSaveProjectConfig_PreservesOnDiskToolFlags(t *testing.T) {
 }
 
 // TestSaveProjectConfig_NoExistingFile_WritesModeOnly is the regression test
-// for the stale-project-config shadowing bug (bugs.md): when the project has
+// for the stale-project-config shadowing bug: when the project has
 // no .goa/config.yaml yet, SaveProjectConfig must persist ONLY the mode
 // section — the documented field scope of this entry point (/mode, /autonomy,
 // autonomy-cycle hotkey). Previously it marshaled the ENTIRE merged in-memory
@@ -90,9 +90,10 @@ func TestSaveProjectConfig_NoExistingFile_WritesModeOnly(t *testing.T) {
 	}
 	// Precondition: the merged in-memory config carries embedded defaults
 	// (context_compression) — the values that must NOT be baked into the
-	// project layer.
-	if cfg.ContextCompression.Strategy == "" {
-		t.Fatalf("precondition: embedded compression strategy should be set")
+	// project layer. The embedded default now sets hard 95 + hybrid on-error
+	// (the legacy `strategy` is empty by default).
+	if cfg.ContextCompression.Thresholds.HardPercent != 95 || cfg.ContextCompression.OnErrorStrategy == "" {
+		t.Fatalf("precondition: embedded compression defaults should be set")
 	}
 	// The caller's legitimate change (what /mode and /autonomy persist).
 	cfg.Mode.Default.Major = "oracle"

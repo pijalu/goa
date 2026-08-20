@@ -32,7 +32,7 @@ func (f *pollFakeManager) DiagnosticsFor(ctx context.Context, path string) []lsp
 }
 
 // TestCollectLSPDiagnostics_WaitsForLateDiagnostics is the regression for the
-// fixed-150ms-sleep race (bugs.md L1): diagnostics arriving after 300ms must
+// fixed-150ms-sleep race (L1): diagnostics arriving after 300ms must
 // still be collected (the old code returned empty).
 func TestCollectLSPDiagnostics_WaitsForLateDiagnostics(t *testing.T) {
 	mgr := &pollFakeManager{

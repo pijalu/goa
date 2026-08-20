@@ -29,7 +29,7 @@ func TestBashTool_Schema_ReturnsValidSchema(t *testing.T) {
 	}
 }
 
-// Regression for bugs.md: the tool's top-level Description (the text the model
+// Regression for the tool's top-level Description (the text the model
 // actually reads) must state that the working directory defaults to the
 // project root, so the model stops prepending a redundant "cd <root> && ".
 func TestBashTool_Schema_DescriptionStatesDefaultWorkdir(t *testing.T) {
@@ -390,7 +390,7 @@ func TestBashTool_Execute_Timeout_Expires(t *testing.T) {
 	}
 }
 
-// TestBashTool_Execute_Timeout_HintIsActionable pins the bugs.md "Timeout hint"
+// TestBashTool_Execute_Timeout_HintIsActionable pins the Timeout hint:
 // fix: a timeout must hint at the TIMEOUT (raise `timeout` or split the work),
 // not the generic "See /docs TOOLS" usage line.
 func TestBashTool_Execute_Timeout_HintIsActionable(t *testing.T) {

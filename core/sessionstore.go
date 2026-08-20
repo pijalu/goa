@@ -506,7 +506,7 @@ func (sc *sessionScan) absorbRoles(event *agentic.OutputEvent) {
 		sc.hasConversation = true
 	}
 	// Model-turn marker: at least one assistant text reply. The session
-	// picker hides sessions without one (bugs.md "must not list sessions
+	// picker hides sessions without one ("must not list sessions
 	// without an actual model turn") while the store still lists them for
 	// export/dream flows.
 	if event.Role == agentic.Assistant {

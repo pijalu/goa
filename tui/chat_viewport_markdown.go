@@ -59,7 +59,7 @@ func looksLikeMarkdown(text string) bool {
 }
 
 func hasMDHeader(trimmed string) bool {
-	// Any ATX level: "# h1" .. "###### h6" (bugs.md "Goal list issue": a doc
+	// Any ATX level: "# h1".. "###### h6" (Goal list issue: a doc
 	// opening with "## Goals" must classify as markdown, not preformatted).
 	i := 0
 	for i < len(trimmed) && trimmed[i] == '#' {

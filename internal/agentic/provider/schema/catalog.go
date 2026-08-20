@@ -4,6 +4,8 @@
 
 package schema
 
+import "time"
+
 // catalog.go — single source of truth for known LLM providers.
 //
 // Every provider Goa knows about is declared ONCE here as a ProviderDef.
@@ -14,12 +16,41 @@ package schema
 //   - endpoint → identity heuristics       (provider/manager.go)
 //   - valid-provider validation            (config/agentic_constants.go)
 //   - models.dev catalog mapping           (internal/agentic/provider/models/modelsdev.go)
+//   - peak-pricing windows for the TUI peak indicator (tui/footer_render.go)
 //
 // Adding a provider = adding one ProviderDef entry. No other code changes.
 //
 // The Compat field carries the wire-level quirks as DATA (not code), so a new
 // OpenAI-compatible provider with unusual behavior is a template entry, not a
 // fingerprint branch.
+
+// PeakWindow is one recurring daily peak-price window in UTC.
+type PeakWindow struct {
+	// StartMin and EndMin bound the window as minutes since midnight UTC.
+	// EndMin must be greater than StartMin (windows do not wrap past midnight).
+	StartMin int
+	EndMin   int
+	// Weekdays restricts the window to the given UTC weekdays; nil means every day.
+	Weekdays []time.Weekday
+}
+
+// PeakStatus classifies a time relative to a provider's peak windows.
+type PeakStatus int
+
+const (
+	// PeakOff is outside every peak window and its grace margin (green).
+	PeakOff PeakStatus = iota
+	// PeakNear is within peakNearMargin of a window boundary (orange).
+	PeakNear
+	// PeakOn is inside a peak window (red).
+	PeakOn
+)
+
+// peakNearMargin is the orange grace margin before/after a peak window, in minutes.
+const peakNearMargin = 5
+
+// hhmm converts hours and minutes to minutes since midnight (catalog shorthand).
+func hhmm(h, m int) int { return h*60 + m }
 
 // ProviderCompat describes the wire-level behavior of a provider as data.
 // The zero value is a fully standard OpenAI-compatible provider.
@@ -49,6 +80,97 @@ type ProviderCompat struct {
 	Local bool
 }
 
+// Canonical retry failure codes (dsh llm-retry vocabulary). The retry policy's
+// codes[] list names these values; empty codes mean the default transient set
+// below. Codes are stable provider-neutral routing keys, never parsed from
+// message text by policy consumers.
+const (
+	// RetryCodeEmptyResponse is a degenerate provider completion that produced
+	// no durable content. Repeating it is safe.
+	RetryCodeEmptyResponse = "EMPTY_RESPONSE"
+	// RetryCodeRateLimit is a provider rate limit (HTTP 429).
+	RetryCodeRateLimit = "RATE_LIMIT"
+	// RetryCodeServer is a provider server failure (HTTP 5xx).
+	RetryCodeServer = "SERVER"
+	// RetryCodeTimeout is a request/response timeout (HTTP 408, deadline).
+	RetryCodeTimeout = "TIMEOUT"
+	// RetryCodeTransport is a network/transport failure (connection reset,
+	// refused, EOF, ...).
+	RetryCodeTransport = "TRANSPORT"
+)
+
+// DefaultRetryCodes are the failure codes eligible for retry in normal mode
+// when a policy omits codes (mirrors dsh llm-retry's DEFAULT_RETRYABLE_CODES).
+var DefaultRetryCodes = []string{
+	RetryCodeEmptyResponse,
+	RetryCodeRateLimit,
+	RetryCodeServer,
+	RetryCodeTimeout,
+	RetryCodeTransport,
+}
+
+// DefaultRetryPolicy is the package-wide normal-mode retry policy applied when
+// neither the provider config nor the catalog entry declares one. It keeps
+// Goa's established retry budget (5 retries, 1s→30s exponential, symmetric
+// jitter) with the default transient code set.
+var DefaultRetryPolicy = &RetryPolicy{
+	Mode:       RetryModeNormal,
+	MaxRetries: 5,
+	Backoff: RetryBackoff{
+		InitialDelay: time.Second,
+		MaxDelay:     30 * time.Second,
+		Jitter:       0.25,
+	},
+	Codes: DefaultRetryCodes,
+}
+
+// ResolveRetryPolicy merges an optional configured policy (from provider
+// config) with a catalog default into one fully-defaulted policy. The
+// configured policy wins per field; catalog defaults fill omissions; the
+// package default fills anything still unset. A nil configured policy uses the
+// catalog default (or the package default when the catalog has none).
+func ResolveRetryPolicy(configured *RetryPolicy, catalogDefault *RetryPolicy) *RetryPolicy {
+	out := DefaultRetryPolicy
+	if catalogDefault != nil {
+		out = catalogDefault
+	}
+	if configured == nil {
+		return cloneRetryPolicy(out)
+	}
+	merged := *out
+	if configured.Mode != "" {
+		merged.Mode = configured.Mode
+	}
+	if configured.MaxRetries != 0 {
+		merged.MaxRetries = configured.MaxRetries
+	}
+	if configured.Backoff.InitialDelay != 0 {
+		merged.Backoff.InitialDelay = configured.Backoff.InitialDelay
+	}
+	if configured.Backoff.MaxDelay != 0 {
+		merged.Backoff.MaxDelay = configured.Backoff.MaxDelay
+	}
+	if configured.Backoff.Jitter != 0 {
+		merged.Backoff.Jitter = configured.Backoff.Jitter
+	}
+	if len(configured.Codes) > 0 {
+		merged.Codes = append([]string(nil), configured.Codes...)
+	}
+	return &merged
+}
+
+// cloneRetryPolicy returns a copy of p safe to mutate independently.
+func cloneRetryPolicy(p *RetryPolicy) *RetryPolicy {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	if p.Codes != nil {
+		cp.Codes = append([]string(nil), p.Codes...)
+	}
+	return &cp
+}
+
 // ProviderDef is the declarative template for one known provider.
 type ProviderDef struct {
 	// ID is the config/wizard identifier (e.g. "openrouter", "poolside").
@@ -75,10 +197,78 @@ type ProviderDef struct {
 	Compat ProviderCompat
 	// Extra holds per-provider request overrides forwarded at stream time.
 	Extra map[string]any
+	// PeakHours lists the provider's peak-pricing windows in UTC, rendered by
+	// the TUI as red inside a window, orange within the grace margin, green
+	// otherwise. Empty = no peak indicator (always green).
+	PeakHours []PeakWindow
+	// RetryPolicy is the provider's default retry policy (nil = the package
+	// DefaultRetryPolicy). Resolved per route at provider construction; an
+	// explicit provider-config retry_policy overrides it field by field.
+	RetryPolicy *RetryPolicy
+	// DefaultMaxTokens is the provider's default per-request output-token cap
+	// (P21, DS2; dsh llm-deepseek DEFAULT_MAX_TOKENS). It is materialized into
+	// the request's max_tokens field when the caller does not set one, so the
+	// wire request is always explicit and reconstructable. It is an
+	// adapter-configured per-request output cap, NOT a model hard limit (dsh
+	// llm README: "defaultMaxTokens is an adapter-configured per-request
+	// output cap, not a model hard limit"); zero means no default — the field
+	// is omitted and the server applies its own default.
+	DefaultMaxTokens int
 }
 
 // NeedsAPIKey reports whether this provider requires an API key.
 func (d ProviderDef) NeedsAPIKey() bool { return !d.Compat.Local }
+
+// zaiPeakHours is the Z.ai weekday peak window, declared once and shared by
+// the "zai" (coding) and "zai-api" (general) catalog entries: Z.ai peak hours
+// are Monday to Friday 14:00–18:00 SGT (UTC+8) == 06:00–10:00 UTC Mon–Fri.
+var zaiPeakHours = []PeakWindow{
+	{
+		StartMin: hhmm(6, 0), EndMin: hhmm(10, 0),
+		Weekdays: []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday},
+	},
+}
+
+// PeakStatusAt classifies t relative to the provider's peak windows: PeakOn
+// inside a window, PeakNear within peakNearMargin minutes before its start or
+// after its end, PeakOff otherwise. Providers without PeakHours are always
+// PeakOff (no peak indicator).
+func (d ProviderDef) PeakStatusAt(t time.Time) PeakStatus {
+	if len(d.PeakHours) == 0 {
+		return PeakOff
+	}
+	t = t.UTC()
+	min := t.Hour()*60 + t.Minute()
+	wd := t.Weekday()
+	for _, w := range d.PeakHours {
+		if !w.activeOn(wd) {
+			continue
+		}
+		switch {
+		case min >= w.StartMin && min < w.EndMin:
+			return PeakOn
+		case min >= w.StartMin-peakNearMargin && min < w.StartMin:
+			return PeakNear
+		case min >= w.EndMin && min < w.EndMin+peakNearMargin:
+			return PeakNear
+		}
+	}
+	return PeakOff
+}
+
+// activeOn reports whether the window applies on the given UTC weekday.
+// A nil Weekdays slice means the window applies every day.
+func (w PeakWindow) activeOn(wd time.Weekday) bool {
+	if len(w.Weekdays) == 0 {
+		return true
+	}
+	for _, d := range w.Weekdays {
+		if d == wd {
+			return true
+		}
+	}
+	return false
+}
 
 // providerCatalog is the ordered list of known providers. Order matters for
 // the setup wizard (preset numbering) and for endpoint-heuristic precedence
@@ -89,6 +279,20 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAIResponses, BaseURL: "https://api.openai.com/v1",
 		DefaultModel: "gpt-4o", EnvKeys: []string{"OPENAI_API_KEY"}, ModelsDevKey: "openai",
 		URLPatterns: []string{"api.openai.com"},
+	},
+	{
+		// OpenAI Codex (ChatGPT Plus/Pro subscription). OAuth-first: users
+		// authenticate via /login:openai:oauth (browser or device) and the
+		// transport targets the chatgpt.com backend API. An OpenAI API key
+		// also works (transport falls back to api.openai.com). The credential
+		// kind is resolved from the auth store at stream time.
+		ID: "openai-codex", Name: "OpenAI Codex", Provider: ProviderOpenAICodex,
+		API: ApiOpenAICodexResponses, BaseURL: "https://chatgpt.com/backend-api",
+		// The codex subscription endpoint serves the gpt-5.4+ generations and
+		// gpt-5.3-codex-spark (Pi scripts/generate-models.ts); gpt-5.3-codex is
+		// not served there, so the default must be a served model.
+		DefaultModel: "gpt-5.5", EnvKeys: []string{"OPENAI_API_KEY"},
+		URLPatterns: []string{"chatgpt.com/backend-api"},
 	},
 	{
 		ID: "lmstudio", Name: "LM Studio", Provider: ProviderLMStudio,
@@ -136,6 +340,16 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.deepseek.com",
 		DefaultModel: "deepseek-v4-flash", EnvKeys: []string{"DEEPSEEK_API_KEY"}, ModelsDevKey: "deepseek",
 		URLPatterns: []string{"deepseek.com"},
+		// P21 (DS2): adapter-owned output default — dsh llm-deepseek
+		// DEFAULT_MAX_TOKENS=256_000 over a DEFAULT_CONTEXT_WINDOW=1_000_000
+		// (packages/llm/llm-deepseek/src/adapter.ts:91-93). Materialized into
+		// max_tokens by the OpenAI-completions builder when the request omits
+		// it, so the wire request is always explicit and reconstructable.
+		DefaultMaxTokens: 256000,
+		PeakHours: []PeakWindow{
+			{StartMin: hhmm(1, 0), EndMin: hhmm(4, 0)},  // 01:00–04:00 UTC daily
+			{StartMin: hhmm(6, 0), EndMin: hhmm(10, 0)}, // 06:00–10:00 UTC daily
+		},
 		Compat: ProviderCompat{
 			ThinkingFormat: "deepseek", NonStandard: true,
 			RequiresReasoningContentOnAssistantMessages: true,
@@ -175,6 +389,7 @@ var providerCatalog = []ProviderDef{
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai-coding-plan",
 		URLPatterns: []string{"api.z.ai/api/coding", "open.bigmodel.cn/api/coding", "zai-coding", "zai-coding-cn", "zai-coding-plan"},
 		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
+		PeakHours:   zaiPeakHours,
 	},
 	{
 		ID: "zai-api", Name: "Z.ai", Provider: ProviderZaiApi,
@@ -182,6 +397,7 @@ var providerCatalog = []ProviderDef{
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai",
 		URLPatterns: []string{"api.z.ai", "open.bigmodel.cn"},
 		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
+		PeakHours:   zaiPeakHours,
 	},
 	{
 		ID: "poolside", Name: "Poolside", Provider: ProviderPoolside,

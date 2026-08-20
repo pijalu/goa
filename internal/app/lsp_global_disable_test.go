@@ -45,7 +45,7 @@ func TestNewLSPManager_GlobalDisable(t *testing.T) {
 
 // TestNewLSPManager_ToolFlagDisable verifies tools.enabled.lsp: false disables
 // the WHOLE integration — no manager, hence no file touches and no background
-// server spawns (bugs.md Issue LSP / "Read stuck": the flag used to gate only
+// server spawns (Issue LSP / "Read stuck": the flag used to gate only
 // the model-facing tool while the manager kept spawning servers).
 func TestNewLSPManager_ToolFlagDisable(t *testing.T) {
 	dir := t.TempDir()

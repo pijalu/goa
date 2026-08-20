@@ -33,6 +33,8 @@ type FooterData struct {
 	MainActivity           string // current main agent activity: "sending", "thinking", "tool", "streaming"
 	CompanionActivity      string // current companion activity, empty when idle
 	GoalStatus             string // "active", "paused", "blocked", or empty when no goal; drives only the ◈ marker (goal detail lives in the goal bubble)
+	GoalCount              int    // total goals: 1 current + queued; drives the ◈ goal-count sign (1 → "◈", 3 → "◈◈◈", 25 → "25◈")
+	GoalPendingTodos       int    // count of not-done todos on the active goal; drives the ⬩ markers next to the mode
 	OrchestrationStats     string // per-model orchestration stats rendered as an extra footer line
 
 	// PluginSegments holds pre-rendered status-bar segments contributed by JS
@@ -81,11 +83,13 @@ func preserveFooterTeam(prev, data FooterData) FooterData {
 // knowledge. updateGoalFooter/SetGoalStatus is the sole writer of goal
 // state, so the preserved value never goes stale: an explicit clear goes
 // through SetGoalStatus, mirroring how SetMinorMode bypasses preservation
-// for its own field (bugs.md Issues 3-4: the ◈ marker must not flicker off
+// for its own field (Issues 3-4: the ◈ marker must not flicker off
 // on every stats tick).
 func preserveFooterGoal(prev, data FooterData) FooterData {
 	if data.GoalStatus == "" {
 		data.GoalStatus = prev.GoalStatus
+		data.GoalCount = prev.GoalCount
+		data.GoalPendingTodos = prev.GoalPendingTodos
 	}
 	return data
 }

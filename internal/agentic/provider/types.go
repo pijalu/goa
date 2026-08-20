@@ -38,29 +38,30 @@ const (
 	ApiMistralConversations = schema.ApiMistralConversations
 	ApiBedrockConverse      = schema.ApiBedrockConverse
 
-	ProviderOpenAI     = schema.ProviderOpenAI
-	ProviderAnthropic  = schema.ProviderAnthropic
-	ProviderGoogle     = schema.ProviderGoogle
-	ProviderMistral    = schema.ProviderMistral
-	ProviderAWS        = schema.ProviderAWS
-	ProviderAzure      = schema.ProviderAzure
-	ProviderGitHub     = schema.ProviderGitHub
-	ProviderTogether   = schema.ProviderTogether
-	ProviderFireworks  = schema.ProviderFireworks
-	ProviderGroq       = schema.ProviderGroq
-	ProviderPerplexity = schema.ProviderPerplexity
-	ProviderDeepSeek   = schema.ProviderDeepSeek
-	ProviderOpenRouter = schema.ProviderOpenRouter
-	ProviderLMStudio   = schema.ProviderLMStudio
-	ProviderOllama     = schema.ProviderOllama
-	ProviderKimi       = schema.ProviderKimi
-	ProviderKimiCode   = schema.ProviderKimiCode
-	ProviderZai        = schema.ProviderZai
-	ProviderZaiApi     = schema.ProviderZaiApi
-	ProviderOpenCode   = schema.ProviderOpenCode
-	ProviderOpenCodeGo = schema.ProviderOpenCodeGo
-	ProviderPoolside   = schema.ProviderPoolside
-	ProviderCustom     = schema.ProviderCustom
+	ProviderOpenAI      = schema.ProviderOpenAI
+	ProviderOpenAICodex = schema.ProviderOpenAICodex
+	ProviderAnthropic   = schema.ProviderAnthropic
+	ProviderGoogle      = schema.ProviderGoogle
+	ProviderMistral     = schema.ProviderMistral
+	ProviderAWS         = schema.ProviderAWS
+	ProviderAzure       = schema.ProviderAzure
+	ProviderGitHub      = schema.ProviderGitHub
+	ProviderTogether    = schema.ProviderTogether
+	ProviderFireworks   = schema.ProviderFireworks
+	ProviderGroq        = schema.ProviderGroq
+	ProviderPerplexity  = schema.ProviderPerplexity
+	ProviderDeepSeek    = schema.ProviderDeepSeek
+	ProviderOpenRouter  = schema.ProviderOpenRouter
+	ProviderLMStudio    = schema.ProviderLMStudio
+	ProviderOllama      = schema.ProviderOllama
+	ProviderKimi        = schema.ProviderKimi
+	ProviderKimiCode    = schema.ProviderKimiCode
+	ProviderZai         = schema.ProviderZai
+	ProviderZaiApi      = schema.ProviderZaiApi
+	ProviderOpenCode    = schema.ProviderOpenCode
+	ProviderOpenCodeGo  = schema.ProviderOpenCodeGo
+	ProviderPoolside    = schema.ProviderPoolside
+	ProviderCustom      = schema.ProviderCustom
 
 	TransportSSE       = schema.TransportSSE
 	TransportWebSocket = schema.TransportWebSocket
@@ -132,6 +133,15 @@ const (
 	CacheRetentionLong  = schema.CacheRetentionLong
 )
 
+// Re-exported request purpose (P13 attribution).
+type Purpose = schema.Purpose
+
+const (
+	PurposeConversation = schema.PurposeConversation
+	PurposeCompaction   = schema.PurposeCompaction
+	PurposeSessionTitle = schema.PurposeSessionTitle
+)
+
 // Re-exported core structs.
 type ContentBlock = schema.ContentBlock
 type Message = schema.Message
@@ -145,6 +155,26 @@ type ModelPricing = schema.ModelPricing
 type Model = schema.Model
 type StreamOptions = schema.StreamOptions
 type SimpleStreamOptions = schema.SimpleStreamOptions
+type RetryMode = schema.RetryMode
+type RetryBackoff = schema.RetryBackoff
+type RetryPolicy = schema.RetryPolicy
+
+const (
+	RetryModeNormal = schema.RetryModeNormal
+	RetryModeAlways = schema.RetryModeAlways
+)
+
+// Canonical retry failure codes (re-exported from schema).
+const (
+	RetryCodeEmptyResponse = schema.RetryCodeEmptyResponse
+	RetryCodeRateLimit     = schema.RetryCodeRateLimit
+	RetryCodeServer        = schema.RetryCodeServer
+	RetryCodeTimeout       = schema.RetryCodeTimeout
+	RetryCodeTransport     = schema.RetryCodeTransport
+)
+
+// DefaultRetryCodes is the re-exported default transient code set.
+var DefaultRetryCodes = schema.DefaultRetryCodes
 
 // Constructor helpers remain in the provider package for ergonomics.
 var (

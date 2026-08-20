@@ -12,7 +12,7 @@ import (
 // any row whose visible width reaches the full terminal width leaves the
 // terminal in a pending-wrap state, so the next line-feed wraps onto an
 // extra row and every subsequent compositor row index shifts by one (the
-// scrollback line-duplication in bugs.md). The compositor must never emit a
+// scrollback line-duplication in). The compositor must never emit a
 // row that fills the last column.
 func TestCompositor_NoFullWidthRowDuringScroll(t *testing.T) {
 	term := &fakeTerminal{w: 40, h: 10}

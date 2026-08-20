@@ -208,7 +208,10 @@ func TestOpenAIResponsesPromptCacheKey(t *testing.T) {
 	assert.Equal(t, "azure-session", req["previous_response_id"])
 	assert.Equal(t, "azure-session", req["prompt_cache_key"])
 
-	// Codex Responses: sends prompt_cache_key whenever a session ID is present.
+	// Codex Responses: sends prompt_cache_key whenever a session ID is present,
+	// but never previous_response_id — the ChatGPT Codex SSE backend rejects it
+	// (HTTP 400 "Unsupported parameter: previous_response_id"). Session affinity
+	// is carried by prompt_cache_key only (mirrors Pi/opencode codex).
 	codex := ForAPI(schema.ApiOpenAICodexResponses)
 	require.NotNil(t, codex)
 	body, err = codex.BuildRequest(
@@ -220,7 +223,7 @@ func TestOpenAIResponsesPromptCacheKey(t *testing.T) {
 	require.NoError(t, err)
 	req = map[string]any{}
 	require.NoError(t, json.Unmarshal(body, &req))
-	assert.Equal(t, "codex-session", req["previous_response_id"])
+	assert.NotContains(t, req, "previous_response_id", "codex SSE body must omit previous_response_id")
 	assert.Equal(t, "codex-session", req["prompt_cache_key"])
 }
 
@@ -348,9 +351,78 @@ func TestOpenAICompletions_ZaiThinkingOffSendsDisabled(t *testing.T) {
 	assert.Equal(t, "disabled", thinking["type"])
 }
 
+// TestOpenAICompletions_SessionTitleForcesThinkingOff is the P13 wire-level
+// acceptance: purpose=session-title forces thinking off on DeepSeek-compat
+// routes (mirrors DS-thinking lock) — the wire carries the explicit disabled
+// signal and omits reasoning_effort, even when a high reasoning level was
+// requested.
+func TestOpenAICompletions_SessionTitleForcesThinkingOff(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICompletions)
+	require.NotNil(t, p)
+
+	model := schema.Model{
+		ID: "deepseek-v4-flash", Api: schema.ApiOpenAICompletions,
+		Provider: schema.ProviderDeepSeek, Reasoning: true,
+	}
+	profile := schema.VariantProfile{
+		Compat: schema.CompatFlags{ThinkingFormat: "deepseek"},
+	}
+	body, err := p.BuildRequest(model, schema.Context{},
+		schema.StreamOptions{Reasoning: schema.ThinkingHigh, Purpose: schema.PurposeSessionTitle},
+		profile)
+	require.NoError(t, err)
+
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(body, &req))
+	thinking, ok := req["thinking"].(map[string]any)
+	require.True(t, ok, "session-title must send the explicit disabled thinking body, got: %v", req["thinking"])
+	assert.Equal(t, "disabled", thinking["type"])
+	_, hasEffort := req["reasoning_effort"]
+	assert.False(t, hasEffort, "session-title must omit reasoning_effort")
+}
+
+// TestOpenAICompletions_SessionTitleLockScope keeps the session-title lock
+// scoped: conversation and compaction requests with an explicit thinking-off
+// level keep the same wire output, and a high level still enables thinking.
+func TestOpenAICompletions_SessionTitleLockScope(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICompletions)
+	require.NotNil(t, p)
+
+	model := schema.Model{
+		ID: "deepseek-v4-flash", Api: schema.ApiOpenAICompletions,
+		Provider: schema.ProviderDeepSeek, Reasoning: true,
+	}
+	profile := schema.VariantProfile{
+		Compat: schema.CompatFlags{ThinkingFormat: "deepseek"},
+	}
+
+	// Conversation + high reasoning → thinking enabled.
+	body, err := p.BuildRequest(model, schema.Context{},
+		schema.StreamOptions{Reasoning: schema.ThinkingHigh, Purpose: schema.PurposeConversation},
+		profile)
+	require.NoError(t, err)
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(body, &req))
+	thinking, ok := req["thinking"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "enabled", thinking["type"])
+	assert.Equal(t, "high", req["reasoning_effort"])
+
+	// Compaction + high reasoning → thinking still enabled (only session-title
+	// holds the lock).
+	body, err = p.BuildRequest(model, schema.Context{},
+		schema.StreamOptions{Reasoning: schema.ThinkingHigh, Purpose: schema.PurposeCompaction},
+		profile)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(body, &req))
+	thinking, ok = req["thinking"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "enabled", thinking["type"])
+}
+
 // TestOpenAICompletionsCacheMarkerPinnedAcrossRounds is the regression for
 // the moving-breakpoint cache bust found in the LM Studio request capture
-// (bugs.md "cache-hit-first"): the conversation cache_control marker must be
+// (cache-hit-first): the conversation cache_control marker must be
 // pinned to the FIRST user message so request N stays a byte-prefix of
 // request N+1. A last-message marker moved every round, rewriting one history
 // message's bytes and killing llama.cpp's longest-prefix cache match.

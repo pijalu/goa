@@ -710,6 +710,7 @@ func (m mockTool) Execute(input string) (string, error) { return "mock result", 
 - **No getters/setters** - Go idiom is direct field access
 - **No panic in library code** - return errors instead
 - **Always close response bodies** - `defer resp.Body.Close()`
+- **Conversations are append-only; cache IDs are context-scoped** - Outside of compression, message history is strictly append-only: never rewrite, drop, or reorder already-sent messages. Every new context (fresh-context goal, `/clear`, sub-agent, skill runner, planner, summarizer, fork) MUST carry its own dedicated `SessionID` (which drives `prompt_cache_key`, `previous_response_id`, and session-affinity headers). Two request chains may share an ID only when one is a byte-exact append of the other; anything else must rotate the ID. A shared ID with a diverging context silently evicts the provider cache and surfaces as an unexplained cache miss in `provider/cache_forensics.go`. (Root AGENTS.md Hard Rule 7.)
 
 ---
 

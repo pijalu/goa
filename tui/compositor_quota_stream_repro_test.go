@@ -11,7 +11,7 @@ import (
 )
 
 // TestCompositor_QuotaDuringStream_NoDuplicatedRows is the regression test for
-// bugs.md "/quota request during streaming corrupts the TUI": issuing /quota
+// /quota request during streaming corrupts the TUI: issuing /quota
 // while a streaming block (e.g. "Thinking…") is being written repaints the
 // input box and trailing border lines many times over, interleaved with the
 // stream, leaving duplicated box fragments.

@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -36,6 +37,31 @@ type SkillMeta struct {
 	SubSkills   []string       `yaml:"sub-skills"`
 	InputSchema map[string]any `yaml:"input-schema"`
 	Hidden      bool           `yaml:"hidden"`
+	// Sticky marks a knowledge skill as always-on: its body is persisted into
+	// every agent's conversation history once per session (and re-persisted
+	// after any context compression that may have dropped it), instead of
+	// requiring explicit /skill:run activation. Restricted to
+	// knowledge-category skills — sticky action skills are ignored.
+	Sticky bool `yaml:"sticky"`
+	// ModelInvocable reports whether the skill may be invoked by the model
+	// through the <available_skills> catalog listing.
+	// Defaults to true when omitted.
+	ModelInvocable bool `yaml:"model_invocable"`
+	// UserInvocable reports whether the skill may be invoked by the user from
+	// the TUI skill menu (/skills). Defaults to true when omitted.
+	UserInvocable bool `yaml:"user_invocable"`
+}
+
+// UnmarshalYAML defaults the invocation policy to fully invocable when the
+// frontmatter omits either flag: a bare bool zero value would otherwise mean
+// "not invocable" for every skill without an explicit policy. Explicit
+// `model_invocable: false` / `user_invocable: false` still win after the
+// defaults are set.
+func (m *SkillMeta) UnmarshalYAML(value *yaml.Node) error {
+	m.ModelInvocable = true
+	m.UserInvocable = true
+	type rawSkillMeta SkillMeta
+	return value.Decode((*rawSkillMeta)(m))
 }
 
 // Skill represents a fully loaded skill with metadata and instructions.
@@ -74,6 +100,58 @@ func (r *SkillRegistry) IsInline(name string) bool {
 	return ok && s.Meta.Inline
 }
 
+// IsSticky reports whether the named skill is sticky: an always-on knowledge
+// skill whose body is auto-persisted into agent history. Sticky is only
+// honored for knowledge-category skills; a sticky action skill is a config
+// error and reports false.
+func (s *Skill) IsSticky() bool {
+	return s.Meta.Sticky && s.Meta.Category != SkillCategoryAction && !s.Meta.Hidden
+}
+
+// IsModelInvocable reports whether the skill may be invoked by the model via
+// the <available_skills> catalog listing. The model-facing
+// predicate requires BOTH flags (P16): a skill the user cannot invoke is
+// never advertised to the model, so the model catalog is always a subset of
+// what the user can run from the UI.
+func (s *Skill) IsModelInvocable() bool {
+	return s.Meta.ModelInvocable && s.Meta.UserInvocable
+}
+
+// IsUserInvocable reports whether the skill may be invoked by the user from
+// the TUI skill menu (/skills). A model_invocable:false skill remains
+// user-invocable and still runs from the UI (P16 acceptance).
+func (s *Skill) IsUserInvocable() bool {
+	return s.Meta.UserInvocable
+}
+
+// StickySkills returns all sticky knowledge skills, sorted by name for
+// byte-stable rendering. Hidden and action-category skills are excluded even
+// when they declare sticky: true. Like the other registry accessors, this
+// reads the load-time map without locking — registries are populated by
+// LoadAll before use.
+func (r *SkillRegistry) StickySkills() []*Skill {
+	var out []*Skill
+	for _, s := range r.skills {
+		if s.IsSticky() {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Meta.Name < out[j].Meta.Name })
+	return out
+}
+
+// StickyBodies renders each sticky skill as a labelled instruction block for
+// history persistence, in sorted order. The output is byte-stable for an
+// unchanged registry so callers can dedup re-persistence by string compare.
+func (r *SkillRegistry) StickyBodies() []string {
+	sticky := r.StickySkills()
+	blocks := make([]string, 0, len(sticky))
+	for _, s := range sticky {
+		blocks = append(blocks, fmt.Sprintf("<sticky_skill name=%q>\n%s\n</sticky_skill>", s.Meta.Name, strings.TrimSpace(s.Body)))
+	}
+	return blocks
+}
+
 // SubSkills returns the sub-skills registered for the named skill, or nil
 // if the skill has no sub-skills or is not found.
 func (r *SkillRegistry) SubSkills(name string) []*Skill {
@@ -110,9 +188,33 @@ type SkillSummary struct {
 	Category         string
 	FilePath         string
 	RequiresSubAgent bool
+	// Sticky reports the EFFECTIVE always-on state (frontmatter sticky
+	// combined with the skills.sticky / skills.sticky_off config overrides)
+	// for banners and listings; the category/hidden gates of IsSticky apply.
+	Sticky bool
 	// Source is the origin of the skill: "embedded" for compiled-in skills,
 	// "file" for skills loaded from a directory (home/project/plugin dirs).
 	Source string
+	// ModelInvocable / UserInvocable mirror the frontmatter invocation
+	// policy (P16), both defaulting to true. Consumers filter by the
+	// predicate matching their surface: model-facing catalogs use
+	// IsModelInvocable, the user-facing TUI menu uses IsUserInvocable.
+	ModelInvocable bool
+	UserInvocable  bool
+}
+
+// IsModelInvocable reports whether the skill may be advertised to the model.
+// The model-facing predicate requires BOTH flags (P16 acceptance): a skill
+// the user cannot invoke never appears in the model's <available_skills>
+// catalog.
+func (s SkillSummary) IsModelInvocable() bool {
+	return s.ModelInvocable && s.UserInvocable
+}
+
+// IsUserInvocable reports whether the skill may appear in the user-facing
+// TUI skill menu. model_invocable:false skills remain user-invocable.
+func (s SkillSummary) IsUserInvocable() bool {
+	return s.UserInvocable
 }
 
 const (
@@ -143,8 +245,26 @@ type SkillRegistry struct {
 	trustChecker TrustChecker // nil means all filesystem skills are trusted
 	disabled     map[string]bool
 	enabled      map[string]bool // non-nil → allowlist; only listed skills load
-	homeDir      string          // home dir path for source labeling ("home")
-	projectDir   string          // project dir path for source labeling ("project")
+	// embeddedDefaultDisabled lists embedded skills that are OFF by default
+	// (all embedded skills except telegram). A default-off skill
+	// loads only when the user explicitly opts it back in via the embedded
+	// opt-in list (embeddedEnabled) or the global Enabled allowlist. It
+	// applies ONLY to the embedded source — home/project/plugin file skills
+	// are never affected.
+	embeddedDefaultDisabled map[string]bool
+	// embeddedEnabled is the embedded-scoped opt-in list (skills.embedded_enabled).
+	embeddedEnabled map[string]bool
+	// stickyOn / stickyOff are the config-level sticky overrides
+	// (skills.sticky / skills.sticky_off): on forces a knowledge skill
+	// sticky, off forces a frontmatter-sticky skill back to on-demand (off
+	// wins). Applied to Meta.Sticky during LoadAll.
+	stickyOn map[string]bool
+	stickyOff map[string]bool
+	// stickyFront records the pristine frontmatter sticky flag per loaded
+	// skill (before overrides) so toggles can write the minimal config list.
+	stickyFront map[string]bool
+	homeDir         string          // home dir path for source labeling ("home")
+	projectDir      string          // project dir path for source labeling ("project")
 }
 
 // NewSkillRegistry creates a registry that scans the given directories.
@@ -164,9 +284,9 @@ func (r *SkillRegistry) SetEmbeddedFS(efs fs.FS) {
 
 // SetDisabled marks skill names as disabled for ALL sources (embedded and
 // file-based): they are skipped during LoadAll, so they never reach the system
-// prompt listing, the skills banner, or the run_skill enum. A name in both
-// Enabled and Disabled is disabled (explicit off wins). Must be called before
-// LoadAll.
+// prompt listing, the skills banner, or the <available_skills> catalog. A name
+// in both Enabled and Disabled is disabled (explicit off wins). Must be called
+// before LoadAll.
 func (r *SkillRegistry) SetDisabled(names []string) {
 	if len(names) == 0 {
 		return
@@ -191,6 +311,110 @@ func (r *SkillRegistry) SetEnabled(names []string) {
 	for _, n := range names {
 		r.enabled[n] = true
 	}
+}
+
+// SetEmbeddedDefaultDisabled marks embedded skill names as OFF by default.
+// These are skipped during the embedded scan ONLY when the user has not
+// explicitly opted them back in (via the embedded opt-in list or the global
+// Enabled allowlist). File-based skills from home/project/plugin dirs are
+// never affected. Must be called before LoadAll.
+func (r *SkillRegistry) SetEmbeddedDefaultDisabled(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	if r.embeddedDefaultDisabled == nil {
+		r.embeddedDefaultDisabled = make(map[string]bool, len(names))
+	}
+	for _, n := range names {
+		r.embeddedDefaultDisabled[n] = true
+	}
+}
+
+// SetEmbeddedEnabled installs the embedded-scoped opt-in list: names here
+// re-enable a default-off embedded skill WITHOUT activating the global
+// Enabled allowlist (which would suppress file-based skills). Must be called
+// before LoadAll.
+func (r *SkillRegistry) SetEmbeddedEnabled(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	r.embeddedEnabled = make(map[string]bool, len(names))
+	for _, n := range names {
+		r.embeddedEnabled[n] = true
+	}
+}
+
+// SetStickyOverrides installs the config-level sticky overrides applied
+// during LoadAll: names in off force a frontmatter-sticky skill back to
+// on-demand (off wins over on, mirroring the Disabled semantics), names in
+// on force a plain knowledge skill sticky. Only knowledge-category skills
+// are affected — the action/hidden gates of Skill.IsSticky still apply on
+// top. Must be called before LoadAll.
+func (r *SkillRegistry) SetStickyOverrides(on, off []string) {
+	if len(on) > 0 {
+		r.stickyOn = make(map[string]bool, len(on))
+		for _, n := range on {
+			r.stickyOn[n] = true
+		}
+	}
+	if len(off) > 0 {
+		r.stickyOff = make(map[string]bool, len(off))
+		for _, n := range off {
+			r.stickyOff[n] = true
+		}
+	}
+}
+
+// applyStickyOverride records the pristine frontmatter sticky flag of a
+// loaded skill (so toggles can decide which config list to edit) and then
+// applies the config overrides to the in-memory Meta.Sticky.
+func (r *SkillRegistry) applyStickyOverride(skill *Skill) {
+	if skill == nil {
+		return
+	}
+	if r.stickyFront == nil {
+		r.stickyFront = make(map[string]bool)
+	}
+	r.stickyFront[skill.Meta.Name] = skill.Meta.Sticky
+	switch {
+	case r.stickyOff[skill.Meta.Name]:
+		skill.Meta.Sticky = false
+	case r.stickyOn[skill.Meta.Name]:
+		skill.Meta.Sticky = true
+	}
+}
+
+// FrontmatterSticky reports the pristine frontmatter sticky flag recorded at
+// load time — BEFORE any skills.sticky / skills.sticky_off override was
+// applied — plus whether the name is known. The sticky toggle uses it to
+// write the minimal config entry: turning a frontmatter-sticky skill off
+// writes sticky_off (not removing a sticky entry that never existed), and
+// turning a plain skill on writes sticky.
+func (r *SkillRegistry) FrontmatterSticky(name string) (bool, bool) {
+	fm, ok := r.stickyFront[name]
+	return fm, ok
+}
+
+
+// embeddedDefaultOff reports whether an embedded skill is suppressed by the
+// default-off policy: it is in the default-disabled set AND the user has not
+// explicitly opted it back in. Re-enable paths (either is sufficient):
+//   - the embedded opt-in list (embeddedEnabled) — embedded-scoped, no
+//     side-effects on file skills, or
+//   - the global Enabled allowlist (explicitly naming the skill).
+// Explicitly Disabled skills are already excluded by allowed() regardless.
+func (r *SkillRegistry) embeddedDefaultOff(name string) bool {
+	if !r.embeddedDefaultDisabled[name] {
+		return false
+	}
+	if r.embeddedEnabled[name] {
+		return false
+	}
+	// A global allowlist that explicitly names the skill also re-enables it.
+	if len(r.enabled) > 0 && r.enabled[name] {
+		return false
+	}
+	return true
 }
 
 // allowed reports whether a skill with the given name may be loaded:
@@ -274,7 +498,7 @@ func (r *SkillRegistry) scanEmbeddedFS() error {
 		if name == "." {
 			return nil
 		}
-		if !r.allowed(name) {
+		if !r.allowed(name) || r.embeddedDefaultOff(name) {
 			return nil
 		}
 		data, err := fs.ReadFile(r.embedFS, path)
@@ -283,6 +507,7 @@ func (r *SkillRegistry) scanEmbeddedFS() error {
 		}
 		skill := parseSkill(name, string(data), "embedded", "skills/"+path)
 		if skill != nil {
+			r.applyStickyOverride(skill)
 			r.skills[name] = skill
 			r.scanEmbeddedSubSkills(name, path)
 		}
@@ -311,7 +536,7 @@ func (r *SkillRegistry) scanEmbeddedSubSkills(parentName, parentPath string) {
 		if err != nil {
 			continue
 		}
-		if !r.allowed(entry.Name()) {
+		if !r.allowed(entry.Name()) || r.embeddedDefaultOff(entry.Name()) {
 			continue
 		}
 		skill := parseSkill(entry.Name(), string(data), "embedded", "skills/"+skillPath)
@@ -344,6 +569,7 @@ func (r *SkillRegistry) scanDir(dir, source string) error {
 		}
 		skill := parseSkill(name, string(data), source, skillPath)
 		if skill != nil {
+			r.applyStickyOverride(skill)
 			r.skills[name] = skill
 			r.scanSubSkills(dir, name, source)
 		}
@@ -410,6 +636,125 @@ func (r *SkillRegistry) SourceOf(name string) (string, bool) {
 	return "", false
 }
 
+// ListEmbeddedDiscoverable returns summaries of EVERY skill discoverable in
+// the embedded filesystem, including default-off and explicitly-disabled ones
+// that LoadAll skipped. The /config skill toggle uses it so a default-off
+// embedded skill (e.g. review) still appears in the menu and can be re-enabled;
+// the agent never sees it (Get/List exclude it until enabled).
+func (r *SkillRegistry) ListEmbeddedDiscoverable() []SkillSummary {
+	if r.embedFS == nil {
+		return nil
+	}
+	var out []SkillSummary
+	_ = fs.WalkDir(r.embedFS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+		name := filepath.Dir(path)
+		if name == "." || filepath.Dir(name) != "." {
+			return nil // top-level skills only (sub-skills live under <parent>/skills/)
+		}
+		data, err := fs.ReadFile(r.embedFS, path)
+		if err != nil {
+			return nil
+		}
+		if skill := parseSkill(name, string(data), "embedded", "skills/"+path); skill != nil {
+			out = append(out, SkillSummary{
+				Name:        skill.Meta.Name,
+				Description: skill.Meta.Description,
+				Inline:      skill.Meta.Inline,
+				Category:    categoryOrDefault(skill.Meta.Category),
+				FilePath:    skill.FilePath,
+				Source:      "embedded",
+				// Invocation policy defaults are applied by parseSkill's
+				// SkillMeta.UnmarshalYAML (both true when omitted).
+				ModelInvocable: skill.Meta.ModelInvocable,
+				UserInvocable:  skill.Meta.UserInvocable,
+			})
+		}
+		return nil
+	})
+	return out
+}
+
+// EmbeddedDefaultDisabled reports whether the named skill is suppressed by the
+// embedded default-off policy right now (in the default-off set AND not
+// explicitly re-enabled). The config menu uses it to show the correct on/off
+// state for discoverable-but-inactive embedded skills.
+func (r *SkillRegistry) EmbeddedDefaultDisabled(name string) bool {
+	return r.embeddedDefaultOff(name)
+}
+
+// IsEmbeddedDefaultOff reports whether the named skill is a MEMBER of the
+// embedded default-off set (all embedded skills except telegram), regardless
+// of whether the user has since re-enabled it. Unlike EmbeddedDefaultDisabled
+// (the current suppressed state), this is stable across a toggle, so the
+// disable path can tell a default-off skill (disabling = drop the opt-in)
+// from a default-ON one (disabling = write an explicit Disabled entry).
+func (r *SkillRegistry) IsEmbeddedDefaultOff(name string) bool {
+	return r.embeddedDefaultDisabled[name]
+}
+
+// DefaultOnEmbeddedSkill is the single agent-facing embedded skill that stays
+// ON by default; every other agent-facing embedded skill is OFF by default
+//
+const DefaultOnEmbeddedSkill = "telegram"
+
+// DefaultEmbeddedOffNames returns the names of all embedded skills that are
+// OFF by default: every agent-facing embedded skill except
+// DefaultOnEmbeddedSkill (telegram). Two kinds are excluded and stay ON:
+//   - telegram (the one kept agent-facing skill), and
+//   - hidden/internal skills (e.g. dream): they are never listed to the agent
+//     (Meta.Hidden) but internal features load them by name via Get, so
+//     defaulting them off would break those features for zero prompt savings.
+//
+// Derived from the embedded FS so it never drifts as skills are added.
+func DefaultEmbeddedOffNames(efs fs.FS) []string {
+	var out []string
+	if efs == nil {
+		return nil
+	}
+	for _, n := range EmbeddedSkillNames(efs) {
+		if n == DefaultOnEmbeddedSkill {
+			continue
+		}
+		hidden := false
+		if data, err := fs.ReadFile(efs, filepath.Join(n, "SKILL.md")); err == nil {
+			if s := parseSkill(n, string(data), "embedded", ""); s != nil {
+				hidden = s.Meta.Hidden
+			}
+		}
+		if !hidden {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// EmbeddedSkillNames returns the names of every top-level skill discoverable
+// in the embedded filesystem (sorted), regardless of enabled/disabled state.
+// It lets the wiring layer derive the default-off set ("all embedded skills
+// except telegram") without a hardcoded list that drifts as skills are added.
+func EmbeddedSkillNames(efs fs.FS) []string {
+	if efs == nil {
+		return nil
+	}
+	var names []string
+	_ = fs.WalkDir(efs, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+		name := filepath.Dir(path)
+		if name == "." || filepath.Dir(name) != "." {
+			return nil // top-level skills only
+		}
+		names = append(names, name)
+		return nil
+	})
+	sort.Strings(names)
+	return names
+}
+
 // List returns summaries of all registered skills.
 func (r *SkillRegistry) List() []SkillSummary {
 	var summaries []SkillSummary
@@ -421,7 +766,10 @@ func (r *SkillRegistry) List() []SkillSummary {
 			Category:         categoryOrDefault(s.Meta.Category),
 			FilePath:         s.FilePath,
 			RequiresSubAgent: r.hasAnySubSkill(s.Meta.Name),
+			Sticky:           s.IsSticky(),
 			Source:           s.Source,
+			ModelInvocable:   s.Meta.ModelInvocable,
+			UserInvocable:    s.Meta.UserInvocable,
 		})
 	}
 	return summaries

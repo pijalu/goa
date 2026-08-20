@@ -503,8 +503,17 @@ func TestAgent_CompactEmitsCompactEvent(t *testing.T) {
 	if compactEvent == nil {
 		t.Fatal("expected compact event")
 	}
-	if !strings.Contains(compactEvent.Text, "Summary") {
-		t.Errorf("expected summary text, got %q", compactEvent.Text)
+	// The structured payload carries the strategy label and before/after
+	// usage; the summary text lives in Compaction.Detail so every surface can
+	// render the pass without parsing free text.
+	if compactEvent.Compaction == nil {
+		t.Fatalf("expected structured Compaction payload, got Text=%q", compactEvent.Text)
+	}
+	if compactEvent.Compaction.Strategy != "summarize" {
+		t.Errorf("Compaction.Strategy = %q, want summarize", compactEvent.Compaction.Strategy)
+	}
+	if !strings.Contains(compactEvent.Compaction.Detail, "Summary") {
+		t.Errorf("expected summary in Compaction.Detail, got %q", compactEvent.Compaction.Detail)
 	}
 }
 
@@ -2335,7 +2344,7 @@ func TestAgent_RetriesStreamError_EmitsSystemNotification(t *testing.T) {
 			notifications = append(notifications, e)
 		}
 	}
-	// The retry lifecycle is fully visible (bugs.md Issue 17): the failure
+	// The retry lifecycle is fully visible (Issue 17): the failure
 	// bubble ("retrying") followed by the durable "Connection restored"
 	// confirmation once a retry succeeds.
 	if len(notifications) != 2 {
@@ -2514,7 +2523,7 @@ func TestAgent_RetriesInitialStreamError_408(t *testing.T) {
 	}
 }
 
-// TestAgent_RetryBudgetResetsAfterSuccess proves bugs.md Issue 17: once a
+// TestAgent_RetryBudgetResetsAfterSuccess proves Issue 17: once a
 // stream failure is recovered by a retry, a LATER failure — in the same turn
 // or the next turn — gets a full fresh retry budget (attempts restart at
 // 1/MaxRetries), and every episode is visible to the user (progress attempts
@@ -2688,5 +2697,247 @@ func TestAgent_ToolResultTooLarge_TruncatesWithNotice(t *testing.T) {
 	}
 	if len(result) <= 100 {
 		t.Errorf("expected non-trivial truncated content, got %q", result)
+	}
+}
+
+// TestAgent_AlwaysModeRetriesUntilSuccess verifies the P8 (DS4) acceptance
+// criterion: an always-mode retry policy retries every model-request failure
+// — far beyond the finite MaxRetries budget — until the provider succeeds.
+func TestAgent_AlwaysModeRetriesUntilSuccess(t *testing.T) {
+	// Rate-limit error with a 1ms Retry-After so retries are fast.
+	rateLimitErr := (&hooks.ErrorContext{
+		StatusCode:   http.StatusTooManyRequests,
+		Body:         `{"error":{"message":"slow down","type":"rate_limit"}}`,
+		IsRateLimit:  true,
+		IsRetryable:  true,
+		RetryAfterMs: 1,
+	}).ToError()
+
+	// The provider fails 5 times, far more than MaxRetries=1, then succeeds.
+	// Always mode must keep retrying past the finite budget.
+	steps := make([]scriptedStreamStep, 0, 6)
+	for i := 0; i < 5; i++ {
+		steps = append(steps, scriptedStreamStep{err: rateLimitErr})
+	}
+	steps = append(steps, scriptedStreamStep{events: []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Recovered."},
+	}})
+	p := &scriptedStreamProvider{
+		api:   provider.Api(fmt.Sprintf("test-always-%d", testProviderCounter.Add(1))),
+		steps: steps,
+	}
+	provider.RegisterApiProvider(p)
+
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+		StreamOptions: provider.StreamOptions{
+			MaxRetries: 1, // finite budget would give up after 1 retry
+			RetryPolicy: &provider.RetryPolicy{
+				Mode:       provider.RetryModeAlways,
+				MaxRetries: 1,
+				Backoff:    provider.RetryBackoff{InitialDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond, Jitter: 0},
+			},
+		},
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := agent.Run(ctx, "prompt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var contents []string
+	for _, e := range obs.Events() {
+		if e.Type == EventContent && e.Role == Assistant {
+			contents = append(contents, e.Text)
+		}
+	}
+	if !containsContent(contents, "Recovered.") {
+		t.Errorf("expected content recovered after always-mode retries, got %q", contents)
+	}
+	if p.Calls() < 6 {
+		t.Errorf("expected >= 6 provider calls (1 initial + 5 retries), got %d", p.Calls())
+	}
+}
+
+// TestAgent_AlwaysModeStopsOnCancel verifies the always-mode "until cancel"
+// semantics: with a permanently failing provider, canceling the parent context
+// stops the retry loop promptly instead of retrying forever.
+func TestAgent_AlwaysModeStopsOnCancel(t *testing.T) {
+	rateLimitErr := (&hooks.ErrorContext{
+		StatusCode:   http.StatusTooManyRequests,
+		Body:         `{"error":{"message":"slow down","type":"rate_limit"}}`,
+		IsRateLimit:  true,
+		IsRetryable:  true,
+		RetryAfterMs: 1,
+	}).ToError()
+
+	p := &scriptedStreamProvider{
+		api: provider.Api(fmt.Sprintf("test-always-cancel-%d", testProviderCounter.Add(1))),
+		steps: []scriptedStreamStep{
+			{err: rateLimitErr}, // repeat-last keeps failing forever
+		},
+	}
+	provider.RegisterApiProvider(p)
+
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+		StreamOptions: provider.StreamOptions{
+			RetryPolicy: &provider.RetryPolicy{
+				Mode:    provider.RetryModeAlways,
+				Backoff: provider.RetryBackoff{InitialDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond, Jitter: 0},
+			},
+		},
+	})
+
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.Run(ctx, "prompt")
+	}()
+
+	// Let the retry loop start, then cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error after cancel, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("always-mode retry loop did not stop on cancel within 5s")
+	}
+}
+
+// TestAgent_AlwaysModeStopsOnOverflow verifies that always mode does NOT loop
+// forever on a context-overflow error: the overflow compress+retry is bounded
+// once per turn (handleStreamFailure), and a retry attempt that still
+// overflows terminates the loop instead of retrying the impossible request.
+func TestAgent_AlwaysModeStopsOnOverflow(t *testing.T) {
+	overflowErr := (&hooks.ErrorContext{
+		StatusCode:        400,
+		Body:              `{"error":{"message":"This model's maximum context length is 4096 tokens. However, you requested 5000 tokens","type":"invalid_request_error"}}`,
+		IsContextOverflow: true,
+		IsRetryable:       true,
+	}).ToError()
+
+	p := &scriptedStreamProvider{
+		api: provider.Api(fmt.Sprintf("test-always-overflow-%d", testProviderCounter.Add(1))),
+		steps: []scriptedStreamStep{
+			{err: overflowErr}, // repeat-last keeps overflowing forever
+		},
+	}
+	provider.RegisterApiProvider(p)
+
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+		StreamOptions: provider.StreamOptions{
+			RetryPolicy: &provider.RetryPolicy{
+				Mode:    provider.RetryModeAlways,
+				Backoff: provider.RetryBackoff{InitialDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond, Jitter: 0},
+			},
+		},
+	})
+
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := agent.Run(ctx, "prompt"); err == nil {
+		t.Fatal("expected an error after always-mode overflow, got nil")
+	}
+	if p.Calls() < 2 {
+		t.Errorf("expected at least the initial call + one retry attempt, got %d calls", p.Calls())
+	}
+}
+
+// TestAgent_RetryEventsVisibleInLog verifies the P8 (DS4) acceptance
+// criterion "events visible in goa.log": each retry attempt emits a durable
+// "retry scheduled" event (before the backoff wait) and a "retry started"
+// event (after the wait, before the request), captured in the agent log ring
+// regardless of file logging.
+func TestAgent_RetryEventsVisibleInLog(t *testing.T) {
+	ResetAgentLogRing()
+	defer ResetAgentLogRing()
+
+	rateLimitErr := (&hooks.ErrorContext{
+		StatusCode:   http.StatusTooManyRequests,
+		Body:         `{"error":{"message":"slow down","type":"rate_limit"}}`,
+		IsRateLimit:  true,
+		IsRetryable:  true,
+		RetryAfterMs: 1,
+	}).ToError()
+
+	p := registerFlakyStartProvider(2, rateLimitErr, []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Recovered."},
+	})
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+		StreamOptions: provider.StreamOptions{
+			MaxRetries: 2,
+			RetryPolicy: &provider.RetryPolicy{
+				Mode:       provider.RetryModeNormal,
+				MaxRetries: 2,
+				Backoff:    provider.RetryBackoff{InitialDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond, Jitter: 0},
+				Codes:      []string{provider.RetryCodeRateLimit},
+			},
+		},
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := agent.Run(ctx, "prompt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	ring := AgentLogSnapshot()
+	var scheduled, started int
+	for _, line := range ring {
+		if strings.Contains(line.Message, "retry scheduled") {
+			scheduled++
+		}
+		if strings.Contains(line.Message, "retry started") {
+			started++
+		}
+	}
+	if scheduled == 0 {
+		t.Fatal("expected at least one 'retry scheduled' event in the agent log")
+	}
+	if started == 0 {
+		t.Fatal("expected at least one 'retry started' event in the agent log")
+	}
+	if scheduled != started {
+		t.Errorf("scheduled=%d started=%d, want equal (every scheduled retry that starts has a started event)", scheduled, started)
 	}
 }

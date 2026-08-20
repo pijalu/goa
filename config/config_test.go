@@ -150,6 +150,72 @@ nested_unknown:
 	}
 }
 
+// TestConfigValidateStreamLoopMinPeriod verifies execution.stream_loop_min_period
+// accepts 0 (default) and values >= 8, rejecting anything below the absolute
+// scan floor.
+func TestConfigValidateMaxInlineBytes(t *testing.T) {
+	for _, tt := range []struct {
+		v       int
+		wantErr bool
+	}{
+		{0, false},     // disabled (default)
+		{4096, false},  // typical cap
+		{-1, true},     // negative would spill every result
+		{-4096, true},
+	} {
+		cfg := &Config{Tools: ToolsConfig{MaxInlineBytes: tt.v}}
+		err := cfg.Validate()
+		if gotErr := err != nil; gotErr != tt.wantErr {
+			t.Errorf("Validate(max_inline_bytes=%d) err=%v, wantErr=%v", tt.v, err, tt.wantErr)
+		}
+	}
+}
+
+func TestConfigMaxInlineBytesYAML(t *testing.T) {
+	var cfg Config
+	if err := yaml.Unmarshal([]byte("tools:\n  max_inline_bytes: 4096\n"), &cfg); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if cfg.Tools.MaxInlineBytes != 4096 {
+		t.Errorf("Tools.MaxInlineBytes = %d, want 4096", cfg.Tools.MaxInlineBytes)
+	}
+}
+
+func TestConfigValidateStreamLoopMinPeriod(t *testing.T) {
+	for _, tt := range []struct {
+		v       int
+		wantErr bool
+	}{
+		{0, false},   // default (50)
+		{8, false},   // absolute scan floor
+		{50, false},  // default value spelled out
+		{4096, false},
+		{7, true},
+		{1, true},
+		{-1, true},
+	} {
+		cfg := &Config{Execution: ExecutionConfig{StreamLoopMinPeriod: tt.v}}
+		err := cfg.Validate()
+		if gotErr := err != nil; gotErr != tt.wantErr {
+			t.Errorf("Validate(stream_loop_min_period=%d) err=%v, wantErr=%v", tt.v, err, tt.wantErr)
+		}
+	}
+}
+
+// TestDeepMergeStreamLoopMinPeriod verifies the overlay wins when non-zero
+// and the base is preserved otherwise.
+func TestDeepMergeStreamLoopMinPeriod(t *testing.T) {
+	base := &Config{Execution: ExecutionConfig{StreamLoopMinPeriod: 80}}
+	base.DeepMerge(&Config{Execution: ExecutionConfig{StreamLoopMinPeriod: 40}})
+	if base.Execution.StreamLoopMinPeriod != 40 {
+		t.Errorf("StreamLoopMinPeriod = %d, want 40", base.Execution.StreamLoopMinPeriod)
+	}
+	base.DeepMerge(&Config{})
+	if base.Execution.StreamLoopMinPeriod != 40 {
+		t.Errorf("StreamLoopMinPeriod after empty merge = %d, want 40 (preserved)", base.Execution.StreamLoopMinPeriod)
+	}
+}
+
 // TestConfigValidateMode verifies mode validation.
 func TestConfigValidateMode(t *testing.T) {
 	tests := []struct {
@@ -409,6 +475,33 @@ func TestDeepMergeSkillsEnabled(t *testing.T) {
 	for i, name := range want {
 		if base.Skills.Enabled[i] != name {
 			t.Errorf("Skills.Enabled[%d] = %q, want %q", i, base.Skills.Enabled[i], name)
+		}
+	}
+}
+
+// TestDeepMergeSkillsStickyLists verifies Skills.Sticky and Skills.StickyOff
+// concatenate with dedup across the config cascade, mirroring the
+// Enabled/Disabled semantics (project-level sticky state).
+func TestDeepMergeSkillsStickyLists(t *testing.T) {
+	base := &Config{Skills: SkillsConfig{Sticky: []string{"review"}, StickyOff: []string{"telegram"}}}
+	override := &Config{Skills: SkillsConfig{Sticky: []string{"refactor", "review"}, StickyOff: []string{"telegram", "dream"}}}
+	base.DeepMerge(override)
+	wantSticky := []string{"review", "refactor"}
+	wantOff := []string{"telegram", "dream"}
+	if len(base.Skills.Sticky) != len(wantSticky) {
+		t.Fatalf("Skills.Sticky = %v, want %v", base.Skills.Sticky, wantSticky)
+	}
+	for i, name := range wantSticky {
+		if base.Skills.Sticky[i] != name {
+			t.Errorf("Skills.Sticky[%d] = %q, want %q", i, base.Skills.Sticky[i], name)
+		}
+	}
+	if len(base.Skills.StickyOff) != len(wantOff) {
+		t.Fatalf("Skills.StickyOff = %v, want %v", base.Skills.StickyOff, wantOff)
+	}
+	for i, name := range wantOff {
+		if base.Skills.StickyOff[i] != name {
+			t.Errorf("Skills.StickyOff[%d] = %q, want %q", i, base.Skills.StickyOff[i], name)
 		}
 	}
 }
@@ -766,6 +859,16 @@ providers:
       project: goa
     max_retry_delay: 2s
     reasoning_effort: low
+    retry_policy:
+      mode: always
+      max_retries: 7
+      backoff:
+        initial_ms: 500
+        max_ms: 5000
+        jitter: 0.2
+      codes:
+        - RATE_LIMIT
+        - SERVER
 models:
   - id: gpt-4o
     provider: openai
@@ -824,6 +927,27 @@ func assertProvider(t *testing.T, cfg Config) {
 	}
 	if p.ReasoningEffort != "low" {
 		t.Errorf("Provider.ReasoningEffort = %q, want low", p.ReasoningEffort)
+	}
+	if p.RetryPolicy == nil {
+		t.Fatal("Provider.RetryPolicy should be set")
+	}
+	if p.RetryPolicy.Mode != "always" {
+		t.Errorf("Provider.RetryPolicy.Mode = %q, want always", p.RetryPolicy.Mode)
+	}
+	if p.RetryPolicy.MaxRetries != 7 {
+		t.Errorf("Provider.RetryPolicy.MaxRetries = %d, want 7", p.RetryPolicy.MaxRetries)
+	}
+	if p.RetryPolicy.Backoff.InitialMS != 500 {
+		t.Errorf("Provider.RetryPolicy.Backoff.InitialMS = %d, want 500", p.RetryPolicy.Backoff.InitialMS)
+	}
+	if p.RetryPolicy.Backoff.MaxMS != 5000 {
+		t.Errorf("Provider.RetryPolicy.Backoff.MaxMS = %d, want 5000", p.RetryPolicy.Backoff.MaxMS)
+	}
+	if p.RetryPolicy.Backoff.Jitter != 0.2 {
+		t.Errorf("Provider.RetryPolicy.Backoff.Jitter = %v, want 0.2", p.RetryPolicy.Backoff.Jitter)
+	}
+	if len(p.RetryPolicy.Codes) != 2 || p.RetryPolicy.Codes[0] != "RATE_LIMIT" || p.RetryPolicy.Codes[1] != "SERVER" {
+		t.Errorf("Provider.RetryPolicy.Codes = %v, want [RATE_LIMIT SERVER]", p.RetryPolicy.Codes)
 	}
 }
 
@@ -1017,6 +1141,80 @@ func TestConfigValidate_AgenticFields(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid retry_policy always",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "always", MaxRetries: 7,
+						Backoff: RetryBackoffConfig{InitialMS: 500, MaxMS: 5000, Jitter: 0.2},
+						Codes:   []string{"RATE_LIMIT", "SERVER"}},
+				}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid retry_policy normal empty codes",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal", MaxRetries: 1},
+				}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid retry_policy mode",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "sometimes"},
+				}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid retry_policy negative max_retries",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal", MaxRetries: -1},
+				}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid retry_policy backoff initial > max",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal",
+						Backoff: RetryBackoffConfig{InitialMS: 5000, MaxMS: 1000}},
+				}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid retry_policy jitter out of range",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal",
+						Backoff: RetryBackoffConfig{Jitter: 1.5}},
+				}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid retry_policy duplicate codes",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal", Codes: []string{"SERVER", "SERVER"}},
+				}},
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1033,6 +1231,77 @@ func TestConfig_GetReasoningEffort(t *testing.T) {
 	cfg := &Config{ThinkingLevels: ThinkingLevelConfig{Default: "medium", MainAgent: "high"}}
 	if got := cfg.GetReasoningEffort(); got != "high" {
 		t.Errorf("GetReasoningEffort() = %q, want high", got)
+	}
+}
+
+// TestConfig_ValidateTimeContext verifies the time_context validation rules:
+// a malformed refresh interval and an unsupported IANA zone are rejected,
+// while the disabled default and valid settings pass.
+func TestConfig_ValidateTimeContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+	}{
+		{
+			name: "disabled default passes",
+			cfg:  &Config{TimeContext: TimeContextConfig{}},
+		},
+		{
+			name: "enabled with valid zone and interval passes",
+			cfg: &Config{TimeContext: TimeContextConfig{
+				Enabled:         true,
+				TimeZone:        "Asia/Shanghai",
+				RefreshInterval: "60s",
+			}},
+		},
+		{
+			name: "invalid refresh interval rejected",
+			cfg: &Config{TimeContext: TimeContextConfig{
+				Enabled:         true,
+				RefreshInterval: "not-a-duration",
+			}},
+			wantErr: true,
+		},
+		{
+			name: "unsupported time zone rejected",
+			cfg: &Config{TimeContext: TimeContextConfig{
+				Enabled:  true,
+				TimeZone: "Not/AZone",
+			}},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			gotErr := err != nil
+			if gotErr != tt.wantErr {
+				t.Errorf("Validate() err=%v, wantErr=%v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestConfig_MergeTimeContext verifies the cascade merge semantics (CX6):
+// the enable switch propagates upward (default off), and zone/interval
+// propagate when set.
+func TestConfig_MergeTimeContext(t *testing.T) {
+	base := &Config{}
+	over := &Config{TimeContext: TimeContextConfig{
+		Enabled:         true,
+		TimeZone:        "Asia/Shanghai",
+		RefreshInterval: "5m",
+	}}
+	base.DeepMerge(over)
+	if !base.TimeContext.Enabled {
+		t.Error("DeepMerge must propagate Enabled=true")
+	}
+	if base.TimeContext.TimeZone != "Asia/Shanghai" {
+		t.Errorf("DeepMerge TimeZone = %q, want Asia/Shanghai", base.TimeContext.TimeZone)
+	}
+	if base.TimeContext.RefreshInterval != "5m" {
+		t.Errorf("DeepMerge RefreshInterval = %q, want 5m", base.TimeContext.RefreshInterval)
 	}
 }
 
@@ -1165,8 +1434,8 @@ func TestToolEnabledConfigDefaults(t *testing.T) {
 	if cfg.Tools.Enabled.BGExec {
 		t.Error("BGExec should be disabled by default")
 	}
-	if cfg.Tools.Enabled.PTYExec {
-		t.Error("PTYExec should be disabled by default")
+	if cfg.Tools.Enabled.Terminals {
+		t.Error("Terminals should be disabled by default")
 	}
 	if cfg.Tools.Enabled.SSHBash {
 		t.Error("SSHBash should be disabled by default")
@@ -1228,8 +1497,10 @@ tools:
 	}
 }
 
-// TestAgentToolsDefaultEnabled verifies the embedded default config ships the
-// sub-agent/swarm/goa tools enabled (opt-out), preserving current behavior.
+// TestAgentToolsDefaultEnabled verifies the embedded default config keeps
+// only the lean core tool set on by default (terminals, python, webfetch) and
+// ships the heavier agent-driven/sub-agent tools off — the tuned default
+// adopted from the maintainer config. Users opt in per tool via /tools.
 func TestAgentToolsDefaultEnabled(t *testing.T) {
 	yamlText, err := DefaultConfigYAML()
 	if err != nil {
@@ -1239,9 +1510,14 @@ func TestAgentToolsDefaultEnabled(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(yamlText), &cfg); err != nil {
 		t.Fatalf("Unmarshal embedded default failed: %v", err)
 	}
-	for _, name := range []string{"agent", "agent_swarm", "goa"} {
+	for _, name := range []string{"terminals", "python", "webfetch"} {
 		if !cfg.Tools.Enabled.GetEnabled(name) {
-			t.Errorf("embedded default should enable %s (opt-out)", name)
+			t.Errorf("embedded default should enable %s", name)
+		}
+	}
+	for _, name := range []string{"agent", "agent_swarm", "goa", "lsp", "todo_list", "verify", "delegate_to", "request_review", "bg_exec"} {
+		if cfg.Tools.Enabled.GetEnabled(name) {
+			t.Errorf("embedded default should disable %s (opt-in)", name)
 		}
 	}
 }
@@ -1251,7 +1527,7 @@ func TestToolEnabledConfigRoundTrip(t *testing.T) {
 tools:
   enabled:
     bg_exec: true
-    pty_exec: true
+    terminals: true
     memento: true
 `
 	var cfg Config
@@ -1261,8 +1537,8 @@ tools:
 	if !cfg.Tools.Enabled.BGExec {
 		t.Error("BGExec should be true")
 	}
-	if !cfg.Tools.Enabled.PTYExec {
-		t.Error("PTYExec should be true")
+	if !cfg.Tools.Enabled.Terminals {
+		t.Error("Terminals should be true")
 	}
 	if !cfg.Tools.Enabled.Memento {
 		t.Error("Memento should be true")
@@ -1455,7 +1731,7 @@ func TestGoalsAutoUnblockEnabled(t *testing.T) {
 }
 
 // TestGoalsFreshContextEnabled verifies the tri-state fresh-context default
-// (bugs.md Issue 24): nil = on (clean context per goal), explicit false = reuse
+// (Issue 24): nil = on (clean context per goal), explicit false = reuse
 // conversation, and a higher-layer explicit value overrides in a DeepMerge.
 func TestGoalsFreshContextEnabled(t *testing.T) {
 	var def Config
@@ -1475,7 +1751,7 @@ func TestGoalsFreshContextEnabled(t *testing.T) {
 	}
 }
 
-// TestGoalsVerifyTimeoutOr verifies goals.verify_timeout parsing (bugs.md
+// TestGoalsVerifyTimeoutOr verifies goals.verify_timeout parsing
 // Bug A): empty/invalid falls back to the default; valid durations win.
 func TestGoalsVerifyTimeoutOr(t *testing.T) {
 	fallback := 2 * time.Minute

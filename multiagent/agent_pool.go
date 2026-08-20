@@ -82,6 +82,12 @@ type AgentPool struct {
 	// ProjectDir scopes SOLO-mode filesystem/shell restrictions for sub-agents.
 	ProjectDir string
 
+	// stickyProvider supplies always-on instruction blocks (sticky knowledge
+	// skills) inherited by every agent the pool creates — including ephemeral
+	// orchestration delegates ("new context" agents) — so sticky skills
+	// propagate to the whole session tree. Nil disables sticky injection.
+	stickyProvider agentic.StickyProvider
+
 	// agentBus enables agent-to-agent messaging via send_message tools.
 	agentBus *agentic.AgentBus
 	// connectors keeps CommConnector instances alive for the agent lifetime.
@@ -130,6 +136,15 @@ func (p *AgentPool) SetGoaConfig(cfg *config.Config) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Config = cfg
+}
+
+// SetStickyProvider sets the always-on instruction source inherited by every
+// agent this pool creates (cached, task, and ephemeral). Call before agents
+// are created.
+func (p *AgentPool) SetStickyProvider(sp agentic.StickyProvider) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stickyProvider = sp
 }
 
 // SetAgentBus sets the communication bus used for agent-to-agent messaging.
@@ -340,6 +355,9 @@ func (p *AgentPool) assembleConfig(mdl provider.Model, cfg AgentConfig, systemPr
 	if cfg.ReasoningEffort != "" {
 		ac.ReasoningEffort = cfg.ReasoningEffort
 	}
+	p.mu.Lock()
+	ac.StickyProvider = p.stickyProvider
+	p.mu.Unlock()
 	p.inheritGoaConfig(&ac)
 	return ac
 }
@@ -435,15 +453,12 @@ func (p *AgentPool) inheritGoaConfig(ac *agentic.Config) {
 	ac.SkillExecutionMode = agentic.SkillExecutionMode(p.Config.Skills.ExecutionMode)
 	if p.Config.ContextCompression.EnabledValue() || p.Config.ContextCompression.MaxTokens > 0 {
 		ac.ContextCompression = agentic.ContextCompressionConfig{
-			MaxTokens:        p.Config.ContextCompression.MaxTokens,
-			ThresholdPercent: p.Config.ContextCompression.ThresholdPercent,
+			MaxTokens: p.Config.ContextCompression.MaxTokens,
 			Thresholds: agentic.CompressionThresholds{
-				SoftPercent:    p.Config.ContextCompression.Thresholds.SoftPercent,
-				TriggerPercent: p.Config.ContextCompression.Thresholds.TriggerPercent,
-				HardPercent:    p.Config.ContextCompression.Thresholds.HardPercent,
+				SoftPercent: p.Config.ContextCompression.Thresholds.SoftPercent,
+				HardPercent: p.Config.ContextCompression.Thresholds.HardPercent,
 			},
 			OnContextError:      p.Config.ContextCompression.OnContextError,
-			Strategy:            agentic.CompressionStrategy(p.Config.ContextCompression.Strategy),
 			PreserveRecentTurns: p.Config.ContextCompression.PreserveRecentTurns,
 		}
 	}

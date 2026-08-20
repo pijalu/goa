@@ -37,7 +37,7 @@ func companionSubsystems(companionProvider string) *subsystems {
 	}
 }
 
-// TestCompanionModelDisplay_UsesCompanionProvider is bugs.md Bug B: the
+// TestCompanionModelDisplay_UsesCompanionProvider is Bug B: the
 // status bar showed the ACTIVE provider ("(opencode-go) glm-5.2") instead of
 // the configured companion provider ("(zai) glm-5.2").
 func TestCompanionModelDisplay_UsesCompanionProvider(t *testing.T) {

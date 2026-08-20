@@ -58,7 +58,7 @@ type Editor struct {
 	// shrinkPending is set by user deletion operations (backspace, delete,
 	// kill) to allow the reserved height to decay toward the content on the
 	// next layout. Programmatic SetText (history recall) does not set it, so
-	// browsing history keeps the layout stable (bugs.md: the height was
+	// browsing history keeps the layout stable (the height was
 	// ratcheted forever and never shrunk when content was deleted).
 	shrinkPending bool
 

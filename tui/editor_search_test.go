@@ -12,7 +12,7 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 )
 
-// TestHistorySearcher_EmptyQueryShowsRecent covers bugs.md "inputline search":
+// TestHistorySearcher_EmptyQueryShowsRecent covers inputline search:
 // pressing the search hotkey must immediately show the last history entries
 // even before the user types anything. Complete("") must not be empty.
 func TestHistorySearcher_EmptyQueryShowsRecent(t *testing.T) {
@@ -51,7 +51,7 @@ func TestHistorySearcher_EmptyQueryDedupes(t *testing.T) {
 	}
 }
 
-// TestEditor_CtrlS_EntersSearchMode covers bugs.md: ctrl+s outside search mode
+// TestEditor_CtrlS_EntersSearchMode covers ctrl+s outside search mode
 // printed "ctrl+s" literally into the input line. It must instead enter
 // history-search mode and show the popup.
 func TestEditor_CtrlS_EntersSearchMode(t *testing.T) {
@@ -72,7 +72,7 @@ func TestEditor_CtrlS_EntersSearchMode(t *testing.T) {
 	}
 }
 
-// TestEditor_CtrlR_ShowsPopupOnEmptyQuery covers bugs.md: ctrl+r showed no
+// TestEditor_CtrlR_ShowsPopupOnEmptyQuery covers ctrl+r showed no
 // box until the user typed. With an empty query the popup must list history.
 func TestEditor_CtrlR_ShowsPopupOnEmptyQuery(t *testing.T) {
 	ed := NewEditor()

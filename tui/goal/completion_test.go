@@ -48,7 +48,7 @@ func TestCompletion_NoOps(t *testing.T) {
 	c.Invalidate()
 }
 
-// TestCompletion_MultiLineObjective pins the bugs.md "Goal completion screen
+// TestCompletion_MultiLineObjective pins the "Goal completion screen
 // corruption" fix: unblocking-investigation objectives contain embedded
 // newlines ("...\n\nThe goal \"X\" was blocked because: ..."). Every rendered
 // row must be a single visual line — no embedded "\n" (raw-mode LF prints the

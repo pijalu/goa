@@ -234,7 +234,7 @@ func (a *blockingAgent) Run(ctx context.Context, _ string) error {
 	return ctx.Err()
 }
 
-// TestGoalDriver_StopEndsDrive is the regression test for bugs.md "ESC: hard
+// TestGoalDriver_StopEndsDrive is the regression test for "ESC: hard
 // stop for ALL ongoing activities": the /goal command starts the driver on
 // context.Background(), so AgentManager.Interrupt() (ESC) could kill the
 // current turn but the loop immediately launched the next continuation.
@@ -484,7 +484,7 @@ func (a *fakeFreshAgent) RunFresh(ctx context.Context, prompt string, begin bool
 
 // TestGoalDriver_FreshContextRouting verifies a goal with the clean-context
 // flag is routed through FreshAgentRunner.RunFresh (begin=true on the first
-// turn) while a default goal uses the ordinary Run path (bugs.md: per-goal
+// turn) while a default goal uses the ordinary Run path (per-goal
 // clean-context flag).
 func TestGoalDriver_FreshContextRouting(t *testing.T) {
 	// Fresh-context goal routes through RunFresh with begin=true.
@@ -523,7 +523,7 @@ func TestGoalDriver_FreshContextRouting(t *testing.T) {
 // driver: while "busy", Run returns instantly (the continuation prompt was
 // merely queued). Unbounded instant returns are what let a Drive started
 // mid-turn hot-loop and queue hundreds of phantom continuation turns
-// (bugs.md Issue 7: "goal cannot be stopped"). The driver must treat the
+// (Issue 7: "goal cannot be stopped"). The driver must treat the
 // busy signal as a clean stop instead of spinning.
 type busyRunner struct {
 	runs atomic.Int32
@@ -606,7 +606,7 @@ func (a *runawayScriptAgent) Run(ctx context.Context, prompt string) error {
 func (a *runawayScriptAgent) ResetLoopStop() { a.resetCalls++ }
 
 // TestGoalDriver_RunawayPauseReasonShowsRepeatedSequence is the regression
-// test for bugs.md "TUI stop omits the repeated sequence": when the
+// test for TUI stop omits the repeated sequence: when the
 // guardrail stops a goal turn, the stored pause reason must carry the
 // guardrail's (elided) repeated sequence so the stop surface and the goal
 // events log show WHAT was judged a loop — not just the generic category.
@@ -636,7 +636,7 @@ func TestGoalDriver_RunawayPauseReasonShowsRepeatedSequence(t *testing.T) {
 }
 
 // TestGoalDriver_RunawayResumeUsesRecoveryPrompt is the regression test for
-// bugs.md "pause/resume re-enters the same loop": after the runaway-loop
+// pause/resume re-enters the same loop: after the runaway-loop
 // guardrail pauses the goal, the first continuation after resume must NOT be
 // the byte-identical ContinuationPrompt, and the agent's loop latch must be
 // reset so the turn is not rejected outright.
@@ -732,8 +732,8 @@ func (a *rateLimitScriptAgent) ResetLoopStop() { a.resetCalls++ }
 
 // fakeTeamOverlay records ApplyOverlay/RemoveOverlay calls for assertions.
 type fakeTeamOverlay struct {
-	applied  []string
-	removed  int
+	applied []string
+	removed int
 }
 
 func (f *fakeTeamOverlay) ApplyOverlay(name string) error {

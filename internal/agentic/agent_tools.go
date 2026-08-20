@@ -4,6 +4,7 @@ package agentic
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/pijalu/goa/internal"
@@ -12,6 +13,18 @@ import (
 	"github.com/pijalu/goa/internal/perms"
 	"github.com/pijalu/goa/internal/toolaccess"
 )
+
+// SpillPolicy bounds oversized plain-text tool results by saving them
+// verbatim to a session-scoped spill dir and substituting a budgeted
+// head/tail preview plus a locator notice (gap CX2, dsh spill-policy parity).
+// The implementation lives in the tools package; the agent only sees this
+// seam. Nil disables the policy.
+type SpillPolicy interface {
+	// ApplySpill returns the model-facing content for a successful plain-text
+	// tool result: the original when the policy does not apply (under cap,
+	// read tool, storage failure), or the bounded replacement when spilled.
+	ApplySpill(toolName, result string) string
+}
 
 func countToolCallBlocks(blocks []provider.ContentBlock) int {
 	count := 0
@@ -70,7 +83,7 @@ func (a *Agent) scheduleAndRunToolCalls(ctx context.Context, tcs []provider.Cont
 	defer sched.Shutdown()
 	// Surface true execution starts to the UI: a queued task (conflict or
 	// MaxParallel) shows "waiting" until the scheduler actually starts it
-	// (bugs.md Bug W). Emitted from scheduler goroutines like tool progress.
+	// (Bug W). Emitted from scheduler goroutines like tool progress.
 	names := make(map[string]string, len(tcs))
 	for i := range tcs {
 		names[tcs[i].ToolCallID] = tcs[i].ToolName
@@ -135,6 +148,73 @@ func (a *Agent) appendToolResults(tcs []provider.ContentBlock, realResults []Too
 	}
 }
 
+// fileToolNames are the tools whose successful results are treated as
+// workspace-instruction touches (gap CX5). Goa's fuzzy edit is part of the
+// "edit" tool (AllowFuzz), so the dsh fuzzyedit surface maps to "edit" here.
+var fileToolNames = map[string]bool{
+	"read":  true,
+	"write": true,
+	"edit":  true,
+}
+
+// injectInstructionLifecycle surfaces workspace-instruction lifecycle changes
+// (gap CX5, dsh agent-instructions parity). After every successful
+// read/write/edit call in the batch, it asks the tracker to reconcile the
+// touched path and appends one durable user-role message per detected change
+// (Additional instructions from…, Updated instructions from…, Instructions
+// removed:…). The messages are appended to history after the tool results, so
+// the next stream round sends them to the model.
+func (a *Agent) injectInstructionLifecycle(tcs []provider.ContentBlock, realResults []ToolCallResult) {
+	tracker := a.cfg.InstructionTracker
+	if tracker == nil || a.cfg.ProjectDir == "" {
+		return
+	}
+	byID := indexResultsByID(realResults)
+	var msgs []Message
+	for _, tc := range tcs {
+		if !fileToolNames[tc.ToolName] {
+			continue
+		}
+		r, ok := byID[tc.ToolCallID]
+		if !ok || r.Err != nil {
+			continue
+		}
+		path := fileToolPath(tc.ToolArguments)
+		if path == "" {
+			continue
+		}
+		for _, change := range tracker.Reconcile(path) {
+			msgs = append(msgs, Message{
+				Type:    Content,
+				Role:    User,
+				Content: internal.RenderInstructionMessage(change),
+			})
+		}
+	}
+	if len(msgs) == 0 {
+		return
+	}
+	a.mu.Lock()
+	a.history = append(a.history, msgs...)
+	a.mu.Unlock()
+	for i := range msgs {
+		a.emitMessage(msgs[i])
+	}
+}
+
+// fileToolPath extracts the "path" field from a file-tool JSON input. The
+// tracker only needs the directory the touch happened in to compute newly
+// reachable scopes, so a best-effort parse is sufficient.
+func fileToolPath(input string) string {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(input), &p); err != nil {
+		return ""
+	}
+	return p.Path
+}
+
 func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[string]ToolCallResult) string {
 	if msg := a.budgetToolCalls[tc.ToolCallID]; msg != "" {
 		return msg
@@ -153,8 +233,18 @@ func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[stri
 	if tc.ToolName == "bash" && a.popBashNearDup(tc.ToolCallID) {
 		output += nearDuplicateHint
 	}
+	// Tool-result spill policy (gap CX2): an oversized plain-text result is
+	// saved verbatim to the session spill dir and replaced by a budgeted
+	// head/tail preview + locator notice. Error results never reach this
+	// point (early return above); the policy itself skips read and keeps the
+	// original on any storage failure.
+	if a.cfg.SpillPolicy != nil {
+		if spilled := a.cfg.SpillPolicy.ApplySpill(tc.ToolName, output); spilled != output {
+			return spilled
+		}
+	}
 	if limit := a.toolResultSizeLimit(); limit > 0 && len(output) > limit {
-		return truncateToolResult(output, limit)
+		return truncateToolResult(tc.ToolName, output, limit)
 	}
 	return output
 }
@@ -170,28 +260,6 @@ func (a *Agent) popBashNearDup(callID string) bool {
 		return true
 	}
 	return false
-}
-
-// truncateToolResult caps a tool result to roughly limit bytes while preserving
-// both the start and the end. The beginning matters for tools like read_file
-// (structure/context at the top); the end matters for bash/webfetch (errors and
-// final results live at the tail). The middle is elided with a clear marker so
-// the model knows content was dropped and can re-read a narrower range. This
-// caps tool output at the source so it never inflates the prefix that later
-// compaction would have to elide anyway.
-func truncateToolResult(output string, limit int) string {
-	const markerFmt = "\n[goa-system] Tool result was truncated to ~%d bytes (original %d bytes); the middle was elided, the beginning and end are preserved.\n"
-	marker := fmt.Sprintf(markerFmt, limit, len(output))
-	half := (limit - len(marker)) / 2
-	if half < 1 {
-		half = 1
-	}
-	if len(output) <= half*2+len(marker) {
-		return output
-	}
-	head := output[:half]
-	tail := output[len(output)-half:]
-	return head + marker + tail
 }
 
 // toolResultSizeLimit returns a heuristic byte limit for a single tool result.
@@ -309,6 +377,8 @@ func (a *Agent) fireBeforeToolHook(ctx context.Context, name, input, callID stri
 		ToolName:  name,
 		ToolInput: input,
 		CallID:    callID,
+		SessionID: a.cfg.SessionID,
+		CWD:       a.cfg.ProjectDir,
 	})
 }
 
@@ -322,6 +392,8 @@ func (a *Agent) fireAfterToolHook(ctx context.Context, name, input, callID strin
 		ToolInput: input,
 		CallID:    callID,
 		Output:    result.Output,
+		SessionID: a.cfg.SessionID,
+		CWD:       a.cfg.ProjectDir,
 	}
 	if runErr != nil {
 		payload.Error = runErr.Error()
@@ -344,18 +416,32 @@ func (a *Agent) runTool(ctx context.Context, name, input string) (ToolResult, er
 	if err := a.confirmToolIfNeeded(ctx, name, input); err != nil {
 		return ToolResult{}, err
 	}
+	// Deferred-tool gate (P1): a deferred tool that has not yet been loaded
+	// via tool_search is unreachable. Reject with a clear redirect instead of
+	// a generic "unknown tool" so the model learns to load it first.
+	if loader, unloaded := a.reg.DeferredStatus(name); unloaded {
+		return ToolResult{}, fmt.Errorf("tool %q is deferred and not yet loaded: call %s with query %q to load it first", name, loader, "select:"+name)
+	}
 	tool, ok := a.reg.Get(name)
 	if !ok {
 		return ToolResult{}, fmt.Errorf("unknown tool: %s", name)
 	}
+	// Nested sub-call dispatch (gap TL7): a nested-capable tool (run_code)
+	// reads the ToolDispatcher from its execution context and re-enters this
+	// same guarded pipeline for every sub-call. The injected dispatcher
+	// refuses to re-enter this tool's own name, so a program cannot recurse
+	// into itself; every other sub-call traverses the complete permission and
+	// jail path (guard policy, solo policy, confirmation, registry lookup,
+	// execution) exactly like a direct call.
+	execCtx := WithToolDispatcher(ctx, a.dispatchSubCalls(name))
 	// ContextResultTool takes priority: ctx AND control signals (StopTurn).
 	if crt, ok := tool.(ContextResultTool); ok {
-		return crt.ExecuteContextWithResult(ctx, input)
+		return crt.ExecuteContextWithResult(execCtx, input)
 	}
 	// ContextTool next: it lets the tool observe cancellation (but its plain
 	// string result carries no StopTurn).
 	if ct, ok := tool.(ContextTool); ok {
-		out, err := ct.ExecuteContext(ctx, input)
+		out, err := ct.ExecuteContext(execCtx, input)
 		return ToolResult{Output: out, Error: err}, err
 	}
 	if rt, ok := tool.(ResultTool); ok {
@@ -363,4 +449,18 @@ func (a *Agent) runTool(ctx context.Context, name, input string) (ToolResult, er
 	}
 	out, err := tool.Execute(input)
 	return ToolResult{Output: out, Error: err}, err
+}
+
+// dispatchSubCalls returns a ToolDispatcher bound to this agent that re-enters
+// the guarded tool pipeline (executeToolWithResult) for nested sub-calls while
+// refusing to re-enter the tool currently being executed (selfName). The
+// refusal is generic — any nested-capable tool cannot recursively invoke
+// itself — and is enforced at the agent boundary, never by the tool.
+func (a *Agent) dispatchSubCalls(selfName string) ToolDispatcher {
+	return func(ctx context.Context, name, input, callID string) (ToolResult, error) {
+		if name == selfName {
+			return ToolResult{}, fmt.Errorf("tool %q cannot be invoked as a run_code sub-call", selfName)
+		}
+		return a.executeToolWithResult(ctx, name, input, callID)
+	}
 }

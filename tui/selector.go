@@ -233,7 +233,7 @@ func (s *Selector) handleDelete(data string) *string {
 // deletable data item. The previous guard blocked deletion of any value with
 // a "__" prefix; that also trapped legitimately persisted entries whose IDs
 // began with "__delete__" (a leaked sentinel saved as a model ID, see
-// bugs.md "Model delete"), making them impossible to remove via '-'.
+// Model delete), making them impossible to remove via '-'.
 // Only exact sentinel action rows are non-deletable; a "__delete__"-prefixed
 // value stays deletable so polluted entries can be removed.
 func isSelectorSentinel(v string) bool {

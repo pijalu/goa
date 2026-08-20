@@ -334,7 +334,7 @@ func showStartupBanner(subs *subsystems, chat *tui.ChatViewport) {
 	}
 
 	// LSP (gopls) availability — surface start failures instead of staying
-	// silent so the user knows Go diagnostics are unavailable (bugs.md L1).
+	// silent so the user knows Go diagnostics are unavailable (L1).
 	showLSPBanner(subs, chat)
 }
 
@@ -368,6 +368,23 @@ func showSkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skill
 		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d sub-agent · mode: %s)",
 			len(skillList), inlineCount, subCount, globalMode))
 	}
+	showStickySkillBanner(subs, chat, skillList)
+}
+
+// showStickySkillBanner reports the always-on (sticky) knowledge skills at
+// startup: they are persisted into every agent's history, so the user must
+// see which ones are active (sticky skills visible at start).
+func showStickySkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skills.SkillSummary) {
+	var names []string
+	for _, s := range skillList {
+		if s.Sticky {
+			names = append(names, s.Name)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	chat.AddSystemMessage(fmt.Sprintf("⟡ Sticky skills (always-on): %s", strings.Join(names, ", ")))
 }
 
 // filterSkillsForMode removes skills that require a sub-agent when the global
@@ -426,7 +443,7 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 	}
 	// NOTE: no synchronous RefreshLocalContextWindow here — that performs up
 	// to 3 HTTP probes (5s timeout each) against the local server and would
-	// block startup before the first frame (bugs.md Start-up: no blocking
+	// block startup before the first frame (Start-up: no blocking
 	// HTTP/API on the startup path). The real loaded context length is
 	// re-detected asynchronously after the first response delta via
 	// AgentManager.maybeRefreshContextWindow, which updates the agent and
@@ -436,7 +453,7 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 
 	systemPrompt := buildSystemPrompt(subs)
 	agenticTools := filterToolsForCurrentMode(subs, subs.toolRegistry.All())
-	_, err = subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, subs.cfg)
+	_, err = subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, subs.liveConfig())
 	if err != nil {
 		chat.AddSystemMessage(fmt.Sprintf("Failed to start session: %v", err))
 		subs.tuiEngine.RequestRender()

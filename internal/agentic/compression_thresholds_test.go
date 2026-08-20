@@ -13,62 +13,43 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// --- Threshold resolution ---
+// --- Threshold resolution (soft / hard / on-error model) ---
 
 func TestResolveThresholds(t *testing.T) {
 	tests := []struct {
-		name        string
-		cfg         ContextCompressionConfig
-		wantSoft    int
-		wantTrigger int
-		wantHard    int
+		name     string
+		cfg      ContextCompressionConfig
+		wantSoft int
+		wantHard int
 	}{
 		{
-			name:        "zero config disables every proactive layer (opt-in)",
-			cfg:         ContextCompressionConfig{},
-			wantSoft:    0, // proactive compression is opt-in: 0 = disabled
-			wantTrigger: 0,
-			wantHard:    0,
+			name: "zero config: both layers off (0 = disabled)",
+			cfg:  ContextCompressionConfig{},
+			// soft/hard are opt-in (0 = disabled); the shipped default config
+			// sets hard 95 explicitly — a zero SDK config is fully off.
+			wantSoft: 0,
+			wantHard: 0,
 		},
 		{
-			name:        "legacy ThresholdPercent maps to trigger",
-			cfg:         ContextCompressionConfig{ThresholdPercent: 80},
-			wantSoft:    0,
-			wantTrigger: 80,
-			wantHard:    0,
+			name:     "full explicit tiers",
+			cfg:      ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: 50, HardPercent: 90}},
+			wantSoft: 50,
+			wantHard: 90,
 		},
 		{
-			name: "explicit Thresholds win over legacy alias",
-			cfg: ContextCompressionConfig{
-				ThresholdPercent: 70,
-				Thresholds:       CompressionThresholds{TriggerPercent: 85},
-			},
-			wantSoft:    0,
-			wantTrigger: 70, // legacy alias wins when both set (backwards compat)
-			wantHard:    0,
+			name:     "hard percent explicit",
+			cfg:      ContextCompressionConfig{Thresholds: CompressionThresholds{HardPercent: 88}},
+			wantSoft: 0,
+			wantHard: 88,
 		},
 		{
-			name: "full explicit tiers",
-			cfg: ContextCompressionConfig{
-				Thresholds: CompressionThresholds{SoftPercent: 50, TriggerPercent: 75, HardPercent: 90},
-			},
-			wantSoft:    50,
-			wantTrigger: 75,
-			wantHard:    90,
-		},
-		{
-			name:        "hard percent explicit",
-			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{HardPercent: 88}},
-			wantSoft:    0,
-			wantTrigger: 0,
-			wantHard:    88,
-		},
-		{
-			name:        "negative values clamp to disabled",
-			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1, TriggerPercent: -5, HardPercent: -1}},
-			wantSoft:    0,
-			wantTrigger: 0,
-			wantHard:    0,
+			name: "negative soft clamps to disabled; negative hard stays (legacy disable spelling)",
+			cfg:  ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1, HardPercent: -1}},
+			// soft: negative = disabled (0). hard: negative is the legacy
+			// explicit-disable spelling — hardEnabled() treats <=0 as disabled;
+			// effectiveHard() still falls back to 95 for the reactive math only.
+			wantSoft: 0,
+			wantHard: -1,
 		},
 	}
 	for _, tt := range tests {
@@ -77,9 +58,6 @@ func TestResolveThresholds(t *testing.T) {
 			if got.soft != tt.wantSoft {
 				t.Errorf("soft = %d, want %d", got.soft, tt.wantSoft)
 			}
-			if got.trigger != tt.wantTrigger {
-				t.Errorf("trigger = %d, want %d", got.trigger, tt.wantTrigger)
-			}
 			if got.hard != tt.wantHard {
 				t.Errorf("hard = %d, want %d", got.hard, tt.wantHard)
 			}
@@ -87,10 +65,10 @@ func TestResolveThresholds(t *testing.T) {
 	}
 }
 
-// --- Tier computation ---
+// --- Tier computation (soft/hard only) ---
 
 func TestProactiveTier(t *testing.T) {
-	cfg := ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: 50, TriggerPercent: 80, HardPercent: 95}}
+	cfg := ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: 50, HardPercent: 95}}
 	rt := cfg.resolveThresholds()
 	tests := []struct {
 		name      string
@@ -102,17 +80,13 @@ func TestProactiveTier(t *testing.T) {
 		{"below soft hot cache does nothing", 40, false, tierNone},
 		{"soft tier when cache cold", 60, true, tierSoft},
 		{"soft tier defers while cache hot", 60, false, tierNone},
-		{"trigger tier when cache cold", 82, true, tierTrigger},
-		{"trigger tier defers while cache hot", 82, false, tierNone},
-		// deferralCeiling = hard(95) - 10 = 85: at/above it the cache gate
-		// no longer suppresses compression (overflow risk beats cache churn).
-		{"just below deferral ceiling still defers", 84, false, tierNone},
-		{"deferral ceiling bypasses hot cache", 85, false, tierTrigger},
+		{"exactly soft boundary", 50, true, tierSoft},
+		// The hard tier ALWAYS fires at/above the hard ceiling, cache state
+		// notwithstanding (the cache gate only defers SOFT maintenance).
 		{"hard ceiling bypasses hot cache", 96, false, tierHard},
 		{"hard ceiling runs when cold", 96, true, tierHard},
-		{"exactly soft boundary", 50, true, tierSoft},
-		{"exactly trigger boundary", 80, true, tierTrigger},
 		{"exactly hard boundary", 95, false, tierHard},
+		{"exactly hard boundary cold", 95, true, tierHard},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -132,20 +106,19 @@ func TestProactiveTier(t *testing.T) {
 	}
 }
 
-// TestProactiveTier_ZeroThresholdsDisableProactive guards the opt-in default:
-// with no thresholds configured (all 0), proactive compression NEVER fires —
-// even at 99% usage with a cold cache. Only the reactive error/ceiling net
-// protects the window.
-func TestProactiveTier_ZeroThresholdsDisableProactive(t *testing.T) {
+// TestProactiveTier_ZeroConfigAllTiersOff guards the opt-in contract: with
+// no thresholds configured (all 0), NO proactive tier fires at any usage —
+// soft and hard are both opt-in (0 = disabled).
+func TestProactiveTier_ZeroConfigAllTiersOff(t *testing.T) {
 	rt := ContextCompressionConfig{}.resolveThresholds()
 	a := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
 	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache: would fire if enabled
-	for _, usage := range []int{50, 80, 90, 95, 99} {
+	for _, usage := range []int{50, 80, 90, 94, 95, 99} {
 		a.mu.Lock()
 		got := a.proactiveTierLocked(usage, rt)
 		a.mu.Unlock()
 		if got != tierNone {
-			t.Errorf("proactiveTierLocked(%d%%, zero thresholds) = %v, want tierNone (proactive disabled by default)", usage, got)
+			t.Errorf("proactiveTierLocked(%d%%, zero config) = %v, want tierNone (all tiers opt-in off)", usage, got)
 		}
 	}
 }
@@ -157,8 +130,8 @@ func TestMaybeCompress_ZeroThresholdsNoProactive(t *testing.T) {
 	a := NewAgent(Config{
 		Model: testModel(provider.ApiOpenAICompletions),
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens: 20000,
-			Strategy:  CompressionToolElision, // strategy set, but no thresholds
+			MaxTokens:  20000,
+			Strategies: CompressionLayerStrategies{Soft: CompressionToolElision}, // strategy set, no thresholds
 		},
 	})
 	a.history = softTierTestHistory()
@@ -174,10 +147,72 @@ func TestMaybeCompress_ZeroThresholdsNoProactive(t *testing.T) {
 	}
 }
 
+// TestMaybeCompress_ZeroConfigMicroSoftStrategyIsNoOp pins the regression
+// behind the spurious "Context compacted (micro): 0% → 1%" banner: with a
+// zero compression config the soft layer is DISABLED, but resolveThresholds
+// still defaults softStrategy to micro. The soft=micro self-management branch
+// in maybeCompress keyed off the resolved strategy alone and fired micro on
+// every turn below the ceiling — truncating fresh tool results at near-empty
+// context. The gate must require the soft threshold (rt.soft > 0).
+func TestMaybeCompress_ZeroConfigMicroSoftStrategyIsNoOp(t *testing.T) {
+	a := NewAgent(Config{
+		Model: testModel(provider.ApiOpenAICompletions),
+		ContextCompression: ContextCompressionConfig{
+			MaxTokens: 20000,
+			// No Strategies and no Thresholds: soft resolves to micro (default)
+			// but SoftPercent is 0 = disabled. No layer may fire.
+		},
+	})
+	a.history = []Message{
+		{Type: Content, Role: System, Content: "sys"},
+		{Type: Content, Role: User, Content: "ask"},
+		{Type: Content, Role: ToolRole, Content: strings.Repeat("r", 3000)},
+		{Type: Content, Role: Assistant, Content: "done"},
+	}
+	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache: would fire if enabled
+
+	// Snapshot the full history (content + length) to detect any in-place
+	// micro truncation or message drop.
+	type msg struct {
+		role    Role
+		content string
+	}
+	snap := func() []msg {
+		out := make([]msg, len(a.history))
+		for i, m := range a.history {
+			out[i] = msg{m.Role, m.Content}
+		}
+		return out
+	}
+	before := snap()
+
+	obs := &mockEventObserver{}
+	a.AddObserver(obs)
+
+	if err := a.maybeCompress(context.Background()); err != nil {
+		t.Fatalf("maybeCompress: %v", err)
+	}
+
+	after := snap()
+	if len(after) != len(before) {
+		t.Fatalf("maybeCompress changed history length %d → %d with all layers disabled", len(before), len(after))
+	}
+	for i := range before {
+		if after[i] != before[i] {
+			t.Errorf("maybeCompress mutated message %d with all layers disabled: content %d → %d bytes", i, len(before[i].content), len(after[i].content))
+		}
+	}
+	for _, ev := range compactEvents(obs) {
+		if ev.Compaction != nil {
+			t.Errorf("compaction event emitted with all layers disabled: %+v", ev.Compaction)
+		}
+	}
+}
+
 func TestProactiveTier_SoftDisabledWhenNegative(t *testing.T) {
 	// SoftPercent -1 disables the soft layer entirely: usage in the soft band
 	// does nothing even with a cold cache.
-	rt := ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1, TriggerPercent: 80, HardPercent: 95}}.resolveThresholds()
+	rt := ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1, HardPercent: 95}}.resolveThresholds()
 	a := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
 	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache
 	a.mu.Lock()
@@ -188,83 +223,46 @@ func TestProactiveTier_SoftDisabledWhenNegative(t *testing.T) {
 	}
 }
 
-// --- Soft-layer strategy validation ---
-
-func TestZeroLLMStrategy(t *testing.T) {
-	tests := []struct {
-		configured CompressionStrategy
-		want       CompressionStrategy
-	}{
-		{CompressionToolElision, CompressionToolElision},
-		{CompressionSummarize, CompressionMicro}, // never LLM at soft layer
-		{CompressionHybrid, CompressionMicro},
-		{CompressionSelective, CompressionMicro}, // too destructive for early maintenance
-		{CompressionMicro, CompressionMicro},
-		{"", CompressionMicro}, // empty → fallback (micro per the 3-layer defaults)
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.configured), func(t *testing.T) {
-			if got := zeroLLMStrategy(tt.configured, CompressionMicro); got != tt.want {
-				t.Errorf("zeroLLMStrategy(%q) = %q, want %q", tt.configured, got, tt.want)
-			}
-		})
-	}
-}
-
-// --- Per-layer strategy resolution ---
+// --- Per-layer strategy resolution (soft/hard) ---
 
 func TestResolveThresholdsStrategies(t *testing.T) {
 	tests := []struct {
 		name        string
 		cfg         ContextCompressionConfig
 		wantSoft    CompressionStrategy
-		wantTrigger CompressionStrategy
 		wantHard    CompressionStrategy
 		wantSoftPct int // expected resolved soft percent (0 = disabled; opt-in)
 	}{
 		{
-			name:        "defaults: micro / tool_elision / hybrid, all layers off",
+			name:        "defaults: micro soft, summarize hard, both levels off",
 			cfg:         ContextCompressionConfig{},
 			wantSoft:    CompressionMicro,
-			wantTrigger: CompressionToolElision,
-			wantHard:    CompressionHybrid,
-			wantSoftPct: 0,
-		},
-		{
-			name:        "legacy Strategy maps to the trigger layer",
-			cfg:         ContextCompressionConfig{Strategy: CompressionSummarize},
-			wantSoft:    CompressionMicro,
-			wantTrigger: CompressionSummarize,
-			wantHard:    CompressionHybrid,
-			wantSoftPct: 0,
-		},
-		{
-			name: "explicit per-layer strategies win over legacy Strategy",
-			cfg: ContextCompressionConfig{
-				Strategy:   CompressionSummarize,
-				Strategies: CompressionLayerStrategies{Soft: CompressionToolElision, Trigger: CompressionSelective, Hard: CompressionSummarize},
-			},
-			wantSoft:    CompressionToolElision,
-			wantTrigger: CompressionSelective,
 			wantHard:    CompressionSummarize,
 			wantSoftPct: 0,
 		},
 		{
-			name: "soft layer degrades LLM strategies to micro",
+			name: "explicit per-layer strategies win",
+			cfg: ContextCompressionConfig{
+				Strategies: CompressionLayerStrategies{Soft: CompressionToolElision, Hard: CompressionSelective},
+			},
+			wantSoft:    CompressionToolElision,
+			wantHard:    CompressionSelective,
+			wantSoftPct: 0,
+		},
+		{
+			name: "soft layer honors any configured strategy",
 			cfg: ContextCompressionConfig{
 				Strategies: CompressionLayerStrategies{Soft: CompressionSummarize},
 			},
-			wantSoft:    CompressionMicro,
-			wantTrigger: CompressionToolElision,
-			wantHard:    CompressionHybrid,
+			wantSoft:    CompressionSummarize,
+			wantHard:    CompressionSummarize,
 			wantSoftPct: 0,
 		},
 		{
 			name:        "negative soft percent clamps to disabled",
 			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1}},
 			wantSoft:    CompressionMicro,
-			wantTrigger: CompressionToolElision,
-			wantHard:    CompressionHybrid,
+			wantHard:    CompressionSummarize,
 			wantSoftPct: 0,
 		},
 	}
@@ -273,9 +271,6 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 			rt := tt.cfg.resolveThresholds()
 			if rt.softStrategy != tt.wantSoft {
 				t.Errorf("softStrategy = %q, want %q", rt.softStrategy, tt.wantSoft)
-			}
-			if rt.triggerStrategy != tt.wantTrigger {
-				t.Errorf("triggerStrategy = %q, want %q", rt.triggerStrategy, tt.wantTrigger)
 			}
 			if rt.hardStrategy != tt.wantHard {
 				t.Errorf("hardStrategy = %q, want %q", rt.hardStrategy, tt.wantHard)
@@ -307,14 +302,13 @@ func softTierTestHistory() []Message {
 }
 
 func TestMaybeCompress_SoftTierRunsElision(t *testing.T) {
-	// Usage ~4KB+sys of 20000 ≈ 21%? No — history is ~16KB chars → ~4000 tokens
-	// → 20% of 20000. Configure soft=10, trigger=80 so 20% lands in soft band.
+	// History is ~16KB chars → ~4000 tokens → 20% of 20000. soft=10 → soft band.
 	a := NewAgent(Config{
 		Model: testModel(provider.ApiOpenAICompletions),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:  20000,
-			Strategy:   CompressionToolElision,
-			Thresholds: CompressionThresholds{SoftPercent: 10, TriggerPercent: 80, HardPercent: 95},
+			Strategies: CompressionLayerStrategies{Soft: CompressionToolElision},
+			Thresholds: CompressionThresholds{SoftPercent: 10, HardPercent: 95},
 		},
 	})
 	a.history = softTierTestHistory()
@@ -325,7 +319,7 @@ func TestMaybeCompress_SoftTierRunsElision(t *testing.T) {
 		t.Fatalf("maybeCompress: %v", err)
 	}
 	if a.history[2].Content == before {
-		t.Errorf("soft tier did not elide old tool results at %d%% usage (soft=10, trigger=80)", a.ContextStats().UsagePercent)
+		t.Errorf("soft tier did not elide old tool results at %d%% usage (soft=10)", a.ContextStats().UsagePercent)
 	}
 }
 
@@ -334,8 +328,8 @@ func TestMaybeCompress_SoftTierDefersWhenCacheHot(t *testing.T) {
 		Model: testModel(provider.ApiOpenAICompletions),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:  20000,
-			Strategy:   CompressionToolElision,
-			Thresholds: CompressionThresholds{SoftPercent: 10, TriggerPercent: 80, HardPercent: 95},
+			Strategies: CompressionLayerStrategies{Soft: CompressionToolElision},
+			Thresholds: CompressionThresholds{SoftPercent: 10, HardPercent: 95},
 		},
 	})
 	a.history = softTierTestHistory()
@@ -346,51 +340,44 @@ func TestMaybeCompress_SoftTierDefersWhenCacheHot(t *testing.T) {
 		t.Fatalf("maybeCompress: %v", err)
 	}
 	if a.history[2].Content != before {
-		t.Errorf("soft tier mutated history while cache hot; must defer")
+		t.Errorf("soft tier mutated history while cache hot; must defer (hard tier only bypasses the gate)")
 	}
 }
 
-func TestMaybeCompress_SoftTierNeverSummarizes(t *testing.T) {
-	// With a summarize strategy configured, the soft tier must run micro
-	// (zero-LLM), never the LLM summarization. A summarize attempt would fail
-	// in tests (no provider), so success here proves no LLM call happened.
+// TestMaybeCompress_SoftTierHonorsSummarize pins the all-methods soft layer:
+// an explicit summarize strategy at the soft tier must run the LLM
+// summarization (no degradation to micro). The history becomes the
+// [summary-request, summary] pair.
+func TestMaybeCompress_SoftTierHonorsSummarize(t *testing.T) {
+	p := textEventProvider("Summary: soft tier summary.")
 	a := NewAgent(Config{
-		Model: testModel(provider.ApiOpenAICompletions),
+		Model: testModel(p.API()),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:  20000,
-			Strategy:   CompressionSummarize,
-			Thresholds: CompressionThresholds{SoftPercent: 10, TriggerPercent: 80, HardPercent: 95},
-			MicroCompaction: MicroCompactionConfig{
-				KeepRecentMessages: 2,
-				MinContentTokens:   10,
-				MinContextRatio:    0.05, // below soft band so micro can act
-				TruncatedMarker:    "[cleared]",
-			},
+			Strategies: CompressionLayerStrategies{Soft: CompressionSummarize},
+			Thresholds: CompressionThresholds{SoftPercent: 10, HardPercent: 95},
 		},
 	})
 	a.history = softTierTestHistory()
 	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache
 
 	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress at soft tier must not invoke LLM summarization: %v", err)
+		t.Fatalf("maybeCompress at soft tier with summarize: %v", err)
 	}
-	if a.history[2].Content != "[cleared]" {
-		t.Errorf("soft tier with summarize strategy should run micro truncation, got content %q", a.history[2].Content[:min(20, len(a.history[2].Content))])
-	}
-	if len(a.history) != 11 {
-		t.Errorf("soft tier must not drop messages, history len = %d, want 11", len(a.history))
+	if n := len(a.history); n != 2 {
+		t.Errorf("soft tier with summarize must compact to the [summary-request, summary] pair, got %d messages", n)
 	}
 }
 
-func TestMaybeCompress_HysteresisSoftThenTrigger(t *testing.T) {
+func TestMaybeCompress_HysteresisSoftThenHard(t *testing.T) {
 	// Turn 1: usage in soft band → elision only (history length preserved).
-	// Turn 2: usage pushed past trigger → configured strategy runs.
+	// Turn 2: usage pushed past the hard ceiling → hard strategy runs.
 	cfg := Config{
 		Model: testModel(provider.ApiOpenAICompletions),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:  20000,
-			Strategy:   CompressionToolElision,
-			Thresholds: CompressionThresholds{SoftPercent: 10, TriggerPercent: 60, HardPercent: 95},
+			Strategies: CompressionLayerStrategies{Soft: CompressionToolElision, Hard: CompressionSelective},
+			Thresholds: CompressionThresholds{SoftPercent: 10, HardPercent: 95},
 		},
 	}
 	a := NewAgent(cfg)
@@ -405,44 +392,17 @@ func TestMaybeCompress_HysteresisSoftThenTrigger(t *testing.T) {
 		t.Fatalf("soft tier dropped messages: len = %d, want 11", len(a.history))
 	}
 
-	// Simulate growth past trigger: shrink the window so the same history
-	// (~4000 tokens) exceeds 60% of 5000.
+	// Simulate growth past the hard ceiling: shrink the window so the same
+	// history (~4000 tokens) exceeds 95% of 4000.
 	a.SetContextCompression(ContextCompressionConfig{
-		MaxTokens:  5000,
-		Strategy:   CompressionToolElision,
-		Thresholds: CompressionThresholds{SoftPercent: 10, TriggerPercent: 60, HardPercent: 95},
+		MaxTokens:  4000,
+		Strategies: CompressionLayerStrategies{Soft: CompressionToolElision, Hard: CompressionSelective},
+		Thresholds: CompressionThresholds{SoftPercent: 10, HardPercent: 95},
 	})
 	a.lastTurnEnd = time.Now().Add(-2 * time.Hour)
-	// Already elided content stays elided; trigger tier must run without error.
+	// Hard tier must run (selective, offline) without error.
 	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress trigger: %v", err)
-	}
-	stats := a.ContextStats()
-	if stats.UsagePercent < 60 {
-		t.Logf("after trigger compression usage = %d%%", stats.UsagePercent)
-	}
-}
-
-// --- Regression: legacy defaults reproduce today's behavior ---
-
-func TestMaybeCompress_LegacyThresholdPercentStillWorks(t *testing.T) {
-	a := NewAgent(Config{
-		Model: testModel(provider.ApiOpenAICompletions),
-		ContextCompression: ContextCompressionConfig{
-			MaxTokens:        20000,
-			ThresholdPercent: 10, // legacy field, no Thresholds set
-			Strategy:         CompressionToolElision,
-		},
-	})
-	a.history = softTierTestHistory()
-	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold
-
-	before := a.history[2].Content
-	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress: %v", err)
-	}
-	if a.history[2].Content == before {
-		t.Errorf("legacy ThresholdPercent trigger no longer fires")
+		t.Fatalf("maybeCompress hard: %v", err)
 	}
 }
 
@@ -455,7 +415,7 @@ func TestCheckContextLimit_RespectsConfiguredHardPercent(t *testing.T) {
 		Model: testModel(provider.ApiOpenAICompletions),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:  5000,
-			Thresholds: CompressionThresholds{TriggerPercent: 40, HardPercent: 50},
+			Thresholds: CompressionThresholds{HardPercent: 50},
 		},
 	})
 	a.history = softTierTestHistory() // ~4000 tokens = 80% of 5000
@@ -470,7 +430,7 @@ func TestEnforceContextCeiling_RespectsConfiguredHardPercent(t *testing.T) {
 		Model: testModel(provider.ApiOpenAICompletions),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:  20000,
-			Thresholds: CompressionThresholds{TriggerPercent: 20, HardPercent: 30},
+			Thresholds: CompressionThresholds{HardPercent: 30},
 		},
 	})
 	a.history = softTierTestHistory() // ~4000 tokens = 20% of 20000 → under 30% hard
@@ -480,32 +440,73 @@ func TestEnforceContextCeiling_RespectsConfiguredHardPercent(t *testing.T) {
 		t.Errorf("enforceContextCeiling dropped messages below hard=30%%: len = %d, want 11", len(a.history))
 	}
 
-	// Tighten: hard=15 → 20% usage exceeds → must drop oldest.
+	// Tighten: hard=15 → 20% usage exceeds → must shrink. The history is
+	// tool-heavy (4 large tool results), so the model-free passes
+	// (pruning/micro truncation) resolve the pressure WITHOUT dropping any
+	// message — the escalation-order contract: drop only when shrink can't fit.
 	a.SetContextCompression(ContextCompressionConfig{
 		MaxTokens:  20000,
-		Thresholds: CompressionThresholds{TriggerPercent: 10, HardPercent: 15},
+		Thresholds: CompressionThresholds{HardPercent: 15},
 	})
 	a.enforceContextCeiling()
-	if len(a.history) >= 11 {
-		t.Errorf("enforceContextCeiling did not enforce hard=15%%: len = %d, want < 11", len(a.history))
+	if len(a.history) != 11 {
+		t.Errorf("enforceContextCeiling dropped messages on a shrinkable history: len = %d, want 11 (elision/micro must run first)", len(a.history))
+	}
+	// But the shrink must have happened (the tool payloads were truncated in
+	// place to bring history under the 15% ceiling).
+	foundMarker := false
+	for _, m := range a.history {
+		if m.Role == ToolRole && (strings.Contains(m.Content, PruneMarker) || strings.Contains(m.Content, a.cfg.ContextCompression.MicroCompaction.TruncatedMarker)) {
+			foundMarker = true
+		}
+	}
+	if !foundMarker {
+		t.Error("expected tool-payload truncation markers after the fallback; the model-free shrink did not run")
 	}
 }
 
-// TestProactiveTier_DisableCacheGate: with the cache gate off (models without
-// a meaningful prefix cache), a hot cache never defers compression — the
-// trigger fires immediately at the trigger level.
+// TestEnforceContextCeiling_DropsWhenShrinkCannotFit pins the last-resort
+// drop: a history of plain (non-tool) messages has no elidable payload, so
+// when total usage exceeds the hard ceiling the fallback must drop the oldest
+// messages — shrink alone cannot fit.
+func TestEnforceContextCeiling_DropsWhenShrinkCannotFit(t *testing.T) {
+	a := NewAgent(Config{
+		Model: testModel(provider.ApiOpenAICompletions),
+		ContextCompression: ContextCompressionConfig{
+			MaxTokens:  2000,
+			Thresholds: CompressionThresholds{HardPercent: 50},
+		},
+	})
+	// Plain chat, no tool payloads to shrink; ~1800 tokens = 90% of 2000.
+	long := strings.Repeat("u", 1600)
+	a.history = []Message{
+		{Type: Content, Role: System, Content: "sys"},
+		{Type: Content, Role: User, Content: long},
+		{Type: Content, Role: Assistant, Content: strings.Repeat("a", 1600)},
+		{Type: Content, Role: User, Content: strings.Repeat("q", 1600)},
+		{Type: Content, Role: Assistant, Content: strings.Repeat("z", 1600)},
+	}
+	before := len(a.history)
+	a.enforceContextCeiling()
+	if len(a.history) >= before {
+		t.Errorf("fallback must drop oldest messages when shrink cannot fit: len %d -> %d", before, len(a.history))
+	}
+}
+
+// TestProactiveTier_DisableCacheGate: with the cache gate off, a hot cache
+// never defers SOFT maintenance — it fires immediately at the soft level.
 func TestProactiveTier_DisableCacheGate(t *testing.T) {
-	rt := ContextCompressionConfig{Thresholds: CompressionThresholds{TriggerPercent: 80, HardPercent: 95}}.resolveThresholds()
+	rt := ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: 80, HardPercent: 95}}.resolveThresholds()
 	a := NewAgent(Config{
 		Model:              testModel(provider.ApiOpenAICompletions),
 		ContextCompression: ContextCompressionConfig{DisableCacheGate: true},
 	})
-	a.lastTurnEnd = time.Now() // hot cache — would normally defer
+	a.lastTurnEnd = time.Now() // hot cache — would normally defer soft
 	a.mu.Lock()
 	got := a.proactiveTierLocked(82, rt)
 	a.mu.Unlock()
-	if got != tierTrigger {
-		t.Errorf("cache gate off: proactiveTierLocked(82, hot) = %v, want tierTrigger (no deferral)", got)
+	if got != tierSoft {
+		t.Errorf("cache gate off: proactiveTierLocked(82, hot) = %v, want tierSoft (no deferral)", got)
 	}
 	// Sanity: same setup with the gate on defers.
 	b := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
@@ -514,6 +515,6 @@ func TestProactiveTier_DisableCacheGate(t *testing.T) {
 	gotOn := b.proactiveTierLocked(82, rt)
 	b.mu.Unlock()
 	if gotOn != tierNone {
-		t.Errorf("cache gate on: proactiveTierLocked(82, hot) = %v, want tierNone (deferred)", gotOn)
+		t.Errorf("cache gate on: proactiveTierLocked(82, hot) = %v, want tierNone (soft deferred)", gotOn)
 	}
 }

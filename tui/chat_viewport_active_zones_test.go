@@ -30,7 +30,7 @@ func stripAllLines(lines []string) []string {
 }
 
 // TestChatViewport_ToolsStayInChronologicalOrder verifies the FIFO layout
-// from bugs.md: a tool widget appears in the order it was created. While it is
+// from a tool widget appears in the order it was created. While it is
 // running it sits below earlier entries and above later entries; once
 // finalized, later entries continue to render below it.
 func TestChatViewport_ToolsStayInChronologicalOrder(t *testing.T) {

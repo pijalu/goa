@@ -441,7 +441,7 @@ func TestPythonTool_FStringConversion(t *testing.T) {
 	}
 }
 
-// Regression for bugs.md: importing an unsupported stdlib module (e.g. struct)
+// Regression for importing an unsupported stdlib module (e.g. struct)
 // produced a cryptic FileNotFoundError: 'Failed to resolve "struct"'. The tool
 // must now return an actionable message naming the module and pointing to
 // bash python3.
@@ -473,7 +473,7 @@ func TestClarifyModuleError_Passthrough(t *testing.T) {
 
 // TestPythonTool_Execute_ReFinditer replays the session failure from
 // goa-export-20260803-113756.zip: re.finditer raised "'module' has no
-// attribute 'finditer'" (bugs.md re.finditer parity gap).
+// attribute 'finditer'" (re.finditer parity gap).
 func TestPythonTool_Execute_ReFinditer(t *testing.T) {
 	tool := &PythonTool{}
 	code := `import re
@@ -486,5 +486,32 @@ for m in re.finditer(r'func (flatten|formatValue|valStr|toStr)\(', "func flatten
 	}
 	if !strings.Contains(out, "flatten 0") || !strings.Contains(out, "formatValue 16") {
 		t.Errorf("output = %q, want finditer matches with positions", out)
+	}
+}
+
+// TestPythonTool_Execute_ReSubCallable replays the reported session failure
+// re.sub(pattern, fn, s) raised "TypeError: 'sub argument must
+// be str, not function'" because the Go-backed re module coerced repl to a
+// string. The end-to-end rewrite from the export must now run to completion.
+func TestPythonTool_Execute_ReSubCallable(t *testing.T) {
+	tool := &PythonTool{}
+	code := `import re
+p = "/tmp/goa_config_skills_test_snippet.txt"
+s = "skillEnabled(cfg, \"goal\", nil)\nskillEnabled(got, name, nil)"
+
+def sub_se(m):
+    return "skillChecked(%s, %s, nil)" % (m.group(1), m.group(2))
+
+s2 = re.sub(r'skillEnabled\((cfg|got|fresh), (["a-zA-Z0-9_-]+|name), nil\)', sub_se, s)
+print(s2)
+print(re.sub(r"(\w+)@(\w+)", r"\g<2>.\g<1>", "user@host"))`
+	out, err := tool.Execute(fmt.Sprintf(`{"code": %q}`, code))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(out, `skillChecked(cfg, "goal", nil)`) ||
+		!strings.Contains(out, "skillChecked(got, name, nil)") ||
+		!strings.Contains(out, "host.user") {
+		t.Errorf("output = %q, want callable rewrite + template expansion", out)
 	}
 }

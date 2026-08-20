@@ -61,7 +61,7 @@ func (c *CompanionToggleCommand) CompleteArgs(ctx core.Context, prefix string) [
 // manager's minor mode, where /companion:on records enablement via
 // SetMinorMode. Reading only the orchestrator proposed ":on" while companion
 // was already on whenever the orchestrator was absent or had lost the mirror
-// after a session restore (bugs.md Bug C).
+// after a session restore (Bug C).
 func companionEffectiveMode(ctx core.Context) multiagent.WorkflowMode {
 	if ctx.ForegroundOrchestrator != nil {
 		if mode := ctx.ForegroundOrchestrator.Mode(); mode != multiagent.WorkflowInactive {

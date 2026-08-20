@@ -27,7 +27,7 @@ const (
 // collectLSPDiagnostics polls the manager for diagnostics for resolvedPath
 // until they appear or the timeout elapses, returning whatever is available.
 // It replaces the previous fixed 150ms sleep, which raced gopls's asynchronous
-// publishDiagnostics on cold package loads (bugs.md L1). The ctx is honoured
+// publishDiagnostics on cold package loads (L1). The ctx is honoured
 // so a cancelled turn stops the wait early.
 func collectLSPDiagnostics(ctx context.Context, mgr LSPDocumentManager, resolvedPath string) []lsp.Diagnostic {
 	if mgr == nil {
@@ -58,7 +58,7 @@ func collectLSPDiagnostics(ctx context.Context, mgr LSPDocumentManager, resolved
 // formatLSPDiagnostics renders diagnostics as a compact, model-readable block
 // appended to tool output. Returns "" when there is nothing to report. The
 // block is labeled with the actual source server (gopls, pyright, …) so the
-// model knows which analyzer produced the hints (bugs.md Issue LSP — the
+// model knows which analyzer produced the hints (Issue LSP — the
 // label used to be hardcoded "gopls" for every language).
 func formatLSPDiagnostics(path string, diags []lsp.Diagnostic, serverID string) string {
 	if len(diags) == 0 {

@@ -153,6 +153,168 @@ func TestFetcherAnthropic_NoAPIKey(t *testing.T) {
 	}
 }
 
+// --- fetchers/opencode.js ---
+
+// TestFetcherOpencode_ParsesRealUsageShape feeds the payload captured from the
+// live endpoint (2026-08-17):
+//
+//	GET https://opencode.ai/zen/go/v1/usage  (Authorization: Bearer <key>)
+//	{"usage":{"rolling":{"status":"ok","percent":0,"resetsAt":"…"},
+//	          "weekly":{"status":"ok","percent":0,"resetsAt":"…"},
+//	          "monthly":{"status":"ok","percent":85,"resetsAt":"…"}}}
+//
+// Regression for "opencode-go quota missing from /quota and the status bar":
+// the first fetcher version invented a credits shape the real API does NOT
+// return, so the mapper produced zero limits and the provider vanished.
+func TestFetcherOpencode_ParsesRealUsageShape(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.respond("opencode.ai/zen/go/v1/usage", 200, `{
+		"usage": {
+			"rolling": {"status":"ok","percent":12,"resetsAt":"2026-08-17T11:55:57.159Z"},
+			"weekly":  {"status":"ok","percent":34,"resetsAt":"2026-08-24T00:00:00.159Z"},
+			"monthly": {"status":"ok","percent":85,"resetsAt":"2026-09-05T15:47:55.159Z"}
+		}
+	}`)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	defer setHTTPDo(env.mockDo())()
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	v, err := bridge.vm.RunString(`
+		(function() {
+			var fetcher = globalThis.__require("fetchers/opencode.js");
+			var ctx = { config: { apiKey: "sk", baseUrl: "https://opencode.ai/zen/go/v1" }, session: {} };
+			var out = fetcher.fetch(ctx);
+			if (out.error) { return "ERR:" + out.error; }
+			var parts = [];
+			for (var i = 0; i < out.limits.length; i++) {
+				var l = out.limits[i];
+				parts.push(l.label + "=" + l.used + "/" + l.limit + "@" + l.periodMs + "->" + l.resetsAt);
+			}
+			return parts.join("|");
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Percent windows normalize to used/100 (z.ai idiom), shortest window
+	// first: rolling (5h) → weekly (7d) → monthly (30d).
+	want := "Session (5h)=12/100@18000000->2026-08-17T11:55:57.159Z" +
+		"|Weekly=34/100@604800000->2026-08-24T00:00:00.159Z" +
+		"|Monthly=85/100@2592000000->2026-09-05T15:47:55.159Z"
+	if got := v.String(); got != want {
+		t.Fatalf("opencode real-shape parse:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestFetcherOpencode_ZenBaseRewritesToGo covers the dual-variant config: a
+// provider whose base is the zen/v1 inference endpoint must still reach the
+// usage API, which lives ONLY under /zen/go/v1 (the zen/v1/usage route serves
+// an HTML 404 page — verified live 2026-08-17). Both variants share the same
+// account and key, so the rewrite is safe.
+func TestFetcherOpencode_ZenBaseRewritesToGo(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	// Only the go URL is mocked: a fetch against zen/v1/usage would 404.
+	env.respond("opencode.ai/zen/go/v1/usage", 200, `{"usage":{"weekly":{"status":"ok","percent":7,"resetsAt":"2026-08-24T00:00:00.000Z"}}}`)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	defer setHTTPDo(env.mockDo())()
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	v, err := bridge.vm.RunString(`
+		(function() {
+			var fetcher = globalThis.__require("fetchers/opencode.js");
+			var ctx = { config: { apiKey: "sk", baseUrl: "https://opencode.ai/zen/v1" }, session: {} };
+			var out = fetcher.fetch(ctx);
+			if (out.error) { return "ERR:" + out.error; }
+			return out.limits.length + ":" + out.limits[0].label + "=" + out.limits[0].used;
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.String(); got != "1:Weekly=7" {
+		t.Fatalf("zen base rewrite = %q", got)
+	}
+}
+
+func TestFetcherOpencode_ParsesCredits(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.respond("opencode.ai/zen/go/v1/usage", 200, `{
+		"plan": "Pro",
+		"data": { "balance": 42.5, "used": 7.5, "limit": 50 }
+	}`)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	defer setHTTPDo(env.mockDo())()
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	v, err := bridge.vm.RunString(`
+		(function() {
+			var fetcher = globalThis.__require("fetchers/opencode.js");
+			var ctx = { config: { apiKey: "sk", baseUrl: "https://opencode.ai/zen/go/v1" }, session: {} };
+			var out = fetcher.fetch(ctx);
+			return out.plan + "|" + out.limits.length + "|" + out.limits[0].label + ":" + out.limits[0].used + "/" + out.limits[0].limit + "|" + out.costUnit;
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// used 7.5/limit 50 in dollars → 750/5000 cents.
+	if got := v.String(); got != "Pro|1|Credits:750/5000|usd_credits" {
+		t.Fatalf("opencode parse = %q", got)
+	}
+}
+
+func TestFetcherOpencode_NoAPIKey(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	v, _ := bridge.vm.RunString(`
+		(function() {
+			var fetcher = globalThis.__require("fetchers/opencode.js");
+			return fetcher.fetch({ config: {}, session: {} }).error;
+		})()
+	`)
+	if got := v.String(); got != "no_api_key" {
+		t.Fatalf("no_api_key = %q", got)
+	}
+}
+
+// TestFetcherOpencode_BalanceDerivation covers the two balance-only shapes: a
+// known limit derives usage from the remaining balance (balance 40 / limit 50
+// → 10 used), and a bare balance reports as a 0-used credit pool.
+func TestFetcherOpencode_BalanceDerivation(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.respond("opencode.ai/zen/go/v1/usage", 200, `{"data":{"balance":40,"limit":50}}`)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	defer setHTTPDo(env.mockDo())()
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	v, err := bridge.vm.RunString(`
+		(function() {
+			var fetcher = globalThis.__require("fetchers/opencode.js");
+			var ctx = { config: { apiKey: "sk" }, session: {} };
+			var out = fetcher.fetch(ctx);
+			return out.limits[0].label + ":" + out.limits[0].used + "/" + out.limits[0].limit;
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.String(); got != "Credits:1000/5000" { // 10/50 dollars → cents
+		t.Fatalf("balance-derived usage = %q", got)
+	}
+}
+
 // --- oauth.js token refresh logic ---
 
 func TestOAuth_RefreshWithinSkew(t *testing.T) {

@@ -430,7 +430,7 @@ func TestCompositor_HeightOnlyResizePreservesScrollback(t *testing.T) {
 	}
 	// Height-only resize repaints the visible window IN PLACE — a screen
 	// wipe (\x1b[2J) would blank the frame before the rewrite lands, which
-	// is the black-flash/mascot-blink of bugs.md "Mascot/logo redraw".
+	// is the black-flash/mascot-blink of Mascot/logo redraw:.
 	if strings.Contains(resize, "\x1b[2J") {
 		t.Errorf("height-only resize blanked the visible screen (\\x1b[2J) — repaint must be in-place: %q", resize)
 	}

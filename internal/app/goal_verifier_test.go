@@ -12,7 +12,7 @@ import (
 )
 
 // TestExecCommandVerifier_TimeoutEnforced pins the verify-command bound
-// (bugs.md Bug A: "the goal complete should have a clear timeout"): a command
+// (Bug A: "the goal complete should have a clear timeout"): a command
 // that outlives the configured timeout FAILS, is marked timed out, and the
 // applied bound travels in the outcome for display.
 func TestExecCommandVerifier_TimeoutEnforced(t *testing.T) {

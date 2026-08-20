@@ -67,6 +67,13 @@ type ConfigSaver interface {
 	// at the given path in ~/.goa/config.yaml, preserving other settings.
 	SaveHomeFieldValue(path []string, value any) error
 
+	// SaveLocalFieldValue writes an arbitrary value (including maps and slices)
+	// at the given path in .goa/config.local.yaml — the project LOCAL layer
+	// (gitignored, per-developer). Use for project-scoped, per-developer
+	// settings such as teams.active: they must neither leak across projects
+	// (home layer) nor dirty the committed project config.
+	SaveLocalFieldValue(path []string, value any) error
+
 	// DeleteProjectField removes the key at the given path from .goa/config.yaml.
 	DeleteProjectField(path []string) error
 
@@ -89,7 +96,7 @@ type CascadeLoader struct {
 	// editConfigFile). All writers mutate the same home/project config.yaml
 	// on disk; without exclusion, a concurrent field-scoped write (skill
 	// toggle) and a snapshot write (model switch, /goal:settings) interleave
-	// and silently lose entries (bugs.md: skills re-enable spontaneously).
+	// and silently lose entries (skills re-enable spontaneously).
 	writeMu sync.Mutex
 }
 
@@ -690,7 +697,7 @@ func (c *Config) repairActiveProviderModel() {
 // Two sentinel shapes are recognized:
 //   - bracketed: "__add__", "__custom__" (both prefix and suffix "__")
 //   - delete-prefixed: "__delete__<id>" — emitted by the picker's '-' hotkey
-//     and previously persisted verbatim as a model/provider ID (bugs.md
+// and previously persisted verbatim as a model/provider ID
 //     "Model delete"). This shape has no trailing "__" after the real ID, so
 //     it needs its own prefix check.
 func (c *Config) sanitizeSelectorSentinels() {
@@ -785,7 +792,7 @@ func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {
 		// No project file yet: persist ONLY the mode section this entry
 		// point owns. Writing the full merged config would bake embedded
 		// defaults and home-layer values into the project layer, where they
-		// silently shadow every later home-config edit (bugs.md: startup
+		// silently shadow every later home-config edit (startup
 		// /config showed the embedded default compression strategy "micro"
 		// instead of the home-config value on every launch).
 		return writeModeOnlyProjectConfig(path, cfg.Mode)
@@ -852,31 +859,52 @@ func (cl *CascadeLoader) HomeConfigPath() string {
 	return filepath.Join(cl.homeDir, ".goa", "config.yaml")
 }
 
-// skillListsOnDisk reads only the skills.enabled / skills.disabled lists from
-// the config file at path. ok=false when the file is missing or unreadable —
-// callers then leave the in-memory lists as-is rather than forcing a value.
+// WritableConfigPaths returns the file paths of the writable cascade layers:
+// the home config, the project config and project local config, or the
+// explicit --config file (in addition to the home config, which is always
+// part of the cascade). Embedded defaults, env vars, and CLI flags are not
+// files and therefore never hot-reloadable.
+func (cl *CascadeLoader) WritableConfigPaths() []string {
+	paths := []string{cl.HomeConfigPath()}
+	if cl.configPath != "" {
+		return append(paths, cl.configPath)
+	}
+	return append(paths,
+		filepath.Join(cl.projectDir, ".goa", "config.yaml"),
+		filepath.Join(cl.projectDir, ".goa", "config.local.yaml"),
+	)
+}
+
+// skillListsOnDisk reads only the skills list keys (enabled / disabled /
+// sticky / sticky_off) from the config file at path. ok=false when the file
+// is missing or unreadable — callers then leave the in-memory lists as-is
+// rather than forcing a value.
 //
 // Snapshot writers (Save, SaveHomeProvidersAndModels, SaveProjectConfig) use
 // this to PRESERVE the on-disk skill lists instead of re-emitting the lists
-// from the in-memory config they were handed. Skill enable/disable is owned by
-// the field-scoped toggle write (persistSkillToggle), so the on-disk value is
-// authoritative and a stale in-memory snapshot must never overwrite it — that
-// lost update is what made disabled skills spontaneously re-enable (bugs.md).
-func skillListsOnDisk(path string) (enabled, disabled []string, ok bool) {
+// from the in-memory config they were handed. Skill enable/disable and the
+// project-level sticky state are owned by field-scoped toggle writes
+// (persistSkillToggle / persistSkillSticky), so the on-disk value is
+// authoritative and a stale in-memory snapshot must never overwrite it —
+// notably Save() must not copy a project layer's sticky lists into the home
+// file (sticky is per-project by design).
+func skillListsOnDisk(path string) (enabled, disabled, sticky, stickyOff []string, ok bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	var raw struct {
 		Skills struct {
-			Enabled  []string `yaml:"enabled"`
-			Disabled []string `yaml:"disabled"`
+			Enabled   []string `yaml:"enabled"`
+			Disabled  []string `yaml:"disabled"`
+			Sticky    []string `yaml:"sticky"`
+			StickyOff []string `yaml:"sticky_off"`
 		} `yaml:"skills"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, nil, false
+		return nil, nil, nil, nil, false
 	}
-	return raw.Skills.Enabled, raw.Skills.Disabled, true
+	return raw.Skills.Enabled, raw.Skills.Disabled, raw.Skills.Sticky, raw.Skills.StickyOff, true
 }
 
 func (cl *CascadeLoader) Save(cfg *Config) error {
@@ -893,10 +921,13 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 	saveCfg.ConfigDir = ""
 	saveCfg.Models = persistableModels(saveCfg.Models)
 	// Preserve on-disk skill lists: a stale in-memory snapshot must not
-	// resurrect a skill the user disabled (skills re-enable bug).
-	if en, dis, ok := skillListsOnDisk(cl.HomeConfigPath()); ok {
+	// resurrect a skill the user disabled (skills re-enable bug) nor copy a
+	// project layer's sticky state into the home file.
+	if en, dis, st, stOff, ok := skillListsOnDisk(cl.HomeConfigPath()); ok {
 		saveCfg.Skills.Enabled = en
 		saveCfg.Skills.Disabled = dis
+		saveCfg.Skills.Sticky = st
+		saveCfg.Skills.StickyOff = stOff
 	}
 
 	data, err := yaml.Marshal(saveCfg)
@@ -1134,6 +1165,15 @@ func (cl *CascadeLoader) SaveHomeFieldValue(path []string, value any) error {
 	})
 }
 
+// SaveLocalFieldValue writes an arbitrary value (including maps and slices) at
+// the given path in the project local layer .goa/config.local.yaml,
+// preserving other local settings.
+func (cl *CascadeLoader) SaveLocalFieldValue(path []string, value any) error {
+	return cl.editLocalConfig(func(doc *yaml.Node) error {
+		return setYamlNodeValue(doc, path, value)
+	})
+}
+
 // DeleteHomeField removes the key at the given path from ~/.goa/config.yaml.
 // It is a no-op when the key (or file) does not exist.
 func (cl *CascadeLoader) DeleteHomeField(path []string) error {
@@ -1148,25 +1188,32 @@ func (cl *CascadeLoader) DeleteHomeField(path []string) error {
 
 // editHomeConfig applies edit to ~/.goa/config.yaml (see editConfigFile).
 func (cl *CascadeLoader) editHomeConfig(edit func(doc *yaml.Node) error) error {
-	return cl.editConfigFile(filepath.Join(cl.homeDir, ".goa"), "home", edit)
+	return cl.editConfigFile(filepath.Join(cl.homeDir, ".goa"), "config.yaml", "home", edit)
 }
 
-// editProjectConfig loads the project config (creating a minimal document when
-// missing), applies edit to the root mapping, and writes it back.
+// editProjectConfig applies edit to the project .goa/config.yaml (see
+// editConfigFile).
 func (cl *CascadeLoader) editProjectConfig(edit func(doc *yaml.Node) error) error {
-	return cl.editConfigFile(filepath.Join(cl.projectDir, ".goa"), "project", edit)
+	return cl.editConfigFile(filepath.Join(cl.projectDir, ".goa"), "config.yaml", "project", edit)
 }
 
-// editConfigFile loads the config.yaml under configDir (creating a minimal
-// document when missing), applies edit to the root mapping, and writes it
-// back. The label ("home"/"project") scopes error messages.
-func (cl *CascadeLoader) editConfigFile(configDir, label string, edit func(doc *yaml.Node) error) error {
+// editLocalConfig applies edit to the project local layer
+// .goa/config.local.yaml (see editConfigFile).
+func (cl *CascadeLoader) editLocalConfig(edit func(doc *yaml.Node) error) error {
+	return cl.editConfigFile(filepath.Join(cl.projectDir, ".goa"), "config.local.yaml", "local", edit)
+}
+
+// editConfigFile loads the named config file under configDir (creating a
+// minimal document when missing), applies edit to the root mapping, and
+// writes it back. The label ("home"/"project"/"local") scopes error
+// messages.
+func (cl *CascadeLoader) editConfigFile(configDir, fileName, label string, edit func(doc *yaml.Node) error) error {
 	cl.writeMu.Lock()
 	defer cl.writeMu.Unlock()
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("create %s config dir: %w", label, err)
 	}
-	pathYaml := filepath.Join(configDir, "config.yaml")
+	pathYaml := filepath.Join(configDir, fileName)
 
 	var root yaml.Node
 	data, err := os.ReadFile(pathYaml)

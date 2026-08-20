@@ -59,16 +59,16 @@ func (t *TaskOutcomeTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"status": map[string]any{
 					"type":        "string",
-					"description": "Outcome: done, needs_clarification, or blocked",
+					"description": "done|needs_clarification|blocked",
 					"enum":        []string{"done", "needs_clarification", "blocked"},
 				},
 				"summary": map[string]any{
 					"type":        "string",
-					"description": "Result summary or reason. Max 4000 characters.",
+					"description": "Result summary or reason (max 4000 chars).",
 				},
 				"question": map[string]any{
 					"type":        "string",
-					"description": "Required when status is needs_clarification. The question for the orchestrator.",
+					"description": "Required when status=needs_clarification.",
 				},
 			},
 			"required": []string{"status", "summary"},

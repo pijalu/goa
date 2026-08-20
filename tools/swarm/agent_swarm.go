@@ -76,7 +76,7 @@ func (t *AgentSwarmTool) Schema() agentic.ToolSchema {
 				},
 				"items": map[string]any{
 					"type":        "array",
-					"description": "values filling {{item}} in prompt_template, one sub-agent per item",
+					"description": "values for {{item}} in prompt_template; one sub-agent each",
 					"items":       map[string]any{"type": "string"},
 				},
 				"subagent_type": map[string]any{

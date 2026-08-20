@@ -143,7 +143,7 @@ func (a *Agent) shouldBufferToolCall(tc provider.ContentBlock) bool {
 	a.mu.Lock()
 	a.bufferedToolCallCount++
 	windowCount, consecutiveCount, windowExceeded, consecutiveExceeded := a.recordToolCallInBudgetWindow(callKey)
-	// Near-duplicate bash guard (bugs.md): flag re-runs of the same expensive
+	// Near-duplicate bash guard: flag re-runs of the same expensive
 	// upstream command with only the trailing filter changed, within one state
 	// epoch. This only MARKS the call — the hint is appended to its result in
 	// resolveToolResultContent; execution is never blocked.
@@ -454,6 +454,9 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 
 	a.appendAssistantToolCallMessage(tcs)
 	realResults := a.scheduleAndRunToolCalls(ctx, tcs)
+	// P1 deferred loading: a tool_search result carries Meta["load_tools"] —
+	// expose those tools on the next stream round (append-only loaded-tail).
+	a.applyToolLoadRequests(realResults)
 	// Fold each real execution outcome into loop detection: successful
 	// state-mutating calls bump the state epoch (resetting the repeat horizon
 	// for the NEXT round), and consecutive same-tool failures feed the
@@ -466,6 +469,11 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 	// stream-loop strike counter (no-op when no strike is outstanding).
 	a.noteStreamLoopCleanActivity(len(realResults))
 	a.appendToolResults(tcs, realResults)
+	// Workspace-instruction lifecycle (gap CX5): after successful
+	// read/write/edit touches, surface newly reachable, changed, or removed
+	// AGENTS.md/CLAUDE.md scopes as durable user messages before the next
+	// stream round, so the model sees them in the following request.
+	a.injectInstructionLifecycle(tcs, realResults)
 
 	a.contentBuf.Reset()
 	a.thinkingBuf.Reset()
@@ -489,4 +497,30 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 		}
 	}
 	return true
+}
+
+// applyToolLoadRequests reads Meta[MetaLoadTools] from executed tool results
+// and exposes the requested deferred tools on the next stream round. The
+// tool_search loader sets that key to the comma-separated names of deferred
+// tools the model selected; loading is append-only, so the eager block stays
+// byte-stable and only the loaded-tail grows.
+func (a *Agent) applyToolLoadRequests(results []ToolCallResult) {
+	var names []string
+	for _, r := range results {
+		if r.Err != nil {
+			continue
+		}
+		v, ok := r.Meta[MetaLoadTools]
+		if !ok {
+			continue
+		}
+		for _, n := range strings.Split(v, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+	}
+	if len(names) > 0 {
+		a.reg.LoadDeferred(names)
+	}
 }

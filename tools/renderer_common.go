@@ -539,7 +539,7 @@ func expandHint(hiddenCount int, key string) string {
 }
 
 // KeyExpandLabel is the user-facing label for the expand/collapse hotkey.
-// Hotkeys are displayed lowercase per bugs.md ("ctrl-O should be ctrl-o").
+// Hotkeys are displayed lowercase per ("ctrl-O should be ctrl-o").
 const KeyExpandLabel = "ctrl+o"
 
 // trimTrailingEmptyLines removes empty lines from the end of a slice.

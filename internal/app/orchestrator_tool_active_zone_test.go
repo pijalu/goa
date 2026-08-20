@@ -13,7 +13,7 @@ import (
 )
 
 // TestOrchestratorToolCalls_FIFOOrderAfterCompletion is the filmstrip
-// regression for the bug reported in bugs.md: completed tool calls should not
+// regression for the bug reported in completed tool calls should not
 // remain pinned to the bottom; they should stay in chronological order so newer
 // messages/thinking appear below them.
 //
@@ -78,7 +78,7 @@ func TestOrchestratorToolCalls_FIFOOrderAfterCompletion(t *testing.T) {
 }
 
 // TestOrchestratorToolCalls_RunningToolMovesUpWhenNewContentStarts is the RED
-// test for the active-zone bug reported in bugs.md: an open (running) tool
+// test for the active-zone bug reported in an open (running) tool
 // widget should not stay pinned to the bottom when new thinking or message
 // blocks start; it should move up in chronological order so the newest output
 // is at the bottom.
