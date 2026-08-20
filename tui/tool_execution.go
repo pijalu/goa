@@ -30,6 +30,23 @@ type ToolViewPolicy interface {
 	ShowReadContent() bool
 }
 
+// ScrollbackGuard is an optional ToolViewPolicy extension implemented by the
+// ChatViewport: it reports whether a widget's rendered rows are committed to
+// terminal scrollback (and can therefore NEVER be repainted — the compositor
+// clamps the repaint window at its scrollback watermark) and flashes a
+// one-line notice in the chat. A user-initiated expand/collapse of such a
+// widget would change its line count and shift every later entry's geometry,
+// so the repaint diffs no longer match the terminal — the out-of-screen
+// corruption in bugs.md. The guard makes that toggle a no-op + notice.
+// Kept as a separate interface (ISP) so minimal test policies need not
+// implement it; absence of the guard means "nothing is scrolled off".
+type ScrollbackGuard interface {
+	// IsScrolledOff reports whether c's rows lie entirely in scrollback.
+	IsScrolledOff(c Component) bool
+	// FlashNotice shows a transient one-line notice in the chat.
+	FlashNotice(text string)
+}
+
 // defaultToolPreviewLines is the fallback Summary line count when no view
 // policy is attached (e.g. in isolated component tests). Production widgets
 // always receive the configured value (default 10) via ToolViewPolicy.
@@ -474,7 +491,17 @@ func (tc *ToolExecutionComponent) SetExpanded(expanded bool) {
 // focused block): the choice becomes an explicit override that wins over the
 // global view policy until ClearExplicitExpand is called (e.g. by the global
 // Ctrl+O toggle-all).
+//
+// A widget whose rows are committed to terminal scrollback can never be
+// repainted, so expanding/collapsing it would silently corrupt the layout
+// (its new line count shifts every later entry's repaint geometry). When the
+// view policy's ScrollbackGuard reports the widget scrolled off, the toggle
+// is a no-op and the user gets a one-line notice instead.
 func (tc *ToolExecutionComponent) setExpandedExplicit(expanded bool) {
+	if g, ok := tc.viewPolicy.(ScrollbackGuard); ok && g.IsScrolledOff(tc) {
+		g.FlashNotice("⚡ That tool block has scrolled off-screen and can’t be expanded — scroll up to view it.")
+		return
+	}
 	tc.expandedSet = true
 	tc.SetExpanded(expanded)
 }

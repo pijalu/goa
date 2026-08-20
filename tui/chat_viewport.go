@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"fmt"
 	"sync/atomic"
 
 	"github.com/pijalu/goa/internal/ansi"
@@ -224,12 +225,28 @@ func (cv *ChatViewport) ShowReadContent() bool {
 // invalidateAllToolWidgets forces every tool widget to rebuild on the next
 // render so a global view-mode change (config load or Ctrl+O) takes effect
 // immediately.
+//
+// Widgets whose rows are committed to terminal scrollback are SKIPPED: they
+// can never be repainted, so rebuilding them with a different line count
+// would shift later entries' geometry and corrupt the screen (bugs.md:
+// "Out-of-screen tool call results corrupt the terminal UI"). When any widget
+// is skipped the user gets one summary flash instead of a corrupted repaint.
 func (cv *ChatViewport) invalidateAllToolWidgets() {
+	skipped := 0
 	for i := range cv.entries {
-		if tc, ok := cv.entries[i].View.(*ToolExecutionComponent); ok {
-			tc.ClearExplicitExpand() // global toggle-all overrides per-widget toggles
-			tc.SetToolViewPolicy(cv)
+		tc, ok := cv.entries[i].View.(*ToolExecutionComponent)
+		if !ok {
+			continue
 		}
+		if cv.IsScrolledOff(tc) {
+			skipped++
+			continue
+		}
+		tc.ClearExplicitExpand() // global toggle-all overrides per-widget toggles
+		tc.SetToolViewPolicy(cv)
+	}
+	if skipped > 0 {
+		cv.AddFlashMessage(fmt.Sprintf("⚡ %d tool block(s) already scrolled off-screen — left unchanged (scroll up to view them).", skipped))
 	}
 	cv.generation++
 }

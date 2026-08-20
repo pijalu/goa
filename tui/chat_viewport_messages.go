@@ -131,6 +131,14 @@ func (cv *ChatViewport) AddToolResult(text string) {
 
 // AddAgentMessage is defined in agent_message.go (factory + AddMessage).
 
+// FlashNotice implements the ScrollbackGuard notice sink: it shows a
+// transient one-line flash (⚡ …) in the chat. Tool widgets call it through
+// the guard when a user toggle is blocked because the widget's rows are
+// committed to terminal scrollback.
+func (cv *ChatViewport) FlashNotice(text string) {
+	cv.AddFlashMessage(text)
+}
+
 // AddFlashMessage adds a transient flash (⚡ …). When the last entry is already
 // a system flash of the same kind, it is updated in place instead of stacking.
 func (cv *ChatViewport) AddFlashMessage(text string) {
