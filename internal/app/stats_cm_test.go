@@ -403,8 +403,10 @@ func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
 	}
 }
 
-// TestFormatCacheMissPart is the golden-ANSI spec for the CM part: full
-// count in red, partial in warning orange, per-kind zero omission. The
+// TestFormatCacheMissPart is the golden-ANSI spec for the CM part: the
+// "CM:" label and "|" separator stay in the default footer color, only the
+// counts are colored (full in red, partial in warning orange), and a zero
+// kind is omitted separator included (CM:3 partial-only, not CM:|3). The
 // footer shows counts only — token damage lives in /stats:cache (bugs.md:
 // CM:1·71,424 must render as CM:1).
 func TestFormatCacheMissPart(t *testing.T) {
@@ -421,25 +423,25 @@ func TestFormatCacheMissPart(t *testing.T) {
 			name:    "both kinds",
 			full:    2,
 			partial: 3,
-			want:    red + "CM:2" + ansi.Reset + orange + "|3" + ansi.Reset,
+			want:    "CM:" + red + "2" + ansi.Reset + "|" + orange + "3" + ansi.Reset,
 		},
 		{
-			name:    "full only omits the partial segment and keeps the label red",
+			name:    "full only omits the partial segment",
 			full:    1,
 			partial: 0,
-			want:    red + "CM:1" + ansi.Reset,
+			want:    "CM:" + red + "1" + ansi.Reset,
 		},
 		{
-			name:    "partial only omits the full count and keeps the leading bar",
+			name:    "partial only omits the full count and the separator",
 			full:    0,
 			partial: 4,
-			want:    orange + "CM:|4" + ansi.Reset,
+			want:    "CM:" + orange + "4" + ansi.Reset,
 		},
 		{
 			name:    "both zero still renders the bare label (caller hides it)",
 			full:    0,
 			partial: 0,
-			want:    orange + "CM:" + ansi.Reset,
+			want:    "CM:",
 		},
 	}
 

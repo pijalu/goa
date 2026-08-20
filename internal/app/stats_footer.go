@@ -201,31 +201,30 @@ func formatCacheMissPartIfAny(s sessionStats) string {
 // formatCacheMissPart renders the cache-miss counter split by failure mode:
 // CM:X|Y where X counts FULL misses (red — the entire prefix was recomputed)
 // and Y counts PARTIAL misses (warning orange — a suffix was recomputed).
-// A zero count is omitted per kind (CM:2 full-only, CM:|3 partial-only); the
-// caller hides the whole part when both are zero. The footer shows counts
-// only — the exact token damage lives in /stats:cache and the session export
-// (cm_tokens), keeping the segment compact (CM:1, not CM:1·71,424).
+// Only the counts carry color — the "CM:" label and the "|" separator stay
+// in the default footer color. A zero count is omitted per kind, separator
+// included (CM:2 full-only, CM:3 partial-only); the caller hides the whole
+// part when both are zero. The footer shows counts only — the exact token
+// damage lives in /stats:cache and the session export (cm_tokens), keeping
+// the segment compact (CM:1, not CM:1·71,424).
 func formatCacheMissPart(full, partial int) string {
 	var b strings.Builder
-	// The label rides the color of the first rendered count.
-	labelColor := cacheMissPartialColor
-	if full > 0 {
-		labelColor = cacheMissFullColor
-	}
-	b.WriteString(ansi.Fg(labelColor))
 	b.WriteString("CM:")
 	if full > 0 {
+		b.WriteString(ansi.Fg(cacheMissFullColor))
 		fmt.Fprintf(&b, "%d", full)
+		b.WriteString(ansi.Reset)
 	}
 	if partial > 0 {
+		// The separator only exists to split two rendered counts — a
+		// partial-only display reads CM:3, not CM:|3.
 		if full > 0 {
-			b.WriteString(ansi.Reset)
-			b.WriteString(ansi.Fg(cacheMissPartialColor))
+			b.WriteString("|")
 		}
-		b.WriteString("|")
+		b.WriteString(ansi.Fg(cacheMissPartialColor))
 		fmt.Fprintf(&b, "%d", partial)
+		b.WriteString(ansi.Reset)
 	}
-	b.WriteString(ansi.Reset)
 	return b.String()
 }
 

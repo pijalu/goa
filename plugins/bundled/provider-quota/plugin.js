@@ -321,8 +321,9 @@ function statusRender() {
 // shortest-period first (session|weekly|monthly) — fetcher emission order is
 // NOT guaranteed (the z.ai monitor API returns monthly first). At most three
 // windows are shown: providers reporting more (shouldn't happen today) would
-// overflow the footer. Falls back to the single worst-window color when
-// goa.segmentColor is unavailable (older hosts).
+// overflow the footer. A window at 0% is omitted entirely — an untouched
+// quota is noise ([0%|71%|0%] reads [71%]). Falls back to the single
+// worst-window color when goa.segmentColor is unavailable (older hosts).
 function colorizedSegment(entry) {
 	var parts = [];
 	// Sort a copy: the cached limits array is shared with /quota, which keeps
@@ -335,7 +336,11 @@ function colorizedSegment(entry) {
 		if (!lim.limit || lim.limit <= 0) {
 			continue;
 		}
-		parts.push({ pct: format.pct(lim.used, lim.limit) + "%", color: ratioColor(projectedRatio(lim)) });
+		var pct = format.pct(lim.used, lim.limit);
+		if (pct === 0) {
+			continue; // untouched window — hide, don't render 0%
+		}
+		parts.push({ pct: pct + "%", color: ratioColor(projectedRatio(lim)) });
 	}
 	if (parts.length === 0) {
 		return "";

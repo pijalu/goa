@@ -92,7 +92,9 @@ func LoginCodexDeviceUI(ctx context.Context, ui CodexUIOpts) (*Tokens, error) {
 // applyUI overlays host UI callbacks onto the flow config.
 func (cfg *codexFlowConfig) applyUI(ui CodexUIOpts) {
 	if ui.NotifyURL != nil {
-		cfg.notifyURL = ui.NotifyURL
+		// The exported UI callback takes only the URL; the internally
+		// tracked bound callback address is not part of that contract.
+		cfg.notifyURL = func(u, _ string) { ui.NotifyURL(u) }
 	}
 	if ui.NotifyDevice != nil {
 		cfg.notifyDevice = ui.NotifyDevice
@@ -109,7 +111,7 @@ func (cfg *codexFlowConfig) applyUI(ui CodexUIOpts) {
 // to stdout, and a manual-paste prompt reads from stdin.
 func defaultCodexFlowConfig() *codexFlowConfig {
 	return &codexFlowConfig{
-		notifyURL: func(u string) {
+		notifyURL: func(u, _ string) {
 			fmt.Printf("Open this URL in your browser:\n%s\n", u)
 		},
 		notifyDevice: func(a CodexDeviceAuth) {
@@ -146,8 +148,12 @@ type codexFlowConfig struct {
 	// promptManualCode asks the user to paste a code/redirect URL. It must
 	// return ok=false when the user cancels. Nil disables manual paste.
 	promptManualCode func() (string, bool)
-	// notifyURL is invoked with the authorization URL for display.
-	notifyURL func(url string)
+	// notifyURL is invoked with the authorization URL for display, plus the
+	// address the local callback listener actually bound ("" when the
+	// listener is skipped). Tests pass an ephemeral ":0" callback address
+	// and read the bound port from here — guessing the port beforehand
+	// (listen-close-rebind) races with other processes grabbing it.
+	notifyURL func(url, callbackAddr string)
 	// notifyDevice is invoked with the device authorization info for display.
 	notifyDevice func(auth CodexDeviceAuth)
 }
@@ -315,6 +321,7 @@ func startCodexCallbackServer(ctx context.Context, cfg *codexFlowConfig, state s
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("oauth callback listener: %w", err)
 	}
+	boundAddr := listener.Addr().String()
 
 	resultCh := make(chan codexCallbackResult, 1)
 	mux := http.NewServeMux()
@@ -339,8 +346,16 @@ func startCodexCallbackServer(ctx context.Context, cfg *codexFlowConfig, state s
 		_ = server.Close()
 	}()
 
-	shutdown := func() { _ = server.Close() }
-	return resultCh, listener.Addr().String(), shutdown, nil
+	// Shutdown must be graceful: Close() cuts in-flight connections, so a
+	// handler that already delivered its result could still lose the
+	// response bytes — the browser (or test client) then sees EOF instead
+	// of the callback page. Shutdown waits for active handlers to return.
+	shutdown := func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(sctx)
+	}
+	return resultCh, boundAddr, shutdown, nil
 }
 
 func writeCodexCallbackPage(w http.ResponseWriter, status int, message string) {
@@ -391,14 +406,16 @@ func loginCodexBrowser(ctx context.Context, cfg *codexFlowConfig) (*Tokens, erro
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	resultCh, _, shutdown, err := startCodexCallbackServer(ctx, cfg, state)
+	resultCh, boundAddr, shutdown, err := startCodexCallbackServer(ctx, cfg, state)
 	if err != nil {
 		return nil, err
 	}
 	defer shutdown()
 
 	if cfg.notifyURL != nil {
-		cfg.notifyURL(authURL)
+		// boundAddr is the address the callback listener actually bound —
+		// with an ephemeral port (":0") this is the only way to learn it.
+		cfg.notifyURL(authURL, boundAddr)
 	}
 	if cfg.openURL != nil {
 		cfg.openURL(authURL)

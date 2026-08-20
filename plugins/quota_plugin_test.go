@@ -128,6 +128,45 @@ func TestQuota_SegmentShowsWindowedQuota(t *testing.T) {
 	}
 }
 
+// TestQuota_SegmentOmitsZeroWindows covers the user report: z.ai returns a
+// session TIME_LIMIT at 0%, a TOKENS_LIMIT at 71%, and a monthly TIME_LIMIT
+// at 0%, which rendered as "[0%|71%|0%]". Untouched windows are noise — the
+// segment must show only the non-zero windows ("[71%]").
+func TestQuota_SegmentOmitsZeroWindows(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("z.ai", map[string]any{"provider": "zai", "apiKey": "k"})
+	env.setActiveProvider("z.ai")
+	// Mirrors the live monitor payload behind the report: 5h session at 0%,
+	// weekly tokens at 71%, monthly web-search credits at 0%.
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[
+		{"type":"TIME_LIMIT","unit":3,"number":5,"percentage":0,"nextResetTime":1784656400096},
+		{"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":71,"nextResetTime":1784656400096},
+		{"type":"TIME_LIMIT","unit":5,"number":1,"percentage":0,"nextResetTime":1787122604987}
+	]}}`)
+	env.load(t)
+	env.callCommand("quota", "refresh")
+	seg := ansi.Strip(env.renderSegment())
+	if !strings.Contains(seg, "71%") {
+		t.Fatalf("segment should show the non-zero window: %q", seg)
+	}
+	if strings.Contains(seg, "0%") {
+		t.Fatalf("segment must omit zero-usage windows: %q", seg)
+	}
+	if strings.Contains(seg, "|") {
+		t.Fatalf("single surviving window needs no separator: %q", seg)
+	}
+
+	// All windows at 0% → the whole segment hides (an untouched quota is
+	// noise, same as a provider without a quota API).
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[
+		{"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":0,"nextResetTime":1784656400096}
+	]}}`)
+	env.callCommand("quota", "refresh")
+	if seg := strings.TrimSpace(ansi.Strip(env.renderSegment())); seg != "" {
+		t.Fatalf("all-zero quota should hide the segment, got %q", seg)
+	}
+}
+
 func TestQuota_SegmentEmptyWhenNoData(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	// No providers configured → only local fallback (no windowed limits).

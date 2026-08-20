@@ -64,10 +64,19 @@ func (e *quotaTestEnv) setActiveProvider(id string) {
 }
 
 // respond registers a canned JSON response for any URL containing substr.
+// Registering the same substr twice REPLACES the earlier entry: the HTTP mock
+// matches first-registered-first, so appending would shadow the new body
+// behind the old one and make mid-test response changes silently impossible.
 func (e *quotaTestEnv) respond(substr string, status int, body string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.responders = append(e.responders, quotaResponder{substr: substr, status: status, body: body, headers: map[string]string{}})
+	kept := e.responders[:0]
+	for _, r := range e.responders {
+		if r.substr != substr {
+			kept = append(kept, r)
+		}
+	}
+	e.responders = append(kept, quotaResponder{substr: substr, status: status, body: body, headers: map[string]string{}})
 }
 
 // setProvider configures a provider in the mocked goa.config().providers.

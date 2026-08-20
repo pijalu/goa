@@ -9,7 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net"
+
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -379,7 +379,7 @@ func TestCodexDevicePoll_FailureStatus(t *testing.T) {
 func TestCodexBrowserFlow_ManualPaste(t *testing.T) {
 	var gotURL string
 	_, cfg := codexTestServer(t, tokenOKHandler(t, "authorization_code", "acct-web"))
-	cfg.notifyURL = func(u string) { gotURL = u }
+	cfg.notifyURL = func(u, _ string) { gotURL = u }
 	// notifyURL fires before promptManualCode in loginCodexBrowser (same
 	// goroutine), so gotURL is safely visible here.
 	cfg.promptManualCode = func() (string, bool) {
@@ -446,18 +446,6 @@ func TestCodexBrowserFlow_Cancel(t *testing.T) {
 	}
 }
 
-// freePort returns an available TCP port on 127.0.0.1.
-func freePort(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("free port: %v", err)
-	}
-	addr := l.Addr().String()
-	l.Close()
-	return addr
-}
-
 func TestCodexBrowserFlow_CallbackServer(t *testing.T) {
 	// Real listener on an ephemeral port: exercises startCodexCallbackServer.
 	mux := http.NewServeMux()
@@ -472,11 +460,17 @@ func TestCodexBrowserFlow_CallbackServer(t *testing.T) {
 		fmt.Fprintf(w, `{"access_token":%q,"refresh_token":"rt","expires_in":3600}`, mintTestJWT(t, "acct-cb"))
 	}))
 
-	callbackAddr := freePort(t)
-	cfg := &codexFlowConfig{authBaseURL: srv.URL, callbackAddr: callbackAddr}
-	// Channel synchronizes the auth URL across goroutines (no data race).
-	urlCh := make(chan string, 1)
-	cfg.notifyURL = func(u string) { urlCh <- u }
+	// Ephemeral port bound by the flow itself: listen-close-rebind guesses
+	// (freePort) race with other processes grabbing the port in between.
+	cfg := &codexFlowConfig{authBaseURL: srv.URL, callbackAddr: "127.0.0.1:0"}
+	// Channel synchronizes the auth URL + bound callback address across
+	// goroutines (no data race).
+	type flowStart struct {
+		url          string
+		callbackAddr string
+	}
+	startCh := make(chan flowStart, 1)
+	cfg.notifyURL = func(u, addr string) { startCh <- flowStart{u, addr} }
 
 	type result struct {
 		tokens *Tokens
@@ -488,14 +482,14 @@ func TestCodexBrowserFlow_CallbackServer(t *testing.T) {
 		done <- result{tokens, err}
 	}()
 
-	var authURL string
+	var start flowStart
 	select {
-	case authURL = <-urlCh:
+	case start = <-startCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("auth url never surfaced")
 	}
-	state := mustStateFromURL(t, authURL)
-	resp, err := http.Get("http://" + callbackAddr + "/auth/callback?code=callback-code&state=" + url.QueryEscape(state))
+	state := mustStateFromURL(t, start.url)
+	resp, err := http.Get("http://" + start.callbackAddr + "/auth/callback?code=callback-code&state=" + url.QueryEscape(state))
 	if err != nil {
 		t.Fatalf("callback request: %v", err)
 	}
@@ -521,12 +515,12 @@ func TestCodexBrowserFlow_CallbackServer(t *testing.T) {
 }
 
 func TestCodexBrowserFlow_CallbackStateMismatch(t *testing.T) {
-	callbackAddr := freePort(t)
 	_, cfg := codexTestServer(t, tokenOKHandler(t, "authorization_code", "x"))
-	cfg.callbackAddr = callbackAddr
+	// Ephemeral port bound by the flow itself (see CallbackServer).
+	cfg.callbackAddr = "127.0.0.1:0"
 	cfg.skipCallbackServer = false // exercise the real listener
-	urlCh := make(chan string, 1)
-	cfg.notifyURL = func(u string) { urlCh <- u }
+	startCh := make(chan string, 1)
+	cfg.notifyURL = func(_, addr string) { startCh <- addr }
 
 	done := make(chan error, 1)
 	go func() {
@@ -534,8 +528,9 @@ func TestCodexBrowserFlow_CallbackStateMismatch(t *testing.T) {
 		done <- err
 	}()
 
+	var callbackAddr string
 	select {
-	case <-urlCh:
+	case callbackAddr = <-startCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("auth url never surfaced")
 	}
