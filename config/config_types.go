@@ -253,6 +253,20 @@ type ModelConfig struct {
 	// token budgets. When empty, DefaultThinkingLevelMap is used.
 	ThinkingLevelMap map[string]int `yaml:"thinking_level_map,omitempty"`
 
+	// ThinkingLevelNativeMap maps Goa's canonical thinking levels (off, minimal,
+	// low, medium, high, xhigh) to the provider-native values sent on the wire
+	// (e.g. "max" for models that only accept low/high/max). This is the direct
+	// per-model escape hatch for quick-fixing new or always-thinking models
+	// whose accepted levels differ from Goa's canonical set: set the canonical
+	// thinking_level you want in the UI, then map it to the native value here.
+	// Example:
+	//   thinking_level: xhigh
+	//   thinking_level_native_map:
+	//     xhigh: max
+	// It only applies when the resolved variant profile has no map of its own
+	// (dedicated profiles like kimi-code already map their levels).
+	ThinkingLevelNativeMap map[string]string `yaml:"thinking_level_native_map,omitempty"`
+
 	// InputTypes lists supported input content types (text, image).
 	InputTypes []string `yaml:"input_types,omitempty"`
 

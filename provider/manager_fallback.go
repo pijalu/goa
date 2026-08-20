@@ -132,6 +132,9 @@ func applyModelConfigToFallback(mdl *agenticprovider.Model, mCfg config.ModelCon
 	if mCfg.ThinkingLevel != "" {
 		mdl.Reasoning = true
 	}
+	if native := nativeThinkingLevelMap(mCfg); len(native) > 0 {
+		mdl.ThinkingLevelMap = native
+	}
 	inferProviderModelTraits(mdl)
 	if budgets := effectiveThinkingBudgets(mCfg); len(budgets) > 0 {
 		mdl.ThinkingBudgets = budgets
@@ -210,6 +213,24 @@ func uniformThinkingBudgets(budget int) agenticprovider.ThinkingBudgets {
 		agenticprovider.ThinkingHigh:    budget,
 		agenticprovider.ThinkingXHigh:   budget,
 	}
+}
+
+// nativeThinkingLevelMap converts the config's ThinkingLevelNativeMap
+// (canonical level → provider-native string) into the model's ThinkingLevelMap
+// so resolveThinkingLevel translates the level before it hits the wire. This is
+// the direct per-model escape hatch for quick-fixing new or always-thinking
+// models whose accepted levels differ from Goa's canonical set. It applies only
+// when the resolved variant profile carries no map of its own (the migration
+// bridge in schema.ResolveProfile skips the copy when the profile has one).
+func nativeThinkingLevelMap(mCfg config.ModelConfig) agenticprovider.ThinkingLevelMap {
+	if len(mCfg.ThinkingLevelNativeMap) == 0 {
+		return nil
+	}
+	m := make(agenticprovider.ThinkingLevelMap, len(mCfg.ThinkingLevelNativeMap))
+	for k, v := range mCfg.ThinkingLevelNativeMap {
+		m[agenticprovider.ThinkingLevel(k)] = v
+	}
+	return m
 }
 
 // parseCompatJSON unmarshals a provider compat JSON blob into the concrete

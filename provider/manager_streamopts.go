@@ -245,6 +245,14 @@ func applyModelStreamOptions(opts *agenticprovider.StreamOptions, mCfg config.Mo
 	if mCfg.MaxTokens > 0 {
 		opts.MaxTokens = mCfg.MaxTokens
 	}
+	// Plumb the configured thinking level onto the wire. Without this the
+	// main-agent path never sets StreamOptions.Reasoning, so applyThinking
+	// falls back to "medium" — which always-thinking models that accept only
+	// low/high/max reject with HTTP 400 (x-preview-f-free). The level passes
+	// through raw unless a thinking_level_native_map (Part B) translates it.
+	if mCfg.ThinkingLevel != "" {
+		opts.Reasoning = agenticprovider.ThinkingLevel(mCfg.ThinkingLevel)
+	}
 }
 
 func buildStreamHeaders(pCfg *config.ProviderConfig, mCfg config.ModelConfig) map[string]string {
