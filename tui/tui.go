@@ -503,6 +503,7 @@ func (t *TUI) renderOneFrame() {
 	func() {
 		defer recoverToLog("render")
 		t.compositor.Render(scene)
+		t.publishScrollWatermark()
 	}()
 }
 

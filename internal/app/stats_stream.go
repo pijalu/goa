@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/internal/agentic"
-	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/tooltracker"
 	"github.com/pijalu/goa/tui"
 )
@@ -226,29 +225,19 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 // compositor never repaints committed rows, so the widget's ✓/✗ transition
 // would be invisible and the frozen running rows would read as "still
 // ongoing" (Issue 6: the first series of a parallel cancel batch
-// "stayed blue"). The echo renders the tool renderer's own summary (e.g.
-// "✓ Cancelled silky.nyala: G05 — …"), capped at a few lines, ANSI-free.
-func (a *App) echoScrolledOffToolResult(tc *tui.ToolExecutionComponent, ev *agentic.OutputEvent) {
+// "stayed blue").
+//
+// The echo is the widget's own one-line CompletionEcho — status icon + call
+// identity + timing/output stats (+ the renderer's one-line outcome when it
+// implements ResultSummarizer). It deliberately NEVER replays raw output
+// lines: echoing the truncated body preview duplicated on-screen content and
+// leaked the "… N earlier lines (ctrl+o to expand)" hint into the transcript,
+// reading as rendering corruption (the reported offscreen-tool bug).
+func (a *App) echoScrolledOffToolResult(tc *tui.ToolExecutionComponent, _ *agentic.OutputEvent) {
 	if a.subs.chat == nil || !a.subs.chat.IsScrolledOff(tc) {
 		return
 	}
-	isErr := a.toolStatusFromResult(ev.Text) == tui.ToolError
-	icon := "✓"
-	if isErr {
-		icon = "✗"
-	}
-	body := ""
-	if r := tui.GetToolRenderer(ev.ToolName); r != nil {
-		body = r.RenderResult(ev.Text, tui.RenderContext{ArgsComplete: true, IsError: isErr})
-	}
-	if body == "" {
-		body = ev.Text
-	}
-	lines := strings.Split(strings.TrimRight(ansi.Strip(body), "\n"), "\n")
-	if len(lines) > 3 {
-		lines = append(lines[:3], "…")
-	}
-	a.subs.chat.AddToolResult(icon + " " + strings.Join(lines, "\n"))
+	a.subs.chat.AddToolResult(tc.CompletionEcho())
 }
 
 // handleToolStart flips a tool widget from waiting (⧖, queued) to running

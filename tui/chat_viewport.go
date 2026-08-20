@@ -77,23 +77,23 @@ type ChatViewport struct {
 	// a full rebuild even when no entry is dirty (filter-only view switch).
 	lastRenderFilter string
 
-	// viewportH is the terminal height set by the host via SetViewportHeight.
-	// Render does NOT truncate to it: culling of off-screen rows happens at the
-	// compositor level (placeLayer only iterates the visible subrange of a
-	// layer's content), and returning a tail here would starve the
-	// scrollback-population paths (emitFirstScroll/emitLargeScroll) that read
-	// historical canvas rows. Together with bottomChromeH it yields the
-	// transcript's visible band for IsScrolledOff.
-	viewportH int
+	// scrollWatermark is the compositor's scrollback watermark: the count of
+	// canvas rows already committed to terminal scrollback. Those rows are
+	// immutable (the window top is clamped to the watermark, so they are never
+	// repainted), making it the exact ground truth for IsScrolledOff's
+	// "completion would be invisible" check — replacing the former
+	// viewportH−bottomChromeH band formula, which re-derived the band from
+	// layout measurements that could be stale relative to the committed
+	// frame (the spurious-echo class of bugs). Written from the render
+	// goroutine after each committed frame; read on the command loop.
+	scrollWatermark atomic.Int64
 
-	// bottomChromeH is the rendered height of the fixed chrome stacked BELOW
-	// the transcript (status bar, bubbles, input editor, footer), pushed by
-	// the layout each frame via SetBottomChromeHeight — the same value the
-	// compositor pins as its chrome band. The transcript's visible window is
-	// viewportH − bottomChromeH rows: children above the transcript (the
-	// header/mascot) scroll with it and do NOT shrink the band, unlike the
-	// bottom-align budget (allocatedHeight) which excludes them.
-	bottomChromeH int
+	// transcriptOrigin is the canvas row at which this viewport's rendered
+	// content starts (the rows stacked above it — header/mascot — plus any
+	// bottom-align padding), published by the layout pass on the command
+	// loop. IsScrolledOff adds it to an entry's lineOffset to obtain canvas
+	// rows comparable to scrollWatermark.
+	transcriptOrigin int
 
 	// generation increments on every mutation (append, update, invalidate).
 	// Render compares it to lastRenderGen: when they match and the cache is
@@ -137,28 +137,27 @@ type ChatViewport struct {
 	runningToolCount atomic.Int64
 }
 
-// SetViewportHeight records the terminal viewport height. It is called by
-// the host each frame. ChatViewport does NOT truncate its rendered output to
-// this height: off-screen culling is handled by the compositor (placeLayer
-// iterates only the visible subrange of a layer's content), and returning a
-// tail would starve scrollback-population paths. IsScrolledOff combines it
-// with bottomChromeH to derive the transcript's visible band.
-func (cv *ChatViewport) SetViewportHeight(h int) {
-	if h < 0 {
-		h = 0
+// SetScrollWatermark records the compositor's scrollback watermark (the
+// count of canvas rows committed to terminal scrollback). It is pushed after
+// each committed frame — potentially from the render goroutine — hence the
+// atomic store; IsScrolledOff reads it on the command loop.
+func (cv *ChatViewport) SetScrollWatermark(wm int) {
+	if wm < 0 {
+		wm = 0
 	}
-	cv.viewportH = h
+	cv.scrollWatermark.Store(int64(wm))
 }
 
-// SetBottomChromeHeight records the rendered height of the fixed bottom
-// chrome (everything stacked below the transcript). The layout pushes it each
-// frame (TUI.buildScene) from the same measurement the compositor pins as its
-// chrome band, so IsScrolledOff computes the exact visible transcript window.
-func (cv *ChatViewport) SetBottomChromeHeight(h int) {
-	if h < 0 {
-		h = 0
+// setTranscriptOrigin records the canvas row at which this viewport's
+// rendered content starts (the header/mascot rows stacked above it plus any
+// bottom-align padding). Called by the layout pass (buildBaseLayers) on the
+// command loop — the same goroutine that reads it via IsScrolledOff, so a
+// plain store suffices.
+func (cv *ChatViewport) setTranscriptOrigin(y int) {
+	if y < 0 {
+		y = 0
 	}
-	cv.bottomChromeH = h
+	cv.transcriptOrigin = y
 }
 
 // TotalHeight returns the total number of lines in the full frame cache, or 0

@@ -391,6 +391,55 @@ func (tc *ToolExecutionComponent) progressSuffix() string {
 	return " · " + formatByteSize(tc.outputBytes) + " · " + formatLineCount(tc.outputLines)
 }
 
+// CompletionEcho returns the compact ONE-LINE summary the app appends to the
+// conversation when this widget finished while fully scrolled into terminal
+// scrollback (its ✓/✗ transition would otherwise be invisible — the
+// compositor never repaints committed rows).
+//
+// The echo must ATTRIBUTE the completion, not replay it: it mirrors the
+// widget's own final header (status icon + agent label + call identity) plus
+// the timing/output stats, and — when the renderer implements
+// ResultSummarizer — its self-contained one-line outcome. It never contains
+// raw output lines or "… N earlier lines (ctrl+o to expand)" hints: those
+// duplicate content that may still be visible elsewhere on screen and read
+// as rendering corruption (the reported "offscreen tool results rendered on
+// screen" bug).
+func (tc *ToolExecutionComponent) CompletionEcho() string {
+	parts := []string{ansi.Strip(tc.box.header)}
+	if s := tc.resultSummaryLine(); s != "" {
+		parts = append(parts, s)
+	}
+	// Final timing + output size ("Took 2.5s · 1.3 KB · 14 lines"): the
+	// stats the running widget's duration line carried, kept on the echo so
+	// the completion conveys the result's magnitude without its content.
+	if d := ansi.Strip(tc.box.duration); d != "" {
+		parts = append(parts, d+tc.progressSuffix())
+	} else if suffix := tc.progressSuffix(); suffix != "" {
+		// Sub-10ms tool with output: no "Took" line, but the size still
+		// attributes the result. Drop the leading " · " separator.
+		parts = append(parts, strings.TrimPrefix(suffix, " · "))
+	}
+	return strings.Join(parts, " — ")
+}
+
+// resultSummaryLine returns the renderer's one-line outcome summary when the
+// tool's renderer implements ResultSummarizer (e.g. goal's "Cancelled
+// minty.puma: G05 — …"); "" otherwise. ANSI-stripped and single-line by
+// construction (the interface contract).
+func (tc *ToolExecutionComponent) resultSummaryLine() string {
+	rs, ok := tc.renderer.(ResultSummarizer)
+	if !ok || tc.output == "" {
+		return ""
+	}
+	ctx := RenderContext{
+		IsError:      tc.status == ToolError,
+		ArgsComplete: tc.argsComplete,
+		Args:         tc.args,
+	}
+	line, _, _ := strings.Cut(rs.SummarizeResult(tc.output, ctx), "\n")
+	return strings.TrimSpace(ansi.Strip(line))
+}
+
 // formatByteSize returns a human-readable byte count (e.g. "1.2 KB").
 func formatByteSize(n int) string {
 	switch {

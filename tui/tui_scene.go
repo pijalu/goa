@@ -61,6 +61,7 @@ func (t *TUI) renderNow() []string {
 
 	scene := t.buildSnapshot()
 	t.compositor.Render(scene)
+	t.publishScrollWatermark()
 	return t.compositor.Buffer()
 }
 
@@ -78,22 +79,23 @@ func (t *TUI) buildScene(w, h int) *Scene {
 	rendered, _ := t.renderChildren(w, h)
 	scene.Layers, scene.Nodes = t.buildBaseLayers(rendered, w, h)
 	scene.ChromeHeight = t.bottomChromeHeight(rendered)
-	t.publishBottomChrome(scene.ChromeHeight)
 	scene.OverlayCapturesInput = t.buildOverlayLayers(scene, w, h)
 	extractCursorMarker(scene)
 	return scene
 }
 
-// publishBottomChrome pushes the fixed bottom-chrome band height to every
-// child that derives visible-window geometry from it (the chat viewport's
-// IsScrolledOff). It is the exact measurement the compositor pins as its
-// chrome band this frame, so consumers share the compositor's truth.
-func (t *TUI) publishBottomChrome(chromeH int) {
-	for _, child := range t.children {
-		if bca, ok := child.(interface{ SetBottomChromeHeight(int) }); ok {
-			bca.SetBottomChromeHeight(chromeH)
-		}
+// publishScrollWatermark pushes the compositor's scrollback watermark (the
+// count of canvas rows committed to terminal scrollback) to the chat
+// viewport, whose IsScrolledOff uses it as the ground truth for "this
+// entry's rows can never be repainted". It must run after EVERY
+// compositor.Render — the only place the watermark moves — so the viewport
+// always observes the watermark of the last committed frame.
+func (t *TUI) publishScrollWatermark() {
+	cv := t.findChatViewport()
+	if cv == nil {
+		return
 	}
+	cv.SetScrollWatermark(t.compositor.ScrollWatermark())
 }
 
 // bottomChromeHeight returns the total rendered height of the fixed chrome
@@ -198,6 +200,15 @@ func (t *TUI) buildBaseLayers(rendered [][]string, w, h int) ([]Layer, []AgentNo
 			Rect:    rect,
 			Content: lines,
 		})
+		// Publish the transcript's canvas origin so ChatViewport.IsScrolledOff
+		// can map entry lineOffsets to canvas rows comparable to the
+		// compositor's scrollback watermark. The origin skips the rows stacked
+		// above the transcript (header) and, when the content fits the
+		// allocated budget, the blank bottom-align padding the viewport
+		// prepends (renderCache rows start after it).
+		if cv, ok := child.(*ChatViewport); ok {
+			cv.setTranscriptOrigin(rectY + max(0, len(lines)-totalH))
+		}
 		nodes = append(nodes, agentNodeFor(child, rect, lines))
 		if pr, ok := child.(PopupRenderer); ok {
 			if pl := pr.PopupLines(w); len(pl) > 0 {

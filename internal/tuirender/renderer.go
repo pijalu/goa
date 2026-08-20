@@ -48,6 +48,23 @@ type StreamingRenderer interface {
 	RenderPartial(args map[string]any, ctx RenderContext) string
 }
 
+// ResultSummarizer is an optional extension for ToolRenderer. Renderers that
+// can condense a result into ONE short line implement SummarizeResult; the
+// TUI uses it for the scrolled-off completion echo (a tool that finishes
+// while its widget is frozen in terminal scrollback gets a compact bottom
+// echo so its ✓/✗ transition is not lost). Returning a single, self-contained
+// line ("Cancelled minty.puma: G05 — …") keeps the echo attributable without
+// duplicating output that may still be visible elsewhere on screen. Renderers
+// without a meaningful one-liner (e.g. bash) simply do not implement it; the
+// echo then carries only the call header and timing stats.
+type ResultSummarizer interface {
+	ToolRenderer
+	// SummarizeResult returns a single-line, self-contained outcome summary
+	// (no newlines, no truncation hints), or "" when there is nothing useful
+	// beyond the call header.
+	SummarizeResult(output string, ctx RenderContext) string
+}
+
 // RenderContext carries execution-state information passed to renderers.
 type RenderContext struct {
 	// Cwd is the current working directory.

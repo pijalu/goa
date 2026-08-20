@@ -19,45 +19,46 @@ func (cv *ChatViewport) Children() []Component {
 	return views
 }
 
-// IsScrolledOff reports whether component c's rendered rows lie entirely
-// above the currently visible window (scrolled into terminal scrollback).
-// The compositor's scroll watermark never repaints committed rows
-// ("canvas rows are immutable"), so a later state change of c is INVISIBLE
-// on screen — the symptom behind Issue 6 (a tool completing after
-// its running-state rows scrolled off leaves a frozen "◉" ghost). The app
-// uses this to append a compact completion echo for such tools.
+// IsScrolledOff reports whether component c's rendered rows lie entirely in
+// terminal scrollback (committed) and can therefore NEVER be repainted: the
+// compositor clamps the window top to its scrollback watermark, so a later
+// state change of c is INVISIBLE on screen — the symptom behind Issue 6 (a
+// tool completing after its running-state rows scrolled off leaves a frozen
+// "◉" ghost). The app uses this to append a compact completion echo for such
+// tools.
 //
-// The visible window is the compositor's transcript band: terminal height
-// (viewportH) minus the fixed bottom chrome (bottomChromeH). It must NOT be
-// derived from the layout-allocated height: that budget also excludes the
-// header/mascot stacked above the transcript, which SCROLLS with the
-// transcript and therefore does not shrink its visible band. Using the
-// budget over-reports by the header height and appends spurious echoes for
-// tools whose completion is plainly visible on screen. Unknown geometry
-// (no layout pass, never rendered, stale offset) reports false — never a
-// spurious echo.
+// The decision reads the compositor's scrollback watermark directly (canvas
+// rows [0, watermark) are committed) instead of re-deriving the visible band
+// from layout measurements. The former viewportH−bottomChromeH formula could
+// disagree with the committed frame (stale chrome after a bubble clear, the
+// budget-vs-band mismatch, …) and appended spurious echoes for tools whose
+// completion was plainly visible. The watermark and the entry offsets are
+// always a consistent pair from the same committed frame: appends between
+// frames never move existing entries' offsets, and every offset/linecount
+// recomputation happens inside a snapshot whose commit then publishes the
+// watermark. Unknown geometry (never rendered, stale offset, zero watermark)
+// reports false — never a spurious echo. While the viewport is suppressed
+// (orchestration mode) its rows are not on the canvas at all, so the check
+// is meaningless and also reports false.
 func (cv *ChatViewport) IsScrolledOff(c Component) bool {
-	if c == nil {
+	if c == nil || cv.suppressed {
 		return false
 	}
-	visibleH := cv.viewportH - cv.bottomChromeH
-	if visibleH <= 0 {
-		return false // no layout geometry yet: never a spurious echo
+	wm := int(cv.scrollWatermark.Load())
+	if wm <= 0 {
+		return false // nothing committed to scrollback: every row repaintable
 	}
-	total := len(cv.renderCache.lines)
-	if total <= visibleH {
-		return false // the whole transcript fits the visible band
-	}
-	visibleStart := total - visibleH
 	for i := range cv.entries {
 		e := &cv.entries[i]
 		if e.View != c {
 			continue
 		}
-		if e.renderedLines == nil || e.lineOffset < 0 || e.lineOffset > total {
+		if e.renderedLines == nil || e.lineOffset < 0 {
 			return false // unknown geometry: no spurious echo
 		}
-		return e.lineOffset+len(e.renderedLines) <= visibleStart
+		// Canvas rows of the entry: [origin+offset, origin+offset+len).
+		// Fully committed (frozen) iff its last row precedes the watermark.
+		return cv.transcriptOrigin+e.lineOffset+len(e.renderedLines) <= wm
 	}
 	return false
 }

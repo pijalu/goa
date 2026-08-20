@@ -224,6 +224,19 @@ func (c *Compositor) Clear() {
 	c.clearRequested = true
 }
 
+// ScrollWatermark returns the scrollback watermark: the number of canvas rows
+// already emitted into terminal scrollback. Those rows are immutable — the
+// window top is always clamped to the watermark (windowTop), so a state
+// change to a component whose rows all lie above it can never become visible
+// on screen. The chat viewport's IsScrolledOff derives its completion-echo
+// geometry from this truth instead of re-deriving the visible band from
+// stale layout measurements.
+func (c *Compositor) ScrollWatermark() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.scrollTop
+}
+
 // ClearGen reports the current clear generation. Snapshot builders stamp it
 // into Scene.ClearGen; see the clearGen field docs for the stale-scene drop.
 func (c *Compositor) ClearGen() uint64 {
