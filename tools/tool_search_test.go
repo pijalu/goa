@@ -204,12 +204,14 @@ func (*longDescDeferredTool) Execute(input string) (string, error) {
 	return "", nil
 }
 
-// TestScheduleToolsAreEager pins the report "schedule_create/delete/list
-// deferred to tool_search": the scheduler tools must stay in the eager block
-// (they do NOT implement Deferred), so the model can call them directly
-// without a tool_search round-trip. Guards against someone adding them to
-// deferred.go.
-func TestScheduleToolsAreEager(t *testing.T) {
+// TestScheduleToolsAreDeferred pins the 2026-08-21 bugs.md feature request
+// "schedule_create/delete/list deferred to tool_search": the scheduler tools
+// must NOT ship in the eager schema block (they implement Deferred in
+// tools/deferred.go) — the model discovers them via the tool_search catalog
+// and loads them on demand with select:schedule_create,…. This deliberately
+// reverses the 2026-08-17 NOT-A-BUG decision that pinned them eager. Guards
+// against someone removing the Deferred markers.
+func TestScheduleToolsAreDeferred(t *testing.T) {
 	reg := tools.NewToolRegistry()
 	// The full deferred family so deferral actually activates (>= threshold).
 	for _, d := range []agentic.Tool{
@@ -231,27 +233,48 @@ func TestScheduleToolsAreEager(t *testing.T) {
 	if _, unloaded := areg.DeferredStatus("webfetch"); !unloaded {
 		t.Fatal("webfetch should be deferred (deferral active) but is not")
 	}
-	// The schedule tools are eager and present in the eager schema block.
+	// The schedule tools are withheld from the eager schema block.
 	var eager []string
 	for _, s := range areg.Schemas() {
 		eager = append(eager, s.Name)
 	}
 	for _, want := range []string{"schedule_create", "schedule_delete", "schedule_list"} {
-		if loader, unloaded := areg.DeferredStatus(want); unloaded {
-			t.Errorf("%s is DEFERRED (loader=%s), want eager", want, loader)
+		if _, unloaded := areg.DeferredStatus(want); !unloaded {
+			t.Errorf("%s is EAGER, want deferred (loadable via tool_search)", want)
 		}
-		found := false
 		for _, n := range eager {
 			if n == want {
-				found = true
+				t.Errorf("%s present in eager schema block, want withheld (eager=%v)", want, eager)
 			}
 		}
-		if !found {
-			t.Errorf("%s missing from eager schema block (eager=%v)", want, eager)
+		// The tool_search catalog must advertise them so the model can find
+		// and select: them.
+		if !strings.Contains(catalogText(reg), want) {
+			t.Errorf("%s missing from tool_search deferred catalog", want)
 		}
-		// And the tool_search catalog must not advertise them as deferred.
-		if strings.Contains(catalogText(reg), want) {
-			t.Errorf("%s wrongly listed in tool_search deferred catalog", want)
+	}
+
+	// Load on demand via the select: path and confirm they become callable.
+	loaded := areg.LoadDeferred([]string{"schedule_create", "schedule_delete", "schedule_list"})
+	if len(loaded) != 3 {
+		t.Fatalf("LoadDeferred loaded %v, want all 3 schedule tools", loaded)
+	}
+	for _, name := range []string{"schedule_create", "schedule_delete", "schedule_list"} {
+		if _, unloaded := areg.DeferredStatus(name); unloaded {
+			t.Errorf("%s still deferred after LoadDeferred", name)
+		}
+		if _, ok := areg.Get(name); !ok {
+			t.Errorf("%s not in registry after LoadDeferred", name)
+		}
+	}
+	// After loading, the schemas ship in the Schemas tail (callable by the model).
+	loadedSchemaNames := map[string]bool{}
+	for _, s := range areg.Schemas() {
+		loadedSchemaNames[s.Name] = true
+	}
+	for _, name := range []string{"schedule_create", "schedule_delete", "schedule_list"} {
+		if !loadedSchemaNames[name] {
+			t.Errorf("%s schema not served after LoadDeferred", name)
 		}
 	}
 }

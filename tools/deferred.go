@@ -22,3 +22,13 @@ func (*SmartSearchTool) Deferred() bool      { return true }
 func (*SSHBashTool) Deferred() bool          { return true }
 func (*SessionSearchTool) Deferred() bool    { return true }
 func (*SessionEventReadTool) Deferred() bool { return true }
+
+// Schedule tools (schedule_create/delete/list): rarely used — reminders are
+// created at most a few times per session — yet their schemas ship on every
+// request. Deferred per the 2026-08-21 bugs.md feature request; the model
+// loads them on demand via tool_search (select:schedule_create,...). This
+// deliberately reverses the 2026-08-17 NOT-A-BUG decision that pinned them
+// eager.
+func (*ScheduleCreateTool) Deferred() bool { return true }
+func (*ScheduleDeleteTool) Deferred() bool { return true }
+func (*ScheduleListTool) Deferred() bool   { return true }
