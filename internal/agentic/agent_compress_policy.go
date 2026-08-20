@@ -52,6 +52,20 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 	effective := a.computeContextStatsForMax(maxTokens)
 	a.mu.Unlock()
 	stats := a.ContextStats()
+	// The projected metric is provider-anchored and is preferred for the soft
+	// maintenance gate, but it can under-report the full in-memory transcript
+	// when the provider has not refreshed usage yet. Never let that discrepancy
+	// route a hard-ceiling turn to the destructive fallback: the hard layer must
+	// get the first chance to summarize. The reactive enforcer uses the full
+	// estimate, so use the same threshold here for hard decisions.
+	estimatedHard := rt.effectiveHard() > 0 && effective.EstimatedTokens >= maxTokens*rt.effectiveHard()/100
+	if estimatedHard {
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Info, "Hard-layer context compression: estimated usage %d%% (%d / %d tokens)",
+				effective.EstimatedTokens*100/maxTokens, effective.EstimatedTokens, maxTokens)
+		}
+		return a.compressAndReportWith(ctx, rt.hardStrategy)
+	}
 	// Legacy whole-strategy micro: when the SOFT layer is micro it self-manages
 	// its internal thresholds below the hard ceiling, so skip the tier gate and
 	// run it directly until the emergency ceiling is reached. Route to the SOFT
