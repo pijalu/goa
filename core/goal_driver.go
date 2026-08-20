@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -278,15 +279,23 @@ func (d *GoalDriver) syncTeamOverlay(active *goal.GoalSnapshot) {
 	switch {
 	case want == "" && d.overlayGoalID != "":
 		// Active goal ended (or has no team): tear down the lingering overlay.
-		_ = d.TeamOverlay.RemoveOverlay()
+		// Errors are logged, not swallowed — a silently stuck overlay leaves a
+		// hidden team governing the session (RC-4).
+		if err := d.TeamOverlay.RemoveOverlay(); err != nil {
+			log.Printf("warning: team overlay remove failed: %v", err)
+		}
 		d.overlayGoalID = ""
 	case want != "" && d.overlayGoalID != wantID:
 		// New team-bound goal: apply its overlay. RemoveOverlay is safe first
 		// (no-op when none) so a prior overlay for a different goal is cleared.
 		if d.overlayGoalID != "" {
-			_ = d.TeamOverlay.RemoveOverlay()
+			if err := d.TeamOverlay.RemoveOverlay(); err != nil {
+				log.Printf("warning: team overlay remove failed: %v", err)
+			}
 		}
-		_ = d.TeamOverlay.ApplyOverlay(want)
+		if err := d.TeamOverlay.ApplyOverlay(want); err != nil {
+			log.Printf("warning: team overlay %q apply failed: %v", want, err)
+		}
 		d.overlayGoalID = wantID
 	}
 }

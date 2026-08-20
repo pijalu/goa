@@ -122,8 +122,27 @@ func (m *configMenu) openTeamsActive() {
 			m.back()
 			return
 		}
+		// Route through the team manager so config and RUNTIME state move
+		// together — previously this selector wrote config only, so the team
+		// stayed active (hidden) until restart, and teams.active resurrected
+		// it at the next start (RC-4). Fall back to config-only when no
+		// manager is wired (headless contexts).
+		if tm := teamManager(m.ctx); tm != nil {
+			if selected == "" {
+				if err := tm.Deactivate(); err != nil {
+					m.flash("Cannot deactivate team: " + err.Error())
+					m.openTeams()
+					return
+				}
+			} else if err := tm.Activate(selected); err != nil {
+				m.flash("Cannot activate team " + selected + ": " + err.Error())
+				m.openTeams()
+				return
+			}
+		}
 		cfg.Teams.Active = selected
 		m.saveTeamsActive()
+		m.ctx.FooterRefresh()
 		m.openTeams()
 	})
 }

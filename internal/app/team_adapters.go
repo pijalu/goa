@@ -6,12 +6,14 @@ package app
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/team"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/multiagent"
 )
 
@@ -231,6 +233,49 @@ func (a *teamMemberApplier) MemberConfig(def config.TeamDefinition, rm config.Re
 		}
 	}
 	return ac, nil
+}
+
+// applyStartupTeam activates the configured teams.active (RC-4): the saved
+// selection is APPLIED at boot so the configured team is real from the first
+// turn — previously the config value was inert and the team stayed hidden
+// until manually activated. Failures flash a warning; the session continues
+// without the team (same as a missing team definition).
+func (s *subsystems) applyStartupTeam() {
+	name := ""
+	if s.cfg != nil {
+		name = s.cfg.Teams.Active
+	}
+	if name == "" || s.teamManager == nil {
+		return
+	}
+	if err := s.teamManager.Activate(name); err != nil {
+		log.Printf("warning: startup team activation %q failed: %v", name, err)
+		if s.events != nil {
+			select {
+			case s.events.Chat <- event.ChatEvent{Flash: &event.Flash{Text: fmt.Sprintf("Team %q failed to activate: %v", name, err)}}:
+			default:
+			}
+		}
+	}
+}
+
+// teamChangeAnnouncement renders the chat flash for a team transition so no
+// team activation/overlay/removal is ever hidden from the user (RC-4).
+func teamChangeAnnouncement(effective, reason string) string {
+	if reason == "overlay removed" && effective == "" {
+		return "Team overlay removed — session model restored"
+	}
+	if effective == "" {
+		return "Team deactivated — prior model/companion restored"
+	}
+	switch reason {
+	case "overlay":
+		return fmt.Sprintf("Team overlay active: %s (goal-scoped — governs until the bound goal ends)", effective)
+	case "overlay removed":
+		return fmt.Sprintf("Team overlay removed — team %s governs again", effective)
+	default:
+		return fmt.Sprintf("Team active: %s", effective)
+	}
 }
 
 // newTeamManager constructs the TeamManager and its adapters (TEAMS-PLAN

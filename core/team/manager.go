@@ -116,6 +116,35 @@ type Manager struct {
 	overlayTeam     string           // goal-scoped overlay ("" = none)
 	overlaySnapshot *sessionSnapshot // pre-overlay snapshot
 	drifted         bool             // manual override since activation
+
+	// onChange fires after every visibility-relevant transition (activation,
+	// deactivation, overlay apply/remove) with the new effective team name and
+	// a human-readable reason ("activated", "overlay", "deactivated",
+	// "overlay removed"). The app wires it to a chat announcement + footer
+	// refresh so a team is never hidden from the user (team UI bug RC-4).
+	// Called with the manager lock NOT held; must not re-enter the manager.
+	onChange func(effective, reason string)
+}
+
+// SetChangeCallback installs the transition observer (nil disables).
+func (m *Manager) SetChangeCallback(cb func(effective, reason string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onChange = cb
+}
+
+// notifyChange invokes the change callback outside the manager lock.
+func (m *Manager) notifyChange(reason string) {
+	m.mu.Lock()
+	cb := m.onChange
+	effective := m.overlayTeam
+	if effective == "" {
+		effective = m.active
+	}
+	m.mu.Unlock()
+	if cb != nil {
+		cb(effective, reason)
+	}
 }
 
 // NewManager builds a TeamManager. Nil dependencies are tolerated so the
@@ -181,23 +210,35 @@ func (m *Manager) Resolve(name string) (config.TeamDefinition, bool) {
 // failure the previous state is restored and the error returned.
 func (m *Manager) Activate(name string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.overlayTeam != "" {
+		m.mu.Unlock()
 		return fmt.Errorf("cannot switch team while goal overlay %q is active", m.overlayTeam)
 	}
 	if m.active != "" {
-		if err := m.restoreLocked(); err != nil {
+		var drop string
+		if err := m.restoreLocked(&drop); err != nil {
+			m.mu.Unlock()
 			return fmt.Errorf("restore previous team: %w", err)
 		}
 	}
-	return m.applyLocked(name, false)
+	err := m.applyLocked(name, false)
+	m.mu.Unlock()
+	if err == nil {
+		m.notifyChange("activated")
+	}
+	return err
 }
 
 // Deactivate restores the pre-team session state (§4.2).
 func (m *Manager) Deactivate() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.restoreLocked()
+	var reason string
+	err := m.restoreLocked(&reason)
+	m.mu.Unlock()
+	if err == nil && reason != "" {
+		m.notifyChange(reason)
+	}
+	return err
 }
 
 // ApplyOverlay applies a team for the duration of a goal (§5.2). The
@@ -205,37 +246,54 @@ func (m *Manager) Deactivate() error {
 // and restored by RemoveOverlay.
 func (m *Manager) ApplyOverlay(name string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.overlayTeam != "" {
+		m.mu.Unlock()
 		return fmt.Errorf("goal overlay %q already active", m.overlayTeam)
 	}
-	return m.applyLocked(name, true)
+	err := m.applyLocked(name, true)
+	m.mu.Unlock()
+	if err == nil {
+		m.notifyChange("overlay")
+	}
+	return err
 }
 
 // RemoveOverlay tears down the goal overlay, restoring the session-level
 // state (§5.2).
 func (m *Manager) RemoveOverlay() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.restoreLocked()
+	var reason string
+	err := m.restoreLocked(&reason)
+	m.mu.Unlock()
+	if err == nil && reason != "" {
+		m.notifyChange(reason)
+	}
+	return err
 }
 
 // Sync re-applies the effective team definition, clearing drift (§4.4).
 func (m *Manager) Sync() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	name := m.overlayTeam
 	overlay := true
 	if name == "" {
 		name, overlay = m.active, false
 	}
 	if name == "" {
+		m.mu.Unlock()
 		return errors.New("no team active")
 	}
-	if err := m.restoreLocked(); err != nil {
+	var drop string
+	if err := m.restoreLocked(&drop); err != nil {
+		m.mu.Unlock()
 		return err
 	}
-	return m.applyLocked(name, overlay)
+	err := m.applyLocked(name, overlay)
+	m.mu.Unlock()
+	if err == nil {
+		m.notifyChange("synced")
+	}
+	return err
 }
 
 // applyLocked snapshots then applies a team definition. overlay selects the
@@ -267,8 +325,10 @@ func (m *Manager) applyLocked(name string, overlay bool) error {
 }
 
 // restoreLocked restores the most recent application (overlay first, then
-// the session-level team).
-func (m *Manager) restoreLocked() error {
+// the session-level team). It reports what it restored via the reason out
+// param ("overlay removed" / "deactivated" / "" when nothing was active) so
+// callers can notify after releasing the lock.
+func (m *Manager) restoreLocked(reason *string) error {
 	switch {
 	case m.overlaySnapshot != nil:
 		if err := m.restoreSnapshotLocked(m.overlaySnapshot); err != nil {
@@ -276,12 +336,14 @@ func (m *Manager) restoreLocked() error {
 		}
 		m.emitLocked("team.deactivated", map[string]any{"team": m.overlayTeam, "overlay": true})
 		m.overlayTeam, m.overlaySnapshot = "", nil
+		*reason = "overlay removed"
 	case m.activeSnapshot != nil:
 		if err := m.restoreSnapshotLocked(m.activeSnapshot); err != nil {
 			return err
 		}
 		m.emitLocked("team.deactivated", map[string]any{"team": m.active, "overlay": false})
 		m.active, m.activeSnapshot = "", nil
+		*reason = "deactivated"
 	}
 	m.drifted = false
 	return nil

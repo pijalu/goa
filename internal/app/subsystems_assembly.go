@@ -91,6 +91,24 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	// applies the team's overlay for its duration). The driver no-ops the
 	// overlay when this is nil.
 	s.goalDriver.TeamOverlay = s.teamManager
+	// Team visibility (RC-4): every team transition announces itself in chat
+	// and refreshes the footer badge so no team — session-level or goal
+	// overlay — is ever hidden from the user.
+	s.teamManager.SetChangeCallback(func(effective, reason string) {
+		text := teamChangeAnnouncement(effective, reason)
+		select {
+		case s.events.Chat <- event.ChatEvent{Flash: &event.Flash{Text: text}}:
+		default:
+		}
+		select {
+		case s.events.Footer <- event.FooterEvent{FooterRefresh: true}:
+		default:
+		}
+	})
+	// Startup activation: teams.active from config is APPLIED here so the
+	// configured team is real from the first turn — previously the config
+	// value was inert and the team stayed hidden until manually activated.
+	s.applyStartupTeam()
 	// Re-bind the sticky skill provider to the assembled subsystems: it must
 	// read the LIVE registry (subsystem field), because /reload swaps the
 	// registry object and a provider pinned to the startup copy would keep
