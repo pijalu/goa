@@ -13,6 +13,8 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
+	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/models"
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/tui"
 )
@@ -254,14 +256,41 @@ func pickModelFromProvider(host core.UIHost, cfg *config.Config, saver config.Co
 		items := make([]tui.SelectorItem, 0, len(models)+1)
 		for _, mod := range models {
 			desc := providerID
+			if mod.ContextWindow > 0 {
+				desc += fmt.Sprintf(" ctx=%dk", mod.ContextWindow/1000)
+			}
+			if mod.MaxTokens > 0 {
+				desc += fmt.Sprintf(" out=%dk", mod.MaxTokens/1000)
+			}
+			if mod.Pricing != nil {
+				var costParts []string
+				if mod.Pricing.InputPer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("in=$%.2f", mod.Pricing.InputPer1M))
+				}
+				if mod.Pricing.CacheReadPer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("cache_read=$%.2f", mod.Pricing.CacheReadPer1M))
+				}
+				if mod.Pricing.CacheWritePer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("cache_write=$%.2f", mod.Pricing.CacheWritePer1M))
+				}
+				if mod.Pricing.OutputPer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("out=$%.2f", mod.Pricing.OutputPer1M))
+				}
+				if len(costParts) > 0 {
+					desc += " " + strings.Join(costParts, " ")
+				}
+			}
 			if modelIndex(cfg.Models, mod.ID) >= 0 {
 				desc += " ✓ configured"
 			}
 			items = append(items, tui.SelectorItem{
-				Value:       mod.ID,
-				Label:       mod.ID,
-				Description: desc,
-				SearchLabel: modelSearchLabel(mod.ID, providerID, mod.ID),
+				Value:            mod.ID,
+				Label:            mod.ID,
+				Description:      desc,
+				Color:            tui.TheTheme.ColorHex("user_msg"),
+				SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
+				DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
+				SearchLabel:      modelSearchLabel(mod.ID, providerID, mod.ID),
 			})
 		}
 		items = append(items, tui.SelectorItem{
@@ -307,12 +336,14 @@ func addAndShowModel(host core.UIHost, cfg *config.Config, saver config.ConfigSa
 		return
 	}
 	modelID := deriveModelID(modelName)
-	cfg.Models = append(cfg.Models, config.ModelConfig{
+	newModel := config.ModelConfig{
 		ID:         modelID,
 		Name:       modelName,
 		ProviderID: providerID,
 		Model:      modelName,
-	})
+	}
+	populateModelFromRegistry(&newModel)
+	cfg.Models = append(cfg.Models, newModel)
 	if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
 		host.Flash("Failed to save: " + err.Error())
 	}
@@ -439,12 +470,41 @@ func modelSelectorItems(allModels []providerModelEntry, active string) []tui.Sel
 	items := make([]tui.SelectorItem, 0, len(allModels)+1)
 	for _, entry := range allModels {
 		desc := entry.ProviderID
+		if entry.Model.ContextWindow > 0 {
+			desc += fmt.Sprintf(" ctx=%dk", entry.Model.ContextWindow/1000)
+		}
+		if entry.Model.MaxTokens > 0 {
+			desc += fmt.Sprintf(" out=%dk", entry.Model.MaxTokens/1000)
+		}
+		if entry.Model.Pricing != nil {
+			var costParts []string
+			if entry.Model.Pricing.InputPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("in=$%.2f", entry.Model.Pricing.InputPer1M))
+			}
+			if entry.Model.Pricing.CacheReadPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("cache_read=$%.2f", entry.Model.Pricing.CacheReadPer1M))
+			}
+			if entry.Model.Pricing.CacheWritePer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("cache_write=$%.2f", entry.Model.Pricing.CacheWritePer1M))
+			}
+			if entry.Model.Pricing.OutputPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("out=$%.2f", entry.Model.Pricing.OutputPer1M))
+			}
+			if len(costParts) > 0 {
+				desc += " " + strings.Join(costParts, " ")
+			}
+		}
 		if entry.Model.ID == active {
 			desc += " (active)"
 		}
 		items = append(items, tui.SelectorItem{
-			Value: entry.Model.ID, Label: entry.Model.ID, Description: desc,
-			SearchLabel: modelSearchLabel(entry.Model.ID, entry.ProviderID, entry.Model.ID),
+			Value:            entry.Model.ID,
+			Label:            entry.Model.ID,
+			Description:      desc,
+			Color:            tui.TheTheme.ColorHex("user_msg"),
+			SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
+			DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
+			SearchLabel:      modelSearchLabel(entry.Model.ID, entry.ProviderID, entry.Model.ID),
 		})
 	}
 	return append(items, tui.SelectorItem{Value: "__custom__", Label: "── custom model ──", Description: "type any model name"})
@@ -624,6 +684,41 @@ func providerIDForModel(cfg *config.Config, modelID string) string {
 	return ""
 }
 
+// populateModelFromRegistry looks up a model in the registry and populates
+// the ModelConfig with context window, max tokens, and pricing info if available.
+func populateModelFromRegistry(m *config.ModelConfig) {
+	if m.ProviderID == "" {
+		return
+	}
+	regModel := models.GetModelForProvider(agenticprovider.Provider(m.ProviderID), m.ID)
+	if regModel == nil {
+		return
+	}
+	if m.ContextWindow == 0 && regModel.ContextWindow > 0 {
+		m.ContextWindow = regModel.ContextWindow
+	}
+	if m.MaxTokens == 0 && regModel.MaxTokens > 0 {
+		m.MaxTokens = regModel.MaxTokens
+	}
+	if regModel.Cost.Input > 0 || regModel.Cost.Output > 0 || regModel.Cost.CacheRead > 0 || regModel.Cost.CacheWrite > 0 {
+		if m.Pricing == nil {
+			m.Pricing = &config.PricingConfig{}
+		}
+		if m.Pricing.InputPer1M == 0 && regModel.Cost.Input > 0 {
+			m.Pricing.InputPer1M = regModel.Cost.Input
+		}
+		if m.Pricing.OutputPer1M == 0 && regModel.Cost.Output > 0 {
+			m.Pricing.OutputPer1M = regModel.Cost.Output
+		}
+		if m.Pricing.CacheReadPer1M == 0 && regModel.Cost.CacheRead > 0 {
+			m.Pricing.CacheReadPer1M = regModel.Cost.CacheRead
+		}
+		if m.Pricing.CacheWritePer1M == 0 && regModel.Cost.CacheWrite > 0 {
+			m.Pricing.CacheWritePer1M = regModel.Cost.CacheWrite
+		}
+	}
+}
+
 // configuredModelItems returns selector items from the local model configuration.
 //
 // By default, models from ALL providers are listed (the active model is
@@ -648,15 +743,41 @@ func configuredModelItemsFiltered(cfg *config.Config, activeModel string, active
 			continue
 		}
 		desc := fmt.Sprintf("provider=%s model=%s", m.ProviderID, m.Model)
+		if m.ContextWindow > 0 {
+			desc += fmt.Sprintf(" ctx=%dk", m.ContextWindow/1000)
+		}
+		if m.MaxTokens > 0 {
+			desc += fmt.Sprintf(" out=%dk", m.MaxTokens/1000)
+		}
+		if m.Pricing != nil {
+			var costParts []string
+			if m.Pricing.InputPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("in=$%.2f", m.Pricing.InputPer1M))
+			}
+			if m.Pricing.CacheReadPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("cache_read=$%.2f", m.Pricing.CacheReadPer1M))
+			}
+			if m.Pricing.CacheWritePer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("cache_write=$%.2f", m.Pricing.CacheWritePer1M))
+			}
+			if m.Pricing.OutputPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("out=$%.2f", m.Pricing.OutputPer1M))
+			}
+			if len(costParts) > 0 {
+				desc += " " + strings.Join(costParts, " ")
+			}
+		}
 		if m.ID == activeModel {
 			desc += " (active)"
 		}
 		items = append(items, tui.SelectorItem{
-			Value:       m.ID,
-			Label:       m.ID,
-			Description: desc,
-			Color:       localModelColor(cfg, m.ProviderID),
-			SearchLabel: modelSearchLabel(m.ID, m.ProviderID, m.Model),
+			Value:            m.ID,
+			Label:            m.ID,
+			Description:      desc,
+			Color:            tui.TheTheme.ColorHex("user_msg"),
+			SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
+			DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
+			SearchLabel:      modelSearchLabel(m.ID, m.ProviderID, m.Model),
 		})
 	}
 	return items

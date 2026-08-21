@@ -521,8 +521,9 @@ func titleSpinnerDefFor(cfg *config.Config) spinner.Definition {
 	return def
 }
 
-// spinnerDefFor resolves the spinner definition for the title/status
-// animation from config: empty = default (hexagon), "none" = no animation,
+// spinnerDefFor resolves the spinner definition for the status/busy animation
+// from config: empty = the Pac-Man / ghost ping-pong waiting animation
+// (shown while the agent processes the request), "none" = no animation,
 // a name = that spinner (falling back to the default when unknown).
 func spinnerDefFor(cfg *config.Config) spinner.Definition {
 	if cfg == nil {
@@ -534,6 +535,12 @@ func spinnerDefFor(cfg *config.Config) spinner.Definition {
 		return spinner.Definition{}
 	}
 	if name == "" {
+		// Default waiting animation: the Unicode Pac-Man / ghost ping-pong,
+		// shown while the user waits for goa to process the request. Set
+		// tui.spinner: hexagon (or any spinners.json name) to override.
+		if def, ok := spinner.Get("pacman"); ok {
+			return def
+		}
 		_, def := spinner.Default()
 		return def
 	}

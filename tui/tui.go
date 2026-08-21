@@ -635,10 +635,14 @@ func (t *TUI) ClearTranscript() {
 // listenResize reacts to terminal size changes by requesting a re-render.
 // The platform-specific signal source lives in resize_unix.go / resize_windows.go
 // (SIGWINCH is unavailable on Windows, where size changes are polled instead).
+// The event source is created ONCE for the TUI's lifetime: re-creating it per
+// event leaked one polling goroutine (Windows) / one os/signal.Notify
+// subscription (Unix) for every resize the terminal received.
 func (t *TUI) listenResize() {
+	events := resizeEvents(t.done)
 	for {
 		select {
-		case <-resizeEvents(t.done):
+		case <-events:
 			t.RequestRender()
 		case <-t.done:
 			return

@@ -597,12 +597,14 @@ func (m *configMenu) settingCompressionPerModel() {
 			desc = "override set"
 		}
 		items = append(items, tui.SelectorItem{
-			Value:       mod.ID,
-			Label:       mod.ID,
-			Description: desc,
-			Color:       localModelColor(cfg, mod.ProviderID),
-			SearchLabel: modelSearchLabel(mod.ID, mod.ProviderID, mod.Model),
-		})
+					Value:            mod.ID,
+					Label:            mod.ID,
+					Description:      desc,
+					Color:            tui.TheTheme.ColorHex("user_msg"),
+					SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
+					DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
+					SearchLabel:      modelSearchLabel(mod.ID, mod.ProviderID, mod.Model),
+				})
 	}
 	if len(items) == 0 {
 		items = append(items, tui.SelectorItem{

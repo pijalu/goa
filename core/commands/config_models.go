@@ -67,12 +67,42 @@ func (m *configMenu) configuredModelItems() []tui.SelectorItem {
 		if mod.Ephemeral {
 			continue
 		}
+		desc := fmt.Sprintf("provider=%s model=%s", mod.ProviderID, mod.Model)
+		if mod.ContextWindow > 0 {
+			desc += fmt.Sprintf(" ctx=%dk", mod.ContextWindow/1000)
+		}
+		if mod.MaxTokens > 0 {
+			desc += fmt.Sprintf(" out=%dk", mod.MaxTokens/1000)
+		}
+		if mod.Pricing != nil {
+			var costParts []string
+			if mod.Pricing.InputPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("in=$%.2f", mod.Pricing.InputPer1M))
+			}
+			if mod.Pricing.CacheReadPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("cache_read=$%.2f", mod.Pricing.CacheReadPer1M))
+			}
+			if mod.Pricing.CacheWritePer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("cache_write=$%.2f", mod.Pricing.CacheWritePer1M))
+			}
+			if mod.Pricing.OutputPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("out=$%.2f", mod.Pricing.OutputPer1M))
+			}
+			if len(costParts) > 0 {
+				desc += " " + strings.Join(costParts, " ")
+			}
+		}
+		if mod.ID == m.ctx.Config.ActiveModel {
+			desc += " (active)"
+		}
 		items = append(items, tui.SelectorItem{
-			Value:       mod.ID,
-			Label:       mod.ID,
-			Description: mod.Model,
-			Color:       localModelColor(m.ctx.Config, mod.ProviderID),
-			SearchLabel: modelSearchLabel(mod.ID, mod.ProviderID, mod.Model),
+			Value:            mod.ID,
+			Label:            mod.ID,
+			Description:      desc,
+			Color:            tui.TheTheme.ColorHex("user_msg"),
+			SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
+			DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
+			SearchLabel:      modelSearchLabel(mod.ID, mod.ProviderID, mod.Model),
 		})
 	}
 	if len(items) == 0 {
@@ -125,17 +155,44 @@ func (m *configMenu) resolveModelFull(providerID, modelName string, onSelected f
 		return
 	}
 	items := make([]tui.SelectorItem, 0, len(models)+1)
-	for _, mod := range models {
-		desc := providerID
-		if findModelIndex(m.ctx.Config.Models, mod.ID) >= 0 {
-			desc += " ✓ configured"
-		}
-		items = append(items, tui.SelectorItem{
-			Value:       mod.ID,
-			Label:       mod.ID,
-			Description: desc,
-			SearchLabel: modelSearchLabel(mod.ID, providerID, mod.ID),
-		})
+		for _, mod := range models {
+			desc := providerID
+			if mod.ContextWindow > 0 {
+				desc += fmt.Sprintf(" ctx=%dk", mod.ContextWindow/1000)
+			}
+			if mod.MaxTokens > 0 {
+				desc += fmt.Sprintf(" out=%dk", mod.MaxTokens/1000)
+			}
+			if mod.Pricing != nil {
+				var costParts []string
+				if mod.Pricing.InputPer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("in=$%.2f", mod.Pricing.InputPer1M))
+				}
+				if mod.Pricing.CacheReadPer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("cache_read=$%.2f", mod.Pricing.CacheReadPer1M))
+				}
+				if mod.Pricing.CacheWritePer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("cache_write=$%.2f", mod.Pricing.CacheWritePer1M))
+				}
+				if mod.Pricing.OutputPer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("out=$%.2f", mod.Pricing.OutputPer1M))
+				}
+				if len(costParts) > 0 {
+					desc += " " + strings.Join(costParts, " ")
+				}
+			}
+			if findModelIndex(m.ctx.Config.Models, mod.ID) >= 0 {
+				desc += " ✓ configured"
+			}
+			items = append(items, tui.SelectorItem{
+				Value:            mod.ID,
+				Label:            mod.ID,
+				Description:      desc,
+				Color:            tui.TheTheme.ColorHex("user_msg"),
+				SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
+				DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
+				SearchLabel:      modelSearchLabel(mod.ID, providerID, mod.ID),
+			})
 	}
 	items = append(items, tui.SelectorItem{
 		Value:       "__custom__",

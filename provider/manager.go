@@ -24,9 +24,15 @@ import (
 	"github.com/pijalu/goa/internal/auth"
 )
 
-// ModelInfo describes an LLM model from a provider's model list.
+// ModelInfo describes an LLM model from a provider's model list. Live
+// /models endpoints typically return only an ID; ContextWindow, MaxTokens, and
+// Pricing are populated from the built-in registry when available so model
+// pickers can show capabilities and cost without a second lookup.
 type ModelInfo struct {
-	ID string `json:"id"`
+	ID            string                `json:"id"`
+	ContextWindow int                   `json:"context_window,omitempty"`
+	MaxTokens     int                   `json:"max_tokens,omitempty"`
+	Pricing       *config.PricingConfig `json:"pricing,omitempty"`
 }
 
 // ModelListResponse represents the OpenAI-compatible /models response.
@@ -223,7 +229,11 @@ func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("parse model list: %w", err)
 	}
 
-	return result.Data, nil
+	out := make([]ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		out = append(out, enrichModelInfo(m))
+	}
+	return out, nil
 }
 
 // ListRegistryModels returns catalog models for a provider config ID, as
@@ -259,20 +269,71 @@ func (pm *ProviderManager) ListRegistryModels(providerID string) []ModelInfo {
 	var out []ModelInfo
 	for _, m := range models.GetRuntimeModels(prov) {
 		if !seen[m.ID] && filter(m.ID) {
-			out = append(out, ModelInfo{ID: m.ID})
+			out = append(out, registryModelInfo(m))
 			seen[m.ID] = true
 		}
 	}
 	for _, m := range models.GetModels(prov) {
 		if !seen[m.ID] && filter(m.ID) {
-			out = append(out, ModelInfo{ID: m.ID})
+			out = append(out, registryModelInfo(m))
 			seen[m.ID] = true
 		}
 	}
 	return out
 }
 
-// isCodexFamilyModel reports whether a model ID belongs to the codex family
+// registryModelInfo converts a built-in registry model into a ModelInfo,
+// carrying over capability and pricing metadata for model pickers.
+func registryModelInfo(m agenticprovider.Model) ModelInfo {
+	return ModelInfo{
+		ID:            m.ID,
+		ContextWindow: m.ContextWindow,
+		MaxTokens:     m.MaxTokens,
+		Pricing:       registryPricing(m.Cost),
+	}
+}
+
+// registryPricing converts a registry model's per-token pricing into the
+// config.PricingConfig per-million-token representation used by the UI. A fully
+// zero cost yields nil so callers degrade gracefully (no cost shown).
+func registryPricing(cost agenticprovider.ModelPricing) *config.PricingConfig {
+	if cost.Input == 0 && cost.Output == 0 && cost.CacheRead == 0 && cost.CacheWrite == 0 {
+		return nil
+	}
+	return &config.PricingConfig{
+		InputPer1M:      cost.Input * 1e6,
+		OutputPer1M:     cost.Output * 1e6,
+		CacheReadPer1M:  cost.CacheRead * 1e6,
+		CacheWritePer1M: cost.CacheWrite * 1e6,
+	}
+}
+
+// enrichModelInfo fills capability/pricing fields for a live /models entry from
+// the built-in registry, which knows context windows and cost that most
+// endpoints omit. Entries that already carry data are left unchanged.
+func enrichModelInfo(info ModelInfo) ModelInfo {
+	if info.ContextWindow != 0 && info.MaxTokens != 0 && info.Pricing != nil {
+		return info
+	}
+	reg := models.GetModel(info.ID)
+	if reg == nil {
+		reg = models.LookupByPrefix(info.ID)
+	}
+	if reg == nil {
+		return info
+	}
+	if info.ContextWindow == 0 {
+		info.ContextWindow = reg.ContextWindow
+	}
+	if info.MaxTokens == 0 {
+		info.MaxTokens = reg.MaxTokens
+	}
+	if info.Pricing == nil {
+		info.Pricing = registryPricing(reg.Cost)
+	}
+	return info
+}
+
 // served by the ChatGPT Codex subscription endpoint: the explicitly codex
 // models (gpt-5.x-codex[-spark]) plus the gpt-5.4+ generations Pi's codex
 // catalog carries (gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6-luna/sol/terra —

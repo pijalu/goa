@@ -94,28 +94,31 @@ func Default() (string, Definition) {
 
 func load() {
 	// Try user-provided ~/.goa/spinner.json first
+	loaded := false
 	home, _ := internal.GoaHome()
 	if home != "" {
 		userPath := filepath.Join(home, ".goa", "spinner.json")
 		if data, err := os.ReadFile(userPath); err == nil {
 			registry = make(map[string]Definition)
 			if err := json.Unmarshal(data, &registry); err == nil && len(registry) > 0 {
-				return
+				loaded = true
 			}
 		}
 	}
 
-	// Fall back to embedded spinners.json
-	data, err := builtinFS.ReadFile("spinners.json")
-	if err != nil {
-		registry = fallback()
-		fmt.Printf("spinner: failed to read embedded spinners.json: %v\n", err)
-		return
-	}
-	registry = make(map[string]Definition)
-	if err := json.Unmarshal(data, &registry); err != nil {
-		registry = fallback()
-		fmt.Printf("spinner: failed to parse spinners.json: %v\n", err)
+	if !loaded {
+		// Fall back to embedded spinners.json
+		data, err := builtinFS.ReadFile("spinners.json")
+		if err != nil {
+			registry = fallback()
+			fmt.Printf("spinner: failed to read embedded spinners.json: %v\n", err)
+		} else {
+			registry = make(map[string]Definition)
+			if err := json.Unmarshal(data, &registry); err != nil {
+				registry = fallback()
+				fmt.Printf("spinner: failed to parse spinners.json: %v\n", err)
+			}
+		}
 	}
 }
 

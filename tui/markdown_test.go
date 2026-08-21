@@ -276,6 +276,63 @@ func TestRenderInline_Escapes(t *testing.T) {
 	}
 }
 
+// TestRenderInline_WindowsPathPreserved covers bugs.md "startup banner path
+// separators": a Windows path rendered through the markdown pipeline must keep
+// its backslash separators. Only backslashes before ASCII punctuation are
+// escapes (CommonMark); \U, \t, \g, \A are literal path separators.
+func TestRenderInline_WindowsPathPreserved(t *testing.T) {
+	theme := DarkTheme()
+	path := `C:\Users\deg34286\tools\goa\AGENTS.md`
+	got := renderInline("⟡ Context loaded: "+path, theme)
+	if !strings.Contains(got, path) {
+		t.Errorf("renderInline Windows path = %q, want it to contain %q", got, path)
+	}
+}
+
+// TestMDStreamRenderer_WindowsPathInParagraph verifies the full paragraph path
+// used by the startup banner (renderGoaPanel → MDStreamRenderer.Render) keeps
+// Windows path separators intact.
+func TestMDStreamRenderer_WindowsPathInParagraph(t *testing.T) {
+	theme := DarkTheme()
+	r := NewMDStreamRenderer(120, theme)
+	path := `C:\Users\deg34286\tools\goa\AGENTS.md`
+	lines := r.Render("⟡ Context loaded: " + path)
+	if len(lines) == 0 {
+		t.Fatal("expected rendered lines")
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, path) {
+		t.Errorf("paragraph render lost path separators: %q does not contain %q", joined, path)
+	}
+}
+
+// TestRenderInlineEscapes_PunctuationOnly verifies the escape rule directly:
+// backslashes are dropped only before ASCII punctuation and preserved before
+// letters/digits.
+func TestRenderInlineEscapes_PunctuationOnly(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"escape star", `\*`, `*`},
+		{"escape underscore", `\_`, `_`},
+		{"escape hash", `\#`, `#`},
+		{"escape backslash", `\\`, `\`},
+		{"letter preserved", `C:\Users`, `C:\Users`},
+		{"digit preserved", `\1`, `\1`},
+		{"trailing backslash", `abc\`, `abc\`},
+		{"mixed path", `C:\Users\deg\tools`, `C:\Users\deg\tools`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := renderInlineEscapes(tt.input); got != tt.want {
+				t.Errorf("renderInlineEscapes(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsThematicBreak(t *testing.T) {
 	tests := []struct {
 		input string
