@@ -494,7 +494,7 @@ func modelSelectorItems(allModels []providerModelEntry, active string) []tui.Sel
 				desc += " " + strings.Join(costParts, " ")
 			}
 		}
-		if entry.Model.ID == cfg.ActiveModel {
+		if entry.Model.ID == active {
 			desc += " (active)"
 		}
 		items = append(items, tui.SelectorItem{
