@@ -74,14 +74,17 @@ func doAddModel(cfg *config.Config, saver config.ConfigSaver, out core.OutputWri
 		if cfg.Models[i].Name == "" {
 			cfg.Models[i].Name = modelName
 		}
+		populateModelFromRegistry(&cfg.Models[i])
 		return saveAndReport(out, saver, cfg, "model", id)
 	}
-	cfg.Models = append(cfg.Models, config.ModelConfig{
+	newModel := config.ModelConfig{
 		ID:         id,
 		Name:       modelName,
 		ProviderID: providerID,
 		Model:      modelName,
-	})
+	}
+	populateModelFromRegistry(&newModel)
+	cfg.Models = append(cfg.Models, newModel)
 	return saveAndReport(out, saver, cfg, "model", id)
 }
 

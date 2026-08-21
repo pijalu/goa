@@ -20,6 +20,8 @@ type SelectorItem struct {
 	Label             string
 	Description       string
 	Color             string        // optional: hex color for the label (empty = default)
+	SelectedColor     string        // optional: hex color for the label when selected (empty = default)
+	DescriptionColor  string        // optional: hex color for the description (empty = default)
 	AnimationFrames   []string      // optional: animation frames (e.g., spinner preview)
 	AnimationInterval time.Duration // time between animation frames
 	// PreserveOrder opts out of the default alphabetical Label sort: the
@@ -634,12 +636,18 @@ func (s *Selector) renderItem(c selectorColors, idx, width int) string {
 
 	if idx == s.selected {
 		labelColor := c.ast
-		if item.Color != "" {
+		if item.SelectedColor != "" {
+			labelColor = item.SelectedColor
+		} else if item.Color != "" {
 			labelColor = item.Color
 		}
 		line := ansi.Fg(c.suc) + "› " + ansi.Reset + marker + ansi.Fg(labelColor) + item.Label + ansi.Reset
 		if desc != "" {
-			line += "  " + ansi.Fg(c.sys) + dimText(desc)
+		descColor := c.sys
+		if item.DescriptionColor != "" {
+			descColor = item.DescriptionColor
+		}
+		line += "  " + ansi.Fg(descColor) + dimText(desc)
 		}
 		return padToWidth(line, width)
 	}
@@ -651,7 +659,11 @@ func (s *Selector) renderItem(c selectorColors, idx, width int) string {
 	label := ansi.Fg(labelColor) + ansi.Faint + item.Label + ansi.Reset
 	line := "  " + marker + label
 	if desc != "" {
-		line += "  " + dimText(ansi.Fg(c.sys)+desc)
+		descColor := c.sys
+		if item.DescriptionColor != "" {
+			descColor = item.DescriptionColor
+		}
+		line += "  " + dimText(ansi.Fg(descColor)+desc)
 	}
 	return padToWidth(line, width)
 }
