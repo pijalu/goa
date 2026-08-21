@@ -60,6 +60,18 @@ type ProcessTerminal struct {
 	running  bool
 	done     chan struct{}
 
+	// reader is the terminal's input source. Production uses os.Stdin;
+	// tests substitute an os.Pipe to drive input deterministically.
+	reader io.Reader
+
+	// readLoopDone is closed when the readLoop goroutine exits. Stop() waits
+	// on it (after interrupting the blocking read) so a successor engine — the
+	// setup wizard, or the relaunched app after the wizard — always starts
+	// with exactly one reader on stdin. Without this, the stale readLoop kept
+	// reading os.Stdin and stole keystrokes from the new engine, making the
+	// wizard GUI appear frozen/unresponsive.
+	readLoopDone chan struct{}
+
 	// screenClaimed records that Start acquired raw mode and claimed screen
 	// ownership, so Stop releases it exactly once (even on partial paths).
 	screenClaimed bool
@@ -100,6 +112,7 @@ type ProcessTerminal struct {
 func NewProcessTerminal() *ProcessTerminal {
 	return &ProcessTerminal{
 		fd:          int(os.Stdin.Fd()),
+		reader:      os.Stdin,
 		stdinBuffer: NewStdinBuffer(),
 	}
 }
@@ -145,6 +158,7 @@ func (t *ProcessTerminal) Start(onInput func(string), onResize func()) {
 
 	// Always start the read loop — even without raw mode, this allows
 	// processing commands from pipes and non-terminal stdin.
+	t.readLoopDone = make(chan struct{})
 	go t.readLoop()
 }
 
@@ -184,6 +198,13 @@ const escapeDebounceTimeout = 20 * time.Millisecond
 // It handles the Escape-vs-CSI-start ambiguity: a bare 0x1b byte
 // is debounced for escapeDebounceTimeout before emitting as Escape.
 func (t *ProcessTerminal) readLoop() {
+	defer func() {
+		// Signal Stop() that the loop exited so it can stop waiting and a
+		// successor engine can safely start its own reader on stdin.
+		if t.readLoopDone != nil {
+			close(t.readLoopDone)
+		}
+	}()
 	buf := make([]byte, 256)
 	for {
 		select {
@@ -198,12 +219,22 @@ func (t *ProcessTerminal) readLoop() {
 			continue
 		}
 
-		n, err := os.Stdin.Read(buf)
+		n, err := t.reader.Read(buf)
 		if err != nil {
 			return
 		}
 		if n == 0 {
 			continue
+		}
+
+		// Discard input that arrives after Stop(): the readLoop can be blocked
+		// inside Read when done is closed (a console read cannot be preempted
+		// on every platform), so it may wake with data after shutdown. Never
+		// dispatch it — the next engine owns stdin now.
+		select {
+		case <-t.done:
+			return
+		default:
 		}
 
 		data := string(buf[:n])
@@ -236,10 +267,18 @@ func (t *ProcessTerminal) pollEscapeDebounce() {
 	t.escapeMu.Unlock()
 
 	// Set a brief read deadline so we don't block forever.
-	_ = setStdinReadDeadline(time.Now().Add(escapeDebounceTimeout))
+	_ = setReadDeadline(t.reader, time.Now().Add(escapeDebounceTimeout))
 
 	buf := make([]byte, 256)
-	n, err := os.Stdin.Read(buf)
+	n, err := t.reader.Read(buf)
+
+	// The fallback timer may have already emitted the bare ESC while this
+	// read was blocked (Windows consoles ignore read deadlines, so the read
+	// waits for the user's next keystroke). What we just read is then the
+	// NEXT keypress and must be forwarded on its own — re-prefixing it with
+	// the stale ESC silently eats it (the wizard's back/cancel navigation
+	// would drop the key that follows every Escape).
+	alreadyEmitted := !t.escapePending.Load()
 
 	// Cancel the pending debounce regardless of outcome.
 	t.escapeMu.Lock()
@@ -251,7 +290,15 @@ func (t *ProcessTerminal) pollEscapeDebounce() {
 	t.escapeMu.Unlock()
 
 	// Clear the read deadline so subsequent reads block normally.
-	_ = setStdinReadDeadline(time.Time{})
+	_ = setReadDeadline(t.reader, time.Time{})
+
+	if alreadyEmitted {
+		// The timer emitted the ESC; forward what we read as its own key.
+		if err == nil && n > 0 {
+			t.forwardToInput(string(buf[:n]))
+		}
+		return
+	}
 
 	if err != nil || n == 0 {
 		// No more data arrived — this is a real Escape key press.
@@ -286,10 +333,15 @@ func (t *ProcessTerminal) startEscapeDebounce() {
 	})
 }
 
-// setStdinReadDeadline sets the read deadline on stdin (Unix only).
-// A zero time.Time clears the deadline.
-func setStdinReadDeadline(t time.Time) error {
-	return os.Stdin.SetReadDeadline(t)
+// setReadDeadline sets a read deadline on r when it supports one (pollable
+// files such as os.Stdin on Unix and os.Pipe on any platform). Windows
+// console handles do not support deadlines; the platform-specific
+// interruptStdinRead falls back to CancelIoEx for those.
+func setReadDeadline(r io.Reader, t time.Time) error {
+	if rd, ok := r.(interface{ SetReadDeadline(time.Time) error }); ok {
+		return rd.SetReadDeadline(t)
+	}
+	return os.ErrNoDeadline
 }
 
 // handleProtocolBytes processes raw bytes during protocol negotiation.
@@ -462,6 +514,13 @@ func (t *ProcessTerminal) Stop() {
 			t.restore()
 			t.restore = nil
 		}
+		// Start() always launches the readLoop (even when raw mode fails, so
+		// pipe/passthrough input still works): signal it to exit and wait, so
+		// no reader is left on stdin for a successor engine.
+		if t.done != nil {
+			close(t.done)
+		}
+		t.shutdownReadLoop()
 		return
 	}
 
@@ -522,6 +581,37 @@ func (t *ProcessTerminal) Stop() {
 		t.restore()
 		t.restore = nil
 	}
+
+	// Terminate the readLoop before returning so no stale goroutine is left
+	// reading stdin while a successor engine (the /setup wizard, or the app
+	// relaunched after it) starts its own reader. Two readers on os.Stdin
+	// race for every keystroke; input routed to the dead engine is silently
+	// lost and the wizard appears frozen.
+	t.shutdownReadLoop()
+}
+
+// readLoopShutdownTimeout bounds how long Stop waits for the readLoop to
+// observe done and exit. The interrupt normally wakes it in microseconds;
+// the bound only matters when a console read cannot be interrupted.
+const readLoopShutdownTimeout = 250 * time.Millisecond
+
+// shutdownReadLoop actively terminates the stdin readLoop so the NEXT TUI
+// engine (setup wizard, relaunched app) starts with exactly one reader on
+// stdin. It interrupts a read blocked in t.reader.Read — a read deadline on
+// pollable readers (os.Stdin on Unix, os.Pipe anywhere), CancelIoEx on
+// Windows consoles — then waits (bounded) for the loop to exit. Without
+// this, the stale readLoop and the new engine's readLoop race for input and
+// the wizard GUI appears frozen (keys consumed by the dead engine).
+func (t *ProcessTerminal) shutdownReadLoop() {
+	if t.readLoopDone == nil {
+		return
+	}
+	t.interruptStdinRead()
+	select {
+	case <-t.readLoopDone:
+	case <-time.After(readLoopShutdownTimeout):
+	}
+	t.clearStdinReadInterrupt()
 }
 
 // drainInput reads any pending stdin data until idle for idleMs or maxMs reached.
@@ -584,7 +674,7 @@ func (t *ProcessTerminal) WriteString(s string) {
 // until a real, plausible size is read again. Genuine resizes still pass
 // through immediately (they read as valid, non-degenerate sizes).
 func (t *ProcessTerminal) Size() (width, height int) {
-	w, h, err := term.GetSize(t.fd)
+	w, h, err := t.readSize()
 	return t.filteredSize(w, h, err != nil)
 }
 

@@ -6,8 +6,11 @@ package config
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/ansi"
@@ -46,6 +49,52 @@ func TestWizardComponent_initDefaults_ReasoningEnabledHigh(t *testing.T) {
 	}
 	if w.companion.modelThinkingLevel != "high" {
 		t.Errorf("companion.modelThinkingLevel = %q, want high", w.companion.modelThinkingLevel)
+	}
+}
+
+// TestWizardComponent_advanceFromKey_PreservesPastedKey is the regression
+// test for the "no API key provided" pane: advanceFromKey re-read the editor
+// AFTER commitTextInput had already captured the text and cleared the editor,
+// so the second read returned "" and wiped the pasted key.
+func TestWizardComponent_advanceFromKey_PreservesPastedKey(t *testing.T) {
+	done := make(chan *WizardResult, 1)
+	w := newWizardComponent(&Config{}, nil, "/tmp", done)
+	w.state = stateProviderKey
+	w.inputMode = "apikey"
+	const key = "sk-paste-demo-1234567890"
+	w.editor.SetText(key) // what a bracketed paste leaves in the editor
+
+	w.advanceFromKey()
+
+	if w.state != stateProviderTest {
+		t.Fatalf("state = %v, want stateProviderTest", w.state)
+	}
+	if w.main.apiKey != key {
+		t.Fatalf("apiKey = %q, want %q (editor was cleared before the capture was read)", w.main.apiKey, key)
+	}
+}
+
+// TestWizardComponent_advanceFromEndpoint_PreservesTypedEndpoint covers the
+// same double-commit bug on the custom-provider endpoint path.
+func TestWizardComponent_advanceFromEndpoint_PreservesTypedEndpoint(t *testing.T) {
+	done := make(chan *WizardResult, 1)
+	w := newWizardComponent(&Config{}, nil, "/tmp", done)
+	w.state = stateProviderEndpoint
+	w.inputMode = "endpoint"
+	w.main.selectedPresetIndex = -1 // custom provider: endpoint is typed
+	const ep = "https://api.example.com/v1"
+	w.editor.SetText(ep)
+
+	w.advanceFromEndpoint()
+
+	if w.state != stateProviderKey {
+		t.Fatalf("state = %v, want stateProviderKey", w.state)
+	}
+	if w.main.endpoint != ep {
+		t.Fatalf("endpoint = %q, want %q (editor was cleared before the capture was read)", w.main.endpoint, ep)
+	}
+	if w.main.providerID == "" {
+		t.Fatal("providerID not derived from the typed endpoint")
 	}
 }
 
@@ -499,5 +548,107 @@ func TestWizardComponent_escapeFromProviderTestGoesProviderType(t *testing.T) {
 	}
 	if len(w.main.availableModels) != 0 {
 		t.Errorf("availableModels not cleared: %v", w.main.availableModels)
+	}
+}
+
+// TestWizardComponent_modelFetchIsNonBlocking guards against the regression
+// where advanceFromTest ran the model-list HTTP call (up to a 5s timeout)
+// synchronously on the command loop, freezing all key input and rendering.
+// Advancing past provider review must return immediately and apply the result
+// only once the background fetch lands.
+func TestWizardComponent_modelFetchIsNonBlocking(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		fmt.Fprint(rw, `{"data":[{"id":"model-a"},{"id":"model-b"}]}`)
+	}))
+	defer srv.Close()
+
+	done := make(chan *WizardResult, 1)
+	w := newWizardComponent(&Config{}, nil, "/tmp", done)
+	w.state = stateProviderTest
+	w.main.providerName = "Test"
+	w.main.endpoint = srv.URL + "/v1"
+
+	// Simulate the TUI command-loop postback queue.
+	cmds := make(chan func(), 1)
+	w.apply = func(fn func()) { cmds <- fn }
+
+	start := time.Now()
+	w.HandleInput(tui.KeyEnter) // advance from provider review -> starts async fetch
+	if elapsed := time.Since(start); elapsed > 75*time.Millisecond {
+		t.Fatalf("advanceFromTest blocked for %v; model fetch must be async", elapsed)
+	}
+	if !w.main.fetching {
+		t.Fatalf("expected fetching=true while model fetch is in flight")
+	}
+
+	// The background fetch posts its result back onto the loop.
+	select {
+	case fn := <-cmds:
+		fn() // apply on the (simulated) command loop
+	case <-time.After(2 * time.Second):
+		t.Fatalf("no fetch result was posted back to the loop")
+	}
+
+	if w.main.fetching {
+		t.Fatalf("fetch still pending after result was applied")
+	}
+	if got := len(w.main.availableModels); got != 2 {
+		t.Fatalf("availableModels length = %d, want 2", got)
+	}
+	if w.state != stateModelSelect {
+		t.Errorf("state = %d, want stateModelSelect", w.state)
+	}
+}
+
+// TestWizardComponent_modelFetchStaleResultDiscarded ensures a fetch result
+// that lands after the user navigated back is dropped instead of hijacking the
+// wizard (the fetchGen token invalidates stale callbacks).
+func TestWizardComponent_modelFetchStaleResultDiscarded(t *testing.T) {
+	done := make(chan *WizardResult, 1)
+	w := newWizardComponent(&Config{}, nil, "/tmp", done)
+
+	// A fetch is triggered.
+	w.main.fetching = true
+	w.main.fetchGen = 5
+	w.applyModels(&w.main, 5, []string{"current-a", "current-b"})
+	if len(w.main.availableModels) != 2 {
+		t.Fatalf("valid result not applied: %v", w.main.availableModels)
+	}
+
+	// A new fetch starts, then the user navigates back (cancel invalidates the
+	// in-flight generation).
+	w.main.fetching = true
+	w.main.fetchGen = 6
+	w.cancelFetch(&w.main)
+
+	// A stale result from the previous generation arrives late.
+	w.applyModels(&w.main, 5, []string{"stale-a"})
+	if w.main.fetching {
+		t.Fatalf("stale result re-enabled fetching")
+	}
+	if len(w.main.availableModels) != 0 {
+		t.Fatalf("stale result overwrote cancelled state: %v", w.main.availableModels)
+	}
+}
+
+// TestWizardComponent_renderProviderTestShowsFetching verifies the provider
+// review screen signals an in-flight model fetch and hides the advance prompt
+// so the user is not left staring at an unresponsive screen.
+func TestWizardComponent_renderProviderTestShowsFetching(t *testing.T) {
+	done := make(chan *WizardResult, 1)
+	w := newWizardComponent(&Config{}, nil, "/tmp", done)
+	w.state = stateProviderTest
+	w.main.providerName = "OpenAI"
+	w.main.endpoint = "https://api.openai.com/v1"
+	w.main.apiKey = "sk-secret"
+	w.main.fetching = true
+
+	lines := ansi.Strip(strings.Join(w.renderProviderTest(80), "\n"))
+	if !strings.Contains(lines, "Fetching available models") {
+		t.Errorf("expected fetching hint, got:\n%s", lines)
+	}
+	if strings.Contains(lines, "press Enter to continue") {
+		t.Errorf("advance prompt must be hidden while fetching:\n%s", lines)
 	}
 }

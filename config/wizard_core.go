@@ -43,6 +43,11 @@ func runSetupWizardWithTerminal(projectDir string, loader *CascadeLoader, term t
 
 	done := make(chan *WizardResult, 1)
 	w := newWizardComponent(cfg, loader, projectDir, done)
+	// Wire the async model-fetch so its result is posted back onto the
+	// command loop (sole state owner) instead of blocking it. The wizard's
+	// itself is replaced by the composition of provider->model transitions.
+	w.engine = engine
+	w.apply = engine.Apply
 	engine.AddChild(w)
 	engine.SetFocus(w)
 	w.initDefaults()
@@ -54,6 +59,13 @@ func runSetupWizardWithTerminal(projectDir string, loader *CascadeLoader, term t
 	// immediately, then launch the Actor-model loops so every subsequent
 	// input-driven state change flows through commandLoop → applyCommand →
 	// RequestRender → renderLoop (the refresh-on-all-changes guarantee).
+	engine.RenderNow()
+	engine.RunLoops()
+
+	// Start() only enters raw mode and clears the screen; without an explicit
+	// first frame plus the command/render loops the wizard component is never
+	// drawn, leaving a blank window instead of the setup dialog. Mirror the
+	// main app's startup sequence (app.go: RenderNow() then RunLoops()).
 	engine.RenderNow()
 	engine.RunLoops()
 
@@ -138,6 +150,12 @@ type modelSlot struct {
 	modelThinkingLevel  string
 	availableModels     []string
 	selectedModelIdx    int
+	// fetching marks an in-flight (async) model-list fetch. While true the
+	// wizard renders a loading hint and advance-from-test is a no-op so the
+	// command loop never blocks on the HTTP call. fetchGen invalidates stale
+	// results when the user navigates back mid-fetch.
+	fetching bool
+	fetchGen int
 }
 
 type wizardComponent struct {
@@ -177,6 +195,12 @@ type wizardComponent struct {
 	dreamEnabled          int // 0 = no, 1 = yes
 	dreamAuto             int // 0 = no, 1 = yes
 	dreamApplyAfterReview int // 0 = no, 1 = yes
+
+	// engine/apply grant the wizard a way to marshal asynchronous work (the
+	// model-list fetch) back onto the TUI command loop. apply is nil in unit
+	// tests, where the fetch runs inline for determinism.
+	engine *tui.TUI
+	apply  func(func())
 }
 
 func newWizardComponent(cfg *Config, loader *CascadeLoader, projectDir string, done chan<- *WizardResult) *wizardComponent {
