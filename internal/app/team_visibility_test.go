@@ -109,33 +109,38 @@ func TestTeamChangeCallbackWiring(t *testing.T) {
 		t.Fatalf("Activate: %v", err)
 	}
 
+	assertChatFlash(t, subs, "Team active: pair")
+	assertFooterRefresh(t, subs)
+
+	if err := subs.teamManager.Deactivate(); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	assertChatFlash(t, subs, "deactivated")
+}
+
+// assertChatFlash requires a chat flash containing substr.
+func assertChatFlash(t *testing.T, subs *subsystems, substr string) {
+	t.Helper()
 	select {
 	case ev := <-subs.events.Chat:
-		if ev.Flash == nil || !strings.Contains(ev.Flash.Text, "Team active: pair") {
-			t.Errorf("chat flash = %+v, want 'Team active: pair'", ev.Flash)
+		if ev.Flash == nil || !strings.Contains(ev.Flash.Text, substr) {
+			t.Errorf("chat flash = %+v, want substring %q", ev.Flash, substr)
 		}
 	default:
-		t.Fatal("no chat flash on activation")
+		t.Fatalf("no chat flash (want %q)", substr)
 	}
+}
+
+// assertFooterRefresh requires a pending footer-refresh event.
+func assertFooterRefresh(t *testing.T, subs *subsystems) {
+	t.Helper()
 	select {
 	case ev := <-subs.events.Footer:
 		if !ev.FooterRefresh {
 			t.Errorf("footer event = %+v, want FooterRefresh", ev)
 		}
 	default:
-		t.Fatal("no footer refresh on activation")
-	}
-
-	if err := subs.teamManager.Deactivate(); err != nil {
-		t.Fatalf("Deactivate: %v", err)
-	}
-	select {
-	case ev := <-subs.events.Chat:
-		if ev.Flash == nil || !strings.Contains(ev.Flash.Text, "deactivated") {
-			t.Errorf("chat flash = %+v, want deactivation notice", ev.Flash)
-		}
-	default:
-		t.Fatal("no chat flash on deactivation")
+		t.Fatal("no footer refresh event")
 	}
 }
 
