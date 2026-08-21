@@ -87,71 +87,82 @@ func TestCacheHitTrend_Session(t *testing.T) {
 	})
 }
 
-// TestCacheHitTrend_RollingWindow verifies the rolling average of the last
-// cacheHitWindowSize rates used for the CH:<avg>% footer segment.
-func TestCacheHitTrend_RollingWindow(t *testing.T) {
-	t.Run("tracks last N rates", func(t *testing.T) {
+// TestCacheHitTrend_WeightedGlobal verifies the token-weighted
+// session-wide level — the CH segment's 1st value. Rounds fold by cached
+// token volume (report formula), not by count.
+func TestCacheHitTrend_WeightedGlobal(t *testing.T) {
+	t.Run("folds rounds by cached-token weight", func(t *testing.T) {
 		a := New(testSubsystems())
-		feedCacheRound(a, 0, 300, 100) // 75%
-		feedCacheRound(a, 0, 100, 100) // 50%
-		feedCacheRound(a, 0, 50, 150)  // 25%
-		avg := a.lastCacheHit.AvgPct()
-		want := (75.0 + 50.0 + 25.0) / 3
-		if avg != want {
-			t.Errorf("AvgPct = %.1f, want %.1f", avg, want)
+		feedCacheRound(a, 0, 300, 100) // 75%, w = 300+100 = 400
+		if a.lastCacheHit.GlobalPct != 75 {
+			t.Errorf("GlobalPct after first round = %.1f, want 75", a.lastCacheHit.GlobalPct)
+		}
+		if a.lastCacheHit.GlobalHasPrev || a.cacheHitGlobalWeight != 400 {
+			t.Errorf("first fold must have no baseline: hasPrev=%v weight=%d", a.lastCacheHit.GlobalHasPrev, a.cacheHitGlobalWeight)
+		}
+		feedCacheRound(a, 0, 100, 100) // 50%, w = 200
+		want := (75.0*400 + 50.0*200) / 600
+		if diff := absDiff(a.lastCacheHit.GlobalPct, want); diff > 1e-9 {
+			t.Errorf("GlobalPct = %.4f, want %.4f", a.lastCacheHit.GlobalPct, want)
+		}
+		if !a.lastCacheHit.GlobalHasPrev || a.lastCacheHit.GlobalPrevPct != 75 {
+			t.Errorf("baseline = hasPrev=%v prev=%.1f, want true/75", a.lastCacheHit.GlobalHasPrev, a.lastCacheHit.GlobalPrevPct)
 		}
 	})
 
-	t.Run("caps at cacheHitWindowSize", func(t *testing.T) {
+	t.Run("report example: 10k miss + 5k full hit weighs to 33.3%", func(t *testing.T) {
 		a := New(testSubsystems())
-		for i := 0; i < 12; i++ {
-			feedCacheRound(a, 0, 400, 100) // 80%
-		}
-		feedCacheRound(a, 0, 20, 80) // 20%
-		if len(a.lastCacheHit.window) != cacheHitWindowSize {
-			t.Errorf("window len = %d, want %d", len(a.lastCacheHit.window), cacheHitWindowSize)
-		}
-		avg := a.lastCacheHit.AvgPct()
-		want := (9*80.0 + 20.0) / 10
-		if avg != want {
-			t.Errorf("AvgPct = %.1f, want %.1f", avg, want)
+		feedCacheRound(a, 10000, 0, 0) // full miss: 0%, w = promptN = 10000
+		feedCacheRound(a, 0, 5000, 0)  // full hit: 100%, w = read = 5000
+		want := (0.0*10000 + 100.0*5000) / 15000
+		if diff := absDiff(a.lastCacheHit.GlobalPct, want); diff > 1e-9 {
+			t.Errorf("GlobalPct = %.4f, want %.4f (weighted, not the 50%% count-average)", a.lastCacheHit.GlobalPct, want)
 		}
 	})
 }
 
-// TestCacheHitTrend_AvgPrevPct verifies the previous-baseline average used
-// for delta coloring the CH:<avg>% element.
-func TestCacheHitTrend_AvgPrevPct(t *testing.T) {
-	t.Run("excludes latest", func(t *testing.T) {
-		a := New(testSubsystems())
-		feedCacheRound(a, 0, 300, 100) // 75%
-		feedCacheRound(a, 0, 100, 100) // 50%
-		feedCacheRound(a, 0, 50, 150)  // 25%
-		avgPrev := a.lastCacheHit.AvgPrevPct()
-		want := (75.0 + 50.0) / 2
-		if avgPrev != want {
-			t.Errorf("AvgPrevPct = %.1f, want %.1f", avgPrev, want)
-		}
-	})
+// TestCacheHitTrend_WeightedGlobal_NoOps locks the boundary conditions of
+// the weighted fold: empty rounds change nothing.
+func TestCacheHitTrend_WeightedGlobal_NoOps(t *testing.T) {
+	a := New(testSubsystems())
+	feedCacheRound(a, 0, 300, 100)
+	a.turnCount++
+	a.handleTokenStats(&agentic.OutputEvent{Timings: &agentic.TokenTimings{}})
+	if a.cacheHitGlobalWeight != 400 {
+		t.Errorf("weight = %d, want 400 (empty round skipped)", a.cacheHitGlobalWeight)
+	}
+}
 
-	t.Run("single observation returns 0", func(t *testing.T) {
-		a := New(testSubsystems())
-		feedCacheRound(a, 0, 300, 100)
-		if a.lastCacheHit.AvgPrevPct() != 0 {
-			t.Errorf("AvgPrevPct with 1 obs = %.1f, want 0", a.lastCacheHit.AvgPrevPct())
-		}
-	})
+// TestCacheHitTrend_WeightedGlobal_Lifecycle locks the accumulator plumbing:
+// clearStats resets the weighted level, and the level surfaces in the
+// footer's session stats.
+func TestCacheHitTrend_WeightedGlobal_Lifecycle(t *testing.T) {
+	a := New(testSubsystems())
+	feedCacheRound(a, 0, 300, 100)
+	a.clearStats()
+	if a.cacheHitGlobalLevel != 0 || a.cacheHitGlobalWeight != 0 || a.lastCacheHit.GlobalHasPrev {
+		t.Errorf("clearStats must reset global accumulators, got level=%v weight=%d trend=%+v",
+			a.cacheHitGlobalLevel, a.cacheHitGlobalWeight, a.lastCacheHit)
+	}
 
-	t.Run("window resets on clearStats", func(t *testing.T) {
-		a := New(testSubsystems())
-		feedCacheRound(a, 0, 300, 100)
-		feedCacheRound(a, 0, 100, 100)
-		a.clearStats()
-		if len(a.lastCacheHit.window) != 0 {
-			t.Errorf("clearStats must reset the window, got %d entries", len(a.lastCacheHit.window))
-		}
-		if a.lastCacheHit.AvgPct() != 0 {
-			t.Errorf("AvgPct after clear = %.1f, want 0", a.lastCacheHit.AvgPct())
-		}
-	})
+	feedCacheRound(a, 0, 300, 100)
+	a.turnCount++ // a post-clear round is a genuinely NEW round: advance past
+	// the pre-clear turn number or handleTokenStats' duplicate guard would
+	// skip the identical fingerprint (same turn number + same values).
+	feedCacheRound(a, 0, 300, 100)
+	a.statsMu.Lock()
+	st := a.buildFooterStatsLocked()
+	a.statsMu.Unlock()
+	if st.LastCacheHit.GlobalPct != 75 {
+		t.Errorf("sessionStats.LastCacheHit.GlobalPct = %v, want 75", st.LastCacheHit.GlobalPct)
+	}
+}
+
+// absDiff returns |a-b| for float comparisons without importing math for a
+// single helper in each test binary.
+func absDiff(a, b float64) float64 {
+	if a < b {
+		return b - a
+	}
+	return a - b
 }

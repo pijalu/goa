@@ -72,3 +72,41 @@ func TestEventContextStats_FooterShowsProjected(t *testing.T) {
 		t.Errorf("footer shows the stale estimate (25.0%%) instead of the projection, got %q", stats)
 	}
 }
+
+// TestFooterCH_GlobalWeightedFirst is the terminal-output validation of the
+// token-weighted session average: the report's example rounds — a 10k-token
+// full miss (0%) followed by a 5k-token full hit (100%) — must render the CH
+// segment's FIRST value as the weighted 33.3%, not the count-average 50%.
+// The most-recent rate stays the 2nd (▸) value at 100.0%. The assertion reads
+// the rendered footer widget data, i.e. exactly what the status bar paints.
+func TestFooterCH_GlobalWeightedFirst(t *testing.T) {
+	app := New(testSubsystems())
+	// Round 1: raw prompt 10k, nothing cached → 0%, weight = PromptN = 10000.
+	app.handleAgentOutputEvent(&agentic.OutputEvent{
+		Type: agentic.EventTokenStats,
+		Timings: &agentic.TokenTimings{
+			PromptN:    10000,
+			PredictedN: 100,
+		},
+	})
+	// Round 2: raw prompt 5k, all cached → CacheHitPct(5000,0,0) = 100%,
+	// weight = CacheRead = 5000.
+	app.handleAgentOutputEvent(&agentic.OutputEvent{
+		Type: agentic.EventTokenStats,
+		Timings: &agentic.TokenTimings{
+			CacheReadTokens: 5000,
+			PredictedN:      100,
+		},
+	})
+
+	stats := app.subs.footer.Data().Stats
+	if !strings.Contains(stats, "CH:33.3%") {
+		t.Errorf("footer CH first value must be the token-weighted 33.3%%, got %q", stats)
+	}
+	if !strings.Contains(stats, "▸100.0%") {
+		t.Errorf("footer CH second value must be the latest round's 100.0%%, got %q", stats)
+	}
+	if strings.Contains(stats, "50.0%") {
+		t.Errorf("footer still shows the unweighted count-average 50%%, got %q", stats)
+	}
+}

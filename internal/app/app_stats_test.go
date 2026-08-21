@@ -127,12 +127,12 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		PredictedN:      500,
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
-		LastCacheHit:    CacheHitTrend{Pct: 60, Seen: true, window: []float64{60}},
+		LastCacheHit:    CacheHitTrend{Pct: 60, Seen: true, GlobalPct: 60},
 		ContextEstimate: 2000,
 		ContextMax:      10000,
 	})
 	// 300 / (300+200) = 60% (cache hit = reads / (reads + writes)).
-	// Format: CH:<avg>%▸<last>% — single observation, avg=last=60.
+	// Format: CH:<global>%▸<last>% — single observation, global=last=60.
 	if !strings.Contains(stats, "CH:60.0%") {
 		t.Errorf("expected CH avg 60%%, got %q", stats)
 	}
@@ -144,7 +144,7 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		PromptN:         0,
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
-		LastCacheHit:    CacheHitTrend{Pct: 60, Seen: true, window: []float64{60}},
+		LastCacheHit:    CacheHitTrend{Pct: 60, Seen: true, GlobalPct: 60},
 	})
 	if !strings.Contains(noPrompt, "CH:60.0%") {
 		t.Errorf("expected CH avg 60%% when PromptN is 0, got %q", noPrompt)
@@ -163,11 +163,11 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 }
 
 // TestFormatFooterStats_LastCacheHit locks the status-bar cache-hit contract:
-// the format is CH:<avg>%▸<last>% where avg is the rolling average of the
-// last 10 observations and last is the most recent per-completion rate.
+// the format is CH:<global>%▸<last>% where global is the token-weighted
+// session-wide level and last is the most recent per-completion rate.
 func TestFormatFooterStats_LastCacheHit(t *testing.T) {
 	withLast := formatFooterStats(sessionStats{
-		LastCacheHit: CacheHitTrend{Pct: 41.9, Seen: true, window: []float64{41.9}},
+		LastCacheHit: CacheHitTrend{Pct: 41.9, Seen: true, GlobalPct: 41.9},
 	})
 	if !strings.Contains(withLast, "CH:41.9%") {
 		t.Errorf("expected CH avg, got %q", withLast)
@@ -192,6 +192,10 @@ func TestFormatFooterStats_LastCacheHit(t *testing.T) {
 // bold green growing / green stable or minor change (<5pts drop) / red
 // significant drop (>=5pts); first observation (no baseline) is green.
 // The prefix checked is the AVG color (first element in the output).
+// TestFormatCacheHitPart_Colors locks the CH evolution coloring:
+// bold green growing / green stable or minor change (<5pts drop) / red
+// significant drop (>=5pts); first observation (no baseline) is green.
+// The prefix checked is the GLOBAL color (first element in the output).
 func TestFormatCacheHitPart_Colors(t *testing.T) {
 	const (
 		green = "\x1b[38;2;63;185;80m" // ansi.Fg("#3fb950")
@@ -200,15 +204,15 @@ func TestFormatCacheHitPart_Colors(t *testing.T) {
 	cases := []struct {
 		name string
 		tr   CacheHitTrend
-		want string // SGR prefix (avg color, first element)
+		want string // SGR prefix (global color, first element)
 	}{
-		{"first observation is stable green", CacheHitTrend{Pct: 50, Seen: true, window: []float64{50}}, green},
-		{"growing is bold green", CacheHitTrend{Pct: 52, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 52}}, ansi.Bold + green},
-		{"stable is green", CacheHitTrend{Pct: 50, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 50}}, green},
-		{"slight grow is green", CacheHitTrend{Pct: 50.5, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 50.5}}, green},
-		{"minor drop <5pts stays green", CacheHitTrend{Pct: 47, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 47}}, green},
-		{"drop of exactly 5pts: avg green, last red", CacheHitTrend{Pct: 45, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 45}}, green}, // avg delta -2.5 → green, last delta -5 → red
-		{"drop >5pts is red", CacheHitTrend{Pct: 10, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 10}}, red},
+		{"first observation is stable green", CacheHitTrend{Pct: 50, Seen: true, GlobalPct: 50}, green},
+		{"growing is bold green", CacheHitTrend{Pct: 52, PrevPct: 50, Seen: true, HasPrev: true, GlobalPct: 52, GlobalPrevPct: 50, GlobalHasPrev: true}, ansi.Bold + green},
+		{"stable is green", CacheHitTrend{Pct: 50, PrevPct: 50, Seen: true, HasPrev: true, GlobalPct: 50, GlobalPrevPct: 50, GlobalHasPrev: true}, green},
+		{"slight grow is green", CacheHitTrend{Pct: 50.5, PrevPct: 50, Seen: true, HasPrev: true, GlobalPct: 50.5, GlobalPrevPct: 50, GlobalHasPrev: true}, green},
+		{"minor drop <5pts stays green", CacheHitTrend{Pct: 47, PrevPct: 50, Seen: true, HasPrev: true, GlobalPct: 47, GlobalPrevPct: 50, GlobalHasPrev: true}, green},
+		{"drop of exactly 5pts is red", CacheHitTrend{Pct: 45, PrevPct: 50, Seen: true, HasPrev: true, GlobalPct: 45, GlobalPrevPct: 50, GlobalHasPrev: true}, red},
+		{"drop >5pts is red", CacheHitTrend{Pct: 10, PrevPct: 50, Seen: true, HasPrev: true, GlobalPct: 10, GlobalPrevPct: 50, GlobalHasPrev: true}, red},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -220,9 +224,9 @@ func TestFormatCacheHitPart_Colors(t *testing.T) {
 	}
 }
 
-// TestFormatCacheHitPart_PerElementColors verifies that avg and last are
-// colored independently: the avg reflects its own trend, and the last
-// reflects its own trend, each with the >=5pt threshold.
+// TestFormatCacheHitPart_PerElementColors verifies that the global and last
+// elements are colored independently: the global level reflects its own
+// evolution and the last rate its own, each with the >=5pt threshold.
 func TestFormatCacheHitPart_PerElementColors(t *testing.T) {
 	const (
 		green = "\x1b[38;2;63;185;80m" // ansi.Fg("#3fb950")
@@ -230,55 +234,55 @@ func TestFormatCacheHitPart_PerElementColors(t *testing.T) {
 		reset = "\x1b[0m"
 	)
 	cases := []struct {
-		name     string
-		tr       CacheHitTrend
-		wantAvg  string // expected SGR for the CH:<avg>% element
-		wantLast string // expected SGR for the ▸<last>% element
+		name       string
+		tr         CacheHitTrend
+		wantGlobal string // expected SGR for the CH:<global>% element
+		wantLast   string // expected SGR for the ▸<last>% element
 	}{
 		{
-			name:     "avg minor drop, last significant drop",
-			tr:       CacheHitTrend{Pct: 40, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 50, 40}},
-			wantAvg:  green, // avg: (50+50+40)/3 = 46.67, prevAvg: 50, delta = -3.3 (< 5)
-			wantLast: red,   // last: 40 vs prev 50, delta = -10 (>= 5)
+			name:       "global minor drop, last significant drop",
+			tr:         CacheHitTrend{Pct: 40, PrevPct: 50, Seen: true, HasPrev: true, GlobalPct: 47, GlobalPrevPct: 50, GlobalHasPrev: true},
+			wantGlobal: green, // global delta -3 (< 5)
+			wantLast:   red,   // last: 40 vs prev 50, delta = -10 (>= 5)
 		},
 		{
-			name:     "avg significant drop, last stable",
-			tr:       CacheHitTrend{Pct: 50, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{80, 80, 50}},
-			wantAvg:  red,   // avg: (80+80+50)/3 = 70, prevAvg: 80, delta = -10 (>= 5)
-			wantLast: green, // last: 50 vs prev 50, delta = 0
+			name:       "global significant drop, last stable",
+			tr:         CacheHitTrend{Pct: 50, PrevPct: 50, Seen: true, HasPrev: true, GlobalPct: 70, GlobalPrevPct: 80, GlobalHasPrev: true},
+			wantGlobal: red,   // global delta -10 (>= 5)
+			wantLast:   green, // last: 50 vs prev 50, delta = 0
 		},
 		{
-			name:     "both stable",
-			tr:       CacheHitTrend{Pct: 75, PrevPct: 75, Seen: true, HasPrev: true, window: []float64{75, 75}},
-			wantAvg:  green,
-			wantLast: green,
+			name:       "both stable",
+			tr:         CacheHitTrend{Pct: 75, PrevPct: 75, Seen: true, HasPrev: true, GlobalPct: 75, GlobalPrevPct: 75, GlobalHasPrev: true},
+			wantGlobal: green,
+			wantLast:   green,
 		},
 		{
-			name:     "both significant drop",
-			tr:       CacheHitTrend{Pct: 10, PrevPct: 50, Seen: true, HasPrev: true, window: []float64{50, 50, 10}},
-			wantAvg:  red, // avg: (50+50+10)/3 = 36.67, prevAvg: 50, delta = -13.3 (>= 5)
-			wantLast: red, // last: 10 vs prev 50, delta = -40 (>= 5)
+			name:       "both significant drop",
+			tr:         CacheHitTrend{Pct: 10, PrevPct: 50, Seen: true, HasPrev: true, GlobalPct: 37, GlobalPrevPct: 50, GlobalHasPrev: true},
+			wantGlobal: red, // global delta -13 (>= 5)
+			wantLast:   red,
 		},
 		{
-			name:     "minor fluctuation stays green",
-			tr:       CacheHitTrend{Pct: 73, PrevPct: 75, Seen: true, HasPrev: true, window: []float64{75, 74, 73}},
-			wantAvg:  green, // avg: 74, prevAvg: 74.5, delta = -0.5 (< 5)
-			wantLast: green, // last: 73 vs 75, delta = -2 (< 5)
+			name:       "minor fluctuation stays green",
+			tr:         CacheHitTrend{Pct: 73, PrevPct: 75, Seen: true, HasPrev: true, GlobalPct: 74.5, GlobalPrevPct: 75, GlobalHasPrev: true},
+			wantGlobal: green, // delta -0.5 (< 5)
+			wantLast:   green, // delta -2 (< 5)
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := formatLastCacheHitPart(tc.tr)
-			// Format: <avgColor>CH:<avg>%<reset><lastColor>▸<last>%<reset>
-			// Find the reset between avg and last to split them.
+			// Format: <gColor>CH:<global>%<reset><lastColor>▸<last>%<reset>
+			// Find the reset between global and last to split them.
 			idx := strings.Index(got, reset)
 			if idx < 0 {
 				t.Fatalf("formatLastCacheHitPart missing reset: %q", got)
 			}
-			avgPart := got[:idx+len(reset)]
+			globalPart := got[:idx+len(reset)]
 			lastPart := got[idx+len(reset):]
-			if !strings.HasPrefix(avgPart, tc.wantAvg) {
-				t.Errorf("avg part = %q, want prefix %q", avgPart, tc.wantAvg)
+			if !strings.HasPrefix(globalPart, tc.wantGlobal) {
+				t.Errorf("global part = %q, want prefix %q", globalPart, tc.wantGlobal)
 			}
 			if !strings.HasPrefix(lastPart, tc.wantLast) {
 				t.Errorf("last part = %q, want prefix %q", lastPart, tc.wantLast)

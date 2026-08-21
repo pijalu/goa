@@ -64,10 +64,11 @@ func buildFooterStatParts(s sessionStats) []string {
 	if s.SpeedTokPerSec > 0 {
 		parts = append(parts, fmt.Sprintf("%.1f tok/s", s.SpeedTokPerSec))
 	}
-	// Cache hit percentage: CH:<avg>%▸<last>% where <avg> is the rolling
-	// average of the last 10 cache-hit observations and <last> is the most
-	// recent per-completion rate. See CacheHitPct for the formula; each
-	// element carries its own previous baseline for delta coloring.
+	// Cache hit percentage: CH:<global>%▸<last>% where <global> is the
+	// token-weighted session-wide cache-hit level and <last> is the most
+	// recent per-completion rate. See CacheHitPct and
+	// foldCacheHitGlobalLocked for the two formulas; each element carries its
+	// own previous baseline for delta coloring.
 	if s.LastCacheHit.Seen {
 		parts = append(parts, formatLastCacheHitPart(s.LastCacheHit))
 	}
@@ -133,8 +134,10 @@ const (
 )
 
 // formatLastCacheHitPart renders the cache hit rate segment of the status
-// bar: CH:<avg>%▸<last>% where <avg> is the rolling average of the last
-// cacheHitWindowSize observations and <last> is the most recent one.
+// bar: CH:<global>%▸<last>% where <global> is the token-weighted
+// session-wide level (folded per round by cached-token volume — the report's
+// running weighted-average formula) and <last> is the most recent
+// per-completion rate.
 //
 // Each element is colored independently based on its evolution from its
 // own previous baseline (significant changes only — >=5pt drop for red):
@@ -144,12 +147,10 @@ const (
 //
 // The first observation (no previous baseline) renders as stable green.
 func formatLastCacheHitPart(t CacheHitTrend) string {
-	avg := t.AvgPct()
-	avgPrev := t.AvgPrevPct()
-	avgColor := cacheHitColorFor(avg, avgPrev, t.HasPrev)
+	gColor := cacheHitColorFor(t.GlobalPct, t.GlobalPrevPct, t.GlobalHasPrev)
 	lastColor := cacheHitColorFor(t.Pct, t.PrevPct, t.HasPrev)
 	return fmt.Sprintf("%sCH:%.1f%%%s%s▸%.1f%%%s",
-		avgColor, avg, ansi.Reset,
+		gColor, t.GlobalPct, ansi.Reset,
 		lastColor, t.Pct, ansi.Reset)
 }
 

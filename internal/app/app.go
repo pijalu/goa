@@ -126,10 +126,15 @@ type App struct {
 	// session-stats record). Guarded by statsMu like the counters above.
 	compactions []CompactionRound
 
-	// Cache hit rate trend for the footer CH stat: the last completion's
-	// rate plus a rolling window of the last 10 rates for the CH:<avg>%
-	// segment. Each element is colored independently by its own evolution.
+	// Cache hit trend for the footer CH segment: the last completion's rate
+	// (CH's 2nd value) plus the token-weighted session-wide level (CH's 1st
+	// value). Each element is colored independently by its own evolution.
 	lastCacheHit CacheHitTrend
+	// Running accumulators for the token-weighted session level:
+	// cacheHitGlobalWeight is the summed per-round cached-token weight W and
+	// cacheHitGlobalLevel the current weighted level. Guarded by statsMu.
+	cacheHitGlobalLevel  float64
+	cacheHitGlobalWeight int64
 
 	// Status tracking for granular footer/status messages.
 	toolResultsSeen      int

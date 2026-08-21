@@ -175,6 +175,8 @@ func (a *App) clearStats() {
 	a.toolCallsTotal = 0
 	a.toolCallWarningLevel = ToolCallNormal
 	a.lastCacheHit = CacheHitTrend{}
+	a.cacheHitGlobalLevel = 0
+	a.cacheHitGlobalWeight = 0
 }
 
 // resetCacheBustBaseline re-arms the cache-bust detector after an in-place

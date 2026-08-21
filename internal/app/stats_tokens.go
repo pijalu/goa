@@ -105,13 +105,18 @@ func (a *App) applyTokenTimingsLocked(timings *agentic.TokenTimings) {
 	a.tokenCacheWriteTotal += timings.CacheWriteTokens
 
 	// Cache-hit rate trend: the per-completion rate (pi-style, from THIS
-	// round's numbers) — the status bar shows only this, no cumulative
-	// session rate. Only rounds with cache activity feed the trend — a
-	// cache-less round (or provider) must not drag the rate to 0 and trip
-	// the drop coloring.
+	// round's numbers) — the 2nd value of the status-bar CH segment. Only
+	// rounds with cache activity feed the trend — a cache-less round (or
+	// provider) must not drag the rate to 0 and trip the drop coloring.
 	if timings.CacheReadTokens > 0 || timings.CacheWriteTokens > 0 {
 		a.lastCacheHit.observe(metrics.CacheHitPct(timings.CacheReadTokens, timings.CacheWriteTokens, timings.PromptN))
 	}
+	// The token-weighted session-wide level (CH's 1st value) folds EVERY
+	// round that consumed prompt-side tokens: a recompute-after-establishment
+	// (read=0/write=0, full uncached prompt) is precisely the miss that must
+	// drag the weighted average down (the report's 10k-miss + 5k-hit → 33%
+	// example). Rounds with no volume at all are no-ops.
+	a.foldCacheHitGlobalLocked(timings)
 	// Count cache busts two ways:
 	//  1. Zero cache reads AFTER the cache was established (provider TTL
 	//     expiry reports 0). The first request(s) of a session — or of a
@@ -152,6 +157,39 @@ func (a *App) applyTokenTimingsLocked(timings *agentic.TokenTimings) {
 	if a.lastTurnSpeed == 0 && timings.PredictedMs > 0 {
 		a.lastTurnSpeed = float64(timings.PredictedN) / (timings.PredictedMs / 1000.0)
 	}
+}
+
+// foldCacheHitGlobalLocked folds one cache-active round into the
+// token-weighted session-wide cache-hit level — the 1st value of the footer's
+// CH segment. Per the report: newLevel = (level·W + rate·w) / (W + w), then
+// W += w, so rounds weigh by cached-token volume, not by count.
+//
+// The per-round weight w is the volume that went through the cache pipeline:
+// CacheRead + CacheWrite. goa normalizes PromptN to EXCLUDE cached tokens
+// (computePromptN in the OpenAI completions parser strips them; Anthropic
+// reports input_tokens without cache parts), so a round with no cache reads
+// AND no writes still carries its uncached prompt size as weight — that is
+// exactly the report's example (10k miss at 0% + 5k full hit at 100% →
+// 33.3%, not 50%). Requires a.statsMu to be held.
+func (a *App) foldCacheHitGlobalLocked(timings *agentic.TokenTimings) {
+	weight := int64(timings.CacheReadTokens + timings.CacheWriteTokens)
+	if weight == 0 {
+		weight = int64(timings.PromptN)
+	}
+	if weight <= 0 {
+		return // nothing to weight this round by
+	}
+	rate := metrics.CacheHitPct(timings.CacheReadTokens, timings.CacheWriteTokens, timings.PromptN)
+	prevLevel := a.cacheHitGlobalLevel
+	prevHad := a.cacheHitGlobalWeight > 0
+	if prevHad {
+		total := a.cacheHitGlobalWeight + weight
+		a.cacheHitGlobalLevel = (a.cacheHitGlobalLevel*float64(a.cacheHitGlobalWeight) + rate*float64(weight)) / float64(total)
+	} else {
+		a.cacheHitGlobalLevel = rate
+	}
+	a.cacheHitGlobalWeight += weight
+	a.lastCacheHit.foldGlobal(a.cacheHitGlobalLevel, prevLevel, prevHad)
 }
 
 // recordTurnUsageLocked appends the just-completed turn's token usage to the

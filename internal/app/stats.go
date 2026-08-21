@@ -50,67 +50,42 @@ const (
 	ToolCallStopped ToolCallLevel = 2 // red — budget exceeded, force-stopped
 )
 
-// cacheHitWindowSize is the number of recent cache-hit rates kept for the
-// rolling average shown in the footer CH:<avg>% segment.
-const cacheHitWindowSize = 10
-
-// CacheHitTrend bundles a cache-hit rate with its previous value so the
-// footer can color it by evolution: bold green when growing, green when
-// stable/slightly growing, orange on a slight drop (< 5 points), red on a
-// drop (>= 5 points). Seen gates display (no cache activity yet); HasPrev
+// CacheHitTrend bundles the cache-hit rates rendered by the footer's CH
+// segment: the most recent completion's rate plus the token-weighted
+// session-wide level. Seen gates display (no cache activity yet); HasPrev
 // gates delta coloring (first observation has no baseline and renders as
-// stable).
-//
-// The trend also maintains a rolling window of the last cacheHitWindowSize
-// rates for the average (CH:<avg>%) — the avg and last values are colored
-// independently, each only shifting to orange/red on a >= 5-point change.
+// stable). The same gating applies independently to the global pair
+// (GlobalHasPrev).
 type CacheHitTrend struct {
-	Pct     float64   // last completion's cache-hit rate
-	PrevPct float64   // previous value (for delta coloring)
-	Seen    bool      // at least one cache-active round observed
-	HasPrev bool      // at least two observations (delta coloring armed)
-	window  []float64 // rolling window of recent rates (max cacheHitWindowSize)
+	Pct     float64 // last completion's cache-hit rate
+	PrevPct float64 // previous value (for delta coloring)
+	Seen    bool    // at least one cache-active round observed
+	HasPrev bool    // at least two observations (delta coloring armed)
+	// Token-weighted session-wide cache-hit level (the report's running
+	// formula: newLevel = (level·W + rate·w)/(W+w), W += w with w = the
+	// round's cached token volume). This is the 1st value of the CH segment;
+	// Pct stays as the 2nd (most recent round).
+	GlobalPct     float64
+	GlobalPrevPct float64
+	GlobalHasPrev bool
 }
 
-// observe folds one new cache-hit rate into the trend: the current value
-// becomes the previous baseline and pct becomes current. The rate is also
-// appended to the rolling window (capped at cacheHitWindowSize).
+// observe folds one new per-completion cache-hit rate into the trend: the
+// current value becomes the previous baseline and pct becomes current.
 func (t *CacheHitTrend) observe(pct float64) {
 	t.PrevPct, t.HasPrev = t.Pct, t.Seen
 	t.Pct, t.Seen = pct, true
-	t.window = append(t.window, pct)
-	if len(t.window) > cacheHitWindowSize {
-		t.window = t.window[len(t.window)-cacheHitWindowSize:]
-	}
 }
 
-// AvgPct returns the rolling average of the last cacheHitWindowSize
-// cache-hit rates. Returns 0 when no observations exist.
-func (t *CacheHitTrend) AvgPct() float64 {
-	if len(t.window) == 0 {
-		return 0
-	}
-	sum := 0.0
-	for _, v := range t.window {
-		sum += v
-	}
-	return sum / float64(len(t.window))
-}
-
-// AvgPrevPct returns the average of the window *before* the most recent
-// observation — the baseline for delta coloring the average. Returns 0 when
-// fewer than 2 observations exist.
-func (t *CacheHitTrend) AvgPrevPct() float64 {
-	if len(t.window) < 2 {
-		return 0
-	}
-	// Compute avg of window[0:len-1] (exclude the latest).
-	prev := t.window[:len(t.window)-1]
-	sum := 0.0
-	for _, v := range prev {
-		sum += v
-	}
-	return sum / float64(len(prev))
+// foldGlobal records one folded cache-active round into the token-weighted
+// session level. rate is the new level; prevLevel/prevHad carry the previous
+// baseline so the first observation renders as stable green. The weighted
+// arithmetic itself lives in App.applyTokenTimingsLocked (it owns the running
+// weight total).
+func (t *CacheHitTrend) foldGlobal(rate, prevLevel float64, prevHad bool) {
+	t.GlobalPct = rate
+	t.GlobalPrevPct = prevLevel
+	t.GlobalHasPrev = prevHad
 }
 
 // cacheHitTrendFromTotals builds a display-only trend from aggregate token
@@ -121,7 +96,11 @@ func cacheHitTrendFromTotals(read, write, prompt int) CacheHitTrend {
 	if read == 0 && write == 0 {
 		return CacheHitTrend{}
 	}
-	return CacheHitTrend{Pct: metrics.CacheHitPct(read, write, prompt), Seen: true}
+	pct := metrics.CacheHitPct(read, write, prompt)
+	// Aggregated totals are already token-weighted, so the same figure feeds
+	// both the global slot and the last-completion slot; there is no evolving
+	// baseline (HasPrev stays false → stable rendering).
+	return CacheHitTrend{Pct: pct, Seen: true, GlobalPct: pct}
 }
 
 // sessionStats holds cumulative + last-turn statistics for footer display.
