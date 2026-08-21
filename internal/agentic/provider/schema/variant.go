@@ -13,6 +13,30 @@ type ProfileMatch struct {
 	VariantID string `json:"variant_id,omitempty"`
 }
 
+// RemoteCompactionSupport is the provider/model-scoped capability level for
+// server-side `/responses/compact` (Codex Phase 2b). It is detection and
+// gating only: the level advertises that the endpoint understands remote
+// compaction, never how to call it (that is 2b.2's request logic).
+type RemoteCompactionSupport string
+
+const (
+	// RemoteCompactionNone (the zero value / "none") means the provider does
+	// not expose a usable remote-compaction endpoint; the local ladder runs.
+	RemoteCompactionNone RemoteCompactionSupport = ""
+	// RemoteCompactionV1 is the unary POST /responses/compact returning a
+	// replacement item list.
+	RemoteCompactionV1 RemoteCompactionSupport = "v1"
+	// RemoteCompactionV2 is the newer Codex remote-compaction protocol
+	// (Feature::RemoteCompactionV2).
+	RemoteCompactionV2 RemoteCompactionSupport = "v2"
+)
+
+// Supported reports whether the level is a usable remote-compaction mode
+// (anything other than the none/zero value).
+func (r RemoteCompactionSupport) Supported() bool {
+	return r == RemoteCompactionV1 || r == RemoteCompactionV2
+}
+
 // CompatFlags holds provider-specific compatibility flags.
 type CompatFlags struct {
 	SupportsStore                               *bool          `json:"supports_store,omitempty"`
@@ -34,6 +58,11 @@ type CompatFlags struct {
 	// omitting the field lets the endpoint apply its own default instead of
 	// erroring the whole turn. Nil means supported (standard behavior).
 	SupportsTemperature *bool `json:"supports_temperature,omitempty"`
+	// RemoteCompaction is the provider/model-scoped server-side compaction
+	// capability: "" / "none" (default) = not supported, "v1" or "v2" = the
+	// endpoint understands /responses/compact. This is opt-in detection only
+	// (Codex Phase 2b.1); it never changes request shape by itself.
+	RemoteCompaction RemoteCompactionSupport `json:"remote_compaction,omitempty"`
 }
 
 // Defaults holds per-variant default request parameters.

@@ -66,7 +66,7 @@ func (t *TodoListTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type": "string",
-					"enum":        []string{"add", "update", "complete", "remove", "list", "clear"},
+					"enum": []string{"add", "update", "complete", "remove", "list", "clear"},
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -78,7 +78,7 @@ func (t *TodoListTool) Schema() agentic.ToolSchema {
 				},
 				"status": map[string]any{
 					"type": "string",
-					"enum":        []string{"pending", "in_progress", "done"},
+					"enum": []string{"pending", "in_progress", "done"},
 				},
 			},
 			"required": []string{"action"},

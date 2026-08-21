@@ -57,36 +57,7 @@ func TestScrollback_HeaderEmittedOnceContiguous(t *testing.T) {
 	}
 	sb := emu.Scrollback()
 
-	// 1. No filler row may be duplicated.
-	seen := map[string]int{}
-	for _, l := range sb {
-		lt := strings.TrimSpace(l)
-		if strings.HasPrefix(lt, "│ filler") {
-			seen[lt]++
-		}
-	}
-	for line, n := range seen {
-		if n > 1 {
-			t.Errorf("scrollback row %q duplicated %d times", line, n)
-		}
-	}
-
-	// 2. Logo rows must form ONE contiguous block at the top of scrollback;
-	//    none may reappear after transcript (filler/user) rows begin.
-	leftHeader := false
-	for i, l := range sb {
-		isLogo := strings.Contains(l, "███") || strings.Contains(l, "▀▄")
-		isTranscript := strings.Contains(l, "filler") || strings.Contains(l, "/model") ||
-			strings.Contains(l, "Context loaded") || strings.Contains(l, "skills loaded") ||
-			strings.Contains(l, "Connected to model") || strings.Contains(l, "model done")
-		if isTranscript {
-			leftHeader = true
-		}
-		if isLogo && leftHeader {
-			t.Errorf("scrollback[%d]: logo row reappears after transcript began (duplicated): %q",
-				i, strings.TrimRight(l, " "))
-		}
-	}
+	assertScrollbackHeader(t, sb)
 	if t.Failed() {
 		t.Logf("scrollback (%d rows):\n%s", len(sb), strings.Join(sb, "\n"))
 	}

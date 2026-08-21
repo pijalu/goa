@@ -16,6 +16,9 @@ Usage: /goal[:subcommand[:<text>]]
   /goal:next[:first]:<text>   Queue a goal to run right after the active goal (front of the queue)
   /goal:next:last[:<text>]    Queue a goal at the END of the queue
   /goal:next:fresh|reuse:<text> Queue with an explicit context mode
+  /goal:next:rfirst|rlast:<text> Reuse the conversation and queue at the
+                                front (rfirst) or the end (rlast) — shorthand
+                                for reuse:first / reuse:last
   /goal:replace               Replace the current goal interactively (asks objective)
   /goal:replace:<text>        Replace the current goal with a new one (asks confirmation)
   /goal:manage                Open the goal manager: execution order, +/-: move up/down, e: edit, del: delete (confirm)

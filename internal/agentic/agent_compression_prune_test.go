@@ -174,9 +174,10 @@ func findToolResult(t *testing.T, hist []Message, callID string) *Message {
 }
 
 // TestAgent_CompactSkipsSummarizeWhenPruningResolves is the CX1 re-measure
-// acceptance: pruning drops the estimate under the escalation level, so
-// Compact skips the summarize LLM call entirely (no provider request) and
-// emits a tool_result_pruning compaction event.
+// acceptance — for the OPT-IN path: with pre-pruning enabled, pruning drops
+// the estimate under the escalation level, so Compact skips the summarize LLM
+// call entirely (no provider request) and emits a tool_result_pruning
+// compaction event.
 func TestAgent_CompactSkipsSummarizeWhenPruningResolves(t *testing.T) {
 	p := &gateProbeProvider{
 		api:        provider.Api(fmt.Sprintf("prune-skip-probe-%d", testProviderCounter.Add(1))),
@@ -194,6 +195,9 @@ func TestAgent_CompactSkipsSummarizeWhenPruningResolves(t *testing.T) {
 				SoftPercent: 50,
 				HardPercent: 95,
 			},
+			// Opt in: pre-pruning is off by default (bugs.md), so the test
+			// exercises the enabled path explicitly.
+			ToolResultPruning: ToolResultPruningConfig{Enabled: true},
 		},
 	})
 
@@ -263,6 +267,7 @@ func TestAgent_CompactSummarizesWhenPruningInsufficient(t *testing.T) {
 				SoftPercent: 50,
 				HardPercent: 95,
 			},
+			ToolResultPruning: ToolResultPruningConfig{Enabled: true},
 		},
 	})
 

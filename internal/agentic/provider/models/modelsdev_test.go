@@ -305,59 +305,69 @@ func modelIDs(ms []provider.Model) []string {
 // pins the coverage claim used by the filmstrip validation (all models.dev
 // providers visible in the TUI).
 func TestModelsDevProviders_CoversEveryToolCallingProvider(t *testing.T) {
+	want := toolCallingProviders(t)
+	got := ModelsDevProviders()
+	assertProviderCounts(t, got, want)
+	gotSet := providerSet(got)
+	for key, wantIDs := range want {
+		assertProviderModels(t, gotSet, key, wantIDs)
+	}
+	assertProviderOrder(t, got)
+}
+
+func toolCallingProviders(t *testing.T) map[string][]string {
 	var top map[string]struct {
 		Models map[string]modelsDevModel `json:"models"`
 	}
 	if err := json.Unmarshal(embeddedAPIJSON, &top); err != nil {
 		t.Fatalf("embedded api.json decode: %v", err)
 	}
-
 	want := map[string][]string{}
 	for key, prov := range top {
-		var ids []string
-		for id, m := range prov.Models {
-			if m.ToolCall != nil && *m.ToolCall {
-				ids = append(ids, id)
+		for id, model := range prov.Models {
+			if model.ToolCall != nil && *model.ToolCall {
+				want[key] = append(want[key], id)
 			}
 		}
-		if len(ids) > 0 {
-			sort.Strings(ids)
-			want[key] = ids
+		if len(want[key]) > 0 {
+			sort.Strings(want[key])
 		}
 	}
+	return want
+}
 
-	got := ModelsDevProviders()
+func assertProviderCounts(t *testing.T, got []ModelsDevProvider, want map[string][]string) {
 	if len(got) == 0 {
 		t.Fatal("ModelsDevProviders returned no providers")
 	}
 	if len(got) != len(want) {
 		t.Errorf("ModelsDevProviders = %d providers, raw api.json has %d tool-calling providers", len(got), len(want))
 	}
-	gotSet := map[string]ModelsDevProvider{}
+}
+
+func providerSet(got []ModelsDevProvider) map[string]ModelsDevProvider {
+	set := map[string]ModelsDevProvider{}
 	for _, p := range got {
-		gotSet[p.Key] = p
+		set[p.Key] = p
 	}
-	for key, wantIDs := range want {
-		p, ok := gotSet[key]
-		if !ok {
-			t.Errorf("provider %q missing from ModelsDevProviders", key)
-			continue
-		}
-		if p.Identity == "" {
-			t.Errorf("provider %q has empty Identity", key)
-		}
-		if !slices.Equal(p.ModelIDs, wantIDs) {
-			t.Errorf("provider %q ModelIDs = %v, want %v", key, p.ModelIDs, wantIDs)
-		}
+	return set
+}
+
+func assertProviderModels(t *testing.T, got map[string]ModelsDevProvider, key string, want []string) {
+	p, ok := got[key]
+	if !ok {
+		t.Errorf("provider %q missing from ModelsDevProviders", key)
+		return
 	}
-	if len(got) == len(want) {
-		for _, p := range got {
-			if _, ok := want[p.Key]; !ok {
-				t.Errorf("provider %q listed but has no tool-calling model in api.json", p.Key)
-			}
-		}
+	if p.Identity == "" {
+		t.Errorf("provider %q has empty Identity", key)
 	}
-	// Sorted, stable order (assertion determinism).
+	if !slices.Equal(p.ModelIDs, want) {
+		t.Errorf("provider %q ModelIDs = %v, want %v", key, p.ModelIDs, want)
+	}
+}
+
+func assertProviderOrder(t *testing.T, got []ModelsDevProvider) {
 	for i := 1; i < len(got); i++ {
 		if got[i-1].Key >= got[i].Key {
 			t.Fatalf("ModelsDevProviders not sorted by key at %d: %q >= %q", i, got[i-1].Key, got[i].Key)

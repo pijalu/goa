@@ -218,18 +218,18 @@ func TestRecentRefs(t *testing.T) {
 
 	commit := func(file, content, msg string) {
 		t.Helper()
-		os.WriteFile(filepath.Join(dir, file), []byte(content), 0644)
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
 		run(t, dir, "git", "add", ".")
 		run(t, dir, "git", "commit", "-m", msg)
 	}
-
 	commit("a.txt", "1\n", "first")
 	run(t, dir, "git", "branch", "oldbranch")
 	commit("a.txt", "2\n", "second")
-	run(t, dir, "git", "tag", "v1.0")          // lightweight tag on second commit
+	run(t, dir, "git", "tag", "v1.0")
 	commit("a.txt", "3\n", "third")
-	run(t, dir, "git", "tag", "-a", "v2.0", "-m", "release 2") // annotated tag on third
-
+	run(t, dir, "git", "tag", "-a", "v2.0", "-m", "release 2")
 	refs, err := RecentRefs(dir, 20)
 	if err != nil {
 		t.Fatalf("RecentRefs failed: %v", err)
@@ -237,42 +237,48 @@ func TestRecentRefs(t *testing.T) {
 	if len(refs) == 0 {
 		t.Fatal("expected refs")
 	}
+	byName := refKinds(refs)
+	assertRefKinds(t, byName)
+	assertRefOrder(t, refs)
+}
 
-	byName := make(map[string]string)
-	for _, r := range refs {
-		byName[r.Name] = r.Kind
+func refKinds(refs []RefInfo) map[string]string {
+	out := make(map[string]string, len(refs))
+	for _, ref := range refs {
+		out[ref.Name] = ref.Kind
 	}
-	// Both annotated and lightweight tags must be classified as tags, and
-	// branches as branches (lightweight tags share the commit objecttype).
-	if byName["v2.0"] != "tag" {
-		t.Errorf("v2.0 (annotated) kind = %q, want tag", byName["v2.0"])
-	}
-	if byName["v1.0"] != "tag" {
-		t.Errorf("v1.0 (lightweight) kind = %q, want tag", byName["v1.0"])
-	}
-	if byName["master"] != "branch" && byName["main"] != "branch" {
-		t.Errorf("default branch not reported as branch: %v", byName)
-	}
-	if byName["oldbranch"] != "branch" {
-		t.Errorf("oldbranch kind = %q, want branch", byName["oldbranch"])
-	}
+	return out
+}
 
-	// Most recent first: the default branch (tip = third commit, newest)
-	// must come before oldbranch (points at first commit, oldest).
-	idxBranch, idxOld := -1, -1
-	for i, r := range refs {
-		if r.Kind == "branch" && (r.Name == "master" || r.Name == "main") {
-			idxBranch = i
-		}
-		if r.Name == "oldbranch" {
-			idxOld = i
+func assertRefKinds(t *testing.T, kinds map[string]string) {
+	for _, name := range []string{"v1.0", "v2.0"} {
+		if kinds[name] != "tag" {
+			t.Errorf("%s kind = %q, want tag", name, kinds[name])
 		}
 	}
-	if idxBranch == -1 || idxOld == -1 {
+	if kinds["master"] != "branch" && kinds["main"] != "branch" {
+		t.Errorf("default branch not reported: %v", kinds)
+	}
+	if kinds["oldbranch"] != "branch" {
+		t.Errorf("oldbranch kind = %q, want branch", kinds["oldbranch"])
+	}
+}
+
+func assertRefOrder(t *testing.T, refs []RefInfo) {
+	branch, old := -1, -1
+	for i, ref := range refs {
+		if ref.Kind == "branch" && (ref.Name == "master" || ref.Name == "main") {
+			branch = i
+		}
+		if ref.Name == "oldbranch" {
+			old = i
+		}
+	}
+	if branch < 0 || old < 0 {
 		t.Fatalf("missing expected branches in %v", refs)
 	}
-	if idxBranch > idxOld {
-		t.Errorf("expected newest-first ordering: default branch (idx %d) should precede oldbranch (idx %d): %v", idxBranch, idxOld, refs)
+	if branch > old {
+		t.Errorf("expected newest-first ordering: default=%d old=%d", branch, old)
 	}
 }
 

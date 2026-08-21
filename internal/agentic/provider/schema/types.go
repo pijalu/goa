@@ -265,6 +265,10 @@ type StreamOptions struct {
 
 	CacheRetention CacheRetention `json:"cache_retention,omitempty"`
 	SessionID      string         `json:"session_id,omitempty"`
+	// PromptCacheKey is an opaque cache identity owned by the conversation
+	// runtime. It is distinct from SessionID, which may be a provider response
+	// continuation identifier (and must not be replaced for plain Responses).
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 
 	// Purpose classifies this request for transport-level attribution and
 	// per-purpose option locks (P13, CA2/CA3; dsh GenerateOptions.purpose).

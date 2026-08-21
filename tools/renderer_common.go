@@ -87,33 +87,18 @@ func themeHex(token string) string {
 		if hex := Themer.ColorHex(token); hex != "" {
 			return hex
 		}
-		// Unknown token: fall through to the defaults so callers always get
-		// a usable color instead of an empty string.
 	}
-	// Fallbacks that match the dark theme.
-	switch token {
-	case "toolTitle":
-		return "#ffffff"
-	case "bash_prompt":
-		return "#7dd3fc"
-	case "toolOutput":
-		return "#8b949e"
-	case "system_msg":
-		return "#8b949e"
-	case "warning":
-		return "#d29922"
-	case "error":
-		return "#f85149"
-	case "token_prompt":
-		return "#1f6feb"
-	case "toolDiffAdded":
-		return "#b5bd68"
-	case "toolDiffRemoved":
-		return "#cc6666"
-	case "toolDiffContext":
-		return "#808080"
+	if hex, ok := defaultThemeColors[token]; ok {
+		return hex
 	}
 	return "#888888"
+}
+
+var defaultThemeColors = map[string]string{
+	"toolTitle": "#ffffff", "bash_prompt": "#7dd3fc", "toolOutput": "#8b949e",
+	"system_msg": "#8b949e", "warning": "#d29922", "error": "#f85149",
+	"token_prompt": "#1f6feb", "toolDiffAdded": "#b5bd68", "toolDiffRemoved": "#cc6666",
+	"toolDiffContext": "#808080",
 }
 
 // ThemeProvider is satisfied by tui.Theme so tool renderers can query theme

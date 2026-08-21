@@ -67,6 +67,9 @@ type ProviderCompat struct {
 	NoReasoningEffort bool
 	// NoCacheRetention disables long cache retention support.
 	NoCacheRetention bool
+	// SupportsPromptCache sends the session cache identity even when retention
+	// is not explicitly configured, for providers that document this field.
+	SupportsPromptCache bool
 	// NoStrictMode disables OpenAI strict tool-schema mode.
 	NoStrictMode bool
 	// AnthropicCacheControl uses anthropic-style cache_control breakpoints.
@@ -214,6 +217,18 @@ type ProviderDef struct {
 	// output cap, not a model hard limit"); zero means no default — the field
 	// is omitted and the server applies its own default.
 	DefaultMaxTokens int
+	// DefaultCacheRetention is the prompt-cache retention used when the user
+	// config does not set cache_retention for this provider; "" means short
+	// (the global default). Providers whose prefix cache benefits from an
+	// explicit affinity hint opt in with "long": it makes the transport send
+	// the OpenAI-style prompt_cache_key (the agent's cache session identity)
+	// so the provider can pin the conversation to one cache shard instead of
+	// relying on content-keyed routing (observed z.ai server-side evictions:
+	// bugs.md, 2026-08-19 exports). Only set it when the provider both
+	// supports long retention (no NoCacheRetention) and accepts the field —
+	// z.ai was live-probed HTTP 200 with prompt_cache_key and
+	// prompt_cache_retention.
+	DefaultCacheRetention CacheRetention
 }
 
 // NeedsAPIKey reports whether this provider requires an API key.
@@ -360,7 +375,7 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.moonshot.cn/v1",
 		DefaultModel: "kimi-k2.6", EnvKeys: []string{"MOONSHOT_API_KEY", "KIMI_API_KEY"},
 		URLPatterns: []string{"api.moonshot.", "moonshotai", "moonshotai-cn"},
-		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true},
+		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true, SupportsPromptCache: true},
 		Extra: map[string]any{
 			"reasoning_key":               "reasoning_content",
 			"thinking_extra_body":         true,
@@ -373,7 +388,7 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.kimi.com/coding/v1",
 		DefaultModel: "kimi-for-coding", EnvKeys: []string{"KIMI_CODE_API_KEY", "MOONSHOT_API_KEY"},
 		URLPatterns: []string{"api.kimi.com/coding"},
-		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true},
+		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true, SupportsPromptCache: true},
 		Extra: map[string]any{
 			"reasoning_key":               "reasoning_content",
 			"thinking_extra_body":         true,
@@ -389,7 +404,11 @@ var providerCatalog = []ProviderDef{
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai-coding-plan",
 		URLPatterns: []string{"api.z.ai/api/coding", "open.bigmodel.cn/api/coding", "zai-coding", "zai-coding-cn", "zai-coding-plan"},
 		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
-		PeakHours:   zaiPeakHours,
+		// Long retention by default: sends prompt_cache_key (the agent's cache
+		// session identity) so GLM prefix-cache hits stop depending on
+		// content-keyed routing (server-side evictions observed 2026-08-19).
+		DefaultCacheRetention: CacheRetentionLong,
+		PeakHours:             zaiPeakHours,
 	},
 	{
 		ID: "zai-api", Name: "Z.ai", Provider: ProviderZaiApi,
@@ -397,7 +416,10 @@ var providerCatalog = []ProviderDef{
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai",
 		URLPatterns: []string{"api.z.ai", "open.bigmodel.cn"},
 		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
-		PeakHours:   zaiPeakHours,
+		// Same affinity rationale as the coding entry above (shared endpoint
+		// family; live-probed field acceptance).
+		DefaultCacheRetention: CacheRetentionLong,
+		PeakHours:             zaiPeakHours,
 	},
 	{
 		ID: "poolside", Name: "Poolside", Provider: ProviderPoolside,

@@ -29,15 +29,28 @@ var (
 	// dsmlInvokeClose terminates one invoke block.
 	dsmlInvokeClose = "</｜｜DSML｜｜invoke>"
 
+	// Anthropic-legacy tool-use dialect: <invoke name="fn">…</invoke> wrapping
+	// <parameter name="k">value</parameter> entries. Models trained on the
+	// classic tool-use SFT format (GLM included) degrade into emitting it as
+	// plain content when they fall out of native function calling mid-turn —
+	// observed live 2026-08-19 (export goa-export-20260819-004622: a goal
+	// create arrived as text after a garbled token, displayed verbatim, never
+	// executed). The recovery path must recognize it like the other dialects.
+	invokeStartRE = regexp.MustCompile(`<invoke\s+name="([^"]+)"\s*>`)
+	invokeParamRE = regexp.MustCompile(`<parameter\s+name="([^"]+)"[^>]*>`)
+	// invokeClose terminates one invoke block.
+	invokeClose = "</invoke>"
+
 	toolClosedPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?s)<tool_call>.*?</tool_call>`),
 		regexp.MustCompile(`(?s)<function=[\w-]+>.*?</function>`),
 		regexp.MustCompile(`(?s)<｜｜DSML｜｜tool_calls>.*?</｜｜DSML｜｜tool_calls>`),
 		regexp.MustCompile(`(?s)<｜｜DSML｜｜invoke\s+name="[^"]+"\s*>.*?</｜｜DSML｜｜invoke>`),
+		regexp.MustCompile(`(?s)<invoke\s+name="[^"]+"\s*>.*?</invoke>`),
 	}
 	toolAllPatterns = append([]*regexp.Regexp(nil), toolClosedPatterns...)
 
-	toolXMLSignals = []string{"<tool_call>", "<function=", "<｜｜DSML｜｜invoke", "<｜｜DSML｜｜tool_calls>"}
+	toolXMLSignals = []string{"<tool_call>", "<function=", "<invoke name", "<｜｜DSML｜｜invoke", "<｜｜DSML｜｜tool_calls>"}
 )
 
 func init() {
@@ -46,10 +59,12 @@ func init() {
 		regexp.MustCompile(`(?s)<function=[\w-]+>.*$`),
 		regexp.MustCompile(`(?s)<｜｜DSML｜｜tool_calls>.*$`),
 		regexp.MustCompile(`(?s)<｜｜DSML｜｜invoke\s+name="[^"]+"\s*>.*$`),
+		regexp.MustCompile(`(?s)<invoke\s+name="[^"]+"\s*>.*$`),
 		// Orphan closers: a close tag whose open was already stripped/flushed on
 		// an earlier delta must not leak into the display.
 		regexp.MustCompile(`(?s)</｜｜DSML｜｜tool_calls>`),
 		regexp.MustCompile(`(?s)</｜｜DSML｜｜invoke>`),
+		regexp.MustCompile(`(?s)</invoke>`),
 	)
 }
 
@@ -118,6 +133,14 @@ func parseToolCallsFromText(content string, idOffset int, allowIncomplete bool) 
 	if calls := sc.allFunctionCalls(); len(calls) > 0 {
 		return calls
 	}
+	// Anthropic-legacy invoke form (see invokeStartRE): GLM-class models
+	// degrade into it as plain content when they fall out of native function
+	// calling — recover it like the other text dialects.
+	sc.pos = 0
+	sc.emitted = 0
+	if calls := sc.allInvokeCalls(); len(calls) > 0 {
+		return calls
+	}
 	// DSML fallback: DeepSeek-family models emit their native markup when
 	// structured tool calls are suppressed (tool_choice "none") — recover it so
 	// a well-formed call is never silently dropped.
@@ -137,6 +160,78 @@ func (sc *toolCallScanner) allDSMLCalls() []parsedToolCall {
 		}
 		calls = append(calls, pc)
 	}
+}
+
+// allInvokeCalls extracts every <invoke name="fn">…</invoke> block of the
+// Anthropic-legacy dialect.
+func (sc *toolCallScanner) allInvokeCalls() []parsedToolCall {
+	var calls []parsedToolCall
+	for {
+		pc, ok := sc.nextInvokeCall()
+		if !ok {
+			return calls
+		}
+		calls = append(calls, pc)
+	}
+}
+
+// nextInvokeCall mirrors nextDSMLCall: forward cursor, body bounded at the
+// </invoke> close (or, incomplete, at the next invoke open / end of content).
+func (sc *toolCallScanner) nextInvokeCall() (parsedToolCall, bool) {
+	for {
+		rel := invokeStartRE.FindStringSubmatchIndex(sc.content[sc.pos:])
+		if rel == nil {
+			return parsedToolCall{}, false
+		}
+		name := sc.content[sc.pos+rel[2] : sc.pos+rel[3]]
+		bodyStart := sc.pos + rel[1]
+
+		bodyEnd := len(sc.content)
+		end := len(sc.content)
+		if ci := strings.Index(sc.content[bodyStart:], invokeClose); ci >= 0 {
+			bodyEnd = bodyStart + ci
+			end = bodyEnd + len(invokeClose)
+		} else if !sc.allowIncomplete {
+			// Complete parse requires a close tag; skip this candidate.
+			sc.pos = bodyStart
+			continue
+		} else if m := invokeStartRE.FindStringIndex(sc.content[bodyStart:]); m != nil {
+			bodyEnd = bodyStart + m[0]
+			end = bodyEnd
+		}
+
+		args, ok := parseInvokeParameters(sc.content[bodyStart:bodyEnd])
+		if !ok {
+			sc.pos = bodyStart
+			continue
+		}
+		sc.pos = end
+		return parsedToolCall{id: sc.nextID(), name: name, arguments: args}, true
+	}
+}
+
+// parseInvokeParameters folds the <parameter name="k">v</parameter> entries
+// of one invoke body into a JSON argument object. Values pass through
+// verbatim (the receiving tool decodes JSON arrays/objects itself); an empty
+// body maps to an empty argument object — same semantics as the DSML form.
+func parseInvokeParameters(body string) (string, bool) {
+	matches := invokeParamRE.FindAllStringSubmatchIndex(body, -1)
+	if len(matches) == 0 {
+		return "{}", true
+	}
+	args := make(map[string]string, len(matches))
+	for i, pm := range matches {
+		key := body[pm[2]:pm[3]]
+		valEnd := len(body)
+		if i+1 < len(matches) {
+			valEnd = matches[i+1][0]
+		}
+		val := strings.TrimSpace(body[pm[1]:valEnd])
+		val = strings.TrimSuffix(val, "</parameter>")
+		args[key] = strings.TrimSpace(val)
+	}
+	b, _ := json.Marshal(args)
+	return string(b), true
 }
 
 func (sc *toolCallScanner) nextDSMLCall() (parsedToolCall, bool) {

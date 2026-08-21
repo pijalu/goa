@@ -90,12 +90,69 @@ func TestZaiPrefixStableAcrossTurns(t *testing.T) {
 	require.JSONEq(t, string(tools1), string(tools2), "tools must not churn between turns")
 
 	// Same model/options must not inject per-turn jitter at the top level:
-	// no prompt_cache_retention (short retention default) and no
-	// prompt_cache_key for z.ai (server-side automatic caching needs none).
+	// with the retention unset (not long) no cache-identity fields are sent.
+	// (The zai catalog default IS long — see TestZaiLongRetentionSendsCacheKey
+	// for the affinity policy — but this test pins serialization stability
+	// for callers that do not opt in.)
 	_, hasKey := req2["prompt_cache_key"]
-	assert.False(t, hasKey, "z.ai must not send OpenAI-specific prompt_cache_key")
+	assert.False(t, hasKey, "no prompt_cache_key without long retention")
 	_, hasRetention := req2["prompt_cache_retention"]
-	assert.False(t, hasRetention, "z.ai must not send prompt_cache_retention on short retention")
+	assert.False(t, hasRetention, "no prompt_cache_retention without long retention")
+}
+
+// TestZaiLongRetentionSendsCacheKey pins the cache-affinity policy
+// (bugs.md 2026-08-19): under long retention — the zai catalog default since
+// content-keyed routing was observed evicting cached prefixes mid-session
+// (2026-08-19 debug exports) — the OpenAI-style prompt_cache_key carries the
+// session cache identity so z.ai can pin the conversation to one cache
+// shard. z.ai was live-probed: HTTP 200 with prompt_cache_key and
+// prompt_cache_retention present. The key must be clamped to OpenAI's
+// 64-character limit because goa's cache identities are longer.
+func TestZaiLongRetentionSendsCacheKey(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICompletions)
+	require.NotNil(t, p)
+	model := zaiModel()
+	profile := schema.ResolveProfile(model)
+	identity := "goa_" + strings.Repeat("a1b2c3d4", 12) // 4 + 96 > 64 chars
+	opts := schema.StreamOptions{
+		SessionID:      identity,
+		CacheRetention: schema.CacheRetentionLong,
+	}
+	ctx := schema.Context{
+		SystemPrompt: "sys",
+		Messages:     []schema.Message{schema.NewUserMessage("hi")},
+	}
+
+	body, err := p.BuildRequest(model, ctx, opts, profile)
+	require.NoError(t, err)
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(body, &req))
+
+	want := identity[:64]
+	assert.Equal(t, want, req["prompt_cache_key"],
+		"long retention must send the (clamped) session cache identity")
+	assert.Equal(t, "24h", req["prompt_cache_retention"],
+		"long retention on a supporting provider must request 24h retention")
+
+	// The identity fields must not perturb the cached prefix: messages and
+	// tools stay byte-identical to a short-retention build.
+	shortOpts := opts
+	shortOpts.CacheRetention = schema.CacheRetentionShort
+	shortBody, err := p.BuildRequest(model, ctx, shortOpts, profile)
+	require.NoError(t, err)
+	var shortReq map[string]any
+	require.NoError(t, json.Unmarshal(shortBody, &shortReq))
+	assert.JSONEq(t, string(mustJSON(t, shortReq["messages"])), string(mustJSON(t, req["messages"])),
+		"cache identity fields must not alter the message prefix")
+	assert.JSONEq(t, string(mustJSON(t, shortReq["tools"])), string(mustJSON(t, req["tools"])),
+		"cache identity fields must not alter the tools schema")
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
 }
 
 // TestZaiSameBodyIsDeterministic verifies two builds of the identical

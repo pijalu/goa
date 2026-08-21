@@ -22,11 +22,11 @@ import (
 // OpenAI Codex (ChatGPT OAuth) constants. Mirrors the reference implementation
 // in pi (packages/ai/src/auth/oauth/openai-codex.ts).
 const (
-	codexClientID         = "app_EMoamEEZ73f0CkXaXp7hrann"
-	codexAuthBaseURL      = "https://auth.openai.com"
-	codexAuthorizeURL     = codexAuthBaseURL + "/oauth/authorize"
-	codexTokenURL         = codexAuthBaseURL + "/oauth/token"
-	codexRedirectURI      = "http://localhost:1455/auth/callback"
+	codexClientID          = "app_EMoamEEZ73f0CkXaXp7hrann"
+	codexAuthBaseURL       = "https://auth.openai.com"
+	codexAuthorizeURL      = codexAuthBaseURL + "/oauth/authorize"
+	codexTokenURL          = codexAuthBaseURL + "/oauth/token"
+	codexRedirectURI       = "http://localhost:1455/auth/callback"
 	codexDeviceUserCodeURL = codexAuthBaseURL + "/api/accounts/deviceauth/usercode"
 	codexDeviceTokenURL    = codexAuthBaseURL + "/api/accounts/deviceauth/token"
 	// CodexDeviceVerificationURI is the page the user visits to approve a

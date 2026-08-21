@@ -27,6 +27,7 @@ type OpenAICompletionsCompat struct {
 	CacheControlFormat                          *string `json:"cacheControlFormat,omitempty"`
 	SendSessionAffinityHeaders                  *bool   `json:"sendSessionAffinityHeaders,omitempty"`
 	SupportsLongCacheRetention                  *bool   `json:"supportsLongCacheRetention,omitempty"`
+	SupportsPromptCache                         *bool   `json:"supportsPromptCache,omitempty"`
 	// ToolResultAsUser formats tool results as user messages with XML-style
 	// markers instead of role: "tool".  Some models (e.g. Gemma via LM Studio,
 	// Qwen) don't properly handle role: "tool" and fail to associate results

@@ -386,15 +386,6 @@ func assertMultiWordRepeatDetected(t *testing.T) {
 	}
 }
 
-// repeatString returns s repeated n times.
-func repeatString(s string, n int) string {
-	var b strings.Builder
-	for i := 0; i < n; i++ {
-		b.WriteString(s)
-	}
-	return b.String()
-}
-
 // TestToolRegistry_Schemas_Cached verifies that Schemas() is computed once and
 // cached (returns the same slice on subsequent calls). This is the contract the
 // agent relies on: it calls Schemas() every stream round and retry.

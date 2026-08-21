@@ -26,34 +26,7 @@ import (
 
 // TestBuildBundle_CacheMissRequestsArtifact drives a real provider cache bust
 // through the generic runtime and expects the debug bundle to carry the
-// COMPLETE requests around the miss (the bust + the preceding call) in
-// logs/cache_miss_requests.json — and, when no miss was detected, an empty
-// array (requests are never logged wholesale).
-func TestBuildBundle_CacheMissRequestsArtifact(t *testing.T) {
-	provider.ResetCacheForensics()
-	defer provider.ResetCacheForensics()
-	old := transport.Default()
-	defer transport.SetDefault(old)
-
-	call := func(cachedTokens int) {
-		transport.SetDefault(&cacheMissMockTransport{cached: cachedTokens})
-		model := schema.Model{
-			ID:       "kimi-k2",
-			Api:      schema.ApiOpenAICompletions,
-			Provider: schema.ProviderKimiCode,
-			BaseURL:  "http://example.com/v1/chat/completions",
-		}
-		stream, err := provider.Stream(model,
-			schema.Context{Messages: []schema.Message{schema.NewUserMessage("hi")}},
-			schema.StreamOptions{SessionID: "sess-1"})
-		if err != nil {
-			t.Fatalf("stream: %v", err)
-		}
-		_ = stream.Result()
-	}
-	call(100) // establish the cache baseline
-	call(0)   // bust
-
+func waitForCacheReport(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for len(provider.CacheForensicsReports()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -61,6 +34,28 @@ func TestBuildBundle_CacheMissRequestsArtifact(t *testing.T) {
 	if len(provider.CacheForensicsReports()) != 1 {
 		t.Fatalf("expected 1 forensics report, got %d", len(provider.CacheForensicsReports()))
 	}
+}
+
+func TestBuildBundle_CacheMissRequestsArtifact(t *testing.T) {
+	provider.ResetCacheForensics()
+
+	provider.ResetCacheForensics()
+	defer provider.ResetCacheForensics()
+	old := transport.Default()
+	defer transport.SetDefault(old)
+
+	call := func(cachedTokens int) {
+		transport.SetDefault(&cacheMissMockTransport{cached: cachedTokens})
+		model := schema.Model{ID: "kimi-k2", Api: schema.ApiOpenAICompletions, Provider: schema.ProviderKimiCode, BaseURL: "http://example.com/v1/chat/completions"}
+		stream, err := provider.Stream(model, schema.Context{Messages: []schema.Message{schema.NewUserMessage("hi")}}, schema.StreamOptions{SessionID: "sess-1"})
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+		_ = stream.Result()
+	}
+	call(100)
+	call(0)
+	waitForCacheReport(t)
 
 	dir := t.TempDir()
 	setupTestProject(t, dir)

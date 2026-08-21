@@ -213,23 +213,10 @@ func (p *PlanPager) renderFooter(width int) string {
 
 // HandleInput implements Component.
 func (p *PlanPager) HandleInput(data string) {
+	if p.handleNavigation(data) {
+		return
+	}
 	switch data {
-	case "up", "k":
-		p.cursor, p.scrollTop = annotate.MoveCursor(p.cursor, p.scrollTop, -1, len(p.lines), p.visibleHeight())
-		p.requestRender()
-	case "down", "j":
-		p.cursor, p.scrollTop = annotate.MoveCursor(p.cursor, p.scrollTop, 1, len(p.lines), p.visibleHeight())
-		p.requestRender()
-	case "pgup":
-		p.cursor, p.scrollTop = annotate.MoveCursor(p.cursor, p.scrollTop, -p.visibleHeight(), len(p.lines), p.visibleHeight())
-		p.requestRender()
-	case "pgdn":
-		p.cursor, p.scrollTop = annotate.MoveCursor(p.cursor, p.scrollTop, p.visibleHeight(), len(p.lines), p.visibleHeight())
-		p.requestRender()
-	case "n":
-		p.jumpToNextItem(1)
-	case "p":
-		p.jumpToNextItem(-1)
 	case "c":
 		p.requestAddComment()
 	case "e":
@@ -245,45 +232,53 @@ func (p *PlanPager) HandleInput(data string) {
 	}
 }
 
+func (p *PlanPager) handleNavigation(data string) bool {
+	delta := map[string]int{"up": -1, "k": -1, "down": 1, "j": 1, "pgup": -p.visibleHeight(), "pgdn": p.visibleHeight()}
+	if step, ok := delta[data]; ok {
+		p.cursor, p.scrollTop = annotate.MoveCursor(p.cursor, p.scrollTop, step, len(p.lines), p.visibleHeight())
+		p.requestRender()
+		return true
+	}
+	if data == "n" {
+		p.jumpToNextItem(1)
+		return true
+	}
+	if data == "p" {
+		p.jumpToNextItem(-1)
+		return true
+	}
+	return false
+}
+
 // jumpToNextItem moves the cursor to the next/previous item heading.
 func (p *PlanPager) jumpToNextItem(dir int) {
 	if len(p.anchors) == 0 {
 		return
 	}
+	best := p.nextAnchorLine(dir)
+	if best < 0 {
+		return
+	}
+	p.cursor = best
+	p.cursor, p.scrollTop = annotate.EnsureScrollInBounds(p.cursor, p.scrollTop, len(p.lines), p.visibleHeight())
+	p.requestRender()
+}
 
-	// Find the nearest anchor in the given direction.
-	best := -1
+func (p *PlanPager) nextAnchorLine(dir int) int {
 	if dir > 0 {
-		// Next anchor after cursor.
-		for _, a := range p.anchors {
-			if a.Line > p.cursor {
-				best = a.Line
-				break
+		for _, anchor := range p.anchors {
+			if anchor.Line > p.cursor {
+				return anchor.Line
 			}
 		}
-		if best == -1 && len(p.anchors) > 0 {
-			// Wrap to first.
-			best = p.anchors[0].Line
-		}
-	} else {
-		// Previous anchor before cursor.
-		for i := len(p.anchors) - 1; i >= 0; i-- {
-			if p.anchors[i].Line < p.cursor {
-				best = p.anchors[i].Line
-				break
-			}
-		}
-		if best == -1 && len(p.anchors) > 0 {
-			// Wrap to last.
-			best = p.anchors[len(p.anchors)-1].Line
+		return p.anchors[0].Line
+	}
+	for i := len(p.anchors) - 1; i >= 0; i-- {
+		if p.anchors[i].Line < p.cursor {
+			return p.anchors[i].Line
 		}
 	}
-
-	if best >= 0 {
-		p.cursor = best
-		p.cursor, p.scrollTop = annotate.EnsureScrollInBounds(p.cursor, p.scrollTop, len(p.lines), p.visibleHeight())
-		p.requestRender()
-	}
+	return p.anchors[len(p.anchors)-1].Line
 }
 
 // currentAnchor returns the anchor at the cursor, or nil.

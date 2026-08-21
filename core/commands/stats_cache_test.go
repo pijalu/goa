@@ -211,7 +211,8 @@ func TestDetectCacheDropsSession(t *testing.T) {
 }
 
 // TestStatsCommand_CacheView covers the routed /stats:cache output: the
-// horizontal chart header, the per-bar label values, and the drop table.
+// last-10 vertical chart header, the per-turn bars, the weighted total, the
+// miss list, and the drop table.
 func TestStatsCommand_CacheView(t *testing.T) {
 	rec := &fakeSessionRecorder{
 		history: cacheTurns(
@@ -229,7 +230,10 @@ func TestStatsCommand_CacheView(t *testing.T) {
 	out := w.Text()
 
 	for _, want := range []string{
-		"Cache hit rate — latest completions (rightmost = newest)",
+		"Cache hit — last completions (rightmost = newest)",
+		"Cache usage per turn",
+		"Session total",
+		"Cache misses",
 		"Cache drops",
 		"BEFORE", "AFTER",
 	} {
@@ -240,6 +244,10 @@ func TestStatsCommand_CacheView(t *testing.T) {
 	// The drop row: 80.0% → 0.0%.
 	if !strings.Contains(out, "80.0%") || !strings.Contains(out, "  0.0%") {
 		t.Errorf("drop table lacks before/after rates:\n%s", out)
+	}
+	// The bust turn is listed with its full-prefix token damage.
+	if !strings.Contains(out, "full miss") || !strings.Contains(out, "400 tokens") {
+		t.Errorf("miss list lacks the full-miss token figure:\n%s", out)
 	}
 	// The chart renders block bars.
 	if !strings.Contains(out, "█") {
@@ -269,4 +277,124 @@ func TestStatsCommand_CacheCompletion(t *testing.T) {
 		}
 	}
 	t.Fatal("cache completion missing")
+}
+
+// TestCacheLevelColor pins the required band thresholds: red <90,
+// orange <95, green ≥95.
+func TestCacheLevelColor(t *testing.T) {
+	red, orange, green := ansi.Fg("#f85149"), ansi.Fg("#d29922"), ansi.Fg("#3fb950")
+	for pct, want := range map[float64]string{
+		0: red, 89.9: red, 90: orange, 94.9: orange, 95: green, 100: green,
+	} {
+		if got := cacheLevelColor(pct); got != want {
+			t.Errorf("cacheLevelColor(%v) = %q, want %q", pct, got, want)
+		}
+	}
+}
+
+// TestWriteCacheHitLast10 verifies the last-10 vertical chart: capped at 10
+// bars, exact percentage labels centered under each bar, band-colored.
+func TestWriteCacheHitLast10(t *testing.T) {
+	// 12 cache-active turns at 100% — only the last 10 may chart.
+	var triples [][3]int
+	for i := 0; i < 12; i++ {
+		triples = append(triples, [3]int{0, 95, 5}) // 95%
+	}
+	var b strings.Builder
+	writeCacheHitLast10(&b, cacheTurnsFromHistory(cacheTurns(triples...), nil))
+	plain := ansi.Strip(b.String())
+	// Bars widened to fit the "95" labels: 2 cells × 10 bars = 20 wide.
+	// The label row must show ten centered 95s.
+	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+	labelRow := lines[len(lines)-1]
+	if strings.Count(labelRow, "95") != 10 {
+		t.Errorf("label row = %q, want 10 centered labels:\n%s", labelRow, plain)
+	}
+	// Colors: 95% is green.
+	if !strings.Contains(b.String(), ansi.Fg("#3fb950")) {
+		t.Errorf("95%% bars must be green:\n%q", b.String())
+	}
+}
+
+// TestWriteCacheAvgPerTurn verifies horizontal per-turn bars with band colors.
+func TestWriteCacheAvgPerTurn(t *testing.T) {
+	var b strings.Builder
+	writeCacheAvgPerTurn(&b, cacheTurnsFromHistory(cacheTurns(
+		[3]int{0, 90, 10}, // 90% → orange
+		[3]int{0, 96, 4},  // 96% → green
+	), nil))
+	out := b.String()
+	if !strings.Contains(out, "T1") || !strings.Contains(out, "90.00%") ||
+		!strings.Contains(out, "T2") || !strings.Contains(out, "96.00%") {
+		t.Errorf("per-turn bars missing labels/rates:\n%s", ansi.Strip(out))
+	}
+	if !strings.Contains(out, ansi.Fg("#d29922")) || !strings.Contains(out, ansi.Fg("#3fb950")) {
+		t.Errorf("bars must be band-colored (90%% orange, 96%% green):\n%q", out)
+	}
+}
+
+// TestWriteCacheSessionTotal verifies the token-weighted session percentage.
+func TestWriteCacheSessionTotal(t *testing.T) {
+	var b strings.Builder
+	// 100/(100+100)=50% on 100 prompt; 900/(900+100)=90% on 900 prompt.
+	// Weighted: 1000/(1000+1100+?) — exact value from CacheHitPct over sums.
+	writeCacheSessionTotal(&b, cacheTurnsFromHistory(cacheTurns(
+		[3]int{100, 50, 50},
+		[3]int{100, 810, 90},
+	), nil))
+	out := ansi.Strip(b.String())
+	if !strings.Contains(out, "Session total:") || !strings.Contains(out, "weighted over 2 turns") {
+		t.Errorf("weighted total line missing:\n%s", out)
+	}
+}
+
+// TestWriteCacheMissList verifies the miss list carries kind, percent-of-
+// prefix, and the token figure.
+func TestWriteCacheMissList(t *testing.T) {
+	var b strings.Builder
+	writeCacheMissList(&b, cacheTurnsFromHistory(cacheTurns(
+		[3]int{0, 8000, 2000},
+		[3]int{2000, 0, 0}, // full miss: 8000 tokens recomputed
+	), nil))
+	out := ansi.Strip(b.String())
+	if !strings.Contains(out, "full miss") || !strings.Contains(out, "100.0% of prefix") ||
+		!strings.Contains(out, "8,000 tokens") {
+		t.Errorf("miss list entry wrong:\n%s", out)
+	}
+}
+
+// TestWriteCacheView_MultiAgentSections proves the sections repeat per
+// agent/goal group and that a solo session stays header-less.
+func TestWriteCacheView_MultiAgentSections(t *testing.T) {
+	main := cacheTurnsFromHistory(cacheTurns([3]int{0, 90, 10}), nil)
+	for i := range main {
+		main[i].AgentRole = "main"
+		main[i].GoalID = "g1"
+	}
+	companion := cacheTurnsFromHistory(cacheTurns([3]int{0, 96, 4}), nil)
+	for i := range companion {
+		companion[i].AgentRole = "companion"
+		companion[i].GoalID = "g1"
+	}
+	turns := append(main, companion...)
+
+	var b strings.Builder
+	writeCacheView(&b, turns)
+	out := ansi.Strip(b.String())
+	// Both groups render with headers and their own sections.
+	for _, want := range []string{"## main · goal:g1", "## companion · goal:g1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing group header %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "Session total:") != 2 {
+		t.Errorf("want one session total per group (2), got:\n%s", out)
+	}
+
+	// Solo session: no ## header.
+	var solo strings.Builder
+	writeCacheView(&solo, main)
+	if strings.Contains(ansi.Strip(solo.String()), "## ") {
+		t.Errorf("solo session must not render group headers:\n%s", solo.String())
+	}
 }

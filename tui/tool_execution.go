@@ -5,12 +5,9 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"time"
 
@@ -36,11 +33,6 @@ type ToolViewPolicy interface {
 // defaultToolPreviewLines is the fallback Summary line count when no view
 // policy is attached (e.g. in isolated component tests). Production widgets
 // always receive the configured value (default 10) via ToolViewPolicy.
-const defaultToolPreviewLines = 10
-
-// partialStringFieldRe extracts quoted string fields from incomplete JSON
-// objects during streaming tool-call argument display.
-var partialStringFieldRe = regexp.MustCompile(`"([^"]+)":"((?:\\.|[^"\\])*)`)
 
 // ToolStatus represents the execution state of a tool call.
 type ToolStatus int
@@ -399,6 +391,55 @@ func (tc *ToolExecutionComponent) progressSuffix() string {
 	return " · " + formatByteSize(tc.outputBytes) + " · " + formatLineCount(tc.outputLines)
 }
 
+// CompletionEcho returns the compact ONE-LINE summary the app appends to the
+// conversation when this widget finished while fully scrolled into terminal
+// scrollback (its ✓/✗ transition would otherwise be invisible — the
+// compositor never repaints committed rows).
+//
+// The echo must ATTRIBUTE the completion, not replay it: it mirrors the
+// widget's own final header (status icon + agent label + call identity) plus
+// the timing/output stats, and — when the renderer implements
+// ResultSummarizer — its self-contained one-line outcome. It never contains
+// raw output lines or "… N earlier lines (ctrl+o to expand)" hints: those
+// duplicate content that may still be visible elsewhere on screen and read
+// as rendering corruption (the reported "offscreen tool results rendered on
+// screen" bug).
+func (tc *ToolExecutionComponent) CompletionEcho() string {
+	parts := []string{ansi.Strip(tc.box.header)}
+	if s := tc.resultSummaryLine(); s != "" {
+		parts = append(parts, s)
+	}
+	// Final timing + output size ("Took 2.5s · 1.3 KB · 14 lines"): the
+	// stats the running widget's duration line carried, kept on the echo so
+	// the completion conveys the result's magnitude without its content.
+	if d := ansi.Strip(tc.box.duration); d != "" {
+		parts = append(parts, d+tc.progressSuffix())
+	} else if suffix := tc.progressSuffix(); suffix != "" {
+		// Sub-10ms tool with output: no "Took" line, but the size still
+		// attributes the result. Drop the leading " · " separator.
+		parts = append(parts, strings.TrimPrefix(suffix, " · "))
+	}
+	return strings.Join(parts, " — ")
+}
+
+// resultSummaryLine returns the renderer's one-line outcome summary when the
+// tool's renderer implements ResultSummarizer (e.g. goal's "Cancelled
+// minty.puma: G05 — …"); "" otherwise. ANSI-stripped and single-line by
+// construction (the interface contract).
+func (tc *ToolExecutionComponent) resultSummaryLine() string {
+	rs, ok := tc.renderer.(ResultSummarizer)
+	if !ok || tc.output == "" {
+		return ""
+	}
+	ctx := RenderContext{
+		IsError:      tc.status == ToolError,
+		ArgsComplete: tc.argsComplete,
+		Args:         tc.args,
+	}
+	line, _, _ := strings.Cut(rs.SummarizeResult(tc.output, ctx), "\n")
+	return strings.TrimSpace(ansi.Strip(line))
+}
+
 // formatByteSize returns a human-readable byte count (e.g. "1.2 KB").
 func formatByteSize(n int) string {
 	switch {
@@ -468,576 +509,3 @@ func (tc *ToolExecutionComponent) SetArgsComplete() {
 // go through it (SetArgsComplete, SetArgsJSON, AddToolExecution) — a direct
 // field assignment would leave waitStart zero and the "waiting Ns…" display
 // would count argument-streaming time as queue wait.
-func (tc *ToolExecutionComponent) markArgsComplete() {
-	if tc.argsComplete {
-		return
-	}
-	tc.argsComplete = true
-	if tc.waitStart.IsZero() {
-		tc.waitStart = time.Now()
-	}
-}
-
-// SetArgsPartial updates the header display with partial tool call
-// arguments during streaming. Unlike SetArgsJSON, this does NOT attempt
-// json.Unmarshal (partial JSON would fail). The renderer handles
-// incomplete JSON via the ArgsComplete field in RenderContext.
-func (tc *ToolExecutionComponent) SetArgsPartial(args string) {
-	tc.toolArgs = args
-	tc.updatePartialArgs(args)
-	// Update byte/line progress from the content arg so the duration line
-	// shows live stats ("elapsed 1.2s · 3.4 KB · 42 lines") during write
-	// streaming. This mirrors how SetOutput tracks outputBytes/outputLines
-	// for bash/terminal progress events.
-	tc.updateContentProgress()
-	tc.invalidateBody()
-	tc.updateBox()
-	tc.Invalidate()
-	if tc.onInvalidate != nil {
-		tc.onInvalidate()
-	}
-}
-
-// updateContentProgress extracts byte/line counts from the "content" arg
-// (present in write/edit tools) and stores them for progressSuffix().
-// Only updates when content is present and growing — avoids flicker when
-// other args (path, etc.) arrive after content.
-func (tc *ToolExecutionComponent) updateContentProgress() {
-	content, ok := tc.args["content"].(string)
-	if !ok || content == "" {
-		return
-	}
-	n := len(content)
-	if n > tc.outputBytes {
-		tc.outputBytes = n
-		tc.outputLines = strings.Count(content, "\n")
-		if !strings.HasSuffix(content, "\n") {
-			tc.outputLines++
-		}
-	}
-}
-
-// couldBeCompleteJSON reports whether raw might be a complete JSON object:
-// it ends with '}' after optional whitespace. Mid-stream args end inside a
-// string value (a quote, escape, or content byte), so this filters out every
-// incomplete delta cheaply, in O(trailing whitespace) time.
-func couldBeCompleteJSON(raw string) bool {
-	for i := len(raw) - 1; i >= 0; i-- {
-		switch raw[i] {
-		case ' ', '\t', '\n', '\r':
-			continue
-		case '}':
-			return true
-		default:
-			return false
-		}
-	}
-	return false
-}
-
-// updatePartialArgs merges best-effort parsed fields from a partial JSON
-// argument string into tc.args so renderers can display streaming content
-// (e.g. write/edit content) before the full JSON is complete.
-//
-// Streaming args arrive as a growing accumulated JSON prefix, one delta per
-// token. A naive re-scan of the whole document per delta is O(n^2). This
-// scanner is incremental: it consumes each field once its value terminates,
-// keeps partialPos at the first unconsumed field, and for the single still-open
-// field decodes only the raw value tail. Per-delta work is proportional to the
-// new text plus one linear pass over the open field's value, not the document.
-func (tc *ToolExecutionComponent) updatePartialArgs(raw string) {
-	// Attempt the real parser only when the document could be complete: the
-	// last non-space byte is '}'. Mid-stream the string ends inside a value,
-	// so this cheap check avoids a full O(n) json.Unmarshal that always fails
-	// (and always re-parses from byte 0) on every delta. SetArgsJSON does the
-	// authoritative parse at completion.
-	if couldBeCompleteJSON(raw) {
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
-			tc.args = parsed
-			return
-		}
-	}
-
-	// Reset when the args string is replaced rather than grown.
-	if !strings.HasPrefix(raw, tc.partialRaw) {
-		tc.partialPos, tc.partialKey, tc.partialVFrom = 0, "", 0
-		tc.partialVDone, tc.partialValue = 0, ""
-		tc.args = nil
-	}
-	tc.partialRaw = raw
-	if tc.args == nil {
-		tc.args = make(map[string]any)
-	}
-
-	// Consume completed fields starting at partialPos. A field is complete
-	// once its value's closing quote is present; consumeField advances
-	// partialPos past it and records the decoded value.
-	for tc.partialPos < len(raw) {
-		next, done := tc.consumePartialField(raw)
-		if !done {
-			break // tail is an incomplete field; handled below
-		}
-		tc.partialPos = next
-	}
-}
-
-// consumePartialField processes input starting at tc.partialPos. It consumes
-// every completed `"key":"value"` field and, for the single still-open field at
-// the tail, decodes its (growing) raw value into tc.args. It uses a hand-rolled
-// scan — not a regexp over the tail — so per-delta work is proportional to the
-// newly arrived bytes rather than the accumulated document size.
-func (tc *ToolExecutionComponent) consumePartialField(raw string) (next int, done bool) {
-	for tc.partialPos < len(raw) {
-		key, vStart, vEnd, closed, ok := scanPartialField(raw, tc.partialPos)
-		if !ok {
-			return tc.partialPos, false // no complete field boundary yet
-		}
-		if key != tc.partialKey {
-			// Moved to a new field: restart its append-only decode.
-			tc.partialKey, tc.partialVFrom = key, vStart
-			tc.partialVDone, tc.partialValue = 0, ""
-		}
-		if !closed {
-			// Open (still-growing) field: decode only the newly arrived raw
-			// suffix and append it, keeping per-delta work O(new bytes) instead
-			// of re-decoding the whole value each delta. partialPos stays at
-			// the field start so the (now larger) raw range is re-read next
-			// delta — but only the unread suffix is decoded.
-			tc.appendOpenValue(raw[vStart:vEnd])
-			tc.args[key] = tc.partialValue
-			return tc.partialPos, false
-		}
-		// Completed field: decode the full raw value once.
-		value := raw[vStart:vEnd]
-		if u, err := strconv.Unquote(`"` + value + `"`); err == nil {
-			value = u
-		}
-		tc.args[key] = value
-		tc.partialPos = vEnd + 1 // past the closing quote
-	}
-	return tc.partialPos, true
-}
-
-// appendOpenValue decodes the not-yet-consumed raw suffix of the open field's
-// value and appends it to partialValue, advancing partialVDone. Decoding only
-// the new suffix keeps streaming a large value O(1) per delta rather than
-// O(value) per delta. strconv.Unquote needs a balanced escape at the cut
-// point, so a trailing incomplete escape is left for the next delta.
-func (tc *ToolExecutionComponent) appendOpenValue(rawVal string) {
-	if tc.partialVDone >= len(rawVal) {
-		return // nothing new (or value shrank; the next full decode corrects it)
-	}
-	suffix := rawVal[tc.partialVDone:]
-	// Don't split a backslash escape at the cut point: if the new suffix ends
-	// mid-escape, hold the trailing partial sequence for the next delta.
-	if n := trailingBackslashes(suffix); n%2 == 1 {
-		suffix = suffix[:len(suffix)-1]
-	}
-	if suffix == "" {
-		return
-	}
-	decoded := suffix
-	if u, err := strconv.Unquote(`"` + suffix + `"`); err == nil {
-		decoded = u
-	}
-	tc.partialValue += decoded
-	tc.partialVDone += len(suffix)
-}
-
-// trailingBackslashes reports how many backslashes end s.
-func trailingBackslashes(s string) int {
-	n := 0
-	for i := len(s) - 1; i >= 0 && s[i] == '\\'; i-- {
-		n++
-	}
-	return n
-}
-
-// scanPartialField scans raw starting at from for the next `"key":"value"`
-// field. It returns the key, the value's raw [vStart,vEnd) range, whether the
-// value's closing quote was seen (closed), and ok=false when no field boundary
-// is found in the remaining input. The value range excludes surrounding quotes.
-func scanPartialField(raw string, from int) (key string, vStart, vEnd int, closed, ok bool) {
-	keyOpen := nextQuote(raw, from)
-	if keyOpen < 0 {
-		return "", 0, 0, false, false
-	}
-	keyClose := nextQuote(raw, keyOpen+1)
-	if keyClose < 0 {
-		return "", 0, 0, false, false // key not yet terminated
-	}
-	valOpen := nextQuote(raw, keyClose+1)
-	if valOpen < 0 {
-		return "", 0, 0, false, false // value opening quote not yet present
-	}
-	valClose := nextUnescapedQuote(raw, valOpen+1)
-	if valClose < 0 {
-		// Value runs to end-of-input: still open/growing.
-		return raw[keyOpen+1 : keyClose], valOpen + 1, len(raw), false, true
-	}
-	return raw[keyOpen+1 : keyClose], valOpen + 1, valClose, true, true
-}
-
-// nextQuote returns the index of the next `"` at or after pos, or -1.
-func nextQuote(raw string, pos int) int {
-	for i := pos; i < len(raw); i++ {
-		if raw[i] == '"' {
-			return i
-		}
-	}
-	return -1
-}
-
-// nextUnescapedQuote returns the index of the next `"` not preceded by an odd
-// run of backslashes (i.e. a real string terminator), or -1.
-func nextUnescapedQuote(raw string, pos int) int {
-	for i := pos; i < len(raw); i++ {
-		switch raw[i] {
-		case '\\':
-			i++ // skip the escaped character
-		case '"':
-			return i
-		}
-	}
-	return -1
-}
-
-// SetArgs parses and stores the structured arguments for renderer use.
-func (tc *ToolExecutionComponent) SetArgs(args map[string]any) {
-	tc.args = args
-	tc.invalidateBody()
-	tc.updateBox()
-	tc.Invalidate()
-}
-
-// SetArgsJSON parses JSON arguments and stores them for the renderer.
-// When the JSON is successfully parsed, args are marked as complete.
-func (tc *ToolExecutionComponent) SetArgsJSON(argsJSON string) {
-	tc.partialRaw, tc.partialPos, tc.partialKey, tc.partialVFrom = "", 0, "", 0
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil {
-		tc.args = args
-		tc.markArgsComplete()
-		tc.updateContentProgress()
-	}
-	tc.toolArgs = FormatToolArgs(tc.toolName, argsJSON)
-	tc.invalidateBody()
-	tc.updateBox()
-	tc.Invalidate()
-}
-
-// SetOnInvalidate registers a callback invoked whenever the component's
-// internal state changes, allowing the owning viewport to invalidate its
-// render cache.
-func (tc *ToolExecutionComponent) SetOnInvalidate(fn func()) {
-	tc.onInvalidate = fn
-}
-
-// SetToolViewPolicy attaches the global tool-view policy (effective expand
-// mode + preview line count) from the owning ChatViewport. Must be called
-// before the first render so the widget honours the config/Ctrl+O state.
-func (tc *ToolExecutionComponent) SetToolViewPolicy(p ToolViewPolicy) {
-	tc.viewPolicy = p
-	tc.invalidateBody()
-	tc.updateBox()
-	tc.Invalidate()
-	if tc.onInvalidate != nil {
-		tc.onInvalidate()
-	}
-}
-
-// SetAgentLabel sets the display label prefix for the tool widget.
-func (tc *ToolExecutionComponent) SetAgentLabel(label string) {
-	tc.agentLabel = label
-	tc.updateBox()
-	tc.Invalidate()
-	if tc.onInvalidate != nil {
-		tc.onInvalidate()
-	}
-}
-
-// SetOutput sets the tool's output text.
-func (tc *ToolExecutionComponent) SetOutput(output string) {
-	tc.output = output
-	tc.outputBytes = len(output)
-	tc.outputLines = strings.Count(output, "\n")
-	if output != "" && !strings.HasSuffix(output, "\n") {
-		tc.outputLines++ // final partial line
-	}
-	tc.invalidateBody()
-	tc.updateBox()
-	tc.Invalidate()
-	if tc.onInvalidate != nil {
-		tc.onInvalidate()
-	}
-}
-
-// Status returns the current execution status.
-func (tc *ToolExecutionComponent) Status() ToolStatus {
-	return tc.status
-}
-
-// ToolName returns the name of the tool being executed.
-func (tc *ToolExecutionComponent) ToolName() string {
-	return tc.toolName
-}
-
-// ArgsComplete returns whether all tool call arguments have been received.
-func (tc *ToolExecutionComponent) ArgsComplete() bool {
-	return tc.argsComplete
-}
-
-// IsPartial reports whether the widget is still streaming/running and its
-// output is a partial snapshot (e.g. streamed progress from a long-running
-// tool). The final result clears it.
-func (tc *ToolExecutionComponent) IsPartial() bool {
-	return tc.isPartial
-}
-
-// SetStatus changes the execution status.
-func (tc *ToolExecutionComponent) SetStatus(status ToolStatus) {
-	old := tc.status
-	tc.status = status
-	if status == ToolSuccess || status == ToolError {
-		tc.isPartial = false
-	}
-	// Restart the elapsed timer when execution actually begins so the display
-	// reflects the execution phase only (streaming/approval time excluded) and
-	// stays within the tool's timeout bound. Re-setting ToolRunning (duplicate
-	// non-delta events) must NOT restart the timer.
-	if status == ToolRunning && old != ToolRunning {
-		tc.startTime = time.Now()
-	}
-	tc.invalidateBody()
-	tc.updateBox()
-	tc.Invalidate()
-	if tc.onInvalidate != nil {
-		tc.onInvalidate()
-	}
-	if tc.onStatusChange != nil && old != status {
-		tc.onStatusChange(old, status)
-	}
-}
-
-// SetPartial marks the component as still streaming/running.
-func (tc *ToolExecutionComponent) SetPartial(partial bool) {
-	tc.isPartial = partial
-	tc.invalidateBody()
-	tc.updateBox()
-	tc.Invalidate()
-	if tc.onInvalidate != nil {
-		tc.onInvalidate()
-	}
-}
-
-// SetDuration sets the execution duration string (e.g., "0.04s").
-func (tc *ToolExecutionComponent) SetDuration(d string) {
-	tc.duration = d
-	tc.updateBox()
-	tc.Invalidate()
-	if tc.onInvalidate != nil {
-		tc.onInvalidate()
-	}
-}
-
-// ── Rendering (delegated to Container which renders spacer + box children) ──
-
-// Invalidate clears cached rendering state.
-func (tc *ToolExecutionComponent) Invalidate() {
-	tc.Container.Invalidate()
-}
-
-// Render renders the tool execution widget. While the tool is running, the
-// elapsed duration is recomputed on every frame so the user sees live timing.
-func (tc *ToolExecutionComponent) Render(width int) []string {
-	if tc.status == ToolPending || tc.status == ToolRunning {
-		if !tc.startTime.IsZero() {
-			elapsed := fmt.Sprintf("elapsed %s", formatDuration(time.Since(tc.startTime)))
-			if tc.box.duration != elapsed {
-				// Rebuild the whole box so the spinner icon and duration both
-				// refresh on the next render cycle.
-				tc.updateBox()
-			}
-		}
-	}
-	return tc.Container.Render(width)
-}
-
-// ── Helpers ──
-
-func (tc *ToolExecutionComponent) bgColor() string {
-	switch tc.status {
-	case ToolPending, ToolRunning:
-		return TheTheme.ColorHex("tool_pending_bg")
-	case ToolSuccess:
-		return TheTheme.ColorHex("tool_success_bg")
-	case ToolError:
-		return TheTheme.ColorHex("tool_error_bg")
-	default:
-		return ""
-	}
-}
-
-func (tc *ToolExecutionComponent) statusIcon() (icon string, color string) {
-	switch tc.status {
-	case ToolPending:
-		if tc.argsComplete {
-			// Queued behind the scheduler (conflict / MaxParallel): show the
-			// hourglass so the wait is visually distinct from execution
-			// (Bug W: use ⧖ instead of the dots for waiting).
-			return "⧖", TheTheme.ColorHex("tool_running")
-		}
-		return "◉", TheTheme.ColorHex("tool_running")
-	case ToolRunning:
-		// Static amber dot for the on-going marker — never the animated
-		// spinner frame (keep the yellow dot).
-		return "●", TheTheme.ColorHex("tool_running")
-	case ToolSuccess:
-		return "✓", TheTheme.ColorHex("tool_success")
-	case ToolError:
-		return "✗", TheTheme.ColorHex("tool_error")
-	default:
-		return "·", TheTheme.ColorHex("system_msg")
-	}
-}
-
-// effectiveExpanded returns the effective expanded state for the widget,
-// considering both the per-widget toggle (tc.expanded) and the global view
-// policy. For read tools, the showRead policy prevents global expansion when
-// false so read output stays silent by default, while the per-widget toggle
-// (Ctrl+O/Enter on the block) still works.
-func (tc *ToolExecutionComponent) effectiveExpanded() bool {
-	// An explicit per-widget toggle wins over the global policy in both
-	// directions, and persists across streaming re-renders.
-	if tc.expandedSet {
-		return tc.expanded
-	}
-	if tc.viewPolicy == nil {
-		return tc.expanded
-	}
-	if !tc.viewPolicy.EffectiveToolsExpanded() {
-		return tc.expanded
-	}
-	if tc.toolName == "read" && !tc.viewPolicy.ShowReadContent() {
-		return tc.expanded
-	}
-	return true
-}
-
-func (tc *ToolExecutionComponent) bgANSI() string {
-	bgHex := tc.bgColor()
-	if bgHex == "" {
-		return ""
-	}
-	return ansi.Bg(bgHex)
-}
-
-// HandleInput processes key events for expand/collapse.
-func (tc *ToolExecutionComponent) HandleInput(data string) {
-	if matchesKey(data, "ctrl+o") || matchesKey(data, "enter") {
-		tc.setExpandedExplicit(!tc.effectiveExpanded())
-	}
-}
-
-// ── ToolArgs formatting ──
-
-// FormatToolArgs formats tool arguments for display.
-func FormatToolArgs(name string, argsJSON string) string {
-	switch name {
-	case "read":
-		return formatReadFileArgs(argsJSON)
-	case "write":
-		return extractJSONField(argsJSON, "path")
-	case "edit":
-		path := extractJSONField(argsJSON, "path")
-		op := extractJSONField(argsJSON, "operation")
-		if op != "" {
-			return fmt.Sprintf("%s (%s)", path, op)
-		}
-		return path
-	case "search":
-		pattern := extractJSONField(argsJSON, "pattern")
-		path := extractJSONField(argsJSON, "path")
-		if path != "" {
-			return fmt.Sprintf("%s in %s", pattern, path)
-		}
-		return pattern
-	case "bash":
-		cmd := extractJSONField(argsJSON, "command")
-		if len(cmd) > 60 {
-			cmd = cmd[:57] + "..."
-		}
-		return cmd
-	default:
-		fields := []string{"path", "command", "name", "pattern", "id"}
-		for _, f := range fields {
-			if v := extractJSONField(argsJSON, f); v != "" {
-				return v
-			}
-		}
-		return ""
-	}
-}
-
-// extractJSONField extracts a string field from a JSON string using proper JSON parsing.
-func extractJSONField(raw, field string) string {
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return ""
-	}
-	if v, ok := m[field].(string); ok {
-		return v
-	}
-	return ""
-}
-
-// formatReadFileArgs formats read arguments as path[:start][:end|+max].
-func formatReadFileArgs(argsJSON string) string {
-	path := extractJSONField(argsJSON, "path")
-	start := extractJSONIntField(argsJSON, "start_line")
-	end := extractJSONIntField(argsJSON, "end_line")
-	maxLines := extractJSONIntField(argsJSON, "max_lines")
-	if start == "" && end == "" && maxLines == "" {
-		return path
-	}
-	parts := []string{path}
-	if start != "" {
-		parts = append(parts, start)
-	} else {
-		parts = append(parts, "1")
-	}
-	if end != "" {
-		parts = append(parts, end)
-	} else if maxLines != "" {
-		parts = append(parts, "+"+maxLines)
-	}
-	return strings.Join(parts, ":")
-}
-
-// extractJSONIntField extracts an integer field from a JSON string.
-func extractJSONIntField(raw, field string) string {
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return ""
-	}
-	switch v := m[field].(type) {
-	case float64:
-		if v == float64(int(v)) {
-			return fmt.Sprintf("%d", int(v))
-		}
-		return fmt.Sprintf("%g", v)
-	case string:
-		return v
-	}
-	return ""
-}
-
-// formatDuration returns a concise human-readable duration string.
-// Sub-second values show two decimals; seconds and up show one decimal.
-func formatDuration(d time.Duration) string {
-	if d < time.Second {
-		return fmt.Sprintf("%.2fs", d.Seconds())
-	}
-	return fmt.Sprintf("%.1fs", d.Seconds())
-}

@@ -28,7 +28,8 @@ func TestLogCacheMissNotices(t *testing.T) {
 	})
 
 	out := buf.String()
-	if !strings.Contains(out, "cache miss #3") || !strings.Contains(out, "83421 -> 0") ||
+	if !strings.Contains(out, "cache miss #3 [full]") || !strings.Contains(out, "83421 -> 0") ||
+		!strings.Contains(out, "cache miss #4 [partial]") || !strings.Contains(out, "5000 -> 900") ||
 		!strings.Contains(out, "cache_miss_requests.json") {
 		t.Errorf("log line misses key diagnostics:\n%s", out)
 	}
@@ -86,6 +87,10 @@ func TestDrainCacheMissNoticesEndToEnd(t *testing.T) {
 
 	var buf bytes.Buffer
 	a := NewAgent(Config{Logger: NewLoggerWithStdLogger(log.New(&buf, "", 0), Warn)})
+	// The notices were recorded under the raw transport session key (no
+	// PromptCacheKey on this direct provider.Stream call), so attribute them
+	// to that key — the same thing Agent.stream does for its own streams.
+	a.activeCacheKey = "sess-1"
 	a.drainCacheMissNotices()
 
 	if !strings.Contains(buf.String(), "cache miss #") ||

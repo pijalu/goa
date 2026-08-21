@@ -26,54 +26,48 @@ func TestLoadConfig_ClaudeFixtureVetoesBash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	home := t.TempDir() // no goa-native or CC hooks at the user scope
-
-	cfg, err := LoadConfig(home, project)
+	cfg, err := LoadConfig(t.TempDir(), project)
 	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
+		t.Fatal(err)
 	}
+	assertClaudeHook(t, cfg, project)
+	engine := NewEngine(cfg, nil)
+	err = engine.FireBeforeTool(context.Background(), ToolPayload{ToolName: "bash", ToolInput: `{"command":"ls"}`, CallID: "call_1", SessionID: "sess_1", CWD: project})
+	assertClaudeVeto(t, err)
+	assertClaudeAudit(t, engine.Store().Entries())
+}
+
+func assertClaudeHook(t *testing.T, cfg *Config, project string) {
 	if len(cfg.Hooks) != 1 {
-		t.Fatalf("expected 1 CC hook from the fixture, got %d", len(cfg.Hooks))
+		t.Fatalf("expected 1 hook, got %d", len(cfg.Hooks))
 	}
 	h := cfg.Hooks[0]
-	if h.Dialect != DialectClaudeCode {
-		t.Errorf("expected claude-code dialect, got %q", h.Dialect)
-	}
-	if h.Event != EventBeforeTool {
-		t.Errorf("expected PreToolUse to map to beforeTool, got %v", h.Event)
-	}
-	if h.Matcher != "Bash" {
-		t.Errorf("expected matcher Bash, got %q", h.Matcher)
+	if h.Dialect != DialectClaudeCode || h.Event != EventBeforeTool || h.Matcher != "Bash" {
+		t.Errorf("hook = %+v", h)
 	}
 	if !strings.Contains(h.Command, project) {
-		t.Errorf("expected ${CLAUDE_PROJECT_DIR} substitution in %q", h.Command)
+		t.Errorf("project substitution missing: %q", h.Command)
 	}
+}
 
-	engine := NewEngine(cfg, nil)
-	err = engine.FireBeforeTool(context.Background(), ToolPayload{
-		ToolName: "bash", ToolInput: `{"command":"ls"}`, CallID: "call_1",
-		SessionID: "sess_1", CWD: project,
-	})
+func assertClaudeVeto(t *testing.T, err error) {
 	if err == nil {
-		t.Fatal("expected the fixture CC hook to veto the bash call")
+		t.Fatal("expected hook veto")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "fixture denies bash") {
-		t.Errorf("veto error should carry the deny reason, got: %s", msg)
+	for _, want := range []string{"fixture denies bash", "fixture additional context reaches the model"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("veto missing %q: %s", want, msg)
+		}
 	}
-	if !strings.Contains(msg, "fixture additional context reaches the model") {
-		t.Errorf("veto error should carry additionalContext for the model, got: %s", msg)
-	}
+}
 
-	entries := engine.Store().Entries()
+func assertClaudeAudit(t *testing.T, entries []Entry) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 audit entry, got %d", len(entries))
 	}
-	if entries[0].Dialect != DialectClaudeCode {
-		t.Errorf("audit entry should record claude-code dialect, got %q", entries[0].Dialect)
-	}
-	if entries[0].ExitCode != 2 {
-		t.Errorf("expected exit code 2 recorded, got %d", entries[0].ExitCode)
+	if entries[0].Dialect != DialectClaudeCode || entries[0].ExitCode != 2 {
+		t.Errorf("audit entry = %+v", entries[0])
 	}
 }
 

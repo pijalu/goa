@@ -81,14 +81,6 @@ func (t resolvedThresholds) effectiveHard() int {
 	return DefaultHardPercent
 }
 
-// hardEnabled reports whether the proactive hard tier can fire: only a
-// positive value enables it (the goa default config sets 95). 0 and negative
-// values disable the proactive hard tier while leaving the reactive safety
-// net (effectiveHard) intact.
-func (t resolvedThresholds) hardEnabled() bool {
-	return t.hard > 0
-}
-
 // EffectiveHardPercent returns the reactive ceiling actually in force for the
 // given configured hard percent: the value itself, or DefaultHardPercent when 0.
 func EffectiveHardPercent(hard int) int {
@@ -155,17 +147,36 @@ const (
 //     presumed hot (cheap in-place maintenance churns the hot prefix cache, so
 //     it is deferred); the hard tier is never deferred.
 func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) compressionTier {
-	if rt.hardEnabled() && usagePercent >= rt.effectiveHard() {
-		return tierHard
+	cacheHot := !a.cacheAssumedColdForProactive()
+	if a.cfg.ContextCompression.DisableCacheGate {
+		cacheHot = false
 	}
-	if rt.soft > 0 && usagePercent >= rt.soft {
-		// Simplified cache gate: defer ONLY soft maintenance while the cache is
-		// hot (the hard tier above already returned, bypassing the gate).
-		if !a.cfg.ContextCompression.DisableCacheGate && !a.cacheAssumedColdForProactive() {
-			a.logDeferral(usagePercent)
-			return tierNone
-		}
+	// There is no distinct high-mark threshold in the resolved config (the
+	// legacy trigger folds into hard), so HighMarkPercent is intentionally
+	// left zero: DecideCompactionPolicy then never selects HighMarkCompaction
+	// and the hard ceiling arrives as EmergencyFallback.
+	decision := DecideCompactionPolicy(CompactionPolicyInput{
+		EstimatedTokens:            usagePercent,
+		MaxTokens:                  100,
+		SoftPercent:                rt.soft,
+		HardPercent:                rt.hard,
+		CacheHot:                   cacheHot,
+		SoftStrategyAvailable:      rt.soft > 0,
+		EmergencyStrategyAvailable: true,
+		// Surface remote-compaction availability (Codex Phase 2b) so the policy
+		// can prefer it once 2b.2 wires the strategy. Detection/gating only:
+		// false unless the operator opted in AND the model advertises support,
+		// so the default local ladder is unchanged.
+		RemoteCompactAvailable: a.remoteCompactionAvailable(),
+	})
+	switch decision {
+	case EmergencyFallback:
+		return tierHard
+	case SoftMaintenance:
 		return tierSoft
+	}
+	if rt.soft > 0 && usagePercent >= rt.soft && cacheHot {
+		a.logDeferral(usagePercent)
 	}
 	return tierNone
 }

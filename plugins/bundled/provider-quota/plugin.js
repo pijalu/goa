@@ -280,10 +280,12 @@ function isLocalProvider() {
 
 // statusRender returns the compact quota segment for the footer, tracking
 // ONLY the active provider. Local providers show "[∞]" (no quota). API
-// providers show "[8%|24%]" (session|weekly), each percentage colored by its
-// OWN projected window-end usage (green in-budget, orange close, red overrun,
-// default when still pending) via goa.segmentColor. Reads the cache only —
-// fetching is the scheduler's job.
+// providers show "[8%|24%]" or "[8%|24%|85%]" (session|weekly|monthly —
+// three windows when the provider reports a monthly limit, as opencode-go
+// does), each percentage colored by its OWN projected window-end usage
+// (green in-budget, orange close, red overrun, default when still pending)
+// via goa.segmentColor. Reads the cache only — fetching is the scheduler's
+// job.
 function statusRender() {
 	var id = activeFetcherId();
 	if (!id) {
@@ -313,11 +315,14 @@ function statusRender() {
 	return colorizedSegment(entry);
 }
 
-// colorizedSegment builds "[8%|24%]" with each window's percentage wrapped in
-// its own semantic color. Windows are sorted shortest-period first
-// (session|weekly|monthly) — fetcher emission order is NOT guaranteed (the
-// z.ai monitor API returns monthly first). Falls back to the single
-// worst-window color when goa.segmentColor is unavailable (older hosts).
+// colorizedSegment builds "[8%|24%]" (or "[8%|24%|85%]" when the provider
+// reports three windows, as opencode-go's monthly limit) with each window's
+// percentage wrapped in its own semantic color. Windows are sorted
+// shortest-period first (session|weekly|monthly) — fetcher emission order is
+// NOT guaranteed (the z.ai monitor API returns monthly first). At most three
+// windows are shown: providers reporting more (shouldn't happen today) would
+// overflow the footer. Falls back to the single worst-window color when
+// goa.segmentColor is unavailable (older hosts).
 function colorizedSegment(entry) {
 	var parts = [];
 	// Sort a copy: the cached limits array is shared with /quota, which keeps
@@ -325,7 +330,7 @@ function colorizedSegment(entry) {
 	var sorted = entry.limits.slice().sort(function(a, b) {
 		return (a.periodMs || 1e15) - (b.periodMs || 1e15);
 	});
-	for (var i = 0; i < sorted.length && parts.length < 2; i++) {
+	for (var i = 0; i < sorted.length && parts.length < 3; i++) {
 		var lim = sorted[i];
 		if (!lim.limit || lim.limit <= 0) {
 			continue;

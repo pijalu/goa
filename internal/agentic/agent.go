@@ -9,6 +9,8 @@ package agentic
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -54,10 +56,34 @@ const (
 //	})
 //	agent.Run(ctx, "Hello!")
 type Agent struct {
-	cfg       Config
-	reg       ToolLookup
-	history   []Message
-	observers []observerEntry
+	cfg     Config
+	reg     ToolLookup
+	history []Message
+	// cacheContextID owns this agent's provider cache namespace. Generation is
+	// advanced only when history is replaced or explicitly reset; append-only
+	// turns retain the same opaque prompt-cache key.
+	cacheContextID string
+	// cacheGeneration advances whenever retained history changes IDENTITY —
+	// wholesale replacement, summarization, or dropping oldest messages — so
+	// the derived cache key rotates and can never alias a prefix the provider
+	// no longer has (Hard Rule 7: only a byte-exact append may keep the key).
+	// In-place payload rewrites that preserve the message SKELETON (tool-result
+	// elision, micro-compaction, ephemeral strips) deliberately keep the
+	// generation: providers with partial-prefix matching can still hit the
+	// unchanged head, and the residual miss is exactly what the forensics
+	// journal reports.
+	cacheGeneration uint64
+	// activeCacheKey is the cache identity stamped on the most recently opened
+	// provider stream (see Agent.stream); cache-miss notices are drained for
+	// this key so concurrent agents never steal each other's notices.
+	activeCacheKey string
+	// remoteCompactAvailableFn memoizes the remote-compaction availability
+	// resolution (Codex Phase 2b.1): the gate and model are fixed at
+	// construction, so the profile lookup runs at most once instead of on
+	// every compaction-policy pass (which holds a.mu and would otherwise
+	// re-parse embedded/user variant profiles each turn).
+	remoteCompactAvailableFn func() bool
+	observers                []observerEntry
 	// observerCounter is a per-agent source of unique observer ids used as
 	// removal handles (see AddObserver). Per-agent (not package-global) so
 	// agents do not share mutable state and tests stay isolated.
@@ -511,6 +537,23 @@ const (
 	// during cache-miss turns, preserving conversation structure while
 	// freeing context.
 	CompressionMicro CompressionStrategy = "micro"
+
+	// CompressionRemoteCompact replaces history with the server-compacted
+	// transcript returned by POST /responses/compact (Codex Phase 2b). It is
+	// not a policy-selectable strategy: the summarize slot upgrades to it
+	// automatically when the operator gate and the provider capability both
+	// allow (2b.1). The constant exists so the provenance events and the
+	// EventCompact strategy label can name the remote path distinctly.
+	CompressionRemoteCompact CompressionStrategy = "remote_compact"
+
+	// CompressionFreshWindow installs a fresh context window with ZERO
+	// summarization calls (Codex TokenBudget mode, 2b.3): history is reset
+	// to the system prompt plus the configured recent-turn/last-user
+	// preservation tail — no summary is ever requested. It is the cheapest
+	// full compaction and IS policy-selectable (any strategy slot may name
+	// it); it still runs the normal compaction lifecycle (provenance
+	// triple + EventCompact) so hooks and observers see one contract.
+	CompressionFreshWindow CompressionStrategy = "fresh_window"
 )
 
 // SkillExecutionMode controls how the skill runner executes skills.
@@ -595,6 +638,39 @@ type ContextCompressionConfig struct {
 	// PreserveRecentTurns keeps the last N user/assistant/tool turns
 	// uncompressed. Default: 2.
 	PreserveRecentTurns int
+
+	// RemoteCompactRetainedBudget bounds the server-compacted replacement
+	// transcript: after a remote /responses/compact, the retained tail is
+	// trimmed (newest-first) so its estimated tokens stay under this budget
+	// (Codex RETAINED_MESSAGE_TOKEN_BUDGET). Zero uses the default
+	// (DefaultRemoteCompactRetainedBudget, 64_000); a negative value disables
+	// the bound.
+	RemoteCompactRetainedBudget int
+
+	// FreshWindow configures the fresh_window (token-budget) compaction
+	// strategy (Codex Phase 2b.3): a full window reset with ZERO
+	// summarization calls. See FreshWindowConfig.
+	FreshWindow FreshWindowConfig
+}
+
+// FreshWindowConfig configures the fresh_window compaction strategy: when a
+// full-window compaction escalates, install a fresh context window (system
+// prompt + preserved recent-turn/last-user tail) instead of paying for an
+// LLM summary. The strategy is selected either by enabling this gate (the
+// summarize slot upgrades to a fresh window, mirroring the remote_compact
+// upgrade) or by naming "fresh_window" on any strategy slot (hard layer,
+// on-error, legacy whole-config strategy) — selection implies the gate.
+type FreshWindowConfig struct {
+	// Enabled opts the fresh-window strategy in as the full-compaction
+	// mode: Compact installs a fresh window with zero LLM calls instead of
+	// summarizing (remote_compact still wins when available). Default off
+	// keeps the local summarize ladder unchanged.
+	Enabled bool
+	// PreserveRecentTurns bounds the preservation tail kept across the
+	// window reset (chain-safe; always keeps at least the last user
+	// message). 0 inherits PreserveRecentTurns (which itself defaults to
+	// 2); a negative value is clamped to 0 → inherit.
+	PreserveRecentTurns int
 }
 
 // Config holds the configuration for creating a new Agent.
@@ -648,6 +724,14 @@ type Config struct {
 	// ContextCompression controls automatic history compression.
 	// Zero value disables automatic compression.
 	ContextCompression ContextCompressionConfig
+	// RemoteCompactionEnabled is the operator opt-in gate for server-side
+	// conversation compaction (Codex Phase 2b, POST /responses/compact). It is
+	// ANDed with the provider/model's advertised RemoteCompaction capability:
+	// remote compaction is only "available" to the compaction policy when both
+	// the gate is on AND the endpoint supports it. Default false keeps the
+	// local compression ladder unchanged. Detection/gating only — no request
+	// logic here (that is 2b.2).
+	RemoteCompactionEnabled bool
 	// TimeContext controls the per-turn temporal context injection (CX6):
 	// a durable context message carrying a zoned timestamp and elapsed
 	// since the last reading, injected at model step preparation. Zero
@@ -674,8 +758,12 @@ type Config struct {
 	// (no rolling-window duplicate guardrail).
 	MaxToolCalls int
 	// MaxStreamRounds is the maximum number of LLM stream rounds per turn.
-	// After this many rounds, if the model is still making tool calls, a
-	// recovery hint is injected. Set to 0 for unlimited (default).
+	// When the limit is reached a recovery hint is injected so the model
+	// answers with what it has. Set to 0 for unlimited — this is also the
+	// default, and there is deliberately NO hidden fallback: SDK consumers
+	// embedding the agent without an application config get an unbounded
+	// (convergence-driven) turn loop unless they set this explicitly. The goa
+	// application exposes it as execution.max_stream_rounds.
 	MaxStreamRounds int
 	// MaxConsecutiveToolRounds is the maximum number of consecutive LLM rounds
 	// that end with finish_reason="tool_calls" before a forced-answer hint is
@@ -684,7 +772,10 @@ type Config struct {
 	// produced no visible answer and requested more tool calls, catching the
 	// "infinite tool-calling loop" where every call has unique inputs. When the
 	// limit is reached, the model is told to stop calling tools and answer with
-	// what it has. Set to 0 to disable (default: 10).
+	// what it has. Set to 0 to disable — and NOTE for SDK consumers: 0/unset
+	// really means DISABLED (no hidden fallback), so an embedded agent with no
+	// application config has no numeric guardrail at all; set this explicitly.
+	// The goa application supplies 15 via execution.max_consecutive_tool_rounds.
 	MaxConsecutiveToolRounds int
 	// DisableToolBudget when true disables the per-turn tool-call budget check
 	// entirely, allowing unlimited tool calls per turn. Useful for sessions with
@@ -790,6 +881,16 @@ type Config struct {
 	AllowEmptyResponse bool
 }
 
+func newCacheContextID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return hex.EncodeToString(raw[:])
+	}
+	// crypto/rand failure is exceptionally unlikely; a process-local opaque
+	// fallback still prevents accidental sharing between Agent instances.
+	return fmt.Sprintf("agent-%p", &raw)
+}
+
 // NewAgent creates a new Agent with the given configuration.
 func NewAgent(cfg Config) *Agent {
 	// Apply documented micro-compaction defaults when the strategy is micro but
@@ -803,12 +904,18 @@ func NewAgent(cfg Config) *Agent {
 		cfg.ContextCompression.MicroCompaction = DefaultMicroCompactionConfig
 	}
 	a := &Agent{
-		cfg:           cfg,
-		reg:           NewToolRegistry(cfg.Tools),
-		Output:        make(chan Message, 10),
-		turnToolCalls: make(map[string]int),
-		bashReuse:     newBashReuseTracker(),
-		bashNearDup:   make(map[string]bool),
+		cfg:            cfg,
+		cacheContextID: newCacheContextID(),
+		reg:            NewToolRegistry(cfg.Tools),
+		Output:         make(chan Message, 10),
+		turnToolCalls:  make(map[string]int),
+		bashReuse:      newBashReuseTracker(),
+		bashNearDup:    make(map[string]bool),
+		// Memoize remote-compaction availability: the gate + model are fixed
+		// for the agent's lifetime, so resolve the profile at most once.
+		remoteCompactAvailableFn: sync.OnceValue(func() bool {
+			return RemoteCompactionAvailable(cfg.RemoteCompactionEnabled, cfg.Model)
+		}),
 		// Negative means "not initialized yet"; undoLastAssistantMessage falls
 		// back to the last user message in that case (e.g. direct test calls).
 		turnStartHistoryLen: -1,
@@ -821,780 +928,3 @@ func NewAgent(cfg Config) *Agent {
 
 // SetHistory replaces the conversation history.
 // Used for session restoration on reconnect.
-func (a *Agent) SetHistory(history []Message) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Ensure system prompt is preserved if not present in new history
-	hasSystem := false
-	for _, m := range history {
-		if m.Role == System {
-			hasSystem = true
-			break
-		}
-	}
-
-	if !hasSystem && a.cfg.SystemPrompt != "" {
-		history = append([]Message{{
-			Type:    Content,
-			Role:    System,
-			Content: a.cfg.SystemPrompt,
-		}}, history...)
-	}
-
-	a.history = history
-	// History was replaced wholesale (session restore): any recorded provider
-	// prompt size belongs to the previous conversation, and the sticky dedup
-	// state no longer reflects what's in history — re-persist on next turn
-	// when the restored conversation lacks the current sticky set.
-	a.lastPersistedSticky = ""
-	a.invalidateContextUsageLocked()
-}
-
-// SetModel replaces the active model for subsequent turns without
-// rebuilding the rest of the agent configuration.
-func (a *Agent) SetModel(mdl provider.Model) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cfg.Model = mdl
-	if mdl.ContextWindow > 0 {
-		a.contextWindow.Store(int64(mdl.ContextWindow))
-	}
-}
-
-// SetContextCompression replaces the context compression configuration for
-// subsequent turns. Used when the model changes mid-session so the context
-// ceiling tracks the new model's context window.
-func (a *Agent) SetContextCompression(cfg ContextCompressionConfig) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cfg.ContextCompression = cfg
-}
-
-// CompressionConfig returns the current context compression configuration.
-func (a *Agent) CompressionConfig() ContextCompressionConfig {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.cfg.ContextCompression
-}
-
-// SetReasoningEffort replaces the reasoning-effort level for subsequent turns.
-func (a *Agent) SetReasoningEffort(effort ReasoningEffort) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cfg.ReasoningEffort = effort
-}
-
-// ReasoningEffort returns the current reasoning-effort level.
-func (a *Agent) ReasoningEffort() ReasoningEffort {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.cfg.ReasoningEffort
-}
-
-// SetTools replaces the tool set available to the agent for subsequent turns.
-// The updated list takes effect on the next provider call without losing the
-// current conversation history.
-func (a *Agent) SetTools(tools []Tool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cfg.Tools = tools
-	a.reg = NewToolRegistry(tools)
-}
-
-// Tools returns a copy of the agent's current tool set. Use with SetTools to
-// append a tool without clobbering the existing ones.
-func (a *Agent) Tools() []Tool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := make([]Tool, len(a.cfg.Tools))
-	copy(out, a.cfg.Tools)
-	return out
-}
-
-// SteeringSource supplies mid-turn steering messages typed by the user while
-// the agent is running. It mirrors pi's getSteeringMessages hook. Drain must
-// atomically return and remove all currently-pending messages.
-type SteeringSource interface {
-	Drain() []string
-}
-
-// SetSteeringSource wires the queue the agent polls between stream rounds for
-// mid-turn steering. Pass nil to disable (tests / single-shot runners).
-func (a *Agent) SetSteeringSource(s SteeringSource) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.steeringSource = s
-}
-
-// IsProcessing reports whether the agent is currently executing a turn
-// (including draining its internal queue between turns). The AgentManager
-// uses it to report busy state for externally driven turns — e.g. goal
-// continuation turns from GoalDriver, which call agent.Run directly and never
-// flip the manager's running flag.
-func (a *Agent) IsProcessing() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.processing
-}
-
-// drainSteeringIntoHistory appends any pending steering messages to history as
-// user messages at the current tail. Called between stream rounds: after the
-// previous round's assistant/tool messages are appended and before the next
-// runStreamRound, so the very next provider request already contains the
-// steering. Because the messages are only ever appended at the tail, request
-// N+1 stays a strict prefix-extension of request N (guideline #9).
-func (a *Agent) drainSteeringIntoHistory() {
-	a.mu.Lock()
-	src := a.steeringSource
-	a.mu.Unlock()
-	if src == nil {
-		return
-	}
-	pending := src.Drain()
-	for _, text := range pending {
-		text = strings.TrimSpace(text)
-		if text == "" {
-			continue
-		}
-		msg := Message{Type: Content, Role: User, Content: text, Metadata: map[string]string{metaSteeringDrained: "true"}}
-		a.mu.Lock()
-		a.history = append(a.history, msg)
-		a.mu.Unlock()
-		a.emitMessage(msg)
-	}
-}
-
-// InjectSystemMessage appends a system message to the conversation history.
-// It is sent to the model on the next turn so the model can be informed of
-// runtime changes (for example newly enabled tools) without losing history.
-func (a *Agent) InjectSystemMessage(content string) {
-	msg := Message{Type: Content, Role: System, Content: content}
-	a.mu.Lock()
-	a.history = append(a.history, msg)
-	a.mu.Unlock()
-	a.emitMessage(msg)
-}
-
-// metaEphemeral marks a history message as transient: it is sent to the model
-// during the turn it is injected but stripped before the next turn so it does
-// not pollute future context (e.g. the recovery hint or the repeat-loop nudge).
-// The tag lives in Message.Metadata, which migrateMessage does not forward, so
-// the model never sees the tag itself (only the message content, during its turn).
-const metaEphemeral = "ephemeral"
-
-// metaSteeringDrained marks a user message that was woven into the turn from
-// the mid-turn steering queue (drainSteeringIntoHistory). The TUI uses it to
-// clear the pending steering bubble and render the consumed text in its place,
-// since the bubble would otherwise linger after the queue has been drained.
-// Like metaEphemeral, the tag lives in Message.Metadata and is never sent to
-// the model (migrateMessage drops Metadata).
-const metaSteeringDrained = "steering_drained"
-
-// InjectEphemeralSystemMessage appends a system message that is relevant only
-// for the current turn. It is sent to the model now but stripped from history
-// at turn end so it is not re-sent (and does not add noise/context) on future
-// turns. Use for transient nudges (e.g. the recovery hint); use
-// InjectSystemMessage for durable runtime notices (tool changes).
-//
-// The message is also surfaced to the user as a durable chat bubble so every
-// nudge sent to the model is visible and part of the chat history
-// the user MUST be aware of nudges). Host control notes (prefixed "[goa-system]")
-// are emitted as a system-notification content event, which the app renders as
-// a persistent bubble (the same path used for "Error: 401" notices).
-func (a *Agent) InjectEphemeralSystemMessage(content string) {
-	msg := Message{
-		Type:     Content,
-		Role:     System,
-		Content:  content,
-		Metadata: map[string]string{metaEphemeral: "true"},
-	}
-	a.mu.Lock()
-	a.history = append(a.history, msg)
-	a.mu.Unlock()
-
-	// Surface the FULL nudge text to the user as a persistent chat bubble
-	// (the user MUST be aware of every nudge sent to the model).
-	// Previously only a transient EventProgress ("System guardrail…") was shown,
-	// hiding the actual content/numbers and leaving the user unable to tell what
-	// the model was told. Now every host control note (prefixed "[goa-system]")
-	// is emitted as a system-notification content event so it renders as a
-	// durable bubble and is part of the chat history.
-	if strings.HasPrefix(content, "[goa-system]") {
-		a.emitEvent(OutputEvent{
-			Type:     EventContent,
-			Role:     System,
-			Text:     content,
-			Metadata: map[string]string{"category": "system-notification"},
-		})
-	}
-}
-
-// stripEphemeralSystemMessages removes ephemeral system messages from history.
-// Called at turn end so transient nudges (e.g. the recovery hint) do not persist
-// into the next turn's context.
-func (a *Agent) stripEphemeralSystemMessages() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.history) == 0 {
-		return
-	}
-	filtered := a.history[:0]
-	for _, m := range a.history {
-		if m.Role == System && m.Metadata != nil && m.Metadata[metaEphemeral] == "true" {
-			continue
-		}
-		filtered = append(filtered, m)
-	}
-	a.history = filtered
-}
-
-// Model returns the active model configuration.
-func (a *Agent) Model() provider.Model {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.cfg.Model
-}
-
-// StreamOptions returns the configured stream options.
-func (a *Agent) StreamOptions() provider.StreamOptions {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.cfg.StreamOptions
-}
-
-// SpillPolicy returns the configured tool-result spill policy (nil when the
-// policy is disabled).
-func (a *Agent) SpillPolicy() SpillPolicy {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.cfg.SpillPolicy
-}
-
-// SetStreamOptions replaces the stream options for subsequent turns.
-// This updates the API key, headers, timeout, transport, and other provider
-// settings. Call after switching providers so the new provider's credentials
-// are used on the next turn.
-// SetContextWindow updates the model's advertised context window at runtime.
-// Used by the host to refresh the loaded context length for local providers
-// after the model has finished loading.
-func (a *Agent) SetContextWindow(nCtx int) {
-	if nCtx <= 0 {
-		return
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cfg.Model.ContextWindow = nCtx
-	a.contextWindow.Store(int64(nCtx))
-}
-
-func (a *Agent) SetStreamOptions(opts provider.StreamOptions) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cfg.StreamOptions = opts
-	if opts.APIKey != "" {
-		a.cfg.APIKey = opts.APIKey
-	}
-}
-
-// GetHistory returns a copy of the conversation history.
-func (a *Agent) GetHistory() []Message {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	result := make([]Message, len(a.history))
-	copy(result, a.history)
-	return result
-}
-
-// observerEntry pairs an OutputObserver with a unique ID used as an identity
-// handle for removal. The id is what AddObserver returns (as a remove handle);
-// observer values themselves may be non-comparable function types.
-type observerEntry struct {
-	obs OutputObserver
-	id  uint64
-}
-
-// AddObserver registers an observer to receive output events and returns a
-// remove handle. Call the returned func exactly once to unregister that
-// specific registration. Using a handle (instead of comparing observer values
-// via reflect) makes removal reliable even when the same observer is added
-// twice or the observer is wrapped in an adapter.
-func (a *Agent) AddObserver(o OutputObserver) func() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.observerCounter++
-	id := a.observerCounter
-	a.observers = append(a.observers, observerEntry{obs: o, id: id})
-	return func() { a.removeObserverByID(id) }
-}
-
-// RemoveObserver unregisters a previously added observer by value. It is kept
-// for backwards compatibility; new code should prefer the remove handle
-// returned by AddObserver. Comparison is identity-based (pointer equality);
-// function-typed observers cannot be matched this way (comparing two non-nil
-// func values panics), so callers using OutputObserverFunc must retain and use
-// the AddObserver handle. RemoveObserver is a no-op when no entry matches.
-func (a *Agent) RemoveObserver(o OutputObserver) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for i, entry := range a.observers {
-		if safeObserverEqual(entry.obs, o) {
-			a.observers = append(a.observers[:i], a.observers[i+1:]...)
-			return
-		}
-	}
-}
-
-// removeObserverByID removes the observer entry with the given id (no-op if
-// not found). Called by the remove handle returned from AddObserver.
-func (a *Agent) removeObserverByID(id uint64) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for i, entry := range a.observers {
-		if entry.id == id {
-			a.observers = append(a.observers[:i], a.observers[i+1:]...)
-			return
-		}
-	}
-}
-
-// safeObserverEqual reports whether two OutputObserver values are identical by
-// pointer/interface equality. Comparing two non-nil function values panics, so
-// the comparison is guarded with a recover; such observers are considered
-// non-matching (callers must use the AddObserver handle for them). This avoids
-// any dependency on reflect.
-func safeObserverEqual(a, b OutputObserver) (eq bool) {
-	if a == nil || b == nil {
-		return a == b
-	}
-	defer func() { _ = recover() }()
-	return a == b
-}
-
-func (a *Agent) transitionTo(target OutputState) {
-	if a.emitState != target {
-		a.emitState = target
-		a.emitEvent(OutputEvent{
-			Type:  EventStateChange,
-			State: target,
-		})
-	}
-}
-
-// Run starts a new conversation turn with the given user input.
-// If the agent is already processing, the input is queued and handled
-// after the current turn completes. The system prompt is automatically
-// prepended on the first call.
-//
-// Run blocks until the conversation turn completes or the context is cancelled.
-func (a *Agent) Run(ctx context.Context, input string) error {
-	return a.RunWithMetadata(ctx, input, nil)
-}
-
-// RunWithImages starts a new conversation turn with the given user input and
-// image attachments. Images are file paths; the provider layer encodes them.
-func (a *Agent) RunWithImages(ctx context.Context, input string, images []string) error {
-	return a.runInternal(ctx, input, images, nil)
-}
-
-// RunWithMetadata starts a new conversation turn with the given user input
-// and optional metadata. Metadata is attached to the user message and propagated
-// through the Output channel and to all observers, but is NOT sent to the LLM.
-//
-// This is useful for attaching application-level tags (e.g., category, visibility)
-// to individual messages without affecting model context.
-func (a *Agent) RunWithMetadata(ctx context.Context, input string, metadata map[string]string) error {
-	return a.runInternal(ctx, input, nil, metadata)
-}
-
-func (a *Agent) runInternal(ctx context.Context, input string, images []string, metadata map[string]string) error {
-	a.mu.Lock()
-
-	// Initialize history with system prompt on first call
-	if len(a.history) == 0 {
-		sysMsg := Message{
-			Type:    Content,
-			Role:    System,
-			Content: a.cfg.SystemPrompt,
-		}
-		a.history = append(a.history, sysMsg)
-		a.mu.Unlock()
-		a.emitMessage(sysMsg)
-		a.mu.Lock()
-	}
-
-	// If processing, queue and return
-	if a.processing {
-		a.queue = append(a.queue, input)
-		a.mu.Unlock()
-		return nil
-	}
-
-	a.processing = true
-	ctx, cancel := context.WithCancel(ctx)
-	a.cancel = cancel
-	a.mu.Unlock()
-
-	// Process current and queued inputs
-	currentInput := input
-	var err error
-
-	for {
-		// One turn per user input; the temporal-context reading (CX6) uses
-		// the count in its "turn N" label.
-		a.turnCounter++
-		// Deliver pre-turn provider content (e.g. due schedule reminders) as
-		// user-role messages ahead of the user's actual input. The provider
-		// claims what it returns, so each delivery happens exactly once.
-		a.deliverPreTurnMessages()
-		// Add user message to history and emit event
-		userMsg := Message{
-			Type:     Content,
-			Role:     User,
-			Content:  currentInput,
-			Images:   images,
-			Metadata: metadata,
-		}
-		a.history = append(a.history, userMsg)
-		a.emitMessage(userMsg)
-
-		// Persist the goal context once per turn (kimi-code parity): the
-		// reminder becomes ordinary append-only history, so the provider
-		// request sequence is strictly append-only and fully prefix-cacheable.
-		a.persistGoalReminder()
-
-		// Persist always-on sticky skill instructions under the same
-		// contract — deduped, user-role, re-persisted after compression.
-		a.persistStickyInstructions()
-
-		// Process one turn
-		err = a.processTurn(ctx)
-		if err != nil {
-			break
-		}
-
-		// Check for queued inputs
-		a.mu.Lock()
-		if len(a.queue) == 0 {
-			a.mu.Unlock()
-			break
-		}
-		currentInput = a.queue[0]
-		a.queue = a.queue[1:]
-		a.mu.Unlock()
-	}
-
-	// Cleanup on every exit path (success, error, empty queue). Mark not
-	// processing and cancel the per-turn child ctx before discarding the func.
-	// Without the cancel() call, every completed turn leaks the cancellable ctx
-	// subtree until the *parent* ctx is cancelled (go vet -lostcancel can't see
-	// this because cancel is stored in a struct field). The error path
-	// previously also left a.processing==true, which made the next Run() queue
-	// forever instead of processing.
-	a.finishProcessing()
-
-	return err
-}
-
-// finishProcessing marks the agent idle and cancels the per-turn child context.
-// It must run on every exit path out of runInternal so that the cancellable
-// turn ctx (and its subtree) is released and the agent can accept new turns.
-// Holding the cancel func without calling it leaks the child ctx tree until the
-// caller's parent ctx is cancelled; go vet -lostcancel cannot detect this
-// because the func is stored in a struct field rather than a local.
-func (a *Agent) finishProcessing() {
-	a.mu.Lock()
-	a.processing = false
-	a.lastTurnEnd = time.Now()
-	cancel := a.cancel
-	a.cancel = nil
-	a.mu.Unlock()
-	a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
-	if cancel != nil {
-		cancel()
-	}
-}
-
-// RunAndCollect runs the agent synchronously and collects all text output
-// (EventContent) into a single string. Useful for callers that need the
-// full response without wiring their own observer, such as sub-agent skill
-// execution.
-//
-// The observer is automatically registered before Run and removed after.
-// RunAndCollect runs the agent synchronously and collects all ASSISTANT text
-// output (EventContent with Role: Assistant) into a single string.
-// System prompt and user messages are excluded. Useful for callers that
-// need the full response without wiring their own observer, such as
-// sub-agent skill execution or companion testing.
-func (a *Agent) RunAndCollect(ctx context.Context, input string) (string, error) {
-	var buf strings.Builder
-	obs := OutputObserverFunc(func(ev OutputEvent) {
-		if ev.Type == EventContent && ev.Role == Assistant && ev.Text != "" {
-			buf.WriteString(ev.Text)
-		}
-	})
-	remove := a.AddObserver(obs)
-	defer remove()
-	err := a.Run(ctx, input)
-	return buf.String(), err
-}
-
-// Stop cancels any ongoing processing and resets the agent state.
-func (a *Agent) Stop() {
-	a.mu.Lock()
-	if a.cancel != nil {
-		a.cancel()
-		a.cancel = nil
-	}
-	a.processing = false
-	a.queue = nil
-	a.mu.Unlock()
-}
-
-// LastTurnSilentStop reports whether the most recently completed turn ended
-// with a "silent stop": the model produced thinking/reasoning tokens but no
-// visible answer content and no tool calls (a reasoning-token or output limit
-// on the provider side). The goal driver uses this to decide whether to pause
-// the goal instead of auto-continuing into the same limit.
-func (a *Agent) LastTurnSilentStop() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.lastTurnSilentStop
-}
-
-func (a *Agent) processTurn(ctx context.Context) error {
-	if a.cfg.Model.ID == "" && a.cfg.Model.Api == "" {
-		return fmt.Errorf("no model configured: set Config.Model")
-	}
-	if err := a.checkLoopStopped(); err != nil {
-		return err
-	}
-	if err := a.processTurnWithStream(ctx); err != nil {
-		return err
-	}
-	return a.checkProgressLoop()
-}
-
-// loopStopCooldown is how long the runaway-loop latch rejects new turns
-// before auto-expiring. A guardrail stops a runaway exchange, never the
-// session: genuine recovery paths (ResetLoopStop on new user input or goal
-// resume) clear it immediately, and this backstop covers driven paths that
-// bypass both (runaway-loop bricking).
-const loopStopCooldown = 10 * time.Minute
-
-// checkLoopStopped enforces the runaway-loop latch at turn start. The latch
-// auto-expires after loopStopCooldown so no session stays bricked forever.
-func (a *Agent) checkLoopStopped() error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !a.loopStopped {
-		return nil
-	}
-	if time.Since(a.loopStoppedAt) >= loopStopCooldown {
-		a.cfg.Logger.Log(Info, "Loop guardrail: session stop latch auto-expired after %s", loopStopCooldown)
-		a.clearLoopStopLocked()
-		return nil
-	}
-	return fmt.Errorf("session stopped due to a runaway loop%s; please review the conversation and retry", loopEvidenceSuffix(a.loopStoppedSample))
-}
-
-// ResetLoopStop clears the runaway-loop latch and repeat counters. It is
-// called when a genuine new user message starts a turn (human input, or a
-// goal resumed after a runaway pause with a varied recovery prompt): the
-// pause/interrupt was the guardrail's stop, and the new input is a deliberate
-// attempt to recover — the session must be allowed to proceed.
-func (a *Agent) ResetLoopStop() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.loopStopped || a.assistantRepeatCount > 0 {
-		a.cfg.Logger.Log(Info, "Loop guardrail: state reset by new user input (latched=%v, repeats=%d)", a.loopStopped, a.assistantRepeatCount)
-	}
-	a.clearLoopStopLocked()
-}
-
-// clearLoopStopLocked resets all runaway-loop guardrail state. Caller must
-// hold a.mu.
-func (a *Agent) clearLoopStopLocked() {
-	a.loopStopped = false
-	a.loopStoppedAt = time.Time{}
-	a.loopStoppedSample = ""
-	a.assistantRepeatCount = 0
-	a.lastAssistantHash = ""
-}
-
-// checkProgressLoop detects runaway conversations where the assistant repeats
-// the same meaningful message across consecutive turns without progress.
-// On the first repeat it injects a warning hint AND surfaces a visible TUI
-// warning naming the repeated response; on the second repeat it stops the
-// session with an error carrying the same evidence (runaway-loop
-// visibility: the user must be able to judge whether the loop was real).
-//
-// The strike only counts when this turn produced a NEW assistant message:
-// when the last assistant message predates turnStartHistoryLen (stream
-// error, retry, pause), comparing the stale message against itself would
-// score a false strike with zero actual repetition.
-func (a *Agent) checkProgressLoop() error {
-	warnSample, err := a.scanProgressLoop()
-	if warnSample != "" {
-		// Emitted after scanProgressLoop released a.mu (emitEvent locks it).
-		a.emitEvent(OutputEvent{
-			Type: EventContent,
-			Role: System,
-			Text: fmt.Sprintf("Runaway-loop warning: the assistant repeated the same response as the previous turn%s; if it repeats again the session stops.", loopEvidenceSuffix(warnSample)),
-			Metadata: map[string]string{
-				"category": "system-notification",
-			},
-		})
-	}
-	return err
-}
-
-// scanProgressLoop evaluates the repeat counters under a.mu. It returns the
-// repeated-response sample when the first strike applies (the caller emits
-// the visible warning — emitEvent takes a.mu, so it must run unlocked), or
-// the terminal guardrail error when the latch trips.
-func (a *Agent) scanProgressLoop() (warnSample string, err error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	idx, msg := a.lastAssistantMessageLocked()
-	if idx < 0 || idx < a.turnStartHistoryLen {
-		return "", nil
-	}
-	if !a.isMeaningfulAssistantMessage(msg) {
-		return "", nil
-	}
-
-	hash := a.hashAssistantMessage(msg)
-	if hash != a.lastAssistantHash {
-		a.lastAssistantHash = hash
-		a.assistantRepeatCount = 0
-		return "", nil
-	}
-
-	a.assistantRepeatCount++
-	a.cfg.Logger.Log(Warn, "Loop guardrail: assistant message repeated %d time(s)", a.assistantRepeatCount)
-
-	sample := progressLoopSample(msg)
-	if a.assistantRepeatCount == 1 {
-		hint := "[goa-system] Your last response was identical to the previous one. Progress has stalled. Change your approach: use a tool, produce different output, or stop and explain the blocker. Repeating the same text will end the session."
-		a.history = append(a.history, Message{Type: Content, Role: System, Content: hint})
-		return sample, nil
-	}
-
-	a.loopStopped = true
-	a.loopStoppedAt = time.Now()
-	a.loopStoppedSample = elideLoopSample(sample)
-	return "", fmt.Errorf("runaway loop detected: the assistant repeated the same response %d consecutive times without progress%s; session stopped", a.assistantRepeatCount+1, loopEvidenceSuffix(sample))
-}
-
-// lastAssistantMessageLocked returns the index and value of the most recent
-// assistant message in history, or (-1, Message{}) when there is none.
-// Caller must hold a.mu.
-func (a *Agent) lastAssistantMessageLocked() (int, Message) {
-	for i := len(a.history) - 1; i >= 0; i-- {
-		if a.history[i].Role == Assistant {
-			return i, a.history[i]
-		}
-	}
-	return -1, Message{}
-}
-
-// isMeaningfulAssistantMessage reports whether a message should participate in
-// progress-loop detection. Any assistant turn — including an empty one with no
-// tool calls — can be a stall signal, because the model is supposed to produce
-// content, reasoning, or tool calls. Empty turns are treated as meaningful so
-// that repeated no-op turns are caught before the context explodes.
-func (a *Agent) isMeaningfulAssistantMessage(msg Message) bool {
-	return msg.Role == Assistant
-}
-
-// hashAssistantMessage builds a simple fingerprint of an assistant message.
-func (a *Agent) hashAssistantMessage(msg Message) string {
-	return fmt.Sprintf("%s\x00%s\x00%v", strings.TrimSpace(msg.Content), strings.TrimSpace(msg.Thinking), len(msg.ToolCalls))
-}
-
-// withToolResultAsUser returns a copy of model with ToolResultAsUser set on its
-// OpenAI completions compat.  Existing compat fields are preserved.
-func (a *Agent) withToolResultAsUser(model provider.Model, value bool) provider.Model {
-	compat, ok := model.Compat.(provider.OpenAICompletionsCompat)
-	if !ok {
-		compat = provider.OpenAICompletionsCompat{}
-	}
-	compat.ToolResultAsUser = &value
-	model.Compat = compat
-	return model
-}
-
-func (a *Agent) undoLastAssistantMessage() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	start := a.turnStartHistoryLen
-	if start < 0 {
-		start = 0
-		for i := len(a.history) - 1; i >= 0; i-- {
-			if a.history[i].Role == User {
-				start = i + 1
-				break
-			}
-		}
-	}
-
-	for i := len(a.history) - 1; i >= start; i-- {
-		if a.history[i].Role == Assistant {
-			a.history = a.history[:i]
-			return
-		}
-	}
-}
-
-// consumeStream reads events from a stream, buffers tool calls, and
-// executes them concurrently after the stream ends.
-// Returns true if tool calls were encountered (caller should re-stream).
-// a fallback for providers that omit timing fields (LM Studio, llama.cpp, Ollama).
-func (a *Agent) Clear() {
-	a.mu.Lock()
-
-	if a.cancel != nil {
-		a.cancel()
-	}
-
-	a.history = nil
-	a.queue = nil
-	a.processing = false
-	a.lastRoundActivity = time.Time{}
-	a.lastCacheReadTokens = 0
-	a.lastPersistedSticky = ""
-	a.clearLoopStopLocked()
-	a.invalidateContextUsageLocked()
-	a.mu.Unlock()
-
-	// Re-arm provider cache-miss forensics: the post-clear cold start must
-	// not be reported as a bust against the cleared conversation's cache.
-	provider.ResetCacheForensicsBaseline()
-
-	a.emitEvent(OutputEvent{Type: EventClear})
-}
-
-// Compact summarizes the conversation history using the LLM provider
-// and replaces it with a condensed version. This is useful for managing
-// context window limits in long conversations.
-//
-// Emits an EventCompact with the summary text.
-func (a *Agent) SetBufferedToolCallCountForTest(n int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.bufferedToolCallCount = n
-}
-
-// PolicyConfigForTest exposes the safety-gating fields a sub-agent was built
-// with (autonomy, guard, confirm, project dir) so tests can assert policy
-// inheritance without reaching into unexported state. Test-only; not part of
-// the runtime API.
-func (a *Agent) PolicyConfigForTest() (getAutonomy func() internal.AutonomyLevel, getGuard func() perms.GuardConfig, confirm func(context.Context, string, string) (bool, error), projectDir string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.cfg.GetAutonomy, a.cfg.GetGuardConfig, a.cfg.ConfirmTool, a.cfg.ProjectDir
-}

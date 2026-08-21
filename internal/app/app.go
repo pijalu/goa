@@ -53,7 +53,16 @@ type App struct {
 	tokenPredictedTotal  int
 	tokenCacheReadTotal  int
 	tokenCacheWriteTotal int
-	tokenCacheMisses     int
+	// Cache-miss tracking (CM footer part), split by failure mode:
+	// full misses are zero cache-reads after establishment (the entire
+	// prefix was recomputed), partial misses are cache-read drops beyond
+	// the tolerance (a suffix of the prefix was recomputed).
+	// tokenCacheMissedTokens sums the exact token damage of every counted
+	// miss: prevCacheRead for full misses, prevCacheRead-cacheRead for
+	// partial ones.
+	tokenCacheFullMisses    int
+	tokenCachePartialMisses int
+	tokenCacheMissedTokens  int64
 	// cacheReadEstablished tracks whether the CURRENT conversation has proven
 	// a warm provider cache (any positive cache read). Unlike
 	// tokenCacheReadTotal — a session total feeding the CH display that must

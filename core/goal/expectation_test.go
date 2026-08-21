@@ -15,8 +15,7 @@ func TestExpectation_PersistedAndReplayed(t *testing.T) {
 	if _, err := mode.CreateGoal(CreateGoalInput{Objective: "deploy"}, GoalActorUser); err != nil {
 		t.Fatal(err)
 	}
-	reason := "missing credentials"
-	expectation := "user provides AWS_ACCESS_KEY_ID"
+	reason, expectation := "missing credentials", "user provides AWS_ACCESS_KEY_ID"
 	blocked, err := mode.MarkBlocked(GoalReasonInput{Reason: &reason, Expectation: &expectation}, GoalActorModel)
 	if err != nil {
 		t.Fatal(err)
@@ -24,13 +23,22 @@ func TestExpectation_PersistedAndReplayed(t *testing.T) {
 	if blocked.TerminalExpectation == nil || *blocked.TerminalExpectation != expectation {
 		t.Fatalf("snapshot expectation = %v", blocked.TerminalExpectation)
 	}
-
-	// Rebuild from the event log.
 	replayed := NewGoalMode(st, nil, nil, nil)
 	if err := replayed.Replay(); err != nil {
 		t.Fatal(err)
 	}
+	assertReplayedExpectation(t, replayed, reason, expectation)
+	if _, err := replayed.ResumeGoal(GoalReasonInput{}, GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
 	g := replayed.GetGoal().Goal
+	if g.TerminalReason != nil || g.TerminalExpectation != nil {
+		t.Errorf("resume must clear terminal fields")
+	}
+}
+
+func assertReplayedExpectation(t *testing.T, mode *GoalMode, reason, expectation string) {
+	g := mode.GetGoal().Goal
 	if g == nil {
 		t.Fatal("replayed goal missing")
 	}
@@ -42,15 +50,6 @@ func TestExpectation_PersistedAndReplayed(t *testing.T) {
 	}
 	if g.TerminalExpectation == nil || *g.TerminalExpectation != expectation {
 		t.Errorf("replayed expectation = %v", g.TerminalExpectation)
-	}
-
-	// Resume clears both terminal fields.
-	if _, err := replayed.ResumeGoal(GoalReasonInput{}, GoalActorUser); err != nil {
-		t.Fatal(err)
-	}
-	g = replayed.GetGoal().Goal
-	if g.TerminalReason != nil || g.TerminalExpectation != nil {
-		t.Errorf("resume must clear terminal fields, got reason=%v expectation=%v", g.TerminalReason, g.TerminalExpectation)
 	}
 }
 

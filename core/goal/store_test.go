@@ -65,40 +65,27 @@ func TestFileEventStore_ReplaySkipsCorruptLine(t *testing.T) {
 // rename to "handover") must still decode their continuity note, and new
 // records marshal the "handover" key.
 func TestGoalEventRecord_UnmarshalHandoverKeys(t *testing.T) {
-	obj := "next goal"
-	// Legacy persisted line: "handoff" key.
-	var legacy GoalEventRecord
-	if err := json.Unmarshal([]byte(`{"type":"goal.create","goalId":"g1","objective":"next goal","handoff":"evidence from old session"}`), &legacy); err != nil {
-		t.Fatal(err)
-	}
-	if legacy.Handoff == nil || *legacy.Handoff != "evidence from old session" {
-		t.Errorf("legacy handoff key not decoded: %+v", legacy.Handoff)
-	}
-	if legacy.Objective == nil || *legacy.Objective != obj {
-		t.Errorf("other fields must still decode: %+v", legacy.Objective)
-	}
-	// New surface: "handover" key.
-	var current GoalEventRecord
-	if err := json.Unmarshal([]byte(`{"type":"goal.create","goalId":"g1","objective":"next goal","handover":"evidence from new session"}`), &current); err != nil {
-		t.Fatal(err)
-	}
-	if current.Handoff == nil || *current.Handoff != "evidence from new session" {
-		t.Errorf("handover key not decoded: %+v", current.Handoff)
-	}
-	// Explicit "handover" wins over a legacy "handoff" in the same record.
-	var both GoalEventRecord
-	if err := json.Unmarshal([]byte(`{"type":"goal.create","goalId":"g1","handoff":"legacy","handover":"explicit"}`), &both); err != nil {
-		t.Fatal(err)
-	}
-	if both.Handoff == nil || *both.Handoff != "explicit" {
-		t.Errorf("handover key must win over legacy handoff: %+v", both.Handoff)
-	}
-	// Marshal writes the new surface key only.
+	assertHandoverDecode(t, `{"type":"goal.create","goalId":"g1","objective":"next goal","handoff":"evidence from old session"}`, "evidence from old session")
+	assertHandoverDecode(t, `{"type":"goal.create","goalId":"g1","objective":"next goal","handover":"evidence from new session"}`, "evidence from new session")
+	assertHandoverDecode(t, `{"type":"goal.create","goalId":"g1","objective":"next goal","handoff":"legacy","handover":"explicit"}`, "explicit")
 	data, err := json.Marshal(GoalEventRecord{Type: GoalEventCreate, Handoff: strPtr("note")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), `"handover":"note"`) || strings.Contains(string(data), `"handoff"`) {
-		t.Errorf("marshal must use handover surface: %s", data)
+		t.Errorf("marshal must use handover: %s", data)
+	}
+}
+
+func assertHandoverDecode(t *testing.T, raw, want string) {
+	var record GoalEventRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Handoff == nil || *record.Handoff != want {
+		t.Errorf("handover = %+v, want %q", record.Handoff, want)
+	}
+	if record.Objective == nil || *record.Objective != "next goal" {
+		t.Errorf("objective = %+v", record.Objective)
 	}
 }

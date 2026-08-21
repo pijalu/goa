@@ -120,6 +120,7 @@ func DetectOpenAICompat(model Model) OpenAICompletionsCompat {
 		CacheControlFormat:                          strPtr(cacheControlFormat),
 		SendSessionAffinityHeaders:                  boolPtr(false),
 		SupportsLongCacheRetention:                  boolPtr(fp.supportsCacheRetention()),
+		SupportsPromptCache:                         boolPtr(fp.supportsPromptCache()),
 		ToolResultAsUser:                            boolPtr(fp.needsToolResultAsUser(model.ID)),
 	}
 }
@@ -215,6 +216,10 @@ func (fp providerFingerprint) supportsCacheRetention() bool {
 	return !fp.isTogether && !fp.isCloudflareWA && !fp.isCloudflareAG && !fp.isNvidia && !fp.isAntLing
 }
 
+func (fp providerFingerprint) supportsPromptCache() bool {
+	return fp.def != nil && fp.def.Compat.SupportsPromptCache
+}
+
 func (fp providerFingerprint) supportsStrictMode() bool {
 	if fp.def != nil && fp.def.Compat.NoStrictMode {
 		return false
@@ -252,6 +257,7 @@ func mergeOpenAICompat(detected, explicit OpenAICompletionsCompat) OpenAIComplet
 		CacheControlFormat:                          mergeStr(detected.CacheControlFormat, explicit.CacheControlFormat),
 		SendSessionAffinityHeaders:                  mergeBool(detected.SendSessionAffinityHeaders, explicit.SendSessionAffinityHeaders),
 		SupportsLongCacheRetention:                  mergeBool(detected.SupportsLongCacheRetention, explicit.SupportsLongCacheRetention),
+		SupportsPromptCache:                         mergeBool(detected.SupportsPromptCache, explicit.SupportsPromptCache),
 		ToolResultAsUser:                            mergeBool(detected.ToolResultAsUser, explicit.ToolResultAsUser),
 	}
 }

@@ -255,43 +255,43 @@ func pickModelFromProvider(host core.UIHost, cfg *config.Config, saver config.Co
 		models := modelListForProvider(host, providerID)
 		items := make([]tui.SelectorItem, 0, len(models)+1)
 		for _, mod := range models {
-					desc := providerID
-					if mod.ContextWindow > 0 {
-						desc += fmt.Sprintf(" ctx=%dk", mod.ContextWindow/1000)
-					}
-					if mod.MaxTokens > 0 {
-						desc += fmt.Sprintf(" out=%dk", mod.MaxTokens/1000)
-					}
-					if mod.Pricing != nil {
-						var costParts []string
-						if mod.Pricing.InputPer1M > 0 {
-							costParts = append(costParts, fmt.Sprintf("in=$%.2f", mod.Pricing.InputPer1M))
-						}
-						if mod.Pricing.CacheReadPer1M > 0 {
-							costParts = append(costParts, fmt.Sprintf("cache_read=$%.2f", mod.Pricing.CacheReadPer1M))
-						}
-						if mod.Pricing.CacheWritePer1M > 0 {
-							costParts = append(costParts, fmt.Sprintf("cache_write=$%.2f", mod.Pricing.CacheWritePer1M))
-						}
-						if mod.Pricing.OutputPer1M > 0 {
-							costParts = append(costParts, fmt.Sprintf("out=$%.2f", mod.Pricing.OutputPer1M))
-						}
-						if len(costParts) > 0 {
-							desc += " " + strings.Join(costParts, " ")
-						}
-					}
-					if modelIndex(cfg.Models, mod.ID) >= 0 {
-						desc += " ✓ configured"
-					}
-					items = append(items, tui.SelectorItem{
-						Value:            mod.ID,
-						Label:            mod.ID,
-						Description:      desc,
-						Color:            tui.TheTheme.ColorHex("user_msg"),
-						SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
-						DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
-						SearchLabel:      modelSearchLabel(mod.ID, providerID, mod.ID),
-					})
+			desc := providerID
+			if mod.ContextWindow > 0 {
+				desc += fmt.Sprintf(" ctx=%dk", mod.ContextWindow/1000)
+			}
+			if mod.MaxTokens > 0 {
+				desc += fmt.Sprintf(" out=%dk", mod.MaxTokens/1000)
+			}
+			if mod.Pricing != nil {
+				var costParts []string
+				if mod.Pricing.InputPer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("in=$%.2f", mod.Pricing.InputPer1M))
+				}
+				if mod.Pricing.CacheReadPer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("cache_read=$%.2f", mod.Pricing.CacheReadPer1M))
+				}
+				if mod.Pricing.CacheWritePer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("cache_write=$%.2f", mod.Pricing.CacheWritePer1M))
+				}
+				if mod.Pricing.OutputPer1M > 0 {
+					costParts = append(costParts, fmt.Sprintf("out=$%.2f", mod.Pricing.OutputPer1M))
+				}
+				if len(costParts) > 0 {
+					desc += " " + strings.Join(costParts, " ")
+				}
+			}
+			if modelIndex(cfg.Models, mod.ID) >= 0 {
+				desc += " ✓ configured"
+			}
+			items = append(items, tui.SelectorItem{
+				Value:            mod.ID,
+				Label:            mod.ID,
+				Description:      desc,
+				Color:            tui.TheTheme.ColorHex("user_msg"),
+				SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
+				DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
+				SearchLabel:      modelSearchLabel(mod.ID, providerID, mod.ID),
+			})
 		}
 		items = append(items, tui.SelectorItem{
 			Value: "__custom__", Label: "── custom model ──", Description: "type any model name",
@@ -336,17 +336,17 @@ func addAndShowModel(host core.UIHost, cfg *config.Config, saver config.ConfigSa
 		return
 	}
 	modelID := deriveModelID(modelName)
-		newModel := config.ModelConfig{
-			ID:         modelID,
-			Name:       modelName,
-			ProviderID: providerID,
-			Model:      modelName,
-		}
-		populateModelFromRegistry(&newModel)
-		cfg.Models = append(cfg.Models, newModel)
-		if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
-			host.Flash("Failed to save: " + err.Error())
-		}
+	newModel := config.ModelConfig{
+		ID:         modelID,
+		Name:       modelName,
+		ProviderID: providerID,
+		Model:      modelName,
+	}
+	populateModelFromRegistry(&newModel)
+	cfg.Models = append(cfg.Models, newModel)
+	if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
+		host.Flash("Failed to save: " + err.Error())
+	}
 	host.Flash("Model " + modelID + " added.")
 	pCfg := cfg.GetProviderByID(cfg.ActiveProvider)
 	_ = showModelSelector(host, cfg, saver, pCfg)
@@ -449,77 +449,78 @@ func modelItemLess(items []tui.SelectorItem, activeModel string) func(i, j int) 
 // It first tries to show available models from ALL configured providers for
 // autocomplete-style selection, falling back to a plain text input.
 func promptCustomModel(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
-	// Fetch models from ALL configured providers, not just the active one.
 	allModels := fetchAllProviderModels(host, cfg)
 	if len(allModels) == 0 {
-		host.ShowInput("Enter custom model name:", "", func(customModel string, ok bool) {
-			if !ok || customModel == "" {
-				return
-			}
-			applyModelSelection(host, cfg, saver, customModel)
-		})
+		showCustomModelInput(host, cfg, saver)
 		return
 	}
+	host.SelectOption("Select model:", modelSelectorItems(allModels, cfg.ActiveModel), cfg.ActiveModel,
+		customModelSelectionHandler(host, cfg, saver))
+}
 
-	items := make([]tui.SelectorItem, 0, len(allModels)+1)
-		for _, entry := range allModels {
-			desc := entry.ProviderID
-			if entry.Model.ContextWindow > 0 {
-				desc += fmt.Sprintf(" ctx=%dk", entry.Model.ContextWindow/1000)
-			}
-			if entry.Model.MaxTokens > 0 {
-				desc += fmt.Sprintf(" out=%dk", entry.Model.MaxTokens/1000)
-			}
-			if entry.Model.Pricing != nil {
-				var costParts []string
-				if entry.Model.Pricing.InputPer1M > 0 {
-					costParts = append(costParts, fmt.Sprintf("in=$%.2f", entry.Model.Pricing.InputPer1M))
-				}
-				if entry.Model.Pricing.CacheReadPer1M > 0 {
-					costParts = append(costParts, fmt.Sprintf("cache_read=$%.2f", entry.Model.Pricing.CacheReadPer1M))
-				}
-				if entry.Model.Pricing.CacheWritePer1M > 0 {
-					costParts = append(costParts, fmt.Sprintf("cache_write=$%.2f", entry.Model.Pricing.CacheWritePer1M))
-				}
-				if entry.Model.Pricing.OutputPer1M > 0 {
-					costParts = append(costParts, fmt.Sprintf("out=$%.2f", entry.Model.Pricing.OutputPer1M))
-				}
-				if len(costParts) > 0 {
-					desc += " " + strings.Join(costParts, " ")
-				}
-			}
-			if entry.Model.ID == cfg.ActiveModel {
-				desc += " (active)"
-			}
-			items = append(items, tui.SelectorItem{
-				Value:            entry.Model.ID,
-				Label:            entry.Model.ID,
-				Description:      desc,
-				Color:            tui.TheTheme.ColorHex("user_msg"),
-				SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
-				DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
-				SearchLabel:      modelSearchLabel(entry.Model.ID, entry.ProviderID, entry.Model.ID),
-			})
-	}
-	items = append(items, tui.SelectorItem{
-		Value: "__custom__", Label: "── custom model ──",
-		Description: "type any model name",
+func showCustomModelInput(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
+	host.ShowInput("Enter custom model name:", "", func(customModel string, ok bool) {
+		if ok && customModel != "" {
+			applyModelSelection(host, cfg, saver, customModel)
+		}
 	})
-	host.SelectOption("Select model:", items, cfg.ActiveModel, func(selected string, ok bool) {
+}
+
+func modelSelectorItems(allModels []providerModelEntry, active string) []tui.SelectorItem {
+	items := make([]tui.SelectorItem, 0, len(allModels)+1)
+	for _, entry := range allModels {
+		desc := entry.ProviderID
+		if entry.Model.ContextWindow > 0 {
+			desc += fmt.Sprintf(" ctx=%dk", entry.Model.ContextWindow/1000)
+		}
+		if entry.Model.MaxTokens > 0 {
+			desc += fmt.Sprintf(" out=%dk", entry.Model.MaxTokens/1000)
+		}
+		if entry.Model.Pricing != nil {
+			var costParts []string
+			if entry.Model.Pricing.InputPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("in=$%.2f", entry.Model.Pricing.InputPer1M))
+			}
+			if entry.Model.Pricing.CacheReadPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("cache_read=$%.2f", entry.Model.Pricing.CacheReadPer1M))
+			}
+			if entry.Model.Pricing.CacheWritePer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("cache_write=$%.2f", entry.Model.Pricing.CacheWritePer1M))
+			}
+			if entry.Model.Pricing.OutputPer1M > 0 {
+				costParts = append(costParts, fmt.Sprintf("out=$%.2f", entry.Model.Pricing.OutputPer1M))
+			}
+			if len(costParts) > 0 {
+				desc += " " + strings.Join(costParts, " ")
+			}
+		}
+		if entry.Model.ID == cfg.ActiveModel {
+			desc += " (active)"
+		}
+		items = append(items, tui.SelectorItem{
+			Value:            entry.Model.ID,
+			Label:            entry.Model.ID,
+			Description:      desc,
+			Color:            tui.TheTheme.ColorHex("user_msg"),
+			SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
+			DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
+			SearchLabel:      modelSearchLabel(entry.Model.ID, entry.ProviderID, entry.Model.ID),
+		})
+	}
+	return append(items, tui.SelectorItem{Value: "__custom__", Label: "── custom model ──", Description: "type any model name"})
+}
+
+func customModelSelectionHandler(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) func(string, bool) {
+	return func(selected string, ok bool) {
 		if !ok || selected == "" {
 			return
 		}
 		if selected == "__custom__" {
-			host.ShowInput("Enter custom model name:", "", func(customModel string, ok bool) {
-				if !ok || customModel == "" {
-					return
-				}
-				applyModelSelection(host, cfg, saver, customModel)
-			})
+			showCustomModelInput(host, cfg, saver)
 			return
 		}
 		applyModelSelection(host, cfg, saver, selected)
-	})
+	}
 }
 
 // providerModelEntry pairs a model with the provider it came from.
@@ -770,14 +771,14 @@ func configuredModelItemsFiltered(cfg *config.Config, activeModel string, active
 			desc += " (active)"
 		}
 		items = append(items, tui.SelectorItem{
-					Value:           m.ID,
-					Label:           m.ID,
-					Description:     desc,
-					Color:           tui.TheTheme.ColorHex("user_msg"),
-					SelectedColor:   tui.TheTheme.ColorHex("token_warning"),
-					DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
-					SearchLabel:     modelSearchLabel(m.ID, m.ProviderID, m.Model),
-				})
+			Value:            m.ID,
+			Label:            m.ID,
+			Description:      desc,
+			Color:            tui.TheTheme.ColorHex("user_msg"),
+			SelectedColor:    tui.TheTheme.ColorHex("token_warning"),
+			DescriptionColor: tui.TheTheme.ColorHex("bash_prompt"),
+			SearchLabel:      modelSearchLabel(m.ID, m.ProviderID, m.Model),
+		})
 	}
 	return items
 }

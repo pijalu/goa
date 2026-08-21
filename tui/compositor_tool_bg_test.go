@@ -19,6 +19,18 @@ import (
 // the real Compositor — pending frame, then success+duration frame (which
 // grows the canvas by one row and scrolls) — and asserts every cell of the
 // widget's last row carries the success background.
+func toolBGCanvas(widgetRows []string, tail int) []string {
+	c := make([]string, 0, 7+len(widgetRows)+tail)
+	for i := 0; i < 6; i++ {
+		c = append(c, "history-"+itoaStr(i))
+	}
+	c = append(c, widgetRows...)
+	for i := 0; i < tail; i++ {
+		c = append(c, "tail-"+itoaStr(i))
+	}
+	return append(c, "SPINNER")
+}
+
 func TestCompositor_ToolWidgetLastRowKeepsStatusBg(t *testing.T) {
 	const w, termH = 40, 10
 	term := &fakeTerminal{w: w, h: termH}
@@ -36,25 +48,12 @@ func TestCompositor_ToolWidgetLastRowKeepsStatusBg(t *testing.T) {
 	// The collapsed read widget is small; the realistic completion frame is:
 	// bg flip (pending -> success) PLUS follow-up content arriving in the same
 	// frame (next streamed row), which grows the canvas and scrolls.
-	mkCanvas := func(widgetRows []string, tail int) []string {
-		var c []string
-		for i := 0; i < 6; i++ {
-			c = append(c, "history-"+itoaStr(i))
-		}
-		c = append(c, widgetRows...)
-		for i := 0; i < tail; i++ {
-			c = append(c, "tail-"+itoaStr(i))
-		}
-		c = append(c, "SPINNER") // chrome row pinned below the transcript
-		return c
+	mkCanvas := func(widgetRows []string, tail int) []string { return toolBGCanvas(widgetRows, tail) }
+	tcScene := func(canvas []string) *Scene {
+		return &Scene{TerminalW: w, TerminalH: termH, ChromeHeight: 1, Layers: []Layer{{Name: "c", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: w, H: len(canvas)}, Content: canvas}}}
 	}
-	mkScene := func(canvas []string) *Scene {
-		return &Scene{TerminalW: w, TerminalH: termH, ChromeHeight: 1,
-			Layers: []Layer{{Name: "c", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: w, H: len(canvas)}, Content: canvas}}}
-	}
-
-	comp.Render(mkScene(mkCanvas(pendingRows, 0)))
-	comp.Render(mkScene(mkCanvas(successRows, 1))) // bg flip + growth -> scroll
+	comp.Render(tcScene(mkCanvas(pendingRows, 0)))
+	comp.Render(tcScene(mkCanvas(successRows, 1)))
 
 	emu := NewTermEmulator(termH, w)
 	for _, wr := range term.Writes() {

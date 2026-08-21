@@ -221,6 +221,7 @@ func (m *configMenu) settingCompressionStrategy() {
 		{Value: "selective", Label: "selective", Description: "drop oldest messages, keep system + recent turns"},
 		{Value: "hybrid", Label: "hybrid", Description: "tool_elision → selective → summarize"},
 		{Value: "summarize", Label: "summarize", Description: "ask the LLM to summarize older turns"},
+		{Value: "fresh_window", Label: "fresh_window", Description: "reset the window, keep system + recent turns (no LLM call)"},
 	}
 	m.ctx.SelectOption("Compression strategy:", items, current, func(v string, ok bool) {
 		if !ok {
@@ -780,6 +781,7 @@ func compressionStrategyItems(withInherit bool) []tui.SelectorItem {
 		tui.SelectorItem{Value: "selective", Label: "selective", Description: "drop oldest messages, keep system + recent turns"},
 		tui.SelectorItem{Value: "hybrid", Label: "hybrid", Description: "tool_elision → selective → summarize"},
 		tui.SelectorItem{Value: "summarize", Label: "summarize", Description: "ask the LLM to summarize older turns"},
+		tui.SelectorItem{Value: "fresh_window", Label: "fresh_window", Description: "reset the window, keep system + recent turns (no LLM call)"},
 	)
 }
 
@@ -798,6 +800,7 @@ func layerStrategyItems(withInherit, soft bool) []tui.SelectorItem {
 		tui.SelectorItem{Value: "selective", Label: "selective", Description: "drop oldest messages"},
 		tui.SelectorItem{Value: "hybrid", Label: "hybrid", Description: "tool_elision → selective → summarize"},
 		tui.SelectorItem{Value: "summarize", Label: "summarize", Description: "ask the LLM to summarize older turns"},
+		tui.SelectorItem{Value: "fresh_window", Label: "fresh_window", Description: "reset the window, keep system + recent turns (no LLM call)"},
 	)
 }
 

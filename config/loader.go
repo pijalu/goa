@@ -161,6 +161,12 @@ func (cl *CascadeLoader) Load() (*Config, error) {
 	// Drop selector sentinel values ("__add__" etc.) persisted by older versions.
 	cfg.sanitizeSelectorSentinels()
 
+	// Drop a dangling teams.active (team definition removed after the
+	// selection was persisted — e.g. deleted in another layer or by hand).
+	// Starting with no active team is identical to /team:off, so heal
+	// instead of failing validation and refusing to start.
+	cfg.sanitizeDanglingActiveTeam()
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -697,9 +703,11 @@ func (c *Config) repairActiveProviderModel() {
 // Two sentinel shapes are recognized:
 //   - bracketed: "__add__", "__custom__" (both prefix and suffix "__")
 //   - delete-prefixed: "__delete__<id>" — emitted by the picker's '-' hotkey
+//
 // and previously persisted verbatim as a model/provider ID
-//     "Model delete"). This shape has no trailing "__" after the real ID, so
-//     it needs its own prefix check.
+//
+//	"Model delete"). This shape has no trailing "__" after the real ID, so
+//	it needs its own prefix check.
 func (c *Config) sanitizeSelectorSentinels() {
 	isSentinel := func(id string) bool {
 		if strings.HasPrefix(id, "__delete__") {
@@ -730,6 +738,24 @@ func (c *Config) sanitizeSelectorSentinels() {
 		}
 	}
 	c.Models = models
+}
+
+// sanitizeDanglingActiveTeam clears teams.active when it names a team that is
+// not defined in teams.definitions. The selection persists in the project
+// LOCAL layer (.goa/config.local.yaml) while definitions live in the home
+// layer, so the two can desync (team deleted via an older build, edited by
+// hand, or the local file copied across projects). Dropping the selection is
+// equivalent to /team:off — safe and self-healing — whereas validation would
+// otherwise hard-fail startup. Runs before validation.
+func (c *Config) sanitizeDanglingActiveTeam() {
+	if c.Teams.Active == "" {
+		return
+	}
+	if _, ok := c.Teams.Definitions[c.Teams.Active]; ok {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Warning: teams.active %q is not defined in teams.definitions — clearing (team deleted?)\n", c.Teams.Active)
+	c.Teams.Active = ""
 }
 
 // migrateLegacyMode converts old config fields to the new mode system.
@@ -765,146 +791,6 @@ func migrateLegacyMode(cfg *Config) {
 // Reload re-reads config from all cascade layers and returns the result.
 func (cl *CascadeLoader) Reload() (*Config, error) {
 	return cl.Load()
-}
-
-// SaveProjectConfig writes the given config to .goa/config.yaml in the project directory.
-func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {
-	cl.writeMu.Lock()
-	defer cl.writeMu.Unlock()
-	projectConfigDir := filepath.Join(cl.projectDir, ".goa")
-	if err := os.MkdirAll(projectConfigDir, 0755); err != nil {
-		return fmt.Errorf("create project config dir: %w", err)
-	}
-	path := filepath.Join(projectConfigDir, "config.yaml")
-
-	// Field-scoped save: this entry point is used by /mode and /autonomy to
-	// persist the active major mode and per-mode autonomy. Start from the
-	// on-disk config (when present) and overlay ONLY those mode fields, so
-	// unrelated settings keep their persisted values. Previously this marshaled
-	// the entire in-memory config, so a stale in-memory Tools.Enabled (e.g.
-	// goal toggled earlier in the session) was written back over the on-disk
-	// value — silently reverting the user's tool toggles on the next session.
-	data, err := os.ReadFile(path)
-	switch {
-	case err != nil && !os.IsNotExist(err):
-		return fmt.Errorf("read project config: %w", err)
-	case err != nil:
-		// No project file yet: persist ONLY the mode section this entry
-		// point owns. Writing the full merged config would bake embedded
-		// defaults and home-layer values into the project layer, where they
-		// silently shadow every later home-config edit (startup
-		// /config showed the embedded default compression strategy "micro"
-		// instead of the home-config value on every launch).
-		return writeModeOnlyProjectConfig(path, cfg.Mode)
-	}
-
-	onDisk := &Config{}
-	if uerr := yaml.Unmarshal(data, onDisk); uerr != nil {
-		// Unreadable project file: same mode-only scope — never dump the
-		// full merged config into the project layer.
-		return writeModeOnlyProjectConfig(path, cfg.Mode)
-	}
-	merged := onDisk
-	merged.Mode = cfg.Mode
-
-	saveCfg := merged.DeepCopy()
-	saveCfg.FirstRun = false
-	saveCfg.ConfigDir = ""
-	saveCfg.Models = persistableModels(saveCfg.Models)
-
-	out, err := yaml.Marshal(saveCfg)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	if err := os.WriteFile(path, out, 0644); err != nil {
-		return fmt.Errorf("write project config: %w", err)
-	}
-	return nil
-}
-
-// writeModeOnlyProjectConfig creates a project config file containing only
-// the mode section — the single field scope SaveProjectConfig is documented
-// to own. It marshals a map rather than a sparse Config because most Config
-// fields lack omitempty: a sparse Config would emit zero-value sections
-// (e.g. tools.terminal.sandbox.enabled: false) that would shadow home-layer
-// values on the next cascade load.
-func writeModeOnlyProjectConfig(path string, mode ModeConfig) error {
-	out, err := yaml.Marshal(map[string]ModeConfig{"mode": mode})
-	if err != nil {
-		return fmt.Errorf("marshal mode config: %w", err)
-	}
-	if err := os.WriteFile(path, out, 0644); err != nil {
-		return fmt.Errorf("write project config: %w", err)
-	}
-	return nil
-}
-
-// persistableModels strips ephemeral (memory-only) model entries so they
-// are never written to config files.
-func persistableModels(models []ModelConfig) []ModelConfig {
-	out := make([]ModelConfig, 0, len(models))
-	for _, m := range models {
-		if !m.Ephemeral {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
-// HomeConfigPath returns the absolute path of the home config file
-// (<goa home>/.goa/config.yaml) this loader reads from and Save writes to.
-// The goa home honors --home / GOA_HOME overrides via internal.GoaHome.
-func (cl *CascadeLoader) HomeConfigPath() string {
-	return filepath.Join(cl.homeDir, ".goa", "config.yaml")
-}
-
-// WritableConfigPaths returns the file paths of the writable cascade layers:
-// the home config, the project config and project local config, or the
-// explicit --config file (in addition to the home config, which is always
-// part of the cascade). Embedded defaults, env vars, and CLI flags are not
-// files and therefore never hot-reloadable.
-func (cl *CascadeLoader) WritableConfigPaths() []string {
-	paths := []string{cl.HomeConfigPath()}
-	if cl.configPath != "" {
-		return append(paths, cl.configPath)
-	}
-	return append(paths,
-		filepath.Join(cl.projectDir, ".goa", "config.yaml"),
-		filepath.Join(cl.projectDir, ".goa", "config.local.yaml"),
-	)
-}
-
-// skillListsOnDisk reads only the skills list keys (enabled / disabled /
-// sticky / sticky_off) from the config file at path. ok=false when the file
-// is missing or unreadable — callers then leave the in-memory lists as-is
-// rather than forcing a value.
-//
-// Snapshot writers (Save, SaveHomeProvidersAndModels, SaveProjectConfig) use
-// this to PRESERVE the on-disk skill lists instead of re-emitting the lists
-// from the in-memory config they were handed. Skill enable/disable and the
-// project-level sticky state are owned by field-scoped toggle writes
-// (persistSkillToggle / persistSkillSticky), so the on-disk value is
-// authoritative and a stale in-memory snapshot must never overwrite it —
-// notably Save() must not copy a project layer's sticky lists into the home
-// file (sticky is per-project by design).
-func skillListsOnDisk(path string) (enabled, disabled, sticky, stickyOff []string, ok bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, nil, nil, false
-	}
-	var raw struct {
-		Skills struct {
-			Enabled   []string `yaml:"enabled"`
-			Disabled  []string `yaml:"disabled"`
-			Sticky    []string `yaml:"sticky"`
-			StickyOff []string `yaml:"sticky_off"`
-		} `yaml:"skills"`
-	}
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, nil, nil, nil, false
-	}
-	return raw.Skills.Enabled, raw.Skills.Disabled, raw.Skills.Sticky, raw.Skills.StickyOff, true
 }
 
 func (cl *CascadeLoader) Save(cfg *Config) error {
@@ -1029,330 +915,4 @@ func (cl *CascadeLoader) SaveProjectProvidersAndModels(cfg *Config) error {
 		return fmt.Errorf("write project config: %w", err)
 	}
 	return nil
-}
-
-// SaveHomeField updates a single scalar field in ~/.goa/config.yaml without
-// overwriting other settings. It reads the existing file (or creates a minimal
-// one), walks the nested key path, and sets the value. Missing intermediate
-// maps are created automatically.
-func (cl *CascadeLoader) SaveHomeField(path []string, value any) error {
-	if len(path) == 0 {
-		return fmt.Errorf("empty field path")
-	}
-
-	cl.writeMu.Lock()
-	defer cl.writeMu.Unlock()
-	configDir := filepath.Join(cl.homeDir, ".goa")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	pathYaml := filepath.Join(configDir, "config.yaml")
-
-	var root yaml.Node
-	data, err := os.ReadFile(pathYaml)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("read home config: %w", err)
-		}
-		root.Kind = yaml.DocumentNode
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
-	} else {
-		if err := yaml.Unmarshal(data, &root); err != nil {
-			return fmt.Errorf("unmarshal home config: %w", err)
-		}
-		if len(root.Content) == 0 {
-			root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
-		}
-	}
-
-	doc := root.Content[0]
-	if doc.Kind != yaml.MappingNode {
-		doc.Kind = yaml.MappingNode
-	}
-
-	if err := setYamlNode(doc, path, value); err != nil {
-		return err
-	}
-
-	out, err := yaml.Marshal(&root)
-	if err != nil {
-		return fmt.Errorf("marshal home config: %w", err)
-	}
-	if err := os.WriteFile(pathYaml, out, 0644); err != nil {
-		return fmt.Errorf("write home config: %w", err)
-	}
-	return nil
-}
-
-// SaveProjectField updates a single scalar field in .goa/config.yaml in the
-// project directory without overwriting other settings. It reads the existing
-// file (or creates a minimal one), walks the nested key path, and sets the
-// value. Missing intermediate maps are created automatically.
-func (cl *CascadeLoader) SaveProjectField(path []string, value any) error {
-	if len(path) == 0 {
-		return fmt.Errorf("empty field path")
-	}
-
-	cl.writeMu.Lock()
-	defer cl.writeMu.Unlock()
-	configDir := filepath.Join(cl.projectDir, ".goa")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("create project config dir: %w", err)
-	}
-	pathYaml := filepath.Join(configDir, "config.yaml")
-
-	var root yaml.Node
-	data, err := os.ReadFile(pathYaml)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("read project config: %w", err)
-		}
-		// Create a minimal document so the field is written (matches SaveHomeField).
-		root.Kind = yaml.DocumentNode
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
-	} else if err := yaml.Unmarshal(data, &root); err != nil {
-		return fmt.Errorf("unmarshal project config: %w", err)
-	}
-	if len(root.Content) == 0 {
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
-	}
-
-	doc := root.Content[0]
-	if doc.Kind != yaml.MappingNode {
-		doc.Kind = yaml.MappingNode
-	}
-
-	if err := setYamlNode(doc, path, value); err != nil {
-		return err
-	}
-
-	out, err := yaml.Marshal(&root)
-	if err != nil {
-		return fmt.Errorf("marshal project config: %w", err)
-	}
-	if err := os.WriteFile(pathYaml, out, 0644); err != nil {
-		return fmt.Errorf("write project config: %w", err)
-	}
-	return nil
-}
-
-// SaveProjectFieldValue writes an arbitrary value (including maps and slices)
-// at the given path in the project .goa/config.yaml, preserving other
-// settings. Use for whole sub-configs such as an MCP server definition.
-func (cl *CascadeLoader) SaveProjectFieldValue(path []string, value any) error {
-	return cl.editProjectConfig(func(doc *yaml.Node) error {
-		return setYamlNodeValue(doc, path, value)
-	})
-}
-
-// DeleteProjectField removes the key at the given path from the project
-// .goa/config.yaml. It is a no-op when the key (or file) does not exist.
-func (cl *CascadeLoader) DeleteProjectField(path []string) error {
-	if len(path) == 0 {
-		return fmt.Errorf("empty field path")
-	}
-	return cl.editProjectConfig(func(doc *yaml.Node) error {
-		deleteYamlNode(doc, path)
-		return nil
-	})
-}
-
-// SaveHomeFieldValue writes an arbitrary value (including maps and slices) at
-// the given path in ~/.goa/config.yaml, preserving other settings.
-func (cl *CascadeLoader) SaveHomeFieldValue(path []string, value any) error {
-	return cl.editHomeConfig(func(doc *yaml.Node) error {
-		return setYamlNodeValue(doc, path, value)
-	})
-}
-
-// SaveLocalFieldValue writes an arbitrary value (including maps and slices) at
-// the given path in the project local layer .goa/config.local.yaml,
-// preserving other local settings.
-func (cl *CascadeLoader) SaveLocalFieldValue(path []string, value any) error {
-	return cl.editLocalConfig(func(doc *yaml.Node) error {
-		return setYamlNodeValue(doc, path, value)
-	})
-}
-
-// DeleteHomeField removes the key at the given path from ~/.goa/config.yaml.
-// It is a no-op when the key (or file) does not exist.
-func (cl *CascadeLoader) DeleteHomeField(path []string) error {
-	if len(path) == 0 {
-		return fmt.Errorf("empty field path")
-	}
-	return cl.editHomeConfig(func(doc *yaml.Node) error {
-		deleteYamlNode(doc, path)
-		return nil
-	})
-}
-
-// editHomeConfig applies edit to ~/.goa/config.yaml (see editConfigFile).
-func (cl *CascadeLoader) editHomeConfig(edit func(doc *yaml.Node) error) error {
-	return cl.editConfigFile(filepath.Join(cl.homeDir, ".goa"), "config.yaml", "home", edit)
-}
-
-// editProjectConfig applies edit to the project .goa/config.yaml (see
-// editConfigFile).
-func (cl *CascadeLoader) editProjectConfig(edit func(doc *yaml.Node) error) error {
-	return cl.editConfigFile(filepath.Join(cl.projectDir, ".goa"), "config.yaml", "project", edit)
-}
-
-// editLocalConfig applies edit to the project local layer
-// .goa/config.local.yaml (see editConfigFile).
-func (cl *CascadeLoader) editLocalConfig(edit func(doc *yaml.Node) error) error {
-	return cl.editConfigFile(filepath.Join(cl.projectDir, ".goa"), "config.local.yaml", "local", edit)
-}
-
-// editConfigFile loads the named config file under configDir (creating a
-// minimal document when missing), applies edit to the root mapping, and
-// writes it back. The label ("home"/"project"/"local") scopes error
-// messages.
-func (cl *CascadeLoader) editConfigFile(configDir, fileName, label string, edit func(doc *yaml.Node) error) error {
-	cl.writeMu.Lock()
-	defer cl.writeMu.Unlock()
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("create %s config dir: %w", label, err)
-	}
-	pathYaml := filepath.Join(configDir, fileName)
-
-	var root yaml.Node
-	data, err := os.ReadFile(pathYaml)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("read %s config: %w", label, err)
-		}
-		root.Kind = yaml.DocumentNode
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
-	} else if err := yaml.Unmarshal(data, &root); err != nil {
-		return fmt.Errorf("unmarshal %s config: %w", label, err)
-	}
-	if len(root.Content) == 0 {
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
-	}
-	doc := root.Content[0]
-	if doc.Kind != yaml.MappingNode {
-		doc.Kind = yaml.MappingNode
-	}
-	if err := edit(doc); err != nil {
-		return err
-	}
-	out, err := yaml.Marshal(&root)
-	if err != nil {
-		return fmt.Errorf("marshal %s config: %w", label, err)
-	}
-	if err := os.WriteFile(pathYaml, out, 0644); err != nil {
-		return fmt.Errorf("write %s config: %w", label, err)
-	}
-	return nil
-}
-
-// deleteYamlNode removes the key at path from a mapping tree, pruning empty
-// parent maps. Missing keys are ignored.
-func deleteYamlNode(node *yaml.Node, path []string) {
-	if node.Kind != yaml.MappingNode {
-		return
-	}
-	key := path[0]
-	for i := 0; i < len(node.Content); i += 2 {
-		if node.Content[i].Value != key {
-			continue
-		}
-		if len(path) == 1 {
-			node.Content = append(node.Content[:i], node.Content[i+2:]...)
-			return
-		}
-		deleteYamlNode(node.Content[i+1], path[1:])
-		if len(node.Content[i+1].Content) == 0 {
-			node.Content = append(node.Content[:i], node.Content[i+2:]...)
-		}
-		return
-	}
-}
-
-// setYamlNode walks a YAML mapping tree and sets the scalar at the given path.
-func setYamlNode(node *yaml.Node, path []string, value interface{}) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("expected mapping node at %q", strings.Join(path, "."))
-	}
-	key := path[0]
-	var child *yaml.Node
-	for i := 0; i < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			child = node.Content[i+1]
-			break
-		}
-	}
-	if child == nil {
-		child = &yaml.Node{Kind: yaml.MappingNode}
-		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, child)
-	}
-	if len(path) == 1 {
-		child.Kind = yaml.ScalarNode
-		child.Tag = ""
-		child.Value = fmt.Sprintf("%v", value)
-		return nil
-	}
-	if child.Kind != yaml.MappingNode {
-		child.Kind = yaml.MappingNode
-	}
-	return setYamlNode(child, path[1:], value)
-}
-
-// setYamlNodeValue walks a YAML mapping tree and replaces the node at the
-// given path with an encoding of value (which may be a map, slice, or scalar).
-// Unlike setYamlNode (scalar-only), it marshals value into a YAML node, so
-// whole sub-configs (e.g. an MCP server definition) can be written. Missing
-// intermediate maps are created automatically.
-func setYamlNodeValue(node *yaml.Node, path []string, value any) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("expected mapping node at %q", strings.Join(path, "."))
-	}
-	key := path[0]
-	var childIdx = -1
-	for i := 0; i < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			childIdx = i + 1
-			break
-		}
-	}
-	if len(path) == 1 {
-		encoded, err := valueToYAMLNode(value)
-		if err != nil {
-			return err
-		}
-		if childIdx >= 0 {
-			node.Content[childIdx] = encoded
-		} else {
-			node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, encoded)
-		}
-		return nil
-	}
-	var child *yaml.Node
-	if childIdx >= 0 {
-		child = node.Content[childIdx]
-		if child.Kind != yaml.MappingNode {
-			child.Kind = yaml.MappingNode
-			child.Content = nil
-		}
-	} else {
-		child = &yaml.Node{Kind: yaml.MappingNode}
-		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, child)
-	}
-	return setYamlNodeValue(child, path[1:], value)
-}
-
-// valueToYAMLNode marshals an arbitrary value into a YAML node.
-func valueToYAMLNode(value any) (*yaml.Node, error) {
-	data, err := yaml.Marshal(value)
-	if err != nil {
-		return nil, fmt.Errorf("marshal value: %w", err)
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("reparse value: %w", err)
-	}
-	if len(doc.Content) == 0 {
-		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: ""}, nil
-	}
-	return doc.Content[0], nil
 }

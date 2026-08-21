@@ -85,6 +85,48 @@ func TestPeakStatusAt_NoPeakWindows(t *testing.T) {
 	}
 }
 
+// TestDefaultCacheRetention_Zai pins the cache-affinity default (bugs.md
+// 2026-08-19): both Z.ai catalog entries declare long prompt-cache retention
+// so BuildStreamOptions sends the session cache identity as the OpenAI-style
+// prompt_cache_key without user configuration — the mitigation for the
+// observed server-side prefix-cache evictions on content-keyed routing
+// (z.ai live-probed HTTP 200 with prompt_cache_key + prompt_cache_retention).
+func TestDefaultCacheRetention_Zai(t *testing.T) {
+	for _, id := range []string{"zai", "zai-api"} {
+		def := LookupProviderDefByID(id)
+		if def == nil {
+			t.Fatalf("%s not in catalog", id)
+		}
+		if def.DefaultCacheRetention != CacheRetentionLong {
+			t.Errorf("%s DefaultCacheRetention = %q, want %q", id, def.DefaultCacheRetention, CacheRetentionLong)
+		}
+		if def.Compat.NoCacheRetention {
+			t.Errorf("%s declares NoCacheRetention yet defaults to long retention", id)
+		}
+	}
+}
+
+// TestProviderCatalog_DefaultCacheRetentionLegal guards the catalog against
+// typos and contradictions: every declared default must be a legal retention
+// value, and a provider that opts out of long retention support must never
+// declare it as its default.
+func TestProviderCatalog_DefaultCacheRetentionLegal(t *testing.T) {
+	legal := map[CacheRetention]bool{
+		CacheRetentionNone: true, CacheRetentionShort: true, CacheRetentionLong: true,
+	}
+	for _, def := range ProviderCatalog() {
+		if def.DefaultCacheRetention == "" {
+			continue
+		}
+		if !legal[def.DefaultCacheRetention] {
+			t.Errorf("%s DefaultCacheRetention = %q: not a legal retention value", def.ID, def.DefaultCacheRetention)
+		}
+		if def.Compat.NoCacheRetention && def.DefaultCacheRetention == CacheRetentionLong {
+			t.Errorf("%s has NoCacheRetention but defaults to long retention", def.ID)
+		}
+	}
+}
+
 // TestProviderCatalog_NoDuplicateIDs ensures the catalog is a valid single
 // source of truth: no two entries share an ID or Provider identity.
 func TestProviderCatalog_NoDuplicateIDs(t *testing.T) {

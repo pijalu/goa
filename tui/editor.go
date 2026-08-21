@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pijalu/goa/internal"
@@ -31,6 +32,11 @@ var saveClipboardImage = internal.SaveClipboardImage
 // state is fully mutated before a host callback observes it. No mutex is
 // required.
 type Editor struct {
+	// bufMu guards buf/pos against concurrent access: the commandLoop mutates
+	// the buffer (SetText/setTextLocked/clearLocked) while the render path
+	// (Render/computeLayout/Text) reads it from another goroutine when Apply
+	// runs inline (tests, pre-RunLoops).
+	bufMu   sync.RWMutex
 	buf     []rune
 	pos     int // cursor position in grapheme clusters
 	history []string
@@ -235,6 +241,8 @@ func (e *Editor) clearPreferredCol() {
 
 // Text returns the full buffer content.
 func (e *Editor) Text() string {
+	e.bufMu.RLock()
+	defer e.bufMu.RUnlock()
 	return string(e.buf)
 }
 
@@ -313,6 +321,8 @@ func (e *Editor) SetText(s string) {
 // setTextLocked replaces the buffer and resets position. Internal helper;
 // runs on the commandLoop like every Editor method.
 func (e *Editor) setTextLocked(s string) {
+	e.bufMu.Lock()
+	defer e.bufMu.Unlock()
 	e.buf = []rune(s)
 	e.pos = len(e.buf)
 	e.scroll = 0
@@ -325,6 +335,8 @@ func (e *Editor) Clear() {
 
 // clearLocked empties the buffer. Internal helper; runs on the commandLoop.
 func (e *Editor) clearLocked() {
+	e.bufMu.Lock()
+	defer e.bufMu.Unlock()
 	e.buf = nil
 	e.pos = 0
 	e.histIdx = -1

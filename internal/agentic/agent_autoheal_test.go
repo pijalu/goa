@@ -286,3 +286,98 @@ func TestDSMLToolCallRecoveredWithAutoHealOff(t *testing.T) {
 		t.Errorf("DSML markup leaked into user-visible output: %q", out)
 	}
 }
+
+// TestInvokeToolCallRecoveredWithAutoHealOn is the regression test for the
+// 2026-08-19 export (goa-export-20260819-004622): a GLM turn degraded
+// mid-sentence and emitted the next tool call as plain content in the
+// Anthropic-legacy <invoke name=...>/<parameter name=...> dialect. With
+// auto-heal enabled the call must be recovered and executed like any other
+// text dialect; the markup must not leak into user-visible output.
+func TestInvokeToolCallRecoveredWithAutoHealOn(t *testing.T) {
+	events := []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Creating the goal: learance"},
+		{Type: provider.EventTextDelta, Delta: "<invoke name=\"terminal\">\n"},
+		{Type: provider.EventTextDelta, Delta: "<parameter name=\"command\">echo hello</parameter>\n"},
+		{Type: provider.EventTextDelta, Delta: "</invoke>"},
+	}
+	p := registerTestProvider("invoke-autoheal", events)
+	mdl := testModel(p.api)
+
+	called := false
+	tool := &autoHealMockTool{
+		name: "terminal",
+		exec: func(input string) (string, error) {
+			called = true
+			if input != `{"command":"echo hello"}` {
+				t.Errorf("unexpected input: %q", input)
+			}
+			return "hello", nil
+		},
+	}
+
+	agent := NewAgent(Config{
+		Model:             mdl,
+		SystemPrompt:      "test",
+		Tools:             []Tool{tool},
+		AutoHealToolCalls: true,
+	})
+
+	out, err := agent.RunAndCollect(context.Background(), "create goal")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !called {
+		t.Fatal("invoke-dialect tool call was not recovered with auto-heal on")
+	}
+	if strings.Contains(out, "<invoke") {
+		t.Errorf("invoke markup leaked into user-visible output: %q", out)
+	}
+}
+
+// TestInvokeToolCallWarnsWithAutoHealOff pins the non-silent failure mode:
+// recovery disabled (the default) + a closed invoke block naming a REGISTERED
+// tool + no native call superseding it → the agent must warn instead of
+// silently rendering the call as content (the export's silent-loss shape).
+func TestInvokeToolCallWarnsWithAutoHealOff(t *testing.T) {
+	events := []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Summary text. <invoke name=\"terminal\">\n"},
+		{Type: provider.EventTextDelta, Delta: "<parameter name=\"command\">echo hello</parameter>\n"},
+		{Type: provider.EventTextDelta, Delta: "</invoke>"},
+	}
+	p := registerTestProvider("invoke-noautoheal", events)
+	mdl := testModel(p.api)
+
+	called := false
+	var warnings []string
+	tool := &autoHealMockTool{
+		name: "terminal",
+		exec: func(input string) (string, error) { called = true; return "hello", nil },
+	}
+
+	agent := NewAgent(Config{
+		Model:        mdl,
+		SystemPrompt: "test",
+		Tools:        []Tool{tool},
+		// AutoHealToolCalls deliberately false: the invoke dialect is a
+		// malformed-fallback shape, recovered only on opt-in (unlike DSML).
+	})
+	agent.AddObserver(OutputObserverFunc(func(ev OutputEvent) {
+		if ev.Type == EventProgress && strings.Contains(ev.Text, "was NOT executed") {
+			warnings = append(warnings, ev.Text)
+		}
+	}))
+
+	_, err := agent.RunAndCollect(context.Background(), "run")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if called {
+		t.Fatal("tool must NOT execute with auto-heal off")
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly 1 unrecovered-call warning, got %d (%v)", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "terminal") {
+		t.Errorf("warning must name the tool: %q", warnings[0])
+	}
+}
