@@ -7,9 +7,53 @@ package multiagent
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/agentic/provider"
+	gorole "github.com/pijalu/goa/internal/role"
 )
+
+// TestDelegateTool_RelaysOutputForAllRoles is the regression test for team UI
+// bug RC-3: previously only the companion role's output was relayed back to
+// the main agent, so planner/coder delegate results vanished and the caller
+// kept re-delegating the same question. Every role's final output must arrive
+// on the main agent's bus inbox, labelled with the producing role.
+func TestDelegateTool_RelaysOutputForAllRoles(t *testing.T) {
+	bus := agentic.NewAgentBus()
+	mainInbox, err := bus.Register(gorole.Main)
+	if err != nil {
+		t.Fatalf("register main: %v", err)
+	}
+
+	pool := NewAgentPool(testModel("default"), provider.StreamOptions{}, nil)
+	pool.SetAgentBus(bus)
+	orch := NewForegroundOrchestrator(pool)
+	pool.SetOrchestrator(orch)
+
+	tool := &DelegateTool{Orchestrator: orch, Pool: pool, Enabled: true}
+
+	if _, err := tool.Execute(`{"agent":"planner","task":"analyze X"}`); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// The mock provider answers with "Test response from mock provider." — the
+	// relay must land on main's inbox with the planner label.
+	select {
+	case msg := <-mainInbox:
+		if msg.From != gorole.Planner {
+			t.Errorf("relay From = %q, want planner", msg.From)
+		}
+		if !strings.Contains(msg.Content, "Message from planner:") {
+			t.Errorf("relay content missing role label: %q", msg.Content)
+		}
+		if !strings.Contains(msg.Content, "Test response from mock provider.") {
+			t.Errorf("relay content missing sub-agent output: %q", msg.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no relay message on main inbox for planner delegate")
+	}
+}
 
 func TestRequestReviewTool_Schema(t *testing.T) {
 	tool := &RequestReviewTool{}

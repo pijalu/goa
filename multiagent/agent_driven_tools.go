@@ -120,7 +120,7 @@ func (t *RequestReviewTool) Execute(input string) (string, error) {
 		return fmt.Sprintf(`{"status":"review_complete","id":"%s","message":"no review output"}`, delegationID), nil
 	}
 
-	if err := sendToMain(t.Pool, review); err != nil {
+	if err := sendToMain(t.Pool, gorole.Companion, review); err != nil {
 		emitDelegationState(t.Orchestrator, gorole.Companion, delegationID, DelegationFailed, err.Error())
 		return "", fmt.Errorf("send review to main: %w", err)
 	}
@@ -252,19 +252,19 @@ func (t *DelegateTool) runDelegation(subAgent *agentic.Agent, role, task, delega
 	}
 
 	ctx := delegationContext(t.Orchestrator)
-	if err := subAgent.Run(ctx, task); err != nil {
+	err := subAgent.Run(ctx, task)
+	if err != nil {
 		emitDelegationState(t.Orchestrator, role, delegationID, DelegationFailed, err.Error())
 		return fmt.Errorf("%s execution failed: %w", role, err)
 	}
 	emitDelegationState(t.Orchestrator, role, delegationID, DelegationCompleted, "")
 
-	if role == gorole.Companion {
-		output := collectAgentOutput(t.Pool, role)
-		if output != "" {
-			if err := sendToMain(t.Pool, output); err != nil {
-				return fmt.Errorf("send %s output to main: %w", role, err)
-			}
-		}
+	// Relay the sub-agent's final output back to the main agent for EVERY
+	// role — previously only the companion's output was relayed, so
+	// planner/coder results vanished and the caller kept re-delegating (RC-3).
+	// Best effort: a relay failure must not fail an already-successful run.
+	if output := collectAgentOutput(t.Pool, role); output != "" {
+		_ = sendToMain(t.Pool, role, output)
 	}
 	return nil
 }
@@ -287,14 +287,17 @@ func collectAgentOutput(pool *AgentPool, role string) string {
 	return ""
 }
 
-func sendToMain(pool *AgentPool, content string) error {
+func sendToMain(pool *AgentPool, role, content string) error {
 	if pool.agentBus == nil {
 		return fmt.Errorf("agent bus not configured")
 	}
+	if role == "" {
+		role = gorole.Companion
+	}
 	return pool.agentBus.Send(context.Background(), agentic.CommMessage{
-		From:    gorole.Companion,
+		From:    role,
 		To:      gorole.Main,
-		Content: fmt.Sprintf("Message from companion:\n```\n%s\n```", content),
+		Content: fmt.Sprintf("Message from %s:\n```\n%s\n```", role, content),
 	})
 }
 
