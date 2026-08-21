@@ -12,6 +12,36 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
+// TestAgentPool_AssembleConfig_NoMaxTokensFloor is the regression test for the
+// silent sub-agent 400: assembleConfig must NOT inject a MaxTokens floor. A
+// sub-agent is a normal agent — it inherits the main agent's stream options
+// verbatim, so when the model config leaves MaxTokens at 0 the assembled
+// config keeps 0 (field omitted on the wire), exactly like the main agent.
+// The removed floor (4096) made the codex transport emit max_output_tokens,
+// which the ChatGPT Codex subscription backend rejects with a 400 — killing
+// every delegated sub-agent silently.
+func TestAgentPool_AssembleConfig_NoMaxTokensFloor(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"zero stays zero (main-agent parity)", 0, 0},
+		{"explicit value preserved", 8192, 8192},
+		{"small explicit value preserved (no bump)", 1024, 1024},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewAgentPool(testModel("default"), provider.StreamOptions{MaxTokens: tc.in}, nil)
+			ac := p.assembleConfig(testModel("default"), AgentConfig{}, "prompt", nil, false)
+			if ac.StreamOptions.MaxTokens != tc.want {
+				t.Errorf("assembleConfig MaxTokens = %d, want %d (verbatim inherit, no floor)",
+					ac.StreamOptions.MaxTokens, tc.want)
+			}
+		})
+	}
+}
+
 func TestAgentPool_GetOrCreate_CreatesAndCaches(t *testing.T) {
 	p := NewAgentPool(testModel("default"), provider.StreamOptions{}, nil)
 

@@ -155,3 +155,36 @@ func TestBuildResponsesBodyPlainSession(t *testing.T) {
 		t.Errorf("plain responses body must not send prompt_cache_key here")
 	}
 }
+
+// TestBuildResponsesBodyCodexOmitsMaxOutputTokens is the regression test for
+// the silent sub-agent 400 (bugs.md "delegate_to reports success without
+// clear UI feedback", spec specs/async-delegation.md §9): the ChatGPT Codex
+// subscription backend rejects max_output_tokens with a 400
+// ("Unsupported parameter"), so the codex flavor must omit the field even
+// when a caller sets MaxTokens > 0. Before the guard, any MaxTokens>0 (e.g.
+// the removed AgentPool 4096 floor) produced a body the backend rejected.
+func TestBuildResponsesBodyCodexOmitsMaxOutputTokens(t *testing.T) {
+	model := provider.Model{ID: "gpt-5.6-luna"}
+	ctx := provider.Context{Messages: []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "hi"}}},
+	}}
+	body := buildResponsesBody(model, ctx, provider.StreamOptions{MaxTokens: 4096}, "codex")
+	if _, has := body["max_output_tokens"]; has {
+		t.Errorf("codex body must omit max_output_tokens (backend 400s on it), got %v",
+			body["max_output_tokens"])
+	}
+}
+
+// TestBuildResponsesBodyNonCodexKeepsMaxOutputTokens pins that the codex
+// guard is flavor-scoped: the plain responses flavor still forwards
+// max_output_tokens when MaxTokens > 0 (no over-broad omission).
+func TestBuildResponsesBodyNonCodexKeepsMaxOutputTokens(t *testing.T) {
+	model := provider.Model{ID: "gpt-5"}
+	ctx := provider.Context{Messages: []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "hi"}}},
+	}}
+	body := buildResponsesBody(model, ctx, provider.StreamOptions{MaxTokens: 4096}, "")
+	if got := body["max_output_tokens"]; got != 4096 {
+		t.Errorf("non-codex body max_output_tokens = %v, want 4096", got)
+	}
+}

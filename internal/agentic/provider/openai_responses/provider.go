@@ -212,7 +212,11 @@ func buildResponsesBody(model provider.Model, ctx provider.Context, opts provide
 	} else {
 		body["tools"] = convertResponsesTools(ctx.Tools)
 	}
-	if opts.MaxTokens > 0 {
+	if opts.MaxTokens > 0 && !isCodex {
+		// The ChatGPT Codex subscription backend rejects max_output_tokens with
+		// a 400 ("Unsupported parameter") — the same class of rejection that
+		// already forces store=false and prompt_cache_key-only session affinity
+		// above. Omit the field on the codex flavor regardless of caller.
 		body["max_output_tokens"] = opts.MaxTokens
 	}
 	if opts.Temperature != nil {

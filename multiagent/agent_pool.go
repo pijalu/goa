@@ -335,11 +335,12 @@ func (p *AgentPool) buildAgentConfig(role string, mdl provider.Model, cfg AgentC
 // delegation result.
 func (p *AgentPool) assembleConfig(mdl provider.Model, cfg AgentConfig, systemPrompt string, tools []agentic.Tool, forceToolUse bool) agentic.Config {
 	opts := p.defaultOpts
-	// Ensure MaxTokens is generous enough for reasoning models (e.g., Qwen)
-	// that use tokens for thinking before producing tool calls.
-	if opts.MaxTokens == 0 || opts.MaxTokens < 2048 {
-		opts.MaxTokens = 4096
-	}
+	// Sub-agents are normal agents (spec G6, async-delegation.md): they inherit
+	// the main agent's stream options verbatim. Do NOT inject a MaxTokens floor
+	// here — a forced floor once made the codex transport emit
+	// max_output_tokens, which the ChatGPT Codex subscription backend rejects
+	// with a 400 (silent sub-agent failure; the main agent was unaffected
+	// because BuildStreamOptions leaves MaxTokens = 0 and omits the field).
 	if forceToolUse {
 		opts.ToolChoice = "required"
 		systemPrompt = appendToolDirective(systemPrompt, tools)
