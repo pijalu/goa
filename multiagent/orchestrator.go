@@ -22,4 +22,9 @@ type OrchestratorMessage struct {
 	Kind      string    `json:"kind"` // "content", "thinking_start", "thinking_chunk", "thinking_end"
 	Turn      int       `json:"turn"`
 	Timestamp time.Time `json:"timestamp"`
+	// DelegationID optionally attributes this message to one specific
+	// delegation (the `dlg-<role>-<NN>` id minted by DelegateTool), so a
+	// consumer can tell two concurrent same-role delegations apart. Empty for
+	// messages that are not tied to a single delegation (pre-T0 behavior).
+	DelegationID string `json:"delegation_id,omitempty"`
 }

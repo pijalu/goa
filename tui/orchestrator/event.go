@@ -61,10 +61,17 @@ type AgentStatsDelta struct {
 // AgentViewEvent is the single neutral type any multi-agent source translates
 // INTO before feeding the view. No field references orchestration concepts:
 // source identity and run-level metadata travel in Meta as free-form strings.
+//
+// DelegationID is the stable per-delegation identity used to key tabs/logs
+// when one role runs several concurrent delegations. For orchestration-source
+// events it may equal AgentID; for delegation-source events it is the minted
+// `dlg-<role>-<NN>` id (see DelegateTool). Empty means "no specific
+// delegation" — the view falls back to AgentID/Role keying (pre-T0 behavior).
 type AgentViewEvent struct {
-	Kind      AgentEventKind
-	AgentID   string
-	Role      string
+	Kind         AgentEventKind
+	AgentID      string
+	DelegationID string
+	Role         string
 	Provider  string
 	Model     string
 	Thinking  string

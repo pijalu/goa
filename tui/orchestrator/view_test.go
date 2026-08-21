@@ -170,6 +170,68 @@ func TestView_DisambiguatesDuplicateRoles(t *testing.T) {
 	}
 }
 
+// TestView_ConcurrentSameRoleDelegations proves the DelegationID seam: two
+// EvAgentStarted events with the SAME Role and SAME AgentID but DIFFERENT
+// DelegationIDs must occupy two distinct per-agent identities (rows + logs +
+// order), so concurrent same-role delegations never collapse into one tab/log.
+func TestView_ConcurrentSameRoleDelegations(t *testing.T) {
+	v := NewMultiAgentView("orchestration")
+	events := []AgentViewEvent{
+		{Kind: EvSourceStarted, Meta: map[string]string{"objective": "parallel"}},
+		{Kind: EvAgentStarted, AgentID: "coder", DelegationID: "dlg-coder-01", Role: "coder", Model: "m", Provider: "p"},
+		{Kind: EvAgentStarted, AgentID: "coder", DelegationID: "dlg-coder-02", Role: "coder", Model: "m", Provider: "p"},
+		{Kind: EvAgentStats, AgentID: "coder", DelegationID: "dlg-coder-01", Role: "coder", Stats: &AgentStatsDelta{Turns: 1, TokensOut: 10}},
+		{Kind: EvAgentStats, AgentID: "coder", DelegationID: "dlg-coder-02", Role: "coder", Stats: &AgentStatsDelta{Turns: 3, TokensOut: 99}},
+		{Kind: EvAgentFinished, AgentID: "coder", DelegationID: "dlg-coder-01", Role: "coder", Status: "ok"},
+	}
+	for _, ev := range events {
+		v.ApplyEvent(ev)
+	}
+
+	// Two distinct rows, keyed by delegation id, with independent stats.
+	r1 := rowFor(v, "dlg-coder-01")
+	r2 := rowFor(v, "dlg-coder-02")
+	if r1 == nil || r2 == nil {
+		t.Fatalf("expected two distinct rows keyed dlg-coder-01/02, got %+v", v.Rows())
+	}
+	if r1.TokensOut != 10 || r2.TokensOut != 99 {
+		t.Errorf("delegation stats merged: r1=%d r2=%d, want 10 and 99", r1.TokensOut, r2.TokensOut)
+	}
+	if r1.Status != "ok" {
+		t.Errorf("dlg-coder-01 status = %q, want ok", r1.Status)
+	}
+
+	// Two distinct logs keyed by delegation id.
+	if v.LogFor("dlg-coder-01") == nil || v.LogFor("dlg-coder-02") == nil {
+		t.Error("expected two distinct logs keyed by delegation id")
+	}
+	if !containsJoin(v.LogFor("dlg-coder-01").Lines(), "[finished]") {
+		t.Error("dlg-coder-01 log missing [finished] marker")
+	}
+
+	// Labels disambiguate the shared role for display.
+	if r1.Label == r2.Label {
+		t.Errorf("same-role delegations share a label %q; want disambiguated", r1.Label)
+	}
+}
+
+// TestView_NoDelegationID_KeepsAgentIDKeying guards the pre-T0 contract: when
+// DelegationID is empty the view keys by AgentID exactly as before.
+func TestView_NoDelegationID_KeepsAgentIDKeying(t *testing.T) {
+	v := NewMultiAgentView("orchestration")
+	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "coder-1", Role: "coder"})
+	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStats, AgentID: "coder-1", Role: "coder", Stats: &AgentStatsDelta{Turns: 2}})
+	if rowFor(v, "coder-1") == nil {
+		t.Error("row not keyed by AgentID when DelegationID empty")
+	}
+	if got := rowFor(v, "coder-1").Turns; got != 2 {
+		t.Errorf("stats did not merge into the AgentID-keyed row, turns=%d", got)
+	}
+	if v.LogFor("coder-1") == nil {
+		t.Error("log not keyed by AgentID when DelegationID empty")
+	}
+}
+
 func tabKeys(tabs []AgentTab) []string {
 	out := make([]string, len(tabs))
 	for i, t := range tabs {

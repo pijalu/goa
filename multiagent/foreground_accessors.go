@@ -110,6 +110,12 @@ func (o *ForegroundOrchestrator) emit(from, to, content string) {
 }
 func (o *ForegroundOrchestrator) emitKind(from, to, content, kind string) {
 	msg := OrchestratorMessage{From: from, To: to, Content: content, Kind: kind, Timestamp: time.Now()}
+	// Attribute the message to the role's in-flight delegation, when one is
+	// active (DelegateTool sets it around the delegated run). This lets a
+	// downstream consumer distinguish concurrent same-role delegations.
+	if id, ok := o.activeDelegations.Load(from); ok {
+		msg.DelegationID, _ = id.(string)
+	}
 	if to == "stream_chunk" {
 		select {
 		case o.events <- msg:
@@ -120,4 +126,21 @@ func (o *ForegroundOrchestrator) emitKind(from, to, content, kind string) {
 		return
 	}
 	o.events <- msg
+}
+
+// SetActiveDelegation binds a delegation id to a role for the duration of one
+// delegated run; emitKind stamps it onto every message the role emits until
+// ClearActiveDelegation. Called by DelegateTool around subAgent.Run.
+func (o *ForegroundOrchestrator) SetActiveDelegation(role, delegationID string) {
+	if delegationID == "" {
+		return
+	}
+	o.activeDelegations.Store(role, delegationID)
+}
+
+// ClearActiveDelegation drops the role→delegation binding installed by
+// SetActiveDelegation. Only clears when the stored id still matches, so a
+// slower overlapping delegation for the same role is not clobbered.
+func (o *ForegroundOrchestrator) ClearActiveDelegation(role, delegationID string) {
+	o.activeDelegations.CompareAndDelete(role, delegationID)
 }

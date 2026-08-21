@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	"github.com/pijalu/goa/internal/agentic"
 	gorole "github.com/pijalu/goa/internal/role"
@@ -92,6 +94,20 @@ type DelegateTool struct {
 	Orchestrator *ForegroundOrchestrator
 	Pool         *AgentPool
 	Enabled      bool // set by AgentManager; when false, calls are rejected
+
+	// seq mints per-role delegation ids (`dlg-<role>-<NN>`). Keyed by role so
+	// two concurrent delegations to DIFFERENT roles never collide, and two to
+	// the SAME role get 01/02/… in call order. Concurrency-safe.
+	seq sync.Map // role string → *atomic.Int64
+}
+
+// mintDelegationID returns the next unique `dlg-<role>-<NN>` id for a role.
+// The per-role counter is created lazily and incremented atomically, so ids
+// are unique across concurrent calls without a global lock.
+func (t *DelegateTool) mintDelegationID(role string) string {
+	v, _ := t.seq.LoadOrStore(role, &atomic.Int64{})
+	n := v.(*atomic.Int64).Add(1)
+	return fmt.Sprintf("dlg-%s-%02d", role, n)
 }
 
 func (t *DelegateTool) Schema() agentic.ToolSchema {
@@ -143,23 +159,43 @@ func (t *DelegateTool) Execute(input string) (string, error) {
 		return "", fmt.Errorf("create sub-agent %q: %w", params.Agent, err)
 	}
 
+	// Mint a stable id for THIS delegation; runDelegation binds it to the role
+	// for the run's duration so streamed messages are attributable. Additive to
+	// the ack JSON (`id` field); the full DelegationRegistry is out of scope.
+	delegationID := t.mintDelegationID(params.Agent)
+	if err := t.runDelegation(subAgent, params.Agent, params.Task, delegationID); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`{"status":"completed","agent":"%s","id":"%s"}`, params.Agent, delegationID), nil
+}
+
+// runDelegation executes one delegated sub-agent run under a minted delegation
+// id: it binds the id to the role on the orchestrator (so emitKind stamps it
+// onto the streamed OrchestratorMessages), runs the agent, and — for the
+// companion role — forwards its output back to the main agent.
+func (t *DelegateTool) runDelegation(subAgent *agentic.Agent, role, task, delegationID string) error {
+	if t.Orchestrator != nil {
+		t.Orchestrator.SetActiveDelegation(role, delegationID)
+		defer t.Orchestrator.ClearActiveDelegation(role, delegationID)
+	}
+
 	ctx := context.Background()
 	if t.Orchestrator != nil {
 		ctx = t.Orchestrator.Context()
 	}
-	if err := subAgent.Run(ctx, params.Task); err != nil {
-		return "", fmt.Errorf("%s execution failed: %w", params.Agent, err)
+	if err := subAgent.Run(ctx, task); err != nil {
+		return fmt.Errorf("%s execution failed: %w", role, err)
 	}
 
-	if params.Agent == gorole.Companion {
-		output := collectAgentOutput(t.Pool, params.Agent)
+	if role == gorole.Companion {
+		output := collectAgentOutput(t.Pool, role)
 		if output != "" {
 			if err := sendToMain(t.Pool, output); err != nil {
-				return "", fmt.Errorf("send %s output to main: %w", params.Agent, err)
+				return fmt.Errorf("send %s output to main: %w", role, err)
 			}
 		}
 	}
-	return fmt.Sprintf(`{"status":"completed","agent":"%s"}`, params.Agent), nil
+	return nil
 }
 
 func collectAgentOutput(pool *AgentPool, role string) string {

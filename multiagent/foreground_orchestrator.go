@@ -118,6 +118,13 @@ type ForegroundOrchestrator struct {
 	// Used by WorkflowNextTool to validate work was done before advancing.
 	stageToolCount atomic.Int32
 
+	// activeDelegations maps a role to the id of its in-flight delegated run
+	// (minted by DelegateTool as `dlg-<role>-<NN>`). emitKind stamps it onto
+	// outgoing OrchestratorMessages so a consumer can attribute a chunk to one
+	// specific delegation, not just a role. NOT a registry — see
+	// specs/async-delegation.md for the full design (out of T0 scope).
+	activeDelegations sync.Map // role string → delegation id string
+
 	// stageAdvanced is the sentinel that distinguishes a WorkflowNextTool-driven
 	// stage advance from a user/parent Cancel(). WorkflowNextTool sets it before
 	// cancelling the stage context; runStage treats a plain context.Canceled

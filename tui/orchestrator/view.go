@@ -190,21 +190,35 @@ func (v *MultiAgentView) handleSourceFinished(ev AgentViewEvent) {
 	}
 }
 
+// keyOf resolves the stable per-agent identity the view keys tabs/logs/rows
+// by: the minted DelegationID when the source provides one (delegation source,
+// where concurrent same-role runs share an AgentID/Role), else the AgentID
+// (orchestration source — pre-T0 behavior, DelegationID empty). This is what
+// lets two concurrent same-role delegations occupy distinct tabs/logs without
+// changing how any existing source is keyed.
+func keyOf(ev AgentViewEvent) string {
+	if ev.DelegationID != "" {
+		return ev.DelegationID
+	}
+	return ev.AgentID
+}
+
 func (v *MultiAgentView) handleAgentStarted(ev AgentViewEvent) {
 	v.ensureBookendTabs()
 	v.upsertRow(ev)
-	if ev.AgentID == "" {
+	key := keyOf(ev)
+	if key == "" {
 		return
 	}
-	v.order = append(v.order, ev.AgentID)
-	v.ensureLog(ev.AgentID, ev.Role)
+	v.order = append(v.order, key)
+	v.ensureLog(key, ev.Role)
 	label := v.DisambiguateLabel(ev.Role)
-	v.setRowLabel(ev.AgentID, label)
+	v.setRowLabel(key, label)
 }
 
-func (v *MultiAgentView) setRowLabel(agentID, label string) {
+func (v *MultiAgentView) setRowLabel(key, label string) {
 	for i := range v.rows {
-		if v.rows[i].AgentID == agentID {
+		if v.rows[i].AgentID == key {
 			v.rows[i].Label = label
 			return
 		}
@@ -234,12 +248,13 @@ func (v *MultiAgentView) handleAgentStats(ev AgentViewEvent) {
 }
 
 func (v *MultiAgentView) handleAgentSteered(ev AgentViewEvent) {
-	v.ensureLog(ev.AgentID, ev.Role)
+	key := keyOf(ev)
+	v.ensureLog(key, ev.Role)
 	text := ev.Text
 	if text != "" {
 		text = " " + text
 	}
-	v.appendLine(ev.AgentID, AgentLogLine{Kind: LogMarker, Text: "[steer]" + text})
+	v.appendLine(key, AgentLogLine{Kind: LogMarker, Text: "[steer]" + text})
 }
 
 func (v *MultiAgentView) handleAgentFinished(ev AgentViewEvent) {
@@ -247,11 +262,12 @@ func (v *MultiAgentView) handleAgentFinished(ev AgentViewEvent) {
 	if status == "" {
 		status = "finished"
 	}
+	key := keyOf(ev)
 	v.upsertRow(AgentViewEvent{
-		Kind: EvAgentFinished, AgentID: ev.AgentID, Role: ev.Role, Status: status,
+		Kind: EvAgentFinished, AgentID: ev.AgentID, DelegationID: ev.DelegationID, Role: ev.Role, Status: status,
 	})
-	v.ensureLog(ev.AgentID, ev.Role)
-	v.appendLine(ev.AgentID, AgentLogLine{Kind: LogMarker, Text: "[finished]"})
+	v.ensureLog(key, ev.Role)
+	v.appendLine(key, AgentLogLine{Kind: LogMarker, Text: "[finished]"})
 }
 
 // ensureBookendTabs guarantees the Conversation (index 0) and Stats (index 1)
@@ -270,16 +286,19 @@ func (v *MultiAgentView) ensureBookendTabs() {
 	v.active = 0
 }
 
-// upsertRow merges a partial event into the row for ev.AgentID, creating it on
-// first sight. Non-zero scalar fields overwrite; Stats counters are absolute.
+// upsertRow merges a partial event into the row for the event's identity key
+// (keyOf), creating it on first sight. Non-zero scalar fields overwrite; Stats
+// counters are absolute. The row's AgentID holds the resolved key, so two
+// concurrent same-role delegations (distinct DelegationIDs) get distinct rows.
 func (v *MultiAgentView) upsertRow(ev AgentViewEvent) {
+	key := keyOf(ev)
 	for i := range v.rows {
-		if v.rows[i].AgentID == ev.AgentID {
+		if v.rows[i].AgentID == key {
 			v.applyRowEv(&v.rows[i], ev)
 			return
 		}
 	}
-	v.rows = append(v.rows, AgentEnhancedRow{AgentID: ev.AgentID})
+	v.rows = append(v.rows, AgentEnhancedRow{AgentID: key})
 	v.applyRowEv(&v.rows[len(v.rows)-1], ev)
 }
 
