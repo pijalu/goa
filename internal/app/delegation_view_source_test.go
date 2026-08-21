@@ -54,14 +54,79 @@ func TestTranslateDelegationMsg(t *testing.T) {
 			ok:   false,
 		},
 		{
-			name: "stream_end framing is not viewable",
-			in:   multiagent.OrchestratorMessage{From: "coder", To: "stream_end", Kind: "content", Content: "full"},
-			ok:   false,
+			// T4: stream_end carries the authoritative full text — the chunk
+			// fanout is lossy, so the terminal frame is a non-delta reconcile.
+			name: "stream_end → full-text reconcile message",
+			in: multiagent.OrchestratorMessage{
+				From: "coder", To: "stream_end", Kind: "content",
+				Content: "full", DelegationID: "dlg-coder-01", Timestamp: ts,
+			},
+			want: orchpanel.AgentViewEvent{
+				Kind: orchpanel.EvAgentMessage, AgentID: "coder", Role: "coder",
+				DelegationID: "dlg-coder-01", Text: "full",
+			},
+			ok: true,
 		},
 		{
 			name: "thinking_start framing is not viewable",
 			in:   multiagent.OrchestratorMessage{From: "coder", To: "stream_start", Kind: "thinking_start"},
 			ok:   false,
+		},
+		{
+			name: "thinking_end → full-text thinking reconcile",
+			in: multiagent.OrchestratorMessage{
+				From: "coder", To: "thinking_end", Kind: "thinking_end",
+				Content: "all my thinking", DelegationID: "dlg-coder-01", Timestamp: ts,
+			},
+			want: orchpanel.AgentViewEvent{
+				Kind: orchpanel.EvAgentThinking, AgentID: "coder", Role: "coder",
+				DelegationID: "dlg-coder-01", Text: "all my thinking",
+			},
+			ok: true,
+		},
+		{
+			name: "delegation_state running → agent started",
+			in: multiagent.OrchestratorMessage{
+				From: "coder", To: "delegation", Kind: "delegation_state",
+				Content: "running|", DelegationID: "dlg-coder-01", Timestamp: ts,
+			},
+			want: orchpanel.AgentViewEvent{
+				Kind: orchpanel.EvAgentStarted, AgentID: "coder", Role: "coder",
+				DelegationID: "dlg-coder-01",
+			},
+			ok: true,
+		},
+		{
+			name: "delegation_state completed → agent finished",
+			in: multiagent.OrchestratorMessage{
+				From: "coder", To: "delegation", Kind: "delegation_state",
+				Content: "completed|", DelegationID: "dlg-coder-01", Timestamp: ts,
+			},
+			want: orchpanel.AgentViewEvent{
+				Kind: orchpanel.EvAgentFinished, AgentID: "coder", Role: "coder",
+				DelegationID: "dlg-coder-01", Status: "completed",
+			},
+			ok: true,
+		},
+		{
+			name: "delegation_state failed → agent finished with error detail",
+			in: multiagent.OrchestratorMessage{
+				From: "coder", To: "delegation", Kind: "delegation_state",
+				Content: "failed|provider 400: bad request", DelegationID: "dlg-coder-01", Timestamp: ts,
+			},
+			want: orchpanel.AgentViewEvent{
+				Kind: orchpanel.EvAgentFinished, AgentID: "coder", Role: "coder",
+				DelegationID: "dlg-coder-01", Status: "failed", Text: "provider 400: bad request",
+			},
+			ok: true,
+		},
+		{
+			name: "delegation_state unknown state → false",
+			in: multiagent.OrchestratorMessage{
+				From: "coder", To: "delegation", Kind: "delegation_state",
+				Content: "mystery|", DelegationID: "dlg-coder-01", Timestamp: ts,
+			},
+			ok: false,
 		},
 		{
 			name: "unknown kind → false",

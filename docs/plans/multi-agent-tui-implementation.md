@@ -624,3 +624,101 @@ primitives) — do not silence with `//nolint`.
   footer. Recorded as an ANSI-free filmstrip snapshot under
   `docs/archive/multi-agent-tui-smoke.<date>.md`.
 - All work committed on `feature/multi-agent`.
+
+---
+
+## 11. Implementation state (T4 checkpoint — 2026-08-21)
+
+**Branch:** `feature/multi-agent`. T0–T3 committed (`56e0537` T0, `734bacc` T1,
+`f7a7a8f` T2, `d08cc56` T3). **T4 implemented** in the `feat(app): multi-agent
+T4` commit (see git log).
+
+### T4 — what landed
+
+- **multiagent** (`delegation_lifecycle.go` NEW, `agent_driven_tools.go` MOD):
+  `DelegationRunning/Completed/Failed` constants +
+  `ForegroundOrchestrator.EmitDelegationState(role, id, state, detail)` emitting
+  `OrchestratorMessage{Kind:"delegation_state", Content:"<state>|<detail>"}`.
+  `DelegateTool.runDelegation` brackets every run with running→completed|failed;
+  `RequestReviewTool` now mints `dlg-companion-NN` ids (shared
+  `delegationIDMinter`), binds them via `SetActiveDelegation`, emits the same
+  lifecycle, and returns the id in the ack JSON. A FAILED run therefore always
+  leaves a terminal marker carrying the error detail (bug-2 fix at the source).
+- **Adapter** (`internal/app/delegation_view_source.go` MOD):
+  `translateDelegationMsg` maps `delegation_state` → `EvAgentStarted` /
+  `EvAgentFinished{Status, Text=detail}`; `stream_end`/`thinking_end` →
+  full-text NON-delta reconcile events (the chunk fanout is lossy under
+  back-pressure — `emitKind` drops `stream_chunk` when the channel is full).
+- **Routing** (`internal/app/orchestrator.go` MOD + `delegation_streams.go` NEW):
+  `handleOrchestratorStreamMsg` routes every message with `DelegationID != ""`
+  through the adapter into `handleDelegationViewEvent`, which writes into the
+  per-delegation `AgentTranscript` in `subs.agentRegistry` (get-or-create on
+  first sight ⇒ the tab spawns the moment the delegation is created). Terminal
+  states: completed → `MarkActivity` + terminal marker line; failed →
+  `MarkError` + error card in the delegation transcript + a `Flash` on the chat
+  bus (failure visible without opening the tab). Inactive views stay pure data
+  (R1); the pull-based `agentctx.AgentTabBar` shows new tabs on the next frame.
+  **The legacy `ensureCompanionSection`→`AddCompanionCycle` interleave is NOT
+  deleted** — it still serves NON-delegation streams (framework companion
+  `/companion:framework`, workflow/pipeline stage agents), which carry no
+  DelegationID. Delegation traffic bypasses it entirely; full retirement is a
+  post-T5 decision once those other sources are also tabbed.
+- **Mock provider** (`internal/agentic/provider/mock/mock.go` MOD): `FailNext(
+  modelID, err)` — per-model FIFO scripted `Stream` errors (provider-400 class),
+  consumed ahead of the turn queue; failed calls still increment `Calls`.
+
+### T4 — tests (all green)
+
+- `multiagent/delegation_lifecycle_test.go` — lifecycle bracket + id
+  propagation for both tools; failed-state error detail (4 tests).
+- `internal/app/delegation_view_source_test.go` — extended adapter mapping
+  (stream_end/thinking_end reconcile, all delegation_state edges).
+- `internal/app/delegation_streams_test.go` — routing isolation for two
+  same-role delegations + planner, stream_end reconcile, FAILED ⇒ marked tab +
+  error card (3 tests).
+- `internal/app/agentctx_delegation_filmstrip_test.go` — MANDATORY filmstrip:
+  tab on creation, streams under RUNNING (screen undisturbed on main),
+  terminal marking, switch shows only the active delegation; separate FAILED
+  filmstrip (2 tests).
+- `internal/app/agentctx_delegation_mockllm_test.go` — MANDATORY mock-LLM:
+  gated coder held mid-stream + concurrent planner (true cross-role
+  concurrency), second coder reusing the pooled agent under a new id, scripted
+  provider-400 ⇒ per-transcript isolation, zero main interleave, marked FAILED
+  tab + error card.
+- `internal/app/agentctx_delegation_e2e_test.go` (build tag `e2e`) — Local-LM
+  e2e, **PASS against http://localhost:1234 (5.7s)**: live delegation spawns a
+  tab with its result; dead-endpoint delegation ⇒ FAILED tab + error card.
+
+### T4 — discovery that shapes the tests
+
+The codex `max_output_tokens` error class is deliberately **recoverable** in
+goa (agent compress+retry, `isContextLengthError` in
+`internal/agentic/agent_compress_recovery.go`), so it is NOT a terminal-failure
+driver: scripted runs recover via mock replay. Terminal-failure tests use a
+plain non-retryable 400 (`"provider 400: invalid request"`, mock) or a dead
+endpoint + non-eligible retry codes (e2e).
+
+### Gates at checkpoint
+
+- `go vet ./...` — clean.
+- `go test -count=1 -race -cover ./internal/app/ ./multiagent/
+  ./internal/agentic/provider/mock/` — green (app 57.4%, multiagent 71.1%,
+  mock 93.7%).
+- `go test -count=1 -race -cover ./tui/agentctx/` — green solo (1.7s, 94.7%).
+  One combined multi-package `-race` run hit a 240s timeout under parallel
+  load; both solo re-runs (incl. `-v`) passed clean ⇒ load flake, not a hang.
+  If it recurs, identify the stalled test via
+  `go test -v -race -timeout 90s ./tui/agentctx/ 2>&1 | tail -30`.
+- `gocognit -over 15 .` / `gocyclo -over 12 .` — **not yet run at checkpoint;
+  run at restart.**
+
+### Restart pointer (next session)
+
+1. Run the two complexity gates (above); split helpers if any T4 function
+   exceeds budget.
+2. T5 per §5: badges ✱/▲ rendering in `tui/agentctx/tabbar.go` (registry state
+   is already set by T4's `MarkActivity`/`MarkError`), `/agent:tab:<id>`,
+   `/agent:replay`, Alt+]/Alt+[ cycling + Alt+<digit>, active-tab steering in
+   `submithandler.go`, per-tab footer stats in `tui/footer_render.go`.
+3. Plan-wide DoD (§10): live smoke snapshot under
+   `docs/archive/multi-agent-tui-smoke.<date>.md`.

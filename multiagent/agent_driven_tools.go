@@ -22,6 +22,11 @@ type RequestReviewTool struct {
 	Pool         *AgentPool
 	Orchestrator *ForegroundOrchestrator
 	Enabled      bool // set by AgentManager; when false, calls are rejected
+
+	// ids mints per-role delegation ids (`dlg-<role>-<NN>`) so the review's
+	// stream is attributable to its own per-delegation view (T4). Shared with
+	// DelegateTool's minter shape; concurrency-safe.
+	ids delegationIDMinter
 }
 
 func (t *RequestReviewTool) Schema() agentic.ToolSchema {
@@ -69,23 +74,45 @@ func (t *RequestReviewTool) Execute(input string) (string, error) {
 		return "", fmt.Errorf("create companion: %w", err)
 	}
 
+	// Mint a stable id for THIS review and bind it to the companion role for
+	// the run's duration, so the review's streamed messages carry it and land
+	// in their own per-delegation transcript (T4 — same seam as delegate_to).
+	delegationID := t.ids.mint(gorole.Companion)
+	if t.Orchestrator != nil {
+		t.Orchestrator.SetActiveDelegation(gorole.Companion, delegationID)
+		defer t.Orchestrator.ClearActiveDelegation(gorole.Companion, delegationID)
+		t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationRunning, "")
+	}
+
 	ctx := context.Background()
 	if t.Orchestrator != nil {
 		ctx = t.Orchestrator.Context()
 	}
 	if err := companion.Run(ctx, params.Content); err != nil {
+		if t.Orchestrator != nil {
+			t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationFailed, err.Error())
+		}
 		return "", fmt.Errorf("companion run: %w", err)
 	}
 
 	review := collectAgentOutput(t.Pool, gorole.Companion)
 	if review == "" {
-		return `{"status":"review_complete","message":"no review output"}`, nil
+		if t.Orchestrator != nil {
+			t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationCompleted, "")
+		}
+		return fmt.Sprintf(`{"status":"review_complete","id":"%s","message":"no review output"}`, delegationID), nil
 	}
 
 	if err := sendToMain(t.Pool, review); err != nil {
+		if t.Orchestrator != nil {
+			t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationFailed, err.Error())
+		}
 		return "", fmt.Errorf("send review to main: %w", err)
 	}
-	return `{"status":"review_complete"}`, nil
+	if t.Orchestrator != nil {
+		t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationCompleted, "")
+	}
+	return fmt.Sprintf(`{"status":"review_complete","id":"%s"}`, delegationID), nil
 }
 
 // DelegateTool allows the main agent to delegate a task to a sub-agent.
@@ -95,19 +122,33 @@ type DelegateTool struct {
 	Pool         *AgentPool
 	Enabled      bool // set by AgentManager; when false, calls are rejected
 
-	// seq mints per-role delegation ids (`dlg-<role>-<NN>`). Keyed by role so
+	// ids mints per-role delegation ids (`dlg-<role>-<NN>`). Keyed by role so
 	// two concurrent delegations to DIFFERENT roles never collide, and two to
 	// the SAME role get 01/02/… in call order. Concurrency-safe.
+	ids delegationIDMinter
+}
+
+// delegationIDMinter allocates `dlg-<role>-<NN>` ids. The per-role counter is
+// created lazily and incremented atomically, so ids are unique across
+// concurrent calls without a global lock. Shared by DelegateTool and
+// RequestReviewTool (T4) so a delegate_to and a request_review for the same
+// role never collide either.
+type delegationIDMinter struct {
 	seq sync.Map // role string → *atomic.Int64
 }
 
-// mintDelegationID returns the next unique `dlg-<role>-<NN>` id for a role.
-// The per-role counter is created lazily and incremented atomically, so ids
-// are unique across concurrent calls without a global lock.
-func (t *DelegateTool) mintDelegationID(role string) string {
-	v, _ := t.seq.LoadOrStore(role, &atomic.Int64{})
+// mint returns the next unique `dlg-<role>-<NN>` id for a role.
+func (m *delegationIDMinter) mint(role string) string {
+	v, _ := m.seq.LoadOrStore(role, &atomic.Int64{})
 	n := v.(*atomic.Int64).Add(1)
 	return fmt.Sprintf("dlg-%s-%02d", role, n)
+}
+
+// mintDelegationID returns the next unique `dlg-<role>-<NN>` id for a role.
+// Kept as a thin wrapper over the shared minter (T0 tests exercise it
+// directly).
+func (t *DelegateTool) mintDelegationID(role string) string {
+	return t.ids.mint(role)
 }
 
 func (t *DelegateTool) Schema() agentic.ToolSchema {
@@ -171,12 +212,16 @@ func (t *DelegateTool) Execute(input string) (string, error) {
 
 // runDelegation executes one delegated sub-agent run under a minted delegation
 // id: it binds the id to the role on the orchestrator (so emitKind stamps it
-// onto the streamed OrchestratorMessages), runs the agent, and — for the
-// companion role — forwards its output back to the main agent.
+// onto the streamed OrchestratorMessages), brackets the run with delegation
+// lifecycle markers (running → completed|failed — the T4 bug-2 fix so a
+// delegation is visible from creation and a failure always leaves a terminal
+// marker), runs the agent, and — for the companion role — forwards its output
+// back to the main agent.
 func (t *DelegateTool) runDelegation(subAgent *agentic.Agent, role, task, delegationID string) error {
 	if t.Orchestrator != nil {
 		t.Orchestrator.SetActiveDelegation(role, delegationID)
 		defer t.Orchestrator.ClearActiveDelegation(role, delegationID)
+		t.Orchestrator.EmitDelegationState(role, delegationID, DelegationRunning, "")
 	}
 
 	ctx := context.Background()
@@ -184,7 +229,13 @@ func (t *DelegateTool) runDelegation(subAgent *agentic.Agent, role, task, delega
 		ctx = t.Orchestrator.Context()
 	}
 	if err := subAgent.Run(ctx, task); err != nil {
+		if t.Orchestrator != nil {
+			t.Orchestrator.EmitDelegationState(role, delegationID, DelegationFailed, err.Error())
+		}
 		return fmt.Errorf("%s execution failed: %w", role, err)
+	}
+	if t.Orchestrator != nil {
+		t.Orchestrator.EmitDelegationState(role, delegationID, DelegationCompleted, "")
 	}
 
 	if role == gorole.Companion {

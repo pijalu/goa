@@ -42,7 +42,8 @@ type Provider struct {
 	api provider.Api
 
 	mu      sync.Mutex
-	turns   map[string][]Turn // model ID → scripted turns
+	turns   map[string][]Turn  // model ID → scripted turns
+	errs    map[string][]error // model ID → scripted Stream errors (FIFO)
 	gates   map[string]chan struct{}
 	calls   map[string]int
 	lastIdx map[string]int
@@ -55,6 +56,7 @@ func New(t testing.TB) *Provider {
 	p := &Provider{
 		api:     provider.Api(fmt.Sprintf("test-mock-%d", instanceCounter.Add(1))),
 		turns:   map[string][]Turn{},
+		errs:    map[string][]error{},
 		gates:   map[string]chan struct{}{},
 		calls:   map[string]int{},
 		lastIdx: map[string]int{},
@@ -108,6 +110,17 @@ func (p *Provider) SetGate(modelID string, gate chan struct{}) {
 	p.gates[modelID] = gate
 }
 
+// FailNext scripts the model's next Stream call to return err instead of a
+// stream — the provider-400 class failure path (request rejected before any
+// chunk). Errors are consumed FIFO ahead of the turn queue, so a model with
+// both scripted fails and turns fails first, then streams. The failed call
+// still increments Calls.
+func (p *Provider) FailNext(modelID string, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.errs[modelID] = append(p.errs[modelID], err)
+}
+
 // Calls returns how many Stream requests the given model has served.
 func (p *Provider) Calls(modelID string) int {
 	p.mu.Lock()
@@ -118,6 +131,13 @@ func (p *Provider) Calls(modelID string) int {
 // Stream implements provider.ApiProvider.
 func (p *Provider) Stream(model provider.Model, _ provider.Context, _ provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
 	p.mu.Lock()
+	// Scripted failures are consumed first (FIFO): a provider-400 aborts the
+	// request before any chunk streams.
+	if err := p.nextErrLocked(model.ID); err != nil {
+		p.calls[model.ID]++
+		p.mu.Unlock()
+		return nil, err
+	}
 	turn := p.nextTurnLocked(model.ID)
 	gate := p.gates[model.ID]
 	delete(p.gates, model.ID) // one-shot
@@ -152,6 +172,17 @@ func (p *Provider) Stream(model provider.Model, _ provider.Context, _ provider.S
 // StreamSimple implements provider.ApiProvider.
 func (p *Provider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
 	return p.Stream(model, ctx, provider.BuildSimpleOptions(model, opts))
+}
+
+// nextErrLocked pops the model's next scripted Stream error, or nil when the
+// error queue is empty.
+func (p *Provider) nextErrLocked(modelID string) error {
+	errs := p.errs[modelID]
+	if len(errs) == 0 {
+		return nil
+	}
+	p.errs[modelID] = errs[1:]
+	return errs[0]
 }
 
 // nextTurnLocked pops the model's next scripted turn; the last scripted turn

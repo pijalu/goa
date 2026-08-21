@@ -95,24 +95,27 @@ type subsystems struct {
 	runWizard      bool // set when /setup command requests wizard
 
 	// TUI components (set after InitSubsystems)
-	chat           *tui.ChatViewport
+	chat *tui.ChatViewport
 	// agentRegistry owns the per-agent view contexts (AgentTranscript +
 	// saved compositor state), keyed by agent id. In T1 it holds exactly the
 	// main agent; chat above is agentRegistry's main view's ChatViewport, so
 	// every existing chat.* call site is byte-for-byte unchanged. Multi-agent
 	// switching (T2+) adds sub-agent views here.
-	agentRegistry  *agentctx.AgentViewRegistry
-	goalBubble     *goaltui.Bubble
-	steeringChrome *tui.SteeringChrome
-	footer         *tui.Footer
-	tuiEngine      *tui.TUI
+	agentRegistry *agentctx.AgentViewRegistry
+	// delegationStreams owns the per-delegation in-flight streaming buffers
+	// (T4), keyed by delegation id. Lazily created on the command loop.
+	delegationStreams *delegationStreamRegistry
+	goalBubble        *goaltui.Bubble
+	steeringChrome    *tui.SteeringChrome
+	footer            *tui.Footer
+	tuiEngine         *tui.TUI
 	// replayRunner emits a switched-to agent's committed transcript rows into
 	// the real terminal scrollback on a tab switch (plan T3). Nil unless the
 	// features.multi_agent_scrollback_replay gate resolves ON; created against
 	// the engine's compositor in buildTUI, drained in setupEventHandlers, and
 	// closed on shutdown. When nil a switch keeps the T2 repaint-only behavior.
-	replayRunner   *agentctx.ReplayRunner
-	bgPanel        *bgpanel.Panel
+	replayRunner *agentctx.ReplayRunner
+	bgPanel      *bgpanel.Panel
 
 	// Logger for structured stats output
 	logger    *agentic.Logger

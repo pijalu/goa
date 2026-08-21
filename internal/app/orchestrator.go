@@ -101,6 +101,18 @@ func (a *App) handleOrchestratorStreamMsg(
 	thinkingBuf *strings.Builder,
 	messageBuf *strings.Builder,
 ) bool {
+	// T4: delegation streams (delegate_to / request_review) route by
+	// DelegationID into their own per-delegation AgentTranscripts via the
+	// registry — they no longer interleave into the shared chat through
+	// AddCompanionCycle. Untranslatable delegation kinds (stream framing) are
+	// delegation traffic, not InterAgent messages, so they are swallowed here.
+	if msg.DelegationID != "" {
+		if ne, ok := translateDelegationMsg(msg); ok {
+			a.handleDelegationViewEvent(ne)
+		}
+		return true
+	}
+
 	ensureCompanionSection := func() {
 		if a.subs.chat == nil {
 			return
