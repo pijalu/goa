@@ -204,6 +204,9 @@ func (*longDescDeferredTool) Execute(input string) (string, error) {
 	return "", nil
 }
 
+// scheduleToolNames lists the schedule tools under test.
+var scheduleToolNames = []string{"schedule_create", "schedule_delete", "schedule_list"}
+
 // TestScheduleToolsAreDeferred pins the 2026-08-21 bugs.md feature request
 // "schedule_create/delete/list deferred to tool_search": the scheduler tools
 // must NOT ship in the eager schema block (they implement Deferred in
@@ -212,8 +215,22 @@ func (*longDescDeferredTool) Execute(input string) (string, error) {
 // reverses the 2026-08-17 NOT-A-BUG decision that pinned them eager. Guards
 // against someone removing the Deferred markers.
 func TestScheduleToolsAreDeferred(t *testing.T) {
+	reg := newScheduleTestRegistry()
+	areg := agentic.NewToolRegistry(reg.All())
+
+	// Deferral is active (sanity: a real deferred tool is withheld).
+	if _, unloaded := areg.DeferredStatus("webfetch"); !unloaded {
+		t.Fatal("webfetch should be deferred (deferral active) but is not")
+	}
+	assertScheduleToolsWithheld(t, reg, areg)
+	assertScheduleToolsLoadable(t, areg)
+}
+
+// newScheduleTestRegistry builds a registry with the full deferred family (so
+// deferral crosses the activation threshold), the schedule tools, and the
+// tool_search loader last (bootstrap order).
+func newScheduleTestRegistry() *tools.ToolRegistry {
 	reg := tools.NewToolRegistry()
-	// The full deferred family so deferral actually activates (>= threshold).
 	for _, d := range []agentic.Tool{
 		&tools.TerminalsTool{}, &tools.WebFetchTool{}, &tools.BGExecTool{},
 		&tools.MementoTool{}, &tools.SmartSearchTool{}, &tools.SSHBashTool{},
@@ -221,59 +238,55 @@ func TestScheduleToolsAreDeferred(t *testing.T) {
 	} {
 		reg.Register(d)
 	}
-	// The scheduler tools under test.
 	reg.Register(&tools.ScheduleCreateTool{})
 	reg.Register(&tools.ScheduleDeleteTool{})
 	reg.Register(&tools.ScheduleListTool{})
 	reg.Register(tools.NewToolSearchTool(reg)) // loader, last (bootstrap order)
+	return reg
+}
 
-	areg := agentic.NewToolRegistry(reg.All())
-
-	// Deferral is active (sanity: a real deferred tool is withheld).
-	if _, unloaded := areg.DeferredStatus("webfetch"); !unloaded {
-		t.Fatal("webfetch should be deferred (deferral active) but is not")
-	}
-	// The schedule tools are withheld from the eager schema block.
-	var eager []string
+// assertScheduleToolsWithheld asserts the schedule tools are deferred: absent
+// from the eager schema block and advertised in the tool_search catalog.
+func assertScheduleToolsWithheld(t *testing.T, reg *tools.ToolRegistry, areg *agentic.ToolRegistry) {
+	t.Helper()
+	eager := map[string]bool{}
 	for _, s := range areg.Schemas() {
-		eager = append(eager, s.Name)
+		eager[s.Name] = true
 	}
-	for _, want := range []string{"schedule_create", "schedule_delete", "schedule_list"} {
+	catalog := catalogText(reg)
+	for _, want := range scheduleToolNames {
 		if _, unloaded := areg.DeferredStatus(want); !unloaded {
 			t.Errorf("%s is EAGER, want deferred (loadable via tool_search)", want)
 		}
-		for _, n := range eager {
-			if n == want {
-				t.Errorf("%s present in eager schema block, want withheld (eager=%v)", want, eager)
-			}
+		if eager[want] {
+			t.Errorf("%s present in eager schema block, want withheld", want)
 		}
-		// The tool_search catalog must advertise them so the model can find
-		// and select: them.
-		if !strings.Contains(catalogText(reg), want) {
+		if !strings.Contains(catalog, want) {
 			t.Errorf("%s missing from tool_search deferred catalog", want)
 		}
 	}
+}
 
-	// Load on demand via the select: path and confirm they become callable.
-	loaded := areg.LoadDeferred([]string{"schedule_create", "schedule_delete", "schedule_list"})
-	if len(loaded) != 3 {
-		t.Fatalf("LoadDeferred loaded %v, want all 3 schedule tools", loaded)
+// assertScheduleToolsLoadable loads the schedule tools via the select: path
+// and asserts they become callable (status cleared + schema served).
+func assertScheduleToolsLoadable(t *testing.T, areg *agentic.ToolRegistry) {
+	t.Helper()
+	loaded := areg.LoadDeferred(scheduleToolNames)
+	if len(loaded) != len(scheduleToolNames) {
+		t.Fatalf("LoadDeferred loaded %v, want all %d schedule tools", loaded, len(scheduleToolNames))
 	}
-	for _, name := range []string{"schedule_create", "schedule_delete", "schedule_list"} {
+	served := map[string]bool{}
+	for _, s := range areg.Schemas() {
+		served[s.Name] = true
+	}
+	for _, name := range scheduleToolNames {
 		if _, unloaded := areg.DeferredStatus(name); unloaded {
 			t.Errorf("%s still deferred after LoadDeferred", name)
 		}
 		if _, ok := areg.Get(name); !ok {
 			t.Errorf("%s not in registry after LoadDeferred", name)
 		}
-	}
-	// After loading, the schemas ship in the Schemas tail (callable by the model).
-	loadedSchemaNames := map[string]bool{}
-	for _, s := range areg.Schemas() {
-		loadedSchemaNames[s.Name] = true
-	}
-	for _, name := range []string{"schedule_create", "schedule_delete", "schedule_list"} {
-		if !loadedSchemaNames[name] {
+		if !served[name] {
 			t.Errorf("%s schema not served after LoadDeferred", name)
 		}
 	}
