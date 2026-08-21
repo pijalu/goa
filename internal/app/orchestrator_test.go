@@ -60,6 +60,16 @@ func TestConcurrentRoleStreams_Isolated(t *testing.T) {
 
 	pSec := fwd.stateFor("planner").section
 	cSec := fwd.stateFor("coder").section
+	assertThinkingIsolated(t, pSec, cSec)
+	assertToolActivityIsolated(t, app, fwd, pSec, cSec)
+	assertPlannerEndsCoderStaysLive(t, app, fwd, pSec, cSec)
+	assertAllEndTitles(t, app, fwd, pSec, cSec)
+}
+
+// assertThinkingIsolated verifies each role's thinking chunks land only in
+// that role's own section with its own cycle counter.
+func assertThinkingIsolated(t *testing.T, pSec, cSec *tui.CompanionSectionComponent) {
+	t.Helper()
 	if pSec == nil || cSec == nil {
 		t.Fatalf("expected both sections to exist (planner=%v coder=%v)", pSec != nil, cSec != nil)
 	}
@@ -89,23 +99,31 @@ func TestConcurrentRoleStreams_Isolated(t *testing.T) {
 	if !strings.Contains(cRendered, "coder · cycle 1") {
 		t.Errorf("coder section title wrong:\n%s", cRendered)
 	}
+}
 
-	// Tool activity must show in the streaming role's section (RC-2).
+// assertToolActivityIsolated verifies tool calls land only in the calling
+// role's section (RC-2).
+func assertToolActivityIsolated(t *testing.T, app *App, fwd *streamForwarder, pSec, cSec *tui.CompanionSectionComponent) {
+	t.Helper()
 	runStreamScript(app, fwd, []streamScript{
 		{from: "coder", kind: "tool_call", content: "search"},
 		{from: "coder", kind: "tool_result", content: "76 matches"},
 	})
-	cRendered = strings.Join(cSec.Render(100), "\n")
+	cRendered := strings.Join(cSec.Render(100), "\n")
 	if !strings.Contains(cRendered, "⚙ search") || !strings.Contains(cRendered, "✓ 76 matches") {
 		t.Errorf("coder section missing tool activity:\n%s", cRendered)
 	}
-	pRendered = strings.Join(pSec.Render(100), "\n")
+	pRendered := strings.Join(pSec.Render(100), "\n")
 	if strings.Contains(pRendered, "⚙ search") {
 		t.Errorf("planner section shows coder's tool activity:\n%s", pRendered)
 	}
+}
 
-	// planner finishes first: only ITS section closes; coder stays live and
-	// the footer must still show coder (not revert to main) — RC-1 footer fix.
+// assertPlannerEndsCoderStaysLive verifies the planner's stream_end closes
+// only its own section while the coder stays live and keeps the footer busy
+// on the coder (RC-1 footer fix).
+func assertPlannerEndsCoderStaysLive(t *testing.T, app *App, fwd *streamForwarder, pSec, cSec *tui.CompanionSectionComponent) {
+	t.Helper()
 	runStreamScript(app, fwd, []streamScript{
 		{from: "planner", to: "stream_start", kind: "content"},
 		{from: "planner", to: "stream_chunk", kind: "content", content: "planner verdict"},
@@ -128,12 +146,16 @@ func TestConcurrentRoleStreams_Isolated(t *testing.T) {
 		{from: "coder", to: "stream_start", kind: "content"},
 		{from: "coder", to: "stream_chunk", kind: "content", content: "coder answer"},
 	})
-	cRendered = strings.Join(cSec.Render(100), "\n")
+	cRendered := strings.Join(cSec.Render(100), "\n")
 	if !strings.Contains(cRendered, "coder answer") {
 		t.Errorf("coder section missing its message after planner ended:\n%s", cRendered)
 	}
+}
 
-	// coder finishes: footer reverts to main (busy cleared, active agent empty).
+// assertAllEndTitles verifies the coder's stream_end reverts the footer to
+// idle and both collapsed titles carry each role's own final message.
+func assertAllEndTitles(t *testing.T, app *App, fwd *streamForwarder, pSec, cSec *tui.CompanionSectionComponent) {
+	t.Helper()
 	runStreamScript(app, fwd, []streamScript{
 		{from: "coder", to: "stream_end", kind: "content", content: "coder answer"},
 	})
