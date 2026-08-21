@@ -27,3 +27,60 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
+## Cache stats are not working
+The are lost during goals but should be preserved for all the session !
+Output is not as expected:
+
+* The result should show 10 vertical continuous bars (separated by spaces - with actual percentage, under each bar)
+* The weight should not be by turn but follow the token/cache ratio 
+* Each turn should have it's own line + show the number of tokens/cache hits/misses in addition of the bar
+```
+T1 : 00045.4kT - CM: 0-1 - CH: 93.0% ███████████████████
+T2 : 00056.0kT - CM: 1-1 - CH: 97.3% ████████████████████
+...
+```
+
+Current:
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ # Cache hit — last completions (rightmost = newest)                                                                                                 │
+│ 100%   █ █                                                                                                                                          │
+│        █ █                                                                                                                                          │
+│                                                                                                                                                     │
+│  75%   █ █                                                                                                                                          │
+│        █ █                                                                                                                                          │
+│                                                                                                                                                     │
+│  50%   █ █                                                                                                                                          │
+│        █ █                                                                                                                                          │
+│                                                                                                                                                     │
+│  25%   █ █                                                                                                                                          │
+│        █ █                                                                                                                                          │
+│                                                                                                                                                     │
+│      ─ ─ ─      0 100 100                                                                                                                           │
+│ # Cache usage per turn                                                                                                                              │
+│ T1      0.09%  T2     99.71% ████████████████████ T3     99.82% ████████████████████                                                                │
+│ # Session total: 82.29% cache hit (weighted over 3 turns)                                                                                           │
+│ # Cache misses                                                                                                                                      │
+│ No cache misses detected. No cache drops detected.                                                                                                  │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+
+
+## Provider not always updated
+Provider can sometimes be incorrect in the status bar, usually after changing a model: eg: This model is openrouter but show as openai-codex
+```
+(openai-codex) stealth/ox-alpha
+```
+
+Make sure the provider/couple are *always* updated together
+
+## Average cache
+The average cache should be calculated/weighted by the number of tokens cached - so a 10k token miss (0%) and a CH 5k token hit (100%) not show 50% but 33%.
+
+eg:
+```
+newLevel = (currentLevel × currentTokens + latestLevel × latestTokens)
+           / (currentTokens + latestTokens)
+```
+
+This global rate should show as 1st value in CH percentage (replace the last X)
