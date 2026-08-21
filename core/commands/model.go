@@ -98,19 +98,18 @@ func runModelCommand(host core.UIHost, pm core.ProviderManager, cfg *config.Conf
 		writeFmt(host, "Invalid model name: %s\n", selected)
 		return nil
 	}
-	if np := providerIDForModel(cfg, selected); np != "" && np != cfg.ActiveProvider {
-		if cfg.GetProviderByID(np) == nil {
-			writeFmt(host, "Cannot switch to %s: provider %q is not configured. Run /config to add it.\n", selected, np)
-			return nil
-		}
-		cfg.ActiveProvider = np
+	// A model bound to another configured provider switches that provider
+	// with it; a custom/remote model keeps the current provider.
+	np := providerIDForModel(cfg, selected)
+	if np != "" && np != cfg.ActiveProvider && cfg.GetProviderByID(np) == nil {
+		writeFmt(host, "Cannot switch to %s: provider %q is not configured. Run /config to add it.\n", selected, np)
+		return nil
 	}
-	cfg.ActiveModel = selected
-	if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
-		return err
+	// One coupled unit: manager → config → persist → agent push → footer.
+	if err := applyCoupledSwitch(host, cfg, saver, np, selected); err != nil {
+		writeFmt(host, "Cannot switch to %s: %v\n", selected, err)
+		return nil
 	}
-	propagateModelSwitch(host, cfg)
-	host.FooterRefresh()
 	writeFmt(host, "Switched to model: %s\n", selected)
 	return nil
 }
@@ -569,28 +568,24 @@ func isModelSentinel(v string) bool {
 	return strings.HasPrefix(v, "__")
 }
 
-// applyModelSelection records the chosen model, follows its configured
-// provider when the model belongs to a different one, persists, and notifies
-// the UI. Extracted to keep showModelSelector within the complexity budget.
+// applyModelSelection records the chosen model through the atomic couple
+// switch (provider follows its configured provider when needed), then
+// notifies the UI. Extracted to keep showModelSelector within the complexity
+// budget.
 func applyModelSelection(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, selected string) {
 	if isModelSentinel(selected) {
 		return
 	}
-	if np := providerIDForModel(cfg, selected); np != "" && np != cfg.ActiveProvider {
-		if cfg.GetProviderByID(np) == nil {
-			host.Flash(fmt.Sprintf("Provider %q is not configured. Run /config to add it.", np))
-			return
-		}
-		cfg.ActiveProvider = np
+	np := providerIDForModel(cfg, selected)
+	if np != "" && np != cfg.ActiveProvider && cfg.GetProviderByID(np) == nil {
+		host.Flash(fmt.Sprintf("Provider %q is not configured. Run /config to add it.", np))
+		return
 	}
-	cfg.ActiveModel = selected
-	if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
+	if err := applyCoupledSwitch(host, cfg, saver, np, selected); err != nil {
 		host.Flash(err.Error())
 		return
 	}
-	propagateModelSwitch(host, cfg)
 	host.Flash("Switched to model: " + selected)
-	host.FooterRefresh()
 }
 
 // propagateModelSwitch pushes a config model/provider change into the
@@ -611,6 +606,44 @@ func propagateModelSwitch(host core.UIHost, cfg *config.Config) {
 	// credentials are used on the next turn instead of the old provider's.
 	newOpts := ctx.ProviderManager.BuildStreamOptions()
 	ctx.AgentManager.SetStreamOptions(newOpts)
+}
+
+// applyCoupledSwitch commits a provider/model couple as ONE unit across all
+// surfaces that hold it: provider manager, config, persisted home config,
+// live agent session (model + stream options + thinking level), and footer.
+//
+// Ordering is what guarantees "always updated together": the couple is pushed
+// into the ProviderManager FIRST, and its SetActive validates the provider —
+// on error nothing has been mutated anywhere, so no surface can end up
+// showing a mixed pair like "(openai-codex) <openrouter-model>". The explicit
+// cfg write afterwards keeps boot config and any hot-reloaded manager copy in
+// lockstep.
+//
+// providerID "" means "keep the current provider" (custom-model switches);
+// modelID may be "" when a provider has no configured model yet.
+func applyCoupledSwitch(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID, modelID string) error {
+	if providerID == "" {
+		providerID = cfg.ActiveProvider
+	}
+	// 1. Validate + push into the manager's live copy before anything else.
+	if ctx, ok := host.(core.Context); ok && ctx.ProviderManager != nil {
+		if err := ctx.ProviderManager.SetActive(providerID, modelID); err != nil {
+			return err
+		}
+	}
+	// 2. Commit to the config object.
+	cfg.ActiveProvider = providerID
+	cfg.ActiveModel = modelID
+	// 3. Persist.
+	if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
+		return err
+	}
+	// 4. Push into the live agent session and refresh the status bar.
+	if ctx, ok := host.(core.Context); ok {
+		propagateModelSwitch(ctx, cfg)
+	}
+	host.FooterRefresh()
+	return nil
 }
 
 // providerIDForModel returns the provider ID associated with a configured model ID.

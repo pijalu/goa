@@ -238,19 +238,31 @@ func applyConfigSet(ctx core.Context, key, value string) error {
 		writeFmt(ctx, "%v\n", err)
 		return nil
 	}
-	// Changing the active model may also change the provider; persist and
-	// propagate that switch so the next turn uses the new provider+model.
-	if key == "active_model" && ctx.Config.ActiveProvider != prevProvider {
-		if err := ctx.ConfigSaver.SaveHomeField([]string{"active_provider"}, ctx.Config.ActiveProvider); err != nil {
-			writeFmt(ctx, "set active_model = %s (provider switch to %s not persisted: %v)\n", value, ctx.Config.ActiveProvider, err)
-		} else {
-			writeFmt(ctx, "Set active_provider = %s\n", ctx.Config.ActiveProvider)
-		}
+	// Changing the active model may also change the provider: persist that
+	// provider switch, and ALWAYS push the couple into the live agent — even
+	// a same-provider switch must reach the session, or the next turn keeps
+	// running on the previous model.
+	if key == "active_model" {
+		persistActiveModelProviderSwitch(ctx, prevProvider, value)
 		propagateModelSwitch(ctx, ctx.Config)
 	}
 	writeFmt(ctx, "Set %s = %s\n", key, value)
 	ctx.FooterRefresh()
 	return nil
+}
+
+// persistActiveModelProviderSwitch persists the provider that followed a
+// /config set active_model switch (no-op when the model stayed on its
+// provider).
+func persistActiveModelProviderSwitch(ctx core.Context, prevProvider, value string) {
+	if ctx.Config.ActiveProvider == prevProvider || ctx.ConfigSaver == nil {
+		return
+	}
+	if err := ctx.ConfigSaver.SaveHomeField([]string{"active_provider"}, ctx.Config.ActiveProvider); err != nil {
+		writeFmt(ctx, "set active_model = %s (provider switch to %s not persisted: %v)\n", value, ctx.Config.ActiveProvider, err)
+		return
+	}
+	writeFmt(ctx, "Set active_provider = %s\n", ctx.Config.ActiveProvider)
 }
 
 // syncLoopDetectorConfig applies loop-detector config keys straight to the

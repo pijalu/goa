@@ -67,18 +67,21 @@ func (c *ProviderCommand) Run(ctx core.Context, args []string) error {
 
 func switchProvider(ctx core.Context, cfg *config.Config, providerID string) error {
 	prevProvider := cfg.ActiveProvider
-	cfg.ActiveProvider = providerID
 
 	// Pick the first model from the new provider if the current model doesn't belong to it
-	if !isModelForProvider(cfg, cfg.ActiveModel, providerID) {
+	modelID := cfg.ActiveModel
+	if !isModelForProvider(cfg, modelID, providerID) {
 		if m := firstModelForProvider(cfg, providerID); m != nil {
-			cfg.ActiveModel = m.ID
+			modelID = m.ID
 		} else {
-			cfg.ActiveModel = ""
+			modelID = ""
 		}
 	}
 
-	if err := saveHomeProvidersAndModels(cfg, ctx.ConfigSaver); err != nil {
+	// One coupled unit — manager validation FIRST, then config + persist +
+	// agent push (SetModel/stream options) together, so the live session can
+	// never keep the previous provider's credentials or model.
+	if err := applyCoupledSwitch(ctx, cfg, ctx.ConfigSaver, providerID, modelID); err != nil {
 		return err
 	}
 
@@ -350,24 +353,24 @@ func providerPickerDesc(cfg *config.Config, p config.ProviderConfig) string {
 	return desc
 }
 
-// applyProviderSelection switches the active provider, picks a valid model for
-// it when the current model is foreign, persists, and notifies the UI.
-// When the provider has no configured model, the preset default is used; if
-// there is none (custom provider), the active model is cleared — a foreign
-// model must never remain active on the new provider.
+// applyProviderSelection switches the active provider through the atomic
+// couple switch, picking a valid model for it when the current model is
+// foreign, persists, and notifies the UI — including pushing the new couple
+// into the live agent session (model + stream options), which keeps the next
+// turn on the chosen provider's credentials. When the provider has no
+// configured model, the preset default is used; if there is none (custom
+// provider), the active model is cleared — a foreign model must never remain
+// active on the new provider.
 func applyProviderSelection(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, selected string) {
-	cfg.ActiveProvider = selected
-	if !isModelForProvider(cfg, cfg.ActiveModel, selected) {
-		cfg.ActiveModel = defaultModelForProvider(cfg, selected)
+	modelID := cfg.ActiveModel
+	if !isModelForProvider(cfg, modelID, selected) {
+		modelID = defaultModelForProvider(cfg, selected)
 	}
-	if saver != nil {
-		if err := saver.SaveHomeProvidersAndModels(cfg); err != nil {
-			host.Flash("Failed to save: " + err.Error())
-			return
-		}
+	if err := applyCoupledSwitch(host, cfg, saver, selected, modelID); err != nil {
+		host.Flash(err.Error())
+		return
 	}
 	host.Flash("Switched to: " + selected + " / " + cfg.ActiveModel)
-	host.FooterRefresh()
 }
 
 // defaultModelForProvider returns the first configured model for providerID,

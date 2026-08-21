@@ -292,6 +292,16 @@ func (d *DreamEngine) resolveModel() (provider.Model, provider.StreamOptions, er
 		return provider.Model{}, provider.StreamOptions{}, fmt.Errorf("no dream model configured")
 	}
 
+	// The dream run is a one-shot side session. An explicit dream couple is a
+	// temporary override of the ACTIVE couple, which must be restored on
+	// every return path — leaving the dream provider/model in the config made
+	// the main session silently switch (status bar + next turns) after a
+	// memory consolidation.
+	prevProvider, prevModel := d.cfg.ActiveProvider, d.cfg.ActiveModel
+	defer func() {
+		d.cfg.ActiveProvider, d.cfg.ActiveModel = prevProvider, prevModel
+	}()
+
 	// Build a provider config override if needed.
 	if dreamCfg.Provider != "" {
 		if p := d.cfg.GetProviderByID(dreamCfg.Provider); p != nil {
