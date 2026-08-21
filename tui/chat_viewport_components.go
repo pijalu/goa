@@ -408,7 +408,7 @@ func (sc *CompanionSectionComponent) SetDone(endMessage string) {
 		if len(endMessage) > 60 {
 			endMessage = endMessage[:60] + "…"
 		}
-		sc.title = "companion · " + endMessage
+		sc.title = sc.role + " · " + endMessage
 	}
 	sc.changed()
 }

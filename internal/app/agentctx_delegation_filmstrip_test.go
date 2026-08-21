@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/multiagent"
-	"github.com/pijalu/goa/tui"
 )
 
 // feedDelegation drives one delegation-source OrchestratorMessage through the
@@ -18,10 +17,7 @@ import (
 func feedDelegation(sc *uiScenario, label string, msg multiagent.OrchestratorMessage) {
 	sc.tb.Helper()
 	sc.engine.ApplySync(func() {
-		var section *tui.CompanionSectionComponent
-		var cycle int
-		var thinkingBuf, messageBuf strings.Builder
-		sc.app.handleOrchestratorStreamMsg(msg, &section, &cycle, &thinkingBuf, &messageBuf)
+		sc.app.handleOrchestratorStreamMsg(msg, newStreamForwarder())
 	})
 	sc.engine.RenderNow()
 	sc.film.Capture(label, sc.engine.AgentFrame(), sc.status.Text())

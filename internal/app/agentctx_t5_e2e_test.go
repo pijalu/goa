@@ -28,10 +28,7 @@ func t5Drain(sc *uiScenario, events <-chan multiagent.OrchestratorMessage) func(
 		for {
 			select {
 			case msg := <-events:
-				var section *tui.CompanionSectionComponent
-				var cycle int
-				var thinkingBuf, messageBuf strings.Builder
-				sc.app.handleOrchestratorStreamMsg(msg, &section, &cycle, &thinkingBuf, &messageBuf)
+				sc.app.handleOrchestratorStreamMsg(msg, newStreamForwarder())
 			default:
 				return
 			}

@@ -166,6 +166,21 @@ func (a *App) forwardCompanionCycle() {
 	}
 }
 
+// setActiveAgentFooter resolves the streaming sub-agent's real provider/model
+// from the agent pool and pushes it to the status bar, so the footer shows the
+// delegated agent actually running (team bug #3) instead of the main model.
+// The stream's From field carries the role ("coder", "companion", …).
+func (a *App) setActiveAgentFooter(role string) {
+	if a.subs.agentPool == nil || role == "" {
+		return
+	}
+	providerID, modelID := a.subs.agentPool.RoleModelInfo(role)
+	if modelID == "" {
+		return
+	}
+	a.subs.footer.SetActiveAgent(providerID, modelID, role)
+}
+
 func (a *App) handleOrchestratorStreamMsg(msg multiagent.OrchestratorMessage, fwd *streamForwarder) bool {
 	// T4: delegation streams (delegate_to / request_review) route by
 	// DelegationID into their own per-delegation AgentTranscripts via the
@@ -193,9 +208,13 @@ func (a *App) handleOrchestratorStreamMsg(msg multiagent.OrchestratorMessage, fw
 			return
 		}
 		st.section = a.subs.chat.AddCompanionCycle(fwd.nextCycle(role), role)
-		// Section created → the role is now streaming. Mark it active.
-		fwd.markActive(role)
+		// Section created → the role is now streaming. Mark it active and
+		// surface the most recently started active role's real provider/model
+		// in the status bar (footer work happens once per section, not per
+		// chunk, to avoid rebuild churn on every delta).
+		top := fwd.markActive(role)
 		a.subs.footer.SetCompanionBusy(true)
+		a.setActiveAgentFooter(top)
 		a.subs.footer.SetData(tui.FooterData{CompanionActivity: "reviewing"})
 		a.subs.tuiEngine.RequestRender()
 	}
@@ -285,12 +304,16 @@ func (a *App) handleRoleContentStream(
 		st.section = nil
 		st.messageBuf.Reset()
 		st.thinkingBuf.Reset()
-		// This role finished — drop it from the active set. The footer clears
-		// busy only when NO role is streaming anymore (RC-1 footer fix).
-		fwd.markInactive(msg.From)
+		// This role finished — drop it from the active set. The footer reverts
+		// to the main model only when NO role is streaming anymore; otherwise
+		// it shows the next most recently started active role (RC-1 footer fix).
+		top := fwd.markInactive(msg.From)
 		a.subs.footer.SetCompanionBusy(fwd.anyActive())
-		if !fwd.anyActive() {
+		if top == "" {
+			a.subs.footer.SetActiveAgent("", "", "")
 			a.subs.footer.SetData(tui.FooterData{CompanionActivity: ""})
+		} else {
+			a.setActiveAgentFooter(top)
 		}
 		// Force full render to avoid screen shrinking artifacts when the
 		// companion section collapses from many lines to 1.

@@ -63,10 +63,7 @@ func (f *delegationMockFixture) drainDelegationEvents(t *testing.T) {
 	for {
 		select {
 		case msg := <-f.orch.Events():
-			var section *tui.CompanionSectionComponent
-			var cycle int
-			var thinkingBuf, messageBuf strings.Builder
-			f.sc.app.handleOrchestratorStreamMsg(msg, &section, &cycle, &thinkingBuf, &messageBuf)
+			f.sc.app.handleOrchestratorStreamMsg(msg, newStreamForwarder())
 		default:
 			return
 		}

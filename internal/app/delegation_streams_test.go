@@ -35,10 +35,7 @@ func newDelegationTestApp(t *testing.T) *App {
 // routing entry point used by the forwarder.
 func feedDelegationMsg(t *testing.T, a *App, msg multiagent.OrchestratorMessage) {
 	t.Helper()
-	var section *tui.CompanionSectionComponent
-	var cycle int
-	var thinkingBuf, messageBuf strings.Builder
-	a.handleOrchestratorStreamMsg(msg, &section, &cycle, &thinkingBuf, &messageBuf)
+	a.handleOrchestratorStreamMsg(msg, newStreamForwarder())
 }
 
 // delegationSnapshot returns the delegation transcript's snapshot text joined

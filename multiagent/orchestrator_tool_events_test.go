@@ -5,6 +5,7 @@
 package multiagent
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,39 @@ import (
 )
 
 const toolEventsTimeout = 2 * time.Second
+
+// collectEventsUntil drains orch.Events() into a slice until stop(ev) returns
+// true or timeout elapses. It returns a channel closed when collection ends
+// and a func to read the collected events. Extracted to keep test bodies
+// low-complexity (gocognit budget).
+func collectEventsUntil(orch *ForegroundOrchestrator, timeout time.Duration, stop func(OrchestratorMessage) bool) (<-chan struct{}, func() []OrchestratorMessage) {
+	var mu sync.Mutex
+	events := make([]OrchestratorMessage, 0)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		deadline := time.After(timeout)
+		for {
+			select {
+			case ev := <-orch.Events():
+				mu.Lock()
+				events = append(events, ev)
+				shouldStop := stop(ev)
+				mu.Unlock()
+				if shouldStop {
+					return
+				}
+			case <-deadline:
+				return
+			}
+		}
+	}()
+	return done, func() []OrchestratorMessage {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]OrchestratorMessage(nil), events...)
+	}
+}
 
 // TestHandleAgentOutputEvent_ToolEventsEmitted verifies team UI bug RC-2 fix:
 // sub-agent tool calls and results are forwarded as orchestrator events

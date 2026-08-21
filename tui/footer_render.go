@@ -196,10 +196,45 @@ func renderTwoCol(left, right string, width int, styler func(string) string) str
 }
 
 func (f *Footer) buildModelDisplay(fg string, availWidth int) string {
+	// A delegated sub-agent actively streaming takes priority: show its real
+	// provider/model so the status bar reflects what is actually running
+	// (team bug #3). This applies in any mode, not just companion minor-mode.
+	if f.data.ActiveAgentModel != "" {
+		return f.buildActiveAgentDisplay(availWidth)
+	}
 	if f.data.MinorMode == "companion" {
 		return f.buildCompanionModelDisplay(fg, availWidth)
 	}
 	return f.buildMainModelDisplay(fg, availWidth)
+}
+
+// buildActiveAgentDisplay renders the status-bar model section for the
+// sub-agent currently streaming via delegate_to/companion. It shows the main
+// model dimmed alongside the active agent's provider/model, with the agent's
+// role color-coded (matching the chat widget's color-coded first column).
+func (f *Footer) buildActiveAgentDisplay(availWidth int) string {
+	// Main model (context) on the left of the separator.
+	mainModel := f.data.Model
+	if availWidth <= 40 {
+		if s := stripProviderPrefix(mainModel); s != "" {
+			mainModel = s
+		}
+	}
+	mainPart := FormatModelPart(mainModel, "", f.data.MainActivity, f.data.ModelBusy, false, peakStatusForProvider(f.data.Provider, time.Now()))
+
+	// Active agent part: color the role label to match the chat widget.
+	role := f.data.ActiveAgentRole
+	if role == "" {
+		role = "agent"
+	}
+	agentModel := f.data.ActiveAgentModel
+	if f.data.ActiveAgentProvider != "" && availWidth > 45 {
+		agentModel = "(" + f.data.ActiveAgentProvider + ") " + agentModel
+	}
+	label := ansi.Fg(hashColor(role)) + role + ansi.Reset + " "
+	agentPart := label + FormatModelPart(agentModel, "", f.data.CompanionActivity, true, true, peakStatusForProvider(f.data.ActiveAgentProvider, time.Now()))
+
+	return mainPart + " " + ansi.Fg("#8b949e") + "|" + ansi.Reset + " " + agentPart
 }
 
 // appendPluginSegments appends rendered plugin status-bar segments to the

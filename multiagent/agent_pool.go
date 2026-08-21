@@ -465,6 +465,27 @@ func (p *AgentPool) inheritGoaConfig(ac *agentic.Config) {
 	}
 }
 
+// RoleModelInfo reports the provider and model a role's agent is actually
+// running, preferring the live agent's resolved model when it exists and
+// falling back to the configured values otherwise. The status bar uses this
+// to show the delegated agent's real provider/model instead of the main
+// agent's (team status bar bug).
+func (p *AgentPool) RoleModelInfo(role string) (providerID, modelID string) {
+	p.mu.Lock()
+	a := p.agents[role]
+	cfg := p.configs[role]
+	p.mu.Unlock()
+
+	// Live agent: its resolved Model carries the true provider + model ID.
+	if a != nil {
+		if m := a.Model(); m.ID != "" {
+			return string(m.Provider), m.ID
+		}
+	}
+	// Not yet created: fall back to config (provider may be empty → main).
+	return cfg.ProviderID, cfg.ModelName
+}
+
 // Get returns an existing agent, or nil if not created yet.
 func (p *AgentPool) Get(role string) *agentic.Agent {
 	p.mu.Lock()

@@ -67,6 +67,19 @@ func (f *Footer) SetModelBusy(busy bool) { f.data.ModelBusy = busy }
 // SetCompanionBusy sets the companion model busy indicator directly.
 func (f *Footer) SetCompanionBusy(busy bool) { f.data.CompanionBusy = busy }
 
+// SetActiveAgent sets or clears the actively-streaming sub-agent identity
+// (provider, model, role) shown in the status bar, bypassing SetData's
+// preservation logic. The orchestrator forwarder calls this on stream start
+// (with the agent's real provider/model) and passes empty strings on stream
+// end so the footer reverts to the main model. This is the fix for the
+// "status bar shows wrong model info" team bug: the bar reflects the agent
+// actually running, not just the configured companion model.
+func (f *Footer) SetActiveAgent(provider, model, role string) {
+	f.data.ActiveAgentProvider = provider
+	f.data.ActiveAgentModel = model
+	f.data.ActiveAgentRole = role
+}
+
 // GitInfo carries git status for the footer, gathered off the commandLoop.
 type GitInfo struct {
 	Branch    string // current branch (empty if not a git repo)

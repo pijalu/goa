@@ -32,10 +32,20 @@ type FooterData struct {
 	CompanionBusy          bool   // true when the companion is reviewing
 	MainActivity           string // current main agent activity: "sending", "thinking", "tool", "streaming"
 	CompanionActivity      string // current companion activity, empty when idle
-	GoalStatus             string // "active", "paused", "blocked", or empty when no goal; drives only the ◈ marker (goal detail lives in the goal bubble)
-	GoalCount              int    // total goals: 1 current + queued; drives the ◈ goal-count sign (1 → "◈", 3 → "◈◈◈", 25 → "25◈")
-	GoalPendingTodos       int    // count of not-done todos on the active goal; drives the ⬩ markers next to the mode
-	OrchestrationStats     string // per-model orchestration stats rendered as an extra footer line
+
+	// ActiveAgentProvider/ActiveAgentModel identify the sub-agent currently
+	// streaming via delegate_to/companion (e.g. "coder" on provider X model Y).
+	// When ActiveAgentModel is non-empty the status bar shows the delegated
+	// agent's real provider/model instead of the main model, fixing the
+	// "status bar shows wrong model info" team bug. Empty when idle.
+	ActiveAgentProvider string
+	ActiveAgentModel    string
+	ActiveAgentRole     string // role label ("coder", "companion", …) for color-coding
+
+	GoalStatus         string // "active", "paused", "blocked", or empty when no goal; drives only the ◈ marker (goal detail lives in the goal bubble)
+	GoalCount          int    // total goals: 1 current + queued; drives the ◈ goal-count sign (1 → "◈", 3 → "◈◈◈", 25 → "25◈")
+	GoalPendingTodos   int    // count of not-done todos on the active goal; drives the ⬩ markers next to the mode
+	OrchestrationStats string // per-model orchestration stats rendered as an extra footer line
 	// AgentTabStats is the ACTIVE multi-agent tab's stat line (T5), rendered
 	// as one extra footer line below the chrome. Written ONLY through
 	// Footer.SetAgentStats (the sole writer, mirroring SetGoalStatus) so
@@ -69,6 +79,7 @@ func preserveFooterData(prev, data FooterData) FooterData {
 	data = preserveFooterGoal(prev, data)
 	data = preserveFooterTeam(prev, data)
 	data = preserveFooterAgentStats(prev, data)
+	data = preserveFooterActiveAgent(prev, data)
 	return data
 }
 
@@ -80,6 +91,22 @@ func preserveFooterData(prev, data FooterData) FooterData {
 func preserveFooterAgentStats(prev, data FooterData) FooterData {
 	if data.AgentTabStats == "" {
 		data.AgentTabStats = prev.AgentTabStats
+	}
+	return data
+}
+
+// preserveFooterActiveAgent keeps the actively-streaming sub-agent identity
+// across routine footer rebuilds (token stats, activity) that construct a
+// fresh FooterData without it. SetActiveAgent is the sole writer (mirroring
+// SetTeam/SetGoalStatus): the forwarder sets it on stream start and clears it
+// on stream end, so the preserved value never goes stale — but a SetData call
+// with a partial struct (e.g. only CompanionActivity) must not wipe it
+// mid-stream (this was the root cause of the active agent not appearing).
+func preserveFooterActiveAgent(prev, data FooterData) FooterData {
+	if data.ActiveAgentModel == "" {
+		data.ActiveAgentProvider = prev.ActiveAgentProvider
+		data.ActiveAgentModel = prev.ActiveAgentModel
+		data.ActiveAgentRole = prev.ActiveAgentRole
 	}
 	return data
 }
