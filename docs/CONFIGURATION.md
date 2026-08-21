@@ -402,6 +402,18 @@ including subcommands and doc suffixes.
 logging:
   level: info                        # error | warn | info | debug
   file: ""                           # Log file path (empty=stderr)
+
+# ── Features (opt-in gates; all default OFF) ───────────────────────
+features:
+  # Server-side conversation compaction (Codex Phase 2b, POST
+  # /responses/compact). Default off: the local compression ladder runs.
+  remote_compaction: false
+  # Multi-agent TUI scrollback replay on tab switch (plan T3). Default off:
+  # switching agent tabs repaints only the visible window. When on, switching
+  # replays the target agent's committed transcript rows into the real
+  # terminal scrollback (via a dedicated ReplayRunner goroutine), so the
+  # switched-to agent's history is faithful and scrollable.
+  multi_agent_scrollback_replay: false
 ```
 
 ## Env Var Overrides

@@ -73,16 +73,26 @@ func (a *App) remountAgentView(eng *tui.TUI, oldID string, oldView *agentctx.Age
 		// new view is at least visible.
 		eng.AddChild(nextView.Transcript.View())
 	}
-	// Restore the target's baseline and arm the full window repaint. The
-	// repaint is in-place (per-row erase + rewrite), which is the
-	// compositor's region-scoped clear: committed scrollback is untouched and
-	// never re-emitted (T2; replay lands in T3).
-	eng.RestoreFrame(nextView.Compositor.Snapshot())
 	// Keep the app's main-chat binding honest: subs.chat must point at the
 	// MAIN agent's viewport regardless of which tab is visible, so main-agent
 	// events keep landing in their own transcript (routing is per-agent, T4).
 	if mainView, ok := a.subs.agentRegistry.Get(agentctx.MainAgentID); ok {
 		a.subs.chat = mainView.Transcript.View()
 	}
+	// Restore the target's baseline and arm the repaint. With the T3 gate ON
+	// this is the scrollback-replay path: suppress frames, hand the target's
+	// committed-but-unemitted backlog to the ReplayRunner, and defer the
+	// resume repaint until the runner reports the watermark it reached
+	// (applyReplayResult). When a replay is scheduled we must NOT call
+	// RestoreFrame here — that would arm a repaint that scrolls the backlog
+	// off inline, double-emitting the rows the runner owns. With the gate OFF
+	// (or nothing to replay) the T2 in-place repaint runs unchanged.
+	if a.driveReplayOnSwitch(eng, newID, nextView) {
+		return
+	}
+	// T2 path: restore the target's baseline and arm the full window repaint.
+	// The repaint is in-place (per-row erase + rewrite), which is the
+	// compositor's region-scoped clear: committed scrollback is untouched and
+	// never re-emitted.
+	eng.RestoreFrame(nextView.Compositor.Snapshot())
 }
-

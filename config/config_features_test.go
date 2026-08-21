@@ -94,3 +94,75 @@ func TestFeaturesRemoteCompaction_DeepCopy(t *testing.T) {
 		t.Fatal("deep copy must not alias the source pointer")
 	}
 }
+
+// TestFeaturesMultiAgentScrollbackReplay_Parse verifies the T3 gate parses
+// from YAML and defaults off when the features block is absent (the default
+// must keep the T2 repaint-only switch behavior).
+func TestFeaturesMultiAgentScrollbackReplay_Parse(t *testing.T) {
+	// Absent -> default off.
+	var off Config
+	if err := yaml.Unmarshal([]byte("active_model: m\n"), &off); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if off.Features.MultiAgentScrollbackReplayEnabled() {
+		t.Error("absent features.multi_agent_scrollback_replay must default to off")
+	}
+
+	// Explicit true.
+	var on Config
+	if err := yaml.Unmarshal([]byte("features:\n  multi_agent_scrollback_replay: true\n"), &on); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !on.Features.MultiAgentScrollbackReplayEnabled() {
+		t.Error("features.multi_agent_scrollback_replay: true must resolve on")
+	}
+
+	// Explicit false (reversible).
+	var explicit Config
+	if err := yaml.Unmarshal([]byte("features:\n  multi_agent_scrollback_replay: false\n"), &explicit); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if explicit.Features.MultiAgentScrollbackReplayEnabled() {
+		t.Error("features.multi_agent_scrollback_replay: false must resolve off")
+	}
+}
+
+// TestFeaturesMultiAgentScrollbackReplay_DeepMerge verifies the gate merges
+// across cascade layers with tri-state semantics (a higher explicit value
+// overrides, an unset higher layer inherits).
+func TestFeaturesMultiAgentScrollbackReplay_DeepMerge(t *testing.T) {
+	// Lower off + higher on -> on.
+	base := &Config{}
+	base.DeepMerge(&Config{Features: FeaturesConfig{MultiAgentScrollbackReplay: boolPtr(true)}})
+	if !base.Features.MultiAgentScrollbackReplayEnabled() {
+		t.Error("higher-layer true must enable the gate")
+	}
+
+	// Lower on + higher explicit false -> off (reversible).
+	base2 := &Config{Features: FeaturesConfig{MultiAgentScrollbackReplay: boolPtr(true)}}
+	base2.DeepMerge(&Config{Features: FeaturesConfig{MultiAgentScrollbackReplay: boolPtr(false)}})
+	if base2.Features.MultiAgentScrollbackReplayEnabled() {
+		t.Error("higher-layer explicit false must reverse a lower true")
+	}
+
+	// Lower on + higher unset -> inherit on.
+	base3 := &Config{Features: FeaturesConfig{MultiAgentScrollbackReplay: boolPtr(true)}}
+	base3.DeepMerge(&Config{})
+	if !base3.Features.MultiAgentScrollbackReplayEnabled() {
+		t.Error("unset higher layer must inherit the lower-layer value")
+	}
+}
+
+// TestFeaturesMultiAgentScrollbackReplay_DeepCopy verifies the tri-state
+// pointer is deep-copied (mutating the copy does not alias the source).
+func TestFeaturesMultiAgentScrollbackReplay_DeepCopy(t *testing.T) {
+	src := &Config{Features: FeaturesConfig{MultiAgentScrollbackReplay: boolPtr(true)}}
+	cp := src.DeepCopy()
+	if !cp.Features.MultiAgentScrollbackReplayEnabled() {
+		t.Fatal("deep copy must preserve the gate value")
+	}
+	*cp.Features.MultiAgentScrollbackReplay = false
+	if !src.Features.MultiAgentScrollbackReplayEnabled() {
+		t.Fatal("deep copy must not alias the source pointer")
+	}
+}

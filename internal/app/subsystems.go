@@ -106,6 +106,12 @@ type subsystems struct {
 	steeringChrome *tui.SteeringChrome
 	footer         *tui.Footer
 	tuiEngine      *tui.TUI
+	// replayRunner emits a switched-to agent's committed transcript rows into
+	// the real terminal scrollback on a tab switch (plan T3). Nil unless the
+	// features.multi_agent_scrollback_replay gate resolves ON; created against
+	// the engine's compositor in buildTUI, drained in setupEventHandlers, and
+	// closed on shutdown. When nil a switch keeps the T2 repaint-only behavior.
+	replayRunner   *agentctx.ReplayRunner
 	bgPanel        *bgpanel.Panel
 
 	// Logger for structured stats output

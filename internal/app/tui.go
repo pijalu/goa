@@ -73,6 +73,13 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 	a.subs.agentRegistry = reg
 	chat := mainTranscript.View()
 	a.configureChat(chat)
+	// T3: when the scrollback-replay gate resolves ON, create the dedicated
+	// ReplayRunner against the engine's compositor. It stays idle until a view
+	// switch submits a backlog; when the gate is OFF the field stays nil and
+	// switching keeps the T2 repaint-only behavior.
+	if a.replayEnabled() {
+		a.subs.replayRunner = agentctx.NewReplayRunner(engine.Compositor(), 0)
+	}
 	// T2: the per-delegation tab strip reads the registry (pull-based); with a
 	// single view it renders nothing, so the single-agent layout is unchanged.
 	agentCtxBar := agentctx.NewAgentTabBar(reg)

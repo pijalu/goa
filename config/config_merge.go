@@ -80,6 +80,9 @@ func (c *Config) mergeFeatures(other *Config) {
 	if other.Features.RemoteCompaction != nil {
 		c.Features.RemoteCompaction = other.Features.RemoteCompaction
 	}
+	if other.Features.MultiAgentScrollbackReplay != nil {
+		c.Features.MultiAgentScrollbackReplay = other.Features.MultiAgentScrollbackReplay
+	}
 }
 
 // mergeTopLevelScalars overwrites top-level scalar fields from other when set.

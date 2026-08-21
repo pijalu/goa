@@ -48,6 +48,13 @@ func (a *App) handleNewSession() bool {
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.ClearTranscript()
 	}
+	// T3: /new wipes the scrollback an in-flight replay would be emitting into.
+	// Cancel the runner and release the render-suppression so the fresh canvas
+	// renders immediately; the (now-stale) replay's rows are gone with the wipe.
+	if a.subs.replayRunner != nil {
+		a.subs.replayRunner.Cancel()
+		a.subs.tuiEngine.SetReplaySuppressed(false)
+	}
 	startAgentSession(a.subs, a.subs.chat)
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()

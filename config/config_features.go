@@ -22,12 +22,30 @@ type FeaturesConfig struct {
 	// ladder runs unless this resolves true. Detection/gating only — no
 	// request logic.
 	RemoteCompaction *bool `yaml:"remote_compaction,omitempty"`
+
+	// MultiAgentScrollbackReplay gates the multi-agent TUI's scrollback
+	// replay on tab switch (plan T3). Tri-state: nil = inherit (embedded
+	// default: off). When ON, switching to another agent's tab replays that
+	// agent's committed transcript rows into the real terminal scrollback via
+	// the dedicated ReplayRunner goroutine, so the switched-to agent has a
+	// faithful, scrollable history. When OFF (default), a switch repaints only
+	// the visible window (the T2 behavior) — committed rows of the target are
+	// NOT re-emitted. The flag lets T3 land and be tested in isolation without
+	// changing default behavior.
+	MultiAgentScrollbackReplay *bool `yaml:"multi_agent_scrollback_replay,omitempty"`
 }
 
 // RemoteCompactionEnabled reports whether the remote-compaction gate resolves
 // on (default false when unset at every cascade layer).
 func (f FeaturesConfig) RemoteCompactionEnabled() bool {
 	return f.RemoteCompaction != nil && *f.RemoteCompaction
+}
+
+// MultiAgentScrollbackReplayEnabled reports whether the multi-agent
+// scrollback-replay gate resolves on (default false when unset at every
+// cascade layer).
+func (f FeaturesConfig) MultiAgentScrollbackReplayEnabled() bool {
+	return f.MultiAgentScrollbackReplay != nil && *f.MultiAgentScrollbackReplay
 }
 
 type GoalsConfig struct {

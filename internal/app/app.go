@@ -278,6 +278,12 @@ func (a *App) Run() bool {
 		_ = a.usageStore.Close()
 		a.usageStore = nil
 	}
+	// T3: stop the scrollback ReplayRunner before the engine's loops so its
+	// goroutine cannot emit into a torn-down terminal.
+	if a.subs.replayRunner != nil {
+		a.subs.replayRunner.Close()
+		a.subs.replayRunner = nil
+	}
 	engine.Stop()
 	a.subs.stopConfigWatcher()
 

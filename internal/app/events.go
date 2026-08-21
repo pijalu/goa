@@ -30,6 +30,12 @@ func (a *App) setupEventHandlers(engine *tui.TUI, chat *tui.ChatViewport, inp *t
 	go a.runGitRefreshLoop(done, gitRefreshInterval)
 	go a.runPeakRefreshLoop(done, peakRefreshInterval)
 
+	// T3: drain the scrollback ReplayRunner's watermark results on the command
+	// loop (a.apply). Only started when the gate created a runner in buildTUI.
+	if a.subs.replayRunner != nil {
+		go a.runReplayResultReader(done, a.subs.replayRunner)
+	}
+
 	// Forward foreground orchestrator events to the TUI event bus, so that
 	// companion post-turn output and other orchestrator-managed workflows
 	// show agent-colored messages in the chat viewport.

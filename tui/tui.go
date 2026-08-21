@@ -76,6 +76,11 @@ type TUI struct {
 	stopOnce  sync.Once // guards the full synchronous shutdown sequence
 	started   atomic.Bool
 
+	// replaySuppressed pauses frame rendering while a scrollback ReplayRunner
+	// owns the terminal (plan T3). Written by the command loop inside the
+	// switch Apply, read by the render loop.
+	replaySuppressed atomic.Bool
+
 	focus        *FocusStack
 	// overlayMu guards overlayStack: mutation happens on the commandLoop
 	// (or inline via Apply pre-RunLoops), while buildOverlayLayers reads it
@@ -512,6 +517,9 @@ func (t *TUI) handleLiveTick(live *liveRenderTicker) bool {
 // renderOneFrame requests a snapshot from the commandLoop and hands it to
 // the compositor. Extracted from renderLoop to keep complexity in budget.
 func (t *TUI) renderOneFrame() {
+	if t.replaySuppressed.Load() {
+		return // ReplayRunner owns the terminal; frames resume on replay end (T3)
+	}
 	reply := make(chan *Scene, 1)
 	t.snapReq <- reply
 	scene := <-reply
@@ -658,6 +666,44 @@ func (t *TUI) ExportFrame() FrameState { return t.compositor.ExportFrame() }
 func (t *TUI) RestoreFrame(s FrameState) {
 	t.compositor.RestoreFrame(s)
 	t.RequestRender()
+}
+
+// Compositor exposes the engine's compositor so the app layer can hand it to
+// the scrollback ReplayRunner (plan T3). The compositor serializes all its
+// own writes; callers must not invoke Render directly.
+func (t *TUI) Compositor() *Compositor { return t.compositor }
+
+// SetReplaySuppressed pauses frame rendering while a scrollback replay runs
+// (plan T3). While suppressed, renderOneFrame drops the render request: the
+// ReplayRunner owns the terminal's scroll region and the two must never write
+// concurrently. The replay's completion handler (on the command loop) clears
+// the suppression and requests the resume frame. Without suppression a frame
+// between switch and replay-end would emit the same backlog rows the runner
+// is emitting — the duplicate-scroll bug this prevents.
+func (t *TUI) SetReplaySuppressed(s bool) { t.replaySuppressed.Store(s) }
+
+// ReplaySuppressed reports whether frame rendering is paused for a replay.
+func (t *TUI) ReplaySuppressed() bool { return t.replaySuppressed.Load() }
+
+// ReplaySnapshot captures the CURRENTLY-mounted view's full canvas and window
+// geometry for a scrollback replay. Must be called on the command loop
+// (inside Apply): it composes the component tree's scene in full (cullFloor
+// 0). Returns the canvas, the canvas row the visible window starts at
+// (naturalVt — replay emits [savedWatermark, naturalVt)), the content end
+// (canvas rows minus the chrome band), and the compose geometry.
+func (t *TUI) ReplaySnapshot() (canvas []string, naturalVt, contentEnd, width, height int) {
+	scene := t.buildSnapshot()
+	canvas, _ = scene.compose(0)
+	w, h := scene.TerminalW, scene.TerminalH
+	contentEnd = len(canvas) - scene.ChromeHeight
+	if contentEnd < 0 {
+		contentEnd = 0
+	}
+	naturalVt = 0
+	if contentEnd > h-scene.ChromeHeight {
+		naturalVt = contentEnd - (h - scene.ChromeHeight)
+	}
+	return canvas, naturalVt, contentEnd, w, h
 }
 
 // listenResize reacts to terminal size changes by requesting a re-render.
