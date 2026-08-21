@@ -64,5 +64,41 @@ Current:
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+### Fix plan — /stats:cache redesign + session preservation
+Part 1 (lost during goals) root cause:
+`AgentManager.SendUserInputWithImages` called `turnRecorder.ResetTurn()`
+BEFORE the steering/busy early-return. Every user message typed while a goal
+turn owned the agent wiped the in-flight turn's accumulators, so the
+finalized TurnRecord carried zero tokens and /stats:cache lost the session's
+cache history exactly during goals. Fix: move ResetTurn AFTER the busy check
+(only a turn that actually starts clears accumulators).
+
+Part 2 (output format) changes in core/commands/stats_cache.go:
+1. Per-turn section lines become the required format — one line per
+   cache-active turn: `T<num> : <tokens>kT - CM: <full>-<partial> -
+   CH: <rate>% <20-col band-colored bar>`; tokens = full prompt-side volume
+   (PromptN + CacheRead + CacheWrite) zero-padded kT ("00045.4kT"); CM =
+   cumulative full/partial miss counters through that turn (footer CM
+   semantics); CH = per-turn rate.
+2. Vertical last-10 chart bars widened to 4 columns so each bar's actual
+   percentage renders under it ("%3.0f%%" label row); empty bands become
+   4-space cells to keep columns aligned; baseline ──── per bar.
+3. Session total line wording → "(token-weighted over N turns)" (totals sum
+   already weights by tokens; matches bug 'Average cache').
+4. Interpretation note: the report's sample "T1 … CM: 0-1" fixes the FORMAT;
+   T1 cannot be a miss (nothing established yet), so values follow the
+   footer's cumulative CM counters.
+
+Test approach:
+- Regression: user input mid-goal must NOT wipe in-flight turn accumulators
+  (CurrentTurn keeps recorded token usage).
+- Format tests: per-turn line exact shape incl. padded kT figure, CM
+  counters, colored bar; chart geometry with 4-wide cells and under-bar
+  percentage labels; multi-agent groups unchanged.
+- Terminal-output validation: capture showCacheStats into a writer and
+  assert rendered lines.
+
+Validation steps: gates per guideline (each separately) + full race suite.
+
 
 

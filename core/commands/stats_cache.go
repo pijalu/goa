@@ -247,14 +247,31 @@ func cacheLevelColors(rates []float64) []string {
 	return colors
 }
 
-// writeCacheAvgPerTurn renders section 2: one horizontal block bar per turn
-// (cache-active turns only), colored by the same band thresholds.
+// cacheTurnsOnActivity filters to turns that actually called the LLM
+// (any prompt-side volume). Unlike cacheActiveTurns this KEEPS bust rounds
+// (zero reads after establishment): their 0% line and bumped CM counters are
+// exactly what the per-turn view must surface.
+func cacheTurnsOnActivity(turns []cacheTurn) []cacheTurn {
+	out := make([]cacheTurn, 0, len(turns))
+	for _, t := range turns {
+		if t.PromptN > 0 || t.CacheRead > 0 || t.CacheWrite > 0 {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// writeCacheAvgPerTurn renders section 2: one line per cache-active turn in
+// the required format — turn number, full prompt-side token volume (padded
+// kT), cumulative cache-miss counters, per-turn hit rate, and a band-colored
+// 20-column bar.
 func writeCacheAvgPerTurn(b *strings.Builder, turns []cacheTurn) {
 	b.WriteString("# Cache usage per turn\n")
-	active := cacheActiveTurns(turns)
+	active := cacheTurnsOnActivity(turns)
 	if len(active) == 0 {
 		return
 	}
+	missByTurn := cacheMissCounters(turns)
 	const barWidth = 20 // block columns at 100%
 	for _, t := range active {
 		r := cacheTurnRate(t)
@@ -262,9 +279,31 @@ func writeCacheAvgPerTurn(b *strings.Builder, turns []cacheTurn) {
 		if filled > barWidth {
 			filled = barWidth
 		}
-		fmt.Fprintf(b, "T%-4d %6.2f%% %s%s%s\n",
-			t.Num, r, cacheLevelColor(r), strings.Repeat("█", filled), ansi.Reset)
+		cm := missByTurn[t.Num]
+		fmt.Fprintf(b, "T%d : %08.1fkT - CM: %d-%d - CH: %.1f%% %s%s%s\n",
+			t.Num, cacheTurnTokensK(t), cm[0], cm[1],
+			r, cacheLevelColor(r), strings.Repeat("█", filled), ansi.Reset)
 	}
+}
+
+// cacheTurnTokensK returns the turn's full prompt-side volume (uncached input
+// + cache reads + cache writes) in kilo-tokens.
+func cacheTurnTokensK(t cacheTurn) float64 {
+	return float64(t.PromptN+t.CacheRead+t.CacheWrite) / 1000.0
+}
+
+// cacheMissCounters folds the per-turn miss detection into CUMULATIVE
+// full/partial counters keyed by turn number — the same semantics as the
+// footer's CM:<full>-<partial> display, so the two surfaces agree.
+func cacheMissCounters(turns []cacheTurn) map[int][2]int {
+	out := make(map[int][2]int, len(turns))
+	var cumFull, cumPartial int
+	for _, m := range cacheMisses(turns) {
+		cumFull += m.full
+		cumPartial += m.partial
+		out[m.num] = [2]int{cumFull, cumPartial}
+	}
+	return out
 }
 
 // writeCacheSessionTotal renders section 3: the token-weighted cache-hit
@@ -281,7 +320,7 @@ func writeCacheSessionTotal(b *strings.Builder, turns []cacheTurn) {
 		prompt += t.PromptN
 	}
 	total := metrics.CacheHitPct(read, write, prompt)
-	fmt.Fprintf(b, "# Session total: %s%.2f%%%s cache hit (weighted over %d turns)\n",
+	fmt.Fprintf(b, "# Session total: %s%.2f%%%s cache hit (token-weighted over %d turns)\n",
 		cacheLevelColor(total), total, ansi.Reset, len(active))
 }
 
@@ -371,7 +410,12 @@ func latestCacheRates(turns []cacheTurn, maxBars int) ([]float64, []string) {
 // labels (e.g. "100% ").
 const cacheChartGutter = "     "
 
-// writeCacheChart renders a horizontal bar chart: one 1-column-wide bar per
+// cacheChartCellW is the per-bar column width of the vertical chart. Bars
+// are drawn 4 columns wide so each bar's actual percentage ("93%", "100%")
+// fits under it on the label row.
+const cacheChartCellW = 4
+
+// writeCacheChart renders a horizontal bar chart: one 4-column-wide bar per
 // completion, separated by a single space, rightmost = newest. Each bar's
 // height encodes the completion's cache-hit rate (scaled to cacheChartRows
 // block bands); the percentage axis is on the left, per-bar labels under the
@@ -403,15 +447,15 @@ func cacheBarHeights(rates []float64) []int {
 }
 
 // writeCacheChartRow draws one horizontal band: the gutter label (at 25%
-// steps) then one cell per bar — a colored block where the bar reaches this
-// band, a space otherwise.
+// steps) then one cell per bar — a colored block run where the bar reaches
+// this band, blank spacing otherwise (cells stay column-aligned).
 func writeCacheChartRow(b *strings.Builder, row int, height []int, colors []string) {
 	b.WriteString(cacheRowGutter(row))
 	writeCacheRowCells(b, func(i int) string {
 		if height[i] >= row {
-			return colors[i] + "█" + ansi.Reset
+			return colors[i] + strings.Repeat("█", cacheChartCellW) + ansi.Reset
 		}
-		return " "
+		return strings.Repeat(" ", cacheChartCellW)
 	}, len(height))
 	b.WriteString("\n")
 }
@@ -440,16 +484,16 @@ func writeCacheRowCells(b *strings.Builder, cell func(i int) string, n int) {
 // writeCacheChartBaseline draws the ─ axis under the bars.
 func writeCacheChartBaseline(b *strings.Builder, n int) {
 	b.WriteString(cacheChartGutter)
-	writeCacheRowCells(b, func(int) string { return "─" }, n)
+	writeCacheRowCells(b, func(int) string { return strings.Repeat("─", cacheChartCellW) }, n)
 	b.WriteString("\n")
 }
 
-// writeCacheChartLabels lists each bar's percentage under the chart, newest
-// rightmost. With ≤ 20 bars the per-bar column is too narrow for the value, so
-// labels are listed as a compact oldest→newest row of percentages instead.
+// writeCacheChartLabels lists each bar's actual percentage under it,
+// right-aligned to the 4-column cells ("100%", " 93%", "  0%"), newest
+// rightmost.
 func writeCacheChartLabels(b *strings.Builder, rates []float64) {
 	b.WriteString(cacheChartGutter)
-	writeCacheRowCells(b, func(i int) string { return fmt.Sprintf("%.0f", rates[i]) }, len(rates))
+	writeCacheRowCells(b, func(i int) string { return fmt.Sprintf("%3.0f%%", rates[i]) }, len(rates))
 	b.WriteString("\n")
 }
 

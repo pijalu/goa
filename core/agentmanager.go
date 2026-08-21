@@ -283,8 +283,6 @@ func (am *AgentManager) SendUserInputWithImages(input string, images []string) e
 		return fmt.Errorf("no active session")
 	}
 
-	am.turnRecorder.ResetTurn(time.Now())
-
 	// Queue as steering whenever the agent cannot start a user turn right now:
 	// a manager-owned turn is in flight (alreadyRunning) OR an externally
 	// driven turn owns the agent (e.g. a goal continuation turn — the goal
@@ -297,6 +295,13 @@ func (am *AgentManager) SendUserInputWithImages(input string, images []string) e
 		am.steering.Append(input)
 		return nil
 	}
+
+	// Only a turn that will actually START clears the per-turn accumulators.
+	// Clearing before the steering check wiped the in-flight goal turn's
+	// token/tool state on every user message typed mid-goal, so /stats:cache
+	// lost the session's cache stats exactly while a goal ran (the finalized
+	// TurnRecord came out empty).
+	am.turnRecorder.ResetTurn(time.Now())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	am.mu.Lock()

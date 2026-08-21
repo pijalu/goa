@@ -139,10 +139,13 @@ func assertChartBand50(t *testing.T, lines []string, plain string) {
 	if band50 == "" {
 		t.Fatalf("no 50%% gutter row:\n%s", plain)
 	}
-	// cells: gutter(5) then bar,space,bar,space,bar → cols 5,7,9
-	cells := []rune(band50)
-	if cells[5] != '█' || cells[7] != '█' || cells[9] != ' ' {
-		t.Errorf("50%% row should fill bars 1&2, empty bar 3: %q", band50)
+	// cells: gutter(5) then 4-wide bar cells separated by single spaces —
+	// bar i occupies cols [5+i*5, 5+i*5+3]. Bars: 100%, 50%, 0% → fill,
+	// fill, blank.
+	runes := []rune(band50)
+	bar := func(i int) string { return string(runes[5+i*5 : 5+i*5+4]) }
+	if bar(0) != "████" || bar(1) != "████" || bar(2) != "    " {
+		t.Errorf("50%% row should fill bars 1&2 and leave bar 3 blank: %q", band50)
 	}
 }
 
@@ -253,6 +256,16 @@ func TestStatsCommand_CacheView(t *testing.T) {
 	if !strings.Contains(out, "█") {
 		t.Errorf("chart lacks block bars:\n%s", out)
 	}
+	// Required per-turn line format: number, padded token volume, CM
+	// counters, hit rate (terminal-output validation of the redesign).
+	for _, want := range []string{
+		"T1 : 000000.4kT - CM: 0-0 - CH: 75.0% ",
+		"T3 : 000000.5kT - CM: 1-0 - CH: 0.0% ",
+	} {
+		if !strings.Contains(ansi.Strip(out), want) {
+			t.Errorf("per-turn line missing %q:\n%s", want, ansi.Strip(out))
+		}
+	}
 }
 
 // TestStatsCommand_CacheViewEmpty covers the no-activity case: no turns with
@@ -316,20 +329,46 @@ func TestWriteCacheHitLast10(t *testing.T) {
 	}
 }
 
-// TestWriteCacheAvgPerTurn verifies horizontal per-turn bars with band colors.
+// TestWriteCacheAvgPerTurn verifies the required per-turn line format:
+// `T<num> : <padded kT> - CM: <full>-<partial> - CH: <rate>% <colored bar>`.
 func TestWriteCacheAvgPerTurn(t *testing.T) {
 	var b strings.Builder
 	writeCacheAvgPerTurn(&b, cacheTurnsFromHistory(cacheTurns(
-		[3]int{0, 90, 10}, // 90% → orange
-		[3]int{0, 96, 4},  // 96% → green
+		[3]int{0, 90, 10},  // 90% → orange, 100 tokens total → 000000.1kT
+		[3]int{0, 960, 40}, // 96% → green, 1000 tokens → 000001.0kT
 	), nil))
 	out := b.String()
-	if !strings.Contains(out, "T1") || !strings.Contains(out, "90.00%") ||
-		!strings.Contains(out, "T2") || !strings.Contains(out, "96.00%") {
-		t.Errorf("per-turn bars missing labels/rates:\n%s", ansi.Strip(out))
+	plain := ansi.Strip(out)
+	// Required line shape (report example): number, token volume, CM
+	// counters, hit rate, bar.
+	for _, want := range []string{
+		"T1 : 000000.1kT - CM: 0-0 - CH: 90.0% ",
+		"T2 : 000001.0kT - CM: 0-0 - CH: 96.0% ",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("per-turn line missing %q:\n%s", want, plain)
+		}
 	}
 	if !strings.Contains(out, ansi.Fg("#d29922")) || !strings.Contains(out, ansi.Fg("#3fb950")) {
 		t.Errorf("bars must be band-colored (90%% orange, 96%% green):\n%q", out)
+	}
+}
+
+// TestWriteCacheAvgPerTurn_MissCounters pins that a turn which busts the
+// established cache shows up in the cumulative CM counters of its own and
+// all later lines.
+func TestWriteCacheAvgPerTurn_MissCounters(t *testing.T) {
+	var b strings.Builder
+	writeCacheAvgPerTurn(&b, cacheTurnsFromHistory(cacheTurns(
+		[3]int{0, 800, 200}, // T1: warm, 80%
+		[3]int{500, 0, 0},   // T2: full miss (500 tokens recomputed)
+	), nil))
+	out := ansi.Strip(b.String())
+	if !strings.Contains(out, "T1 : 000001.0kT - CM: 0-0") {
+		t.Errorf("T1 must show clean counters:\n%s", out)
+	}
+	if !strings.Contains(out, "T2 : 000000.5kT - CM: 1-0") {
+		t.Errorf("T2 full miss must bump the cumulative full counter:\n%s", out)
 	}
 }
 
