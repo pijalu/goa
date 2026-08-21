@@ -219,6 +219,13 @@ func (a *App) handleOrchestratorStreamMsg(msg multiagent.OrchestratorMessage, fw
 		a.subs.tuiEngine.RequestRender()
 	}
 
+	return a.handleRoleStreamMsg(msg, fwd, st, ensureSection)
+}
+
+// handleRoleStreamMsg routes one non-delegation stream message into its
+// role's isolated section state. Returns true when the kind was consumed;
+// false lets the caller fall back to the InterAgent channel.
+func (a *App) handleRoleStreamMsg(msg multiagent.OrchestratorMessage, fwd *streamForwarder, st *roleStreamState, ensureSection func()) bool {
 	switch msg.Kind {
 	case "content":
 		a.handleRoleContentStream(msg, st, fwd, ensureSection)
