@@ -132,49 +132,47 @@ func TestSkillRegistrySourceOf(t *testing.T) {
 	reg := NewSkillRegistry(nil)
 	reg.SetEmbeddedFS(EmbeddedSkillsFS)
 	if err := reg.LoadAll(); err != nil {
-		t.Fatalf("LoadAll: %v", err)
-	}
-	if src, ok := reg.SourceOf("refactor"); !ok || src != "embedded" {
-		t.Errorf("SourceOf(refactor) = %q, %v; want embedded, true", src, ok)
-	}
-	if src, ok := reg.SourceOf("nonexistent"); ok {
-		t.Errorf("SourceOf(nonexistent) = %q, %v; want '', false", src, ok)
-	}
-
-	// File-based skill in a temp dir.
-	dir := t.TempDir()
-	skillDir := filepath.Join(dir, "local-skill")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: local-skill\n---\nbody"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	reg2 := NewSkillRegistry([]string{dir})
-	reg2.SetEmbeddedFS(EmbeddedSkillsFS)
-	if err := reg2.LoadAll(); err != nil {
-		t.Fatalf("LoadAll: %v", err)
-	}
-	if src, ok := reg2.SourceOf("local-skill"); !ok || src != "file" {
-		t.Errorf("SourceOf(local-skill) = %q, %v; want file, true", src, ok)
-	}
-
-	// SourceOf still finds a DISABLED skill: it is not loaded but on disk.
-	reg3 := NewSkillRegistry([]string{dir})
-	reg3.SetEmbeddedFS(EmbeddedSkillsFS)
-	reg3.SetDisabled([]string{"local-skill"})
-	if err := reg3.LoadAll(); err != nil {
-		t.Fatalf("LoadAll with disabled: %v", err)
-	}
+	assertSkillSource(t, reg, "refactor", "embedded", true)
+	assertSkillSource(t, reg, "nonexistent", "", false)
+	dir := writeLocalSkill(t)
+	reg2 := loadedRegistry(t, dir, nil)
+	assertSkillSource(t, reg2, "local-skill", "file", true)
+	reg3 := loadedRegistry(t, dir, []string{"local-skill"})
 	if _, ok := reg3.Get("local-skill"); ok {
 		t.Fatal("disabled skill should not be loaded")
 	}
-	if src, ok := reg3.SourceOf("local-skill"); !ok || src != "file" {
-		t.Errorf("SourceOf(disabled local-skill) = %q, %v; want file, true", src, ok)
+	assertSkillSource(t, reg3, "local-skill", "file", true)
+	assertSkillSource(t, reg3, "refactor", "embedded", true)
+}
+
+func assertSkillSource(t *testing.T, reg *SkillRegistry, name, want string, wantOK bool) {
+	if got, ok := reg.SourceOf(name); ok != wantOK || got != want {
+		t.Errorf("SourceOf(%s) = %q, %v; want %q, %v", name, got, ok, want, wantOK)
 	}
-	if src, ok := reg3.SourceOf("refactor"); !ok || src != "embedded" {
-		t.Errorf("SourceOf(refactor) = %q, %v; want embedded, true", src, ok)
+}
+
+func writeLocalSkill(t *testing.T) string {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "local-skill")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte("---\nname: local-skill\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func loadedRegistry(t *testing.T, dir string, disabled []string) *SkillRegistry {
+	reg := NewSkillRegistry([]string{dir})
+	reg.SetEmbeddedFS(EmbeddedSkillsFS)
+	reg.SetDisabled(disabled)
+	if err := reg.LoadAll(); err != nil {
+		t.Fatal(err)
+	}
+	return reg
 }
 
 // TestSkillRegistryListSource verifies List summaries carry the skill origin
@@ -547,67 +545,71 @@ func TestParseSkillStickyDefaultFalse(t *testing.T) {
 //   - SkillSummary.Sticky reflects the effective state.
 func TestSkillRegistryStickyOverrides(t *testing.T) {
 	dir := t.TempDir()
-	write := func(name, frontmatter string) {
-		sd := filepath.Join(dir, name)
-		if err := os.MkdirAll(sd, 0755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(frontmatter+"\nbody"), 0644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-	}
-	write("plain-k", "---\nname: plain-k\ndescription: P\ncategory: knowledge\n---")
-	write("fm-sticky", "---\nname: fm-sticky\ndescription: F\ncategory: knowledge\nsticky: true\n---")
-	write("forced-off", "---\nname: forced-off\ndescription: O\ncategory: knowledge\nsticky: true\n---")
-	write("off-wins", "---\nname: off-wins\ndescription: W\ncategory: knowledge\n---")
-	write("plain-action", "---\nname: plain-action\ndescription: A2\ncategory: action\n---")
-
+	writeTestSkills(t, dir)
 	reg := NewSkillRegistry([]string{dir})
 	reg.SetStickyOverrides([]string{"plain-k", "off-wins"}, []string{"forced-off", "off-wins"})
 	if err := reg.LoadAll(); err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
+	assertStickyNames(t, reg)
+	assertFrontmatterSticky(t, reg)
+	assertListedSticky(t, reg)
+}
 
-	stickyNames := map[string]bool{}
-	for _, s := range reg.StickySkills() {
-		stickyNames[s.Meta.Name] = true
+func writeTestSkills(t *testing.T, dir string) {
+	skills := map[string]string{
+		"plain-k": "description: P\ncategory: knowledge", "fm-sticky": "description: F\ncategory: knowledge\nsticky: true",
+		"forced-off": "description: O\ncategory: knowledge\nsticky: true", "off-wins": "description: W\ncategory: knowledge", "plain-action": "description: A2\ncategory: action",
 	}
-	if !stickyNames["plain-k"] {
-		t.Error("plain-k should be sticky via skills.sticky override")
+	for name, body := range skills {
+		sd := filepath.Join(dir, name)
+		if err := os.MkdirAll(sd, 0755); err != nil {
+			t.Fatal(err)
+		}
+		content := fmt.Sprintf("---\nname: %s\n%s\n---\nbody", name, body)
+		if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !stickyNames["fm-sticky"] {
-		t.Error("fm-sticky should stay sticky from frontmatter")
-	}
-	if stickyNames["forced-off"] {
-		t.Error("forced-off should not be sticky (skills.sticky_off override)")
-	}
-	if stickyNames["off-wins"] {
-		t.Error("off-wins: sticky_off must win over sticky")
-	}
-	if stickyNames["plain-action"] {
-		t.Error("action skills are never sticky")
-	}
+}
 
-	if fm, ok := reg.FrontmatterSticky("forced-off"); !ok || !fm {
-		t.Error("FrontmatterSticky(forced-off) = true, true; want the pristine frontmatter value")
+func assertStickyNames(t *testing.T, reg *SkillRegistry) {
+	names := map[string]bool{}
+	for _, skill := range reg.StickySkills() {
+		names[skill.Meta.Name] = true
 	}
-	if fm, ok := reg.FrontmatterSticky("plain-k"); !ok || fm {
-		t.Error("FrontmatterSticky(plain-k) = false, true; want the pristine frontmatter value")
+	for _, name := range []string{"plain-k", "fm-sticky"} {
+		if !names[name] {
+			t.Errorf("%s should be sticky", name)
+		}
+	}
+	for _, name := range []string{"forced-off", "off-wins", "plain-action"} {
+		if names[name] {
+			t.Errorf("%s should not be sticky", name)
+		}
+	}
+}
+
+func assertFrontmatterSticky(t *testing.T, reg *SkillRegistry) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{{"forced-off", true}, {"plain-k", false}} {
+		got, ok := reg.FrontmatterSticky(tc.name)
+		if !ok || got != tc.want {
+			t.Errorf("FrontmatterSticky(%s) = %v, %v; want %v, true", tc.name, got, ok, tc.want)
+		}
 	}
 	if _, ok := reg.FrontmatterSticky("missing"); ok {
-		t.Error("FrontmatterSticky(missing) should report ok=false")
+		t.Error("missing should report ok=false")
 	}
+}
 
-	for _, s := range reg.List() {
-		switch s.Name {
-		case "plain-k", "fm-sticky":
-			if !s.Sticky {
-				t.Errorf("List() Sticky for %s should be true", s.Name)
-			}
-		case "forced-off", "off-wins", "plain-action":
-			if s.Sticky {
-				t.Errorf("List() Sticky for %s should be false", s.Name)
-			}
+func assertListedSticky(t *testing.T, reg *SkillRegistry) {
+	for _, skill := range reg.List() {
+		want := skill.Name == "plain-k" || skill.Name == "fm-sticky"
+		if skill.Sticky != want {
+			t.Errorf("List() Sticky for %s = %v, want %v", skill.Name, skill.Sticky, want)
 		}
 	}
 }
@@ -684,37 +686,32 @@ func TestSkillRegistryStickyBodies(t *testing.T) {
 // explicit false values are honored.
 func TestParseSkillInvocationPolicy(t *testing.T) {
 	tests := []struct {
-		name        string
-		frontmatter string
-		wantModel   bool
-		wantUser    bool
+		name, frontmatter string
+		model, user       bool
 	}{
-		{name: "defaults both true", frontmatter: "name: s\ndescription: d", wantModel: true, wantUser: true},
-		{name: "model only false", frontmatter: "name: s\ndescription: d\nmodel_invocable: false", wantModel: false, wantUser: true},
-		{name: "user only false", frontmatter: "name: s\ndescription: d\nuser_invocable: false", wantModel: true, wantUser: false},
-		{name: "both false", frontmatter: "name: s\ndescription: d\nmodel_invocable: false\nuser_invocable: false", wantModel: false, wantUser: false},
-		{name: "explicit true", frontmatter: "name: s\ndescription: d\nmodel_invocable: true\nuser_invocable: true", wantModel: true, wantUser: true},
+		{"defaults both true", "name: s\ndescription: d", true, true}, {"model only false", "name: s\ndescription: d\nmodel_invocable: false", false, true}, {"user only false", "name: s\ndescription: d\nuser_invocable: false", true, false}, {"both false", "name: s\ndescription: d\nmodel_invocable: false\nuser_invocable: false", false, false}, {"explicit true", "name: s\ndescription: d\nmodel_invocable: true\nuser_invocable: true", true, true},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			content := "---\n" + tt.frontmatter + "\n---\n\nbody"
-			skill := parseSkill("s", content, "embedded", "skills/s/SKILL.md")
-			if skill == nil {
-				t.Fatal("parseSkill returned nil")
-			}
-			if skill.Meta.ModelInvocable != tt.wantModel {
-				t.Errorf("ModelInvocable = %v, want %v", skill.Meta.ModelInvocable, tt.wantModel)
-			}
-			if skill.Meta.UserInvocable != tt.wantUser {
-				t.Errorf("UserInvocable = %v, want %v", skill.Meta.UserInvocable, tt.wantUser)
-			}
-			if skill.IsModelInvocable() != (tt.wantModel && tt.wantUser) {
-				t.Errorf("IsModelInvocable = %v, want %v (model predicate must require both flags)", skill.IsModelInvocable(), tt.wantModel && tt.wantUser)
-			}
-			if skill.IsUserInvocable() != tt.wantUser {
-				t.Errorf("IsUserInvocable = %v, want %v", skill.IsUserInvocable(), tt.wantUser)
-			}
-		})
+		t.Run(tt.name, func(t *testing.T) { assertInvocationPolicy(t, tt.frontmatter, tt.model, tt.user) })
+	}
+}
+
+func assertInvocationPolicy(t *testing.T, frontmatter string, wantModel, wantUser bool) {
+	skill := parseSkill("s", "---\n"+frontmatter+"\n---\n\nbody", "embedded", "skills/s/SKILL.md")
+	if skill == nil {
+		t.Fatal("parseSkill returned nil")
+	}
+	if skill.Meta.ModelInvocable != wantModel {
+		t.Errorf("ModelInvocable = %v, want %v", skill.Meta.ModelInvocable, wantModel)
+	}
+	if skill.Meta.UserInvocable != wantUser {
+		t.Errorf("UserInvocable = %v, want %v", skill.Meta.UserInvocable, wantUser)
+	}
+	if skill.IsModelInvocable() != (wantModel && wantUser) {
+		t.Errorf("IsModelInvocable = %v, want %v", skill.IsModelInvocable(), wantModel && wantUser)
+	}
+	if skill.IsUserInvocable() != wantUser {
+		t.Errorf("IsUserInvocable = %v, want %v", skill.IsUserInvocable(), wantUser)
 	}
 }
 

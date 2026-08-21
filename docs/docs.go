@@ -42,6 +42,11 @@ func List() ([]DocInfo, error) {
 			continue
 		}
 		name := strings.TrimSuffix(entry.Name(), ".md")
+		// Lowercase planning artifacts are repository metadata, not public
+		// goa:// documentation entries; public doc names are uppercase.
+		if name != strings.ToUpper(name) {
+			continue
+		}
 		docs = append(docs, DocInfo{
 			Name:        name,
 			File:        entry.Name(),

@@ -6,7 +6,7 @@ package tools
 
 import (
 	"fmt"
-	"os"
+
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -403,16 +403,4 @@ func findShellBase(prevTokens []string, isWinC bool) string {
 		return ""
 	}
 	return ""
-}
-
-// getShellCmd returns the platform-appropriate shell invocation.
-func getShellCmd(command string) []string {
-	if runtime.GOOS == "windows" {
-		return []string{"cmd", "/c", command}
-	}
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/bash"
-	}
-	return []string{shell, "-c", command}
 }

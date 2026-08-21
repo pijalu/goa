@@ -27,6 +27,11 @@ func runAgentCollectEvents(t *testing.T, st *streamTestProvider, tools []Tool) [
 		SystemPrompt: "You are helpful",
 		Logger:       NewLogger(Error),
 		Tools:        tools,
+		// The canned streamTestProvider replays the same tool call on every
+		// stream and never converges; the silent-round guardrail is what ends
+		// the turn. Unset means DISABLED by contract (the application layer
+		// supplies the default), so tests must opt in explicitly.
+		MaxConsecutiveToolRounds: 2,
 	})
 	obs := &mockEventObserver{}
 	agent.AddObserver(obs)

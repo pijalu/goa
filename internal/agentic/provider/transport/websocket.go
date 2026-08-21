@@ -26,6 +26,20 @@ func (e *HeaderTimeoutError) Error() string {
 	return fmt.Sprintf("websocket header timeout for %s", e.URL)
 }
 
+// UpgradeRequiredError is returned when the server rejects the WebSocket
+// upgrade with an HTTP error status (e.g. 426 Upgrade Required, 404, 501).
+// The gorilla dialer reports the rejection as ErrBadHandshake and drops the
+// status from the error text; this typed error preserves it so callers can
+// distinguish "endpoint does not speak WebSocket" from a transient failure.
+type UpgradeRequiredError struct {
+	URL        string
+	StatusCode int
+}
+
+func (e *UpgradeRequiredError) Error() string {
+	return fmt.Sprintf("websocket upgrade rejected for %s: status %d", e.URL, e.StatusCode)
+}
+
 const (
 	maxConnectionAge   = 55 * time.Minute
 	defaultIdleTimeout = 5 * time.Minute
@@ -138,6 +152,7 @@ func (e *MessageTooBigError) Error() string {
 // WebSocketTransport executes WebSocket requests with session affinity.
 type WebSocketTransport struct {
 	Pool           *WebSocketPool
+	poolMu         sync.Mutex
 	HeaderTimeout  time.Duration
 	StreamFailures int
 	// IdleTimeout bounds the gap between received messages. Zero falls back to
@@ -179,10 +194,12 @@ func (t *WebSocketTransport) Do(ctx context.Context, req *TransportRequest) (*Tr
 }
 
 func (t *WebSocketTransport) pool() *WebSocketPool {
-	if t.Pool != nil {
-		return t.Pool
+	t.poolMu.Lock()
+	defer t.poolMu.Unlock()
+	if t.Pool == nil {
+		t.Pool = NewWebSocketPool()
 	}
-	return NewWebSocketPool()
+	return t.Pool
 }
 
 func (t *WebSocketTransport) maxFailures() int {
@@ -223,6 +240,13 @@ func (t *WebSocketTransport) dialConnection(ctx context.Context, pool *WebSocket
 		if ctx.Err() != nil {
 			return nil, &HeaderTimeoutError{URL: url}
 		}
+		// A handshake rejected with an HTTP status means the endpoint does not
+		// accept the WebSocket transport; preserve the status for the caller's
+		// fallback decision.
+		if errors.Is(err, websocket.ErrBadHandshake) && resp != nil {
+			_ = resp.Body.Close()
+			return nil, &UpgradeRequiredError{URL: url, StatusCode: resp.StatusCode}
+		}
 		return nil, err
 	}
 	if resp != nil {
@@ -262,6 +286,20 @@ func (t *WebSocketTransport) streamResponse(conn *WebSocketConnection, sessionID
 	}
 }
 
+func handleCopyMessageError(err error, msg []byte, pw *io.PipeWriter, sessionID string, pool *WebSocketPool) {
+	if isDeadlineTimeout(err) {
+		_ = pw.CloseWithError(ErrWSStreamIdle)
+		return
+	}
+	if websocket.IsCloseError(err, websocket.CloseMessageTooBig) {
+		_ = pw.CloseWithError(&MessageTooBigError{Size: len(msg)})
+		return
+	}
+	if sessionID != "" {
+		pool.Remove(sessionID)
+	}
+}
+
 // copyMessages reads frames from the WebSocket into the pipe until the stream
 // ends. It enforces an idle deadline (so a stalled connection surfaces
 // ErrWSStreamIdle instead of hanging forever) and releases the connection's
@@ -277,15 +315,7 @@ func (t *WebSocketTransport) copyMessages(conn *WebSocketConnection, pw *io.Pipe
 		}
 		_, msg, err := conn.conn.ReadMessage()
 		if err != nil {
-			if isDeadlineTimeout(err) {
-				_ = pw.CloseWithError(ErrWSStreamIdle)
-				return
-			}
-			if websocket.IsCloseError(err, websocket.CloseMessageTooBig) {
-				_ = pw.CloseWithError(&MessageTooBigError{Size: len(msg)})
-				return
-			}
-			t.removeOnFailure(pool, sessionID, conn)
+			handleCopyMessageError(err, msg, pw, sessionID, pool)
 			return
 		}
 		conn.mu.Lock()

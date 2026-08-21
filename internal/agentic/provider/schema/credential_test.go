@@ -14,44 +14,33 @@ import (
 // surrounding whitespace is trimmed silently, then the key must be non-empty
 // printable ASCII (0x21..0x7E) with no spaces.
 func TestValidateAPIKey(t *testing.T) {
-	tests := []struct {
-		name    string
-		raw     string
-		wantKey string
-		wantErr string // substring of the error reason, "" for success
-	}{
-		{name: "valid plain", raw: "sk-test-123", wantKey: "sk-test-123"},
-		{name: "valid all printable", raw: "a!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~Z", wantKey: "a!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~Z"},
-		{name: "trims leading whitespace", raw: "  sk-test", wantKey: "sk-test"},
-		{name: "trims trailing whitespace", raw: "sk-test\n", wantKey: "sk-test"},
-		{name: "trims both sides", raw: "\t sk-test-9 \n", wantKey: "sk-test-9"},
-		{name: "empty", raw: "", wantErr: "empty"},
-		{name: "whitespace only", raw: "   ", wantErr: "empty"},
-		{name: "interior space", raw: "bad key", wantErr: "printable ASCII"},
-		{name: "tab interior", raw: "bad\tkey", wantErr: "printable ASCII"},
-		{name: "unicode", raw: "sk-ключ", wantErr: "printable ASCII"},
-		{name: "control char", raw: "sk-test\x01", wantErr: "printable ASCII"},
-		{name: "non-breaking space", raw: "sk\u00a0test", wantErr: "printable ASCII"},
+	tests := []struct{ name, raw, wantKey, wantErr string }{
+		{"valid plain", "sk-test-123", "sk-test-123", ""},
+		{"valid all printable", "a!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~Z", "a!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~Z", ""},
+		{"trims leading whitespace", "  sk-test", "sk-test", ""}, {"trims trailing whitespace", "sk-test\n", "sk-test", ""}, {"trims both sides", "\t sk-test-9 \n", "sk-test-9", ""},
+		{"empty", "", "", "empty"}, {"whitespace only", "   ", "", "empty"}, {"interior space", "bad key", "", "printable ASCII"}, {"tab interior", "bad\tkey", "", "printable ASCII"}, {"unicode", "sk-ключ", "", "printable ASCII"}, {"control char", "sk-test\x01", "", "printable ASCII"}, {"non-breaking space", "sk\u00a0test", "", "printable ASCII"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := ValidateAPIKey("OPENAI_API_KEY", tt.raw)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("ValidateAPIKey(%q) unexpected error: %v", tt.raw, err)
-				}
-				if got != tt.wantKey {
-					t.Errorf("ValidateAPIKey(%q) = %q, want %q", tt.raw, got, tt.wantKey)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("ValidateAPIKey(%q) expected error containing %q, got nil", tt.raw, tt.wantErr)
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("ValidateAPIKey(%q) error = %q, want substring %q", tt.raw, err.Error(), tt.wantErr)
-			}
-		})
+		t.Run(tt.name, func(t *testing.T) { assertAPIKeyCase(t, tt.raw, tt.wantKey, tt.wantErr) })
+	}
+}
+
+func assertAPIKeyCase(t *testing.T, raw, wantKey, wantErr string) {
+	got, err := ValidateAPIKey("OPENAI_API_KEY", raw)
+	if wantErr == "" {
+		if err != nil {
+			t.Fatalf("ValidateAPIKey(%q) unexpected error: %v", raw, err)
+		}
+		if got != wantKey {
+			t.Errorf("ValidateAPIKey(%q) = %q, want %q", raw, got, wantKey)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatalf("ValidateAPIKey(%q) expected error containing %q", raw, wantErr)
+	}
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Errorf("ValidateAPIKey(%q) error = %q, want %q", raw, err, wantErr)
 	}
 }
 

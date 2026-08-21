@@ -67,6 +67,15 @@ var DefaultToolResultPruningConfig = ToolResultPruningConfig{
 // historical tool results in place to head + PruneMarker + tail. Character
 // budgets are in Unicode code points (runes), matching the dsh reference.
 type ToolResultPruningConfig struct {
+	// Enabled gates the PRE-COMPACTION pruning pass in compactOrdered.
+	// DEFAULT OFF (false): at the hard ceiling the configured summarize runs
+	// directly — pre-pruning rewrites historical tool results in place and,
+	// when it resolves pressure on its own, skips the summarize entirely.
+	// The summarize-overflow fallback (shrinkToolPayloadsToFitLocked) is NOT
+	// gated by this flag: pruning still runs there to make room for the
+	// summarize retry.
+	Enabled bool
+
 	// ThresholdChars prunes a tool result when its content exceeds this many
 	// Unicode code points. <= 0 falls back to the default (8192).
 	ThresholdChars int

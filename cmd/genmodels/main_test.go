@@ -64,72 +64,83 @@ func TestSlimCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slimCatalog: %v", err)
 	}
-
-	var got map[string]map[string]any
-	if err := json.Unmarshal(slim, &got); err != nil {
-		t.Fatalf("re-decode slim output: %v", err)
-	}
-
+	got := decodeSlimCatalog(t, slim)
 	if len(got) != 2 {
 		t.Fatalf("providers = %d, want 2", len(got))
 	}
-
 	zeta, ok := got["zetaprovider"]
 	if !ok {
 		t.Fatal("zetaprovider missing from slim output")
 	}
+	assertProviderFields(t, zeta)
+	zeta1 := gotModel(t, zeta, "zeta-1")
+	assertModelFields(t, zeta1)
+	assertCostAndModalities(t, zeta1)
+	alpha := gotModel(t, got["alphaprovider"], "alpha-mini")
+	if alpha["name"] != "Alpha Mini" {
+		t.Errorf("alpha-mini name = %v", alpha["name"])
+	}
+}
 
-	// Provider-level: doc dropped, identity + synthesis fields kept.
-	if _, has := zeta["doc"]; has {
+func decodeSlimCatalog(t *testing.T, slim []byte) map[string]map[string]any {
+	var got map[string]map[string]any
+	if err := json.Unmarshal(slim, &got); err != nil {
+		t.Fatalf("re-decode slim output: %v", err)
+	}
+	return got
+}
+
+func gotModel(t *testing.T, provider map[string]any, name string) map[string]any {
+	models, ok := provider["models"].(map[string]any)
+	if !ok {
+		t.Fatal("models missing")
+	}
+	model, ok := models[name].(map[string]any)
+	if !ok {
+		t.Fatalf("model %s missing", name)
+	}
+	return model
+}
+
+func assertProviderFields(t *testing.T, p map[string]any) {
+	if _, ok := p["doc"]; ok {
 		t.Error("provider field 'doc' not stripped")
 	}
-	for _, k := range []string{"id", "name", "api", "npm", "env", "models"} {
-		if _, has := zeta[k]; !has {
-			t.Errorf("provider field %q unexpectedly dropped", k)
+	for _, key := range []string{"id", "name", "api", "npm", "env", "models"} {
+		if _, ok := p[key]; !ok {
+			t.Errorf("provider field %q unexpectedly dropped", key)
 		}
 	}
+}
 
-	// Model-level: verbose metadata dropped, registry fields kept.
-	models, _ := zeta["models"].(map[string]any)
-	zeta1, _ := models["zeta-1"].(map[string]any)
-	for _, k := range []string{"id", "release_date", "last_updated", "description", "family", "attachment", "open_weights", "temperature"} {
-		if _, has := zeta1[k]; has {
-			t.Errorf("model field %q not stripped", k)
+func assertModelFields(t *testing.T, m map[string]any) {
+	for _, key := range []string{"id", "release_date", "last_updated", "description", "family", "attachment", "open_weights", "temperature"} {
+		if _, ok := m[key]; ok {
+			t.Errorf("model field %q not stripped", key)
 		}
 	}
-	for _, k := range []string{"name", "tool_call", "reasoning", "cost", "limit", "modalities"} {
-		if _, has := zeta1[k]; !has {
-			t.Errorf("model field %q unexpectedly dropped", k)
+	for _, key := range []string{"name", "tool_call", "reasoning", "cost", "limit", "modalities"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("model field %q unexpectedly dropped", key)
 		}
 	}
+}
 
-	// Explicit zero cost must survive (pointer fields, not omitempty floats).
-	cost, _ := zeta1["cost"].(map[string]any)
-	cw, has := cost["cache_write"]
-	if !has {
+func assertCostAndModalities(t *testing.T, m map[string]any) {
+	cost, _ := m["cost"].(map[string]any)
+	cw, ok := cost["cache_write"]
+	if !ok {
 		t.Fatal("cache_write: 0 dropped from cost")
 	}
 	if cw.(float64) != 0 {
 		t.Errorf("cache_write = %v, want 0", cw)
 	}
-
-	// Modalities: input kept, output dropped (registry only parses input).
-	modalities, _ := zeta1["modalities"].(map[string]any)
-	if _, has := modalities["input"]; !has {
+	modalities, _ := m["modalities"].(map[string]any)
+	if _, ok := modalities["input"]; !ok {
 		t.Error("modalities.input dropped")
 	}
-	if _, has := modalities["output"]; has {
+	if _, ok := modalities["output"]; ok {
 		t.Error("modalities.output not stripped")
-	}
-
-	// Model without optional fields still decodes.
-	alpha, _ := got["alphaprovider"]["models"].(map[string]any)
-	mini, _ := alpha["alpha-mini"].(map[string]any)
-	if mini["name"] != "Alpha Mini" {
-		t.Errorf("alpha-mini name = %v", mini["name"])
-	}
-	if _, has := mini["cost"]; has {
-		t.Error("absent cost synthesized for alpha-mini")
 	}
 }
 

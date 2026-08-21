@@ -100,7 +100,6 @@ func previewPortion(replaced, path string) string {
 	return replaced[:idx]
 }
 
-
 func TestSpillPolicy_UnderCapUnchanged(t *testing.T) {
 	p, dir := newTestSpillPolicy(t, 512)
 	result := "small result"

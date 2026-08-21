@@ -171,23 +171,15 @@ func (e *TermEmulator) parseEscape(s string) int {
 func (e *TermEmulator) applyCSI(params string, final byte) {
 	switch final {
 	case 'H', 'f':
-		var row, col int
-		fmtSscan(params, &row, &col)
-		e.row = clampInt(row-1, 0, e.h-1)
-		e.col = clampInt(col-1, 0, e.w-1)
-		e.pendingWrap = false
+		e.applyCursorPosition(params)
 	case 'A':
-		e.row = clampInt(e.row-paramInt(params, 1), 0, e.h-1)
-		e.pendingWrap = false
+		e.moveCursor(-paramInt(params, 1), 0)
 	case 'B':
-		e.row = clampInt(e.row+paramInt(params, 1), 0, e.h-1)
-		e.pendingWrap = false
+		e.moveCursor(paramInt(params, 1), 0)
 	case 'C':
-		e.col = clampInt(e.col+paramInt(params, 1), 0, e.w-1)
-		e.pendingWrap = false
+		e.moveCursor(0, paramInt(params, 1))
 	case 'G':
-		e.col = clampInt(paramInt(params, 1)-1, 0, e.w-1)
-		e.pendingWrap = false
+		e.moveCursor(0, paramInt(params, 1)-1-e.col)
 	case 'J':
 		e.eraseDisplay(params)
 	case 'K':
@@ -195,23 +187,37 @@ func (e *TermEmulator) applyCSI(params string, final byte) {
 	case 'm':
 		e.applySGR(params)
 	case 'r':
-		// DECSTBM: set scroll region ("\x1b[top;bot r" 1-indexed; "\x1b[r" =
-		// full screen). Homes the cursor per DEC spec.
-		top, bot := 1, e.h
-		if params != "" {
-			parts := strings.SplitN(params, ";", 2)
-			top = paramInt(parts[0], 1)
-			if len(parts) > 1 {
-				bot = paramInt(parts[1], e.h)
-			}
-		}
-		e.scrollTop = clampInt(top-1, 0, e.h-1)
-		e.scrollBot = clampInt(bot-1, 0, e.h-1)
-		if e.scrollBot < e.scrollTop {
-			e.scrollBot = e.scrollTop
-		}
-		e.row, e.col, e.pendingWrap = 0, 0, false
+		e.applyScrollRegion(params)
 	}
+}
+
+func (e *TermEmulator) applyCursorPosition(params string) {
+	var row, col int
+	fmtSscan(params, &row, &col)
+	e.row, e.col = clampInt(row-1, 0, e.h-1), clampInt(col-1, 0, e.w-1)
+	e.pendingWrap = false
+}
+
+func (e *TermEmulator) moveCursor(rowDelta, colDelta int) {
+	e.row = clampInt(e.row+rowDelta, 0, e.h-1)
+	e.col = clampInt(e.col+colDelta, 0, e.w-1)
+	e.pendingWrap = false
+}
+
+func (e *TermEmulator) applyScrollRegion(params string) {
+	top, bot := 1, e.h
+	if params != "" {
+		parts := strings.SplitN(params, ";", 2)
+		top, bot = paramInt(parts[0], 1), e.h
+		if len(parts) > 1 {
+			bot = paramInt(parts[1], e.h)
+		}
+	}
+	e.scrollTop, e.scrollBot = clampInt(top-1, 0, e.h-1), clampInt(bot-1, 0, e.h-1)
+	if e.scrollBot < e.scrollTop {
+		e.scrollBot = e.scrollTop
+	}
+	e.row, e.col, e.pendingWrap = 0, 0, false
 }
 
 // applySGR tracks the current background color from SGR sequences. Only the

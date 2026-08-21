@@ -108,7 +108,7 @@ type goalArgs struct {
 	// the goal is active, the team's overlay is applied. Empty = inherit the
 	// session-level team. Only meaningful for `create` (and create-derived
 	// queue actions).
-	Team string `json:"team,omitempty"`
+	Team   string `json:"team,omitempty"`
 	Status string `json:"status,omitempty"`
 	// Terminal-answer contract (update): reason justifies the transition;
 	// expectation states what unblocks a blocked goal.
@@ -937,88 +937,6 @@ func (t *GoalTool) announceVerification(ctx context.Context) {
 		timeout = t.VerifyTimeout()
 	}
 	emit(fmt.Sprintf("Running goal verification (timeout %s):\n$ %s", timeout, *snap.VerifyCommand))
-}
-
-// formatOpenTodosReminder appends the open-todos reminder to a completion
-// result ("when a goal is achieved: if there are pending todos, the
-// framework should remind the model of the open todos"). A gated completion
-// (recorded criterion) already requires every todo done, so this fires for
-// criterion-less completions. Todos are contained by the goal and die with
-// it — the reminder exists so unfinished work is not silently dropped: the
-// model can schedule a follow-up goal if the work is still needed.
-func formatOpenTodosReminder(snap *goal.GoalSnapshot) string {
-	if snap == nil {
-		return ""
-	}
-	var open []string
-	for _, todo := range snap.Todos {
-		if todo.Status != goal.TodoDone {
-			open = append(open, todo.Title)
-		}
-	}
-	if len(open) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "\n\nReminder: %d todo(s) were still open when the goal completed:", len(open))
-	for _, title := range open {
-		fmt.Fprintf(&b, "\n- %s", title)
-	}
-	b.WriteString("\nTodos do not escape the goal — if any of this work is still needed, create a follow-up goal for it now.")
-	return b.String()
-}
-
-// formatVerifyEvidence renders the post-completion evidence block: the exact
-// command, how long it took, the applied timeout, and its output tail.
-func formatVerifyEvidence(v *goal.VerifyEvidence) string {
-	if v == nil {
-		return ""
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "\n\nVerification passed in %s (timeout %s):\n$ %s",
-		formatMillis(v.DurationMs), formatMillis(v.TimeoutMs), v.Command)
-	if out := strings.TrimRight(v.Output, "\n"); out != "" {
-		b.WriteString("\n")
-		b.WriteString(strings.Join(tailLines(out, 10), "\n"))
-	}
-	return b.String()
-}
-
-// formatMillis renders a millisecond duration compactly (e.g. 0.3s, 12.3s, 1m30s).
-func formatMillis(ms int64) string {
-	d := time.Duration(ms) * time.Millisecond
-	if d < time.Second {
-		return fmt.Sprintf("%.1fs", d.Seconds())
-	}
-	return d.Truncate(100 * time.Millisecond).String()
-}
-
-// tailLines keeps the last n lines of s.
-func tailLines(s string, n int) []string {
-	lines := strings.Split(s, "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return lines
-}
-
-// optionalReason maps the raw reason arg to a trimmed *string (nil when blank).
-func optionalReason(args goalArgs) *string {
-	return optionalText(args.Reason)
-}
-
-// optionalText maps a raw string to a trimmed *string (nil when blank).
-func optionalText(s string) *string {
-	trimmed := strings.TrimSpace(s)
-	if trimmed == "" {
-		return nil
-	}
-	return &trimmed
-}
-
-// optionalExpectation maps the raw expectation arg to a trimmed *string (nil when blank).
-func optionalExpectation(args goalArgs) *string {
-	return optionalText(args.Expectation)
 }
 
 func (t *GoalTool) handleGet() (agentic.ToolResult, error) {

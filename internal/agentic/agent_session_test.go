@@ -99,6 +99,10 @@ func TestAgent_ExecutesTool_Stream(t *testing.T) {
 		SystemPrompt: "You are helpful",
 		Logger:       NewLogger(Error),
 		Tools:        []Tool{calcTool},
+		// streamTestProvider replays the same tool call forever and never
+		// converges; the silent-round guardrail ends the turn. Unset means
+		// DISABLED by contract (application layer supplies the default).
+		MaxConsecutiveToolRounds: 2,
 	})
 
 	ctx := context.Background()

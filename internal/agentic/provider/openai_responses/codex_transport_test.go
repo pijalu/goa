@@ -122,6 +122,22 @@ func TestBuildResponsesBodyCodexSession(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesBodyCodexPromptCacheKeyPrecedence(t *testing.T) {
+	model := provider.Model{ID: "gpt-5-codex"}
+	ctx := provider.Context{Messages: []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "hi"}}},
+	}}
+	body := buildResponsesBody(model, ctx, provider.StreamOptions{
+		SessionID: "legacy-session", PromptCacheKey: "scoped-cache-key",
+	}, "codex")
+	if got := body["prompt_cache_key"]; got != "scoped-cache-key" {
+		t.Fatalf("prompt_cache_key = %v, want explicit cache key", got)
+	}
+	if _, hasPrevious := body["previous_response_id"]; hasPrevious {
+		t.Fatal("Codex body must never include previous_response_id")
+	}
+}
+
 // TestBuildResponsesBodyPlainSession ensures non-codex responses flavors still
 // chain turns via previous_response_id (the codex carve-out did not regress).
 func TestBuildResponsesBodyPlainSession(t *testing.T) {

@@ -5,8 +5,9 @@
 package tui
 
 import (
-	"github.com/rivo/uniseg"
 	"unicode/utf8"
+
+	"github.com/rivo/uniseg"
 )
 
 // GraphemeHelper provides grapheme cluster-aware string operations.

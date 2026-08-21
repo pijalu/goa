@@ -76,6 +76,10 @@ func streamWithInterceptors(model schema.Model, ctx schema.Context, opts schema.
 		Headers: reqCtx.Headers,
 		Body:    body,
 		URL:     resolveURL(model, profile),
+		Fingerprint: BuildRequestFingerprint(
+			string(model.Provider), model.ID, reqCtx.Options.PromptCacheKey,
+			nil, body, 0, 0, string(reqCtx.Options.Transport), "", false,
+		),
 	}
 
 	handler := ApplyStreamInterceptors(func(goCtx context.Context, r *StreamRequest) (*schema.AssistantMessageEventStream, error) {

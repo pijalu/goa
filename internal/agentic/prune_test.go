@@ -76,7 +76,18 @@ func TestPruneStaleToolOutput_ProtectsRecentWindow(t *testing.T) {
 	if reclaimed < stalePruneGateTokens {
 		t.Errorf("reclaimed %d < gate %d", reclaimed, stalePruneGateTokens)
 	}
-	// The oldest bodies must be pruned...
+	assertPrunedBodies(t, h, bodies, recent)
+	assertRecentMessages(t, h, bodies, recent)
+	if h[0].Content != "start" {
+		t.Error("leading user message changed")
+	}
+	idx := toolResultIndex(0)
+	if h[idx].ToolCallID != "c0" || h[idx].ToolName != "bash" {
+		t.Errorf("pruned body lost pairing: id=%q name=%q", h[idx].ToolCallID, h[idx].ToolName)
+	}
+}
+
+func assertPrunedBodies(t *testing.T, h []Message, bodies, recent int) {
 	pruned := 0
 	for i := 0; i < bodies; i++ {
 		if strings.HasPrefix(h[toolResultIndex(i)].Content, stalePrunePrefix) {
@@ -87,34 +98,25 @@ func TestPruneStaleToolOutput_ProtectsRecentWindow(t *testing.T) {
 		t.Error("no body was pruned")
 	}
 	if pruned > bodies-recent {
-		t.Errorf("pruned %d bodies, expected the recent window to protect at least the last %d", pruned, recent)
+		t.Errorf("pruned %d bodies, expected recent window to protect %d", pruned, recent)
 	}
-	// ...and the newest bodies (inside the protected window) must be untouched.
 	protected := 0
 	for i := bodies - 1; i >= 0; i-- {
-		content := h[toolResultIndex(i)].Content
-		if strings.HasPrefix(content, stalePrunePrefix) {
+		if strings.HasPrefix(h[toolResultIndex(i)].Content, stalePrunePrefix) {
 			break
 		}
 		protected++
 	}
 	if protected < 25 {
-		t.Errorf("recent window should protect the newest bodies, protected=%d", protected)
+		t.Errorf("recent window should protect newest bodies, protected=%d", protected)
 	}
-	// The recent user messages are never touched.
+}
+
+func assertRecentMessages(t *testing.T, h []Message, bodies, recent int) {
 	for i := 0; i < recent; i++ {
-		want := fmt.Sprintf("recent %d", i)
-		if got := h[bodies*2+1+i].Content; got != want {
+		if got, want := h[bodies*2+1+i].Content, fmt.Sprintf("recent %d", i); got != want {
 			t.Errorf("recent message %d changed to %q", i, got)
 		}
-	}
-	if h[0].Content != "start" {
-		t.Error("leading user message changed")
-	}
-	// Tool pairing fields survive on a pruned body.
-	idx := toolResultIndex(0)
-	if h[idx].ToolCallID != "c0" || h[idx].ToolName != "bash" {
-		t.Errorf("pruned body lost pairing: id=%q name=%q", h[idx].ToolCallID, h[idx].ToolName)
 	}
 }
 
@@ -174,6 +176,67 @@ func TestPruneStaleToolOutput_Idempotent(t *testing.T) {
 	}
 }
 
+// TestAgent_CompactNoPrePruningByDefault is the bugs.md regression: with
+// pre-pruning at its default (off), a dump-heavy history at the hard ceiling
+// MUST summarize — no tool_result_pruning early-return, no in-place rewrite,
+// exactly one summarize LLM call. Pruning only ever serves as the
+// summarize-overflow fallback.
+func TestAgent_CompactNoPrePruningByDefault(t *testing.T) {
+	p := &gateProbeProvider{
+		api:        provider.Api(fmt.Sprintf("no-pre-prune-probe-%d", testProviderCounter.Add(1))),
+		toolRounds: 0,
+	}
+	provider.RegisterApiProvider(p)
+
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "sys",
+		Logger:       NewLogger(Error),
+		ContextCompression: ContextCompressionConfig{
+			MaxTokens: 10000,
+			Thresholds: CompressionThresholds{
+				SoftPercent: 50,
+				HardPercent: 95,
+			},
+			// ToolResultPruning zero value: Enabled=false — the default.
+		},
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	// Same dump-heavy shape as the opt-in skip test: 20000-rune tool result.
+	// With pre-pruning OFF this must NOT short-circuit the summarize.
+	agent.SetHistory([]Message{
+		{Type: Content, Role: User, Content: "go"},
+	})
+	bigToolPair(agent, "c1", 20000)
+
+	if err := agent.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	if got := len(p.recorded()); got != 1 {
+		t.Errorf("summarize LLM call count = %d, want 1 (pre-pruning off by default)", got)
+	}
+	for _, e := range obs.Events() {
+		if e.Type == EventCompact && e.Compaction != nil && e.Compaction.Strategy == "tool_result_pruning" {
+			t.Error("tool_result_pruning compaction emitted with pre-pruning disabled")
+		}
+	}
+	// History must NOT carry the prune marker: the summarize replaced the
+	// history wholesale instead of pruning in place.
+	for _, m := range agent.GetHistory() {
+		if strings.Contains(m.Content, strings.TrimSpace(PruneMarker)) {
+			t.Error("history carries a prune marker though pre-pruning is disabled")
+		}
+	}
+}
+
 // TestAgent_CompactStalePruningSkipsSummarize is the P4 wiring acceptance:
 // a dump-heavy session triggers the stale pass inside the pre-compaction path;
 // when pruning resolves the pressure, Compact skips the summarize LLM call and
@@ -195,6 +258,7 @@ func TestAgent_CompactStalePruningSkipsSummarize(t *testing.T) {
 				SoftPercent: 50,
 				HardPercent: 95,
 			},
+			ToolResultPruning: ToolResultPruningConfig{Enabled: true},
 		},
 	})
 

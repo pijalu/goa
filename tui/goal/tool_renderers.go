@@ -127,6 +127,18 @@ func (r GoalRenderer) RenderResult(output string, ctx tuirender.RenderContext) s
 	return renderGoalSummary(output)
 }
 
+// SummarizeResult implements tuirender.ResultSummarizer: the first line of
+// the compact result summary ("Cancelled minty.puma: G05 — …", "Todo t2
+// added: …", "Goal complete: …") is already a self-contained one-liner,
+// which is exactly what the scrolled-off completion echo needs. Multi-line
+// summaries (goal/queue lists) contribute only their headline.
+var _ tuirender.ResultSummarizer = GoalRenderer{}
+
+func (r GoalRenderer) SummarizeResult(output string, ctx tuirender.RenderContext) string {
+	line, _, _ := strings.Cut(renderGoalSummary(output), "\n")
+	return line
+}
+
 // RenderPartial implements tuirender.StreamingRenderer so a goal call shows
 // progress while its arguments are still streaming, like other tools: the
 // body previews the objective(s) received so far for a create (numbered for

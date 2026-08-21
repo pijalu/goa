@@ -215,6 +215,58 @@ func TestUI_ScrolledOffToolResultGetsEcho(t *testing.T) {
 	}
 }
 
+// TestUI_ScrolledOffEchoIsAttributable pins the echo CONTENT (the reported
+// "offscreen tool results rendered on screen" corruption): a bash call whose
+// widget is genuinely scrolled into terminal scrollback must echo a compact,
+// self-attributing one-liner — icon + command identity + timing/size stats —
+// NEVER the truncated body preview. The old implementation replayed the
+// renderer's collapsed output ("… N earlier lines (ctrl+o to expand)" +
+// output tail lines), duplicating on-screen content and leaking the expand
+// hint into the transcript.
+func TestUI_ScrolledOffEchoIsAttributable(t *testing.T) {
+	sc := newUIScenario(t, 100, 20)
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolName: "bash", ToolCallID: "c1", ToolInput: `{"command":"grep -n foo bar.go"}`})
+	// Push the widget fully above the visible band before the result lands.
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant,
+		State: agentic.StateThinking, IsDelta: true,
+		Text: "f01\nf02\nf03\nf04\nf05\nf06\nf07\nf08\nf09\nf10\nf11\nf12\nf13\nf14\nf15\nf16\nf17\nf18\nf19\nf20\nf21\nf22\nf23\nf24\nf25"})
+	// Multi-line output so the collapsed body would carry the truncation hint.
+	out := "match-01\nmatch-02\nmatch-03\nmatch-04\nmatch-05\nmatch-06\nmatch-07\nmatch-08\nmatch-09\nmatch-10\nmatch-11\nmatch-12"
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolResult, State: agentic.StateToolResult,
+		ToolName: "bash", ToolCallID: "c1", Text: out})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	var echoes []string
+	for _, e := range sc.chat.Snapshot() {
+		if e.Type == tui.ConsoleToolResult {
+			echoes = append(echoes, e.Text)
+		}
+	}
+	if len(echoes) != 1 {
+		t.Fatalf("scrolled-off tool produced %d echoes, want exactly 1: %q", len(echoes), echoes)
+	}
+	echo := echoes[0]
+	if strings.Contains(echo, "\n") {
+		t.Errorf("echo must be one line, got %q", echo)
+	}
+	if strings.Contains(echo, "ctrl+o") || strings.Contains(echo, "earlier lines") {
+		t.Errorf("echo leaked the truncation hint: %q", echo)
+	}
+	if strings.Contains(echo, "match-") {
+		t.Errorf("echo replayed raw output lines: %q", echo)
+	}
+	// Attribution: icon + command identity + output stats.
+	if !strings.Contains(echo, "✓") || !strings.Contains(echo, "grep -n foo bar.go") {
+		t.Errorf("echo must identify the completed call, got %q", echo)
+	}
+	if !strings.Contains(echo, "12 lines") {
+		t.Errorf("echo should carry the output size stats, got %q", echo)
+	}
+}
+
 // streamCancelBatch streams partial arg deltas for every call, then the
 // final args (mirrors provider tool-call streaming).
 func streamCancelBatch(sc *uiScenario, names []string) {

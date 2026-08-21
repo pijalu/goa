@@ -369,3 +369,38 @@ func TestGoalRenderer_RenderPartial(t *testing.T) {
 		t.Errorf("update partial = %q", got)
 	}
 }
+
+// TestGoalRenderer_SummarizeResult: the scrolled-off completion echo uses
+// SummarizeResult — it must return exactly ONE self-contained line (no
+// newlines), equal to the headline of RenderResult.
+func TestGoalRenderer_SummarizeResult(t *testing.T) {
+	r := GoalRenderer{}
+	cases := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{"cancel", `{"cancelled":{"name":"minty.puma","objective":"G05 — do the thing"}}`, "Cancelled minty.puma: G05 — do the thing"},
+		{"todo", `{"todo":{"id":"t1","title":"Write tests","status":"pending"}}`, "Todo t1 added: Write tests (pending)"},
+		{"null goal", `{"goal":null}`, "No current goal"},
+		{"plain text passthrough", "Goal marked complete.\nevidence line two", "Goal marked complete."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := r.SummarizeResult(tc.output, tuirender.RenderContext{})
+			if strings.Contains(got, "\n") {
+				t.Errorf("SummarizeResult must return one line, got %q", got)
+			}
+			if got != tc.want {
+				t.Errorf("SummarizeResult = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// Multi-line summaries contribute only their headline.
+	multi := r.RenderResult(`{"queued":[{"name":"a","objective":"x"},{"name":"b","objective":"y"}],"totalQueued":2}`, tuirender.RenderContext{})
+	sum := r.SummarizeResult(`{"queued":[{"name":"a","objective":"x"},{"name":"b","objective":"y"}],"totalQueued":2}`, tuirender.RenderContext{})
+	if first, _, _ := strings.Cut(multi, "\n"); sum != first {
+		t.Errorf("SummarizeResult = %q, want RenderResult headline %q", sum, first)
+	}
+}

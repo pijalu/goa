@@ -300,3 +300,32 @@ func TestCacheForensicsEndToEnd(t *testing.T) {
 	call()
 	assert.Len(t, CacheForensicsReports(), 1)
 }
+
+// TestTakeCacheMissNoticesForScopedToSessionKey verifies that scoped notice
+// draining is per cache session key: with two sequences that both busted, a
+// scoped drain returns only its own sequence's notice and leaves the other
+// queued — concurrent agents cannot steal each other's diagnostics.
+func TestTakeCacheMissNoticesForScopedToSessionKey(t *testing.T) {
+	ResetCacheForensics()
+	defer ResetCacheForensics()
+
+	model := schema.Model{ID: "kimi-k2", Api: schema.ApiOpenAICompletions, Provider: schema.ProviderKimiCode}
+	bust := func(sessionKey string) {
+		r1 := recordCacheForensicsRequest(model, sessionKey, "sp", "http://u", []byte(`{"a":1}`))
+		r1.complete(&schema.Usage{InputTokens: 10, CacheReadTokens: 100})
+		r2 := recordCacheForensicsRequest(model, sessionKey, "sp", "http://u", []byte(`{"a":1}`))
+		r2.complete(&schema.Usage{InputTokens: 10}) // cache_read 100 -> 0: bust
+	}
+	bust("key-A")
+	bust("key-B")
+
+	noticesA := TakeCacheMissNoticesFor("key-A")
+	require.Len(t, noticesA, 1, "scoped drain must return exactly key-A's notice")
+	assert.Equal(t, 100, noticesA[0].PrevCacheRead)
+
+	noticesB := TakeCacheMissNoticesFor("key-B")
+	require.Len(t, noticesB, 1, "key-B's notice must still be queued after key-A drained")
+
+	assert.Empty(t, TakeCacheMissNotices(), "both sequences drained; drain-all must be empty")
+	assert.Empty(t, TakeCacheMissNoticesFor("unknown-key"), "unknown key drains nothing")
+}

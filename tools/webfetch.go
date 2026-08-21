@@ -90,9 +90,9 @@ func (t *WebFetchTool) Schema() agentic.ToolSchema {
 					"description": "absolute URL; goa://NAME = Goa embedded doc",
 				},
 				"action": map[string]any{
-					"type": "string",
-					"enum":        actions,
-					"default":     "fetch",
+					"type":    "string",
+					"enum":    actions,
+					"default": "fetch",
 				},
 				"start_line": map[string]any{
 					"type":        "integer",

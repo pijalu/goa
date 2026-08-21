@@ -701,27 +701,8 @@ func (m *steeringPending) Render(width int) []string {
 	// defense-in-depth for anything produced by goa itself.
 	merged := strings.Join(m.messages, "\n\n")
 	clean := ansi.Strip(ansi.Sanitize(merged))
-	innerWidth := width - 4 // "│ " + content + " │"
-	if innerWidth < 1 {
-		innerWidth = 1
-	}
-	// ansi.Wrap takes a single paragraph: split multi-line steering text on
-	// newlines and wrap each paragraph. Feeding embedded newlines to Wrap
-	// would return "lines" containing '\n', which paint as several terminal
-	// rows and desync the compositor's line accounting (overlapping redraw).
-	var wrapped []string
-	for i, para := range strings.Split(clean, "\n") {
-		if strings.TrimSpace(para) == "" {
-			wrapped = append(wrapped, "")
-			continue
-		}
-		prefix := "  "
-		if i == 0 {
-			prefix = "✎ "
-		}
-		wrapped = append(wrapped, ansi.Wrap(prefix+para, innerWidth)...)
-	}
-
+	innerWidth := max(width-4, 1) // "│ " + content + " │"
+	wrapped := wrapSteeringText(clean, innerWidth)
 	// box draws one bordered row with the terminal default background:
 	// "│ <content padded to innerWidth> │" — exactly width visible columns.
 	box := func(content string) string {
@@ -735,36 +716,66 @@ func (m *steeringPending) Render(width int) []string {
 
 	// One-line preview: the first non-blank wrapped line. Leading blanks are
 	// skipped so a message starting with blank lines shows real content.
-	preview := ""
-	for _, raw := range wrapped {
-		if raw != "" {
-			preview = raw
-			break
-		}
-	}
-	if preview != "" {
+	if preview := firstNonBlank(wrapped); preview != "" {
 		lines = append(lines, box(preview))
 	}
 
-	// Hidden lines = every wrapped visual line except the single preview row.
-	hidden := len(wrapped)
-	if preview != "" {
-		hidden--
-	}
+	lines = append(lines, box(steeringFooter(len(m.messages), hiddenLines(wrapped))))
+	lines = append(lines, hline("└", "┘"))
+	return lines
+}
 
-	// Footer stats: message count, hidden line count, edit affordance.
+// wrapSteeringText wraps multi-line steering text paragraph-by-paragraph.
+// ansi.Wrap takes a single paragraph: feeding embedded newlines to Wrap
+// would return "lines" containing '\n', which paint as several terminal rows
+// and desync the compositor's line accounting (overlapping redraw).
+func wrapSteeringText(clean string, innerWidth int) []string {
+	var wrapped []string
+	for i, para := range strings.Split(clean, "\n") {
+		if strings.TrimSpace(para) == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+		prefix := "  "
+		if i == 0 {
+			prefix = "✎ "
+		}
+		wrapped = append(wrapped, ansi.Wrap(prefix+para, innerWidth)...)
+	}
+	return wrapped
+}
+
+// firstNonBlank returns the first non-empty line (leading blanks skipped so
+// a message starting with blank lines still shows real content).
+func firstNonBlank(lines []string) string {
+	for _, raw := range lines {
+		if raw != "" {
+			return raw
+		}
+	}
+	return ""
+}
+
+// hiddenLines counts every wrapped visual line except the single preview row.
+func hiddenLines(wrapped []string) int {
+	if firstNonBlank(wrapped) == "" {
+		return len(wrapped)
+	}
+	return len(wrapped) - 1
+}
+
+// steeringFooter renders the footer stats: message count, hidden line count,
+// edit affordance.
+func steeringFooter(numMessages, hidden int) string {
 	var parts []string
-	if n := len(m.messages); n > 1 {
-		parts = append(parts, fmt.Sprintf("(%d messages)", n))
+	if numMessages > 1 {
+		parts = append(parts, fmt.Sprintf("(%d messages)", numMessages))
 	}
 	if hidden > 0 {
 		parts = append(parts, fmt.Sprintf("+%d lines", hidden))
 	}
 	parts = append(parts, "(alt+e to edit)")
-	lines = append(lines, box(strings.Join(parts, " ")))
-
-	lines = append(lines, hline("└", "┘"))
-	return lines
+	return strings.Join(parts, " ")
 }
 
 // LastToolComponent returns the last ToolExecutionComponent in the

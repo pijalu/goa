@@ -156,6 +156,28 @@ func (am *AgentManager) SetGoalTokenRecorder(fn func(totalTokens int)) {
 	am.goalTokenRecorder = fn
 }
 
+// SetActiveGoalIDProvider registers a callback returning the ID of the goal
+// active at turn finalize time ("" = none). The main agent's TurnRecord is
+// tagged with it so /stats:cache can group turns per goal. Passing nil
+// disables tagging.
+func (am *AgentManager) SetActiveGoalIDProvider(fn func() string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.activeGoalID = fn
+}
+
+// currentGoalID resolves the active goal ID at finalize time ("" when no
+// provider is wired or no goal is active).
+func (am *AgentManager) currentGoalID() string {
+	am.mu.Lock()
+	fn := am.activeGoalID
+	am.mu.Unlock()
+	if fn == nil {
+		return ""
+	}
+	return fn()
+}
+
 func (am *AgentManager) dispatchLifecycle(hookType string, payload map[string]any) {
 	if am.lifecycleRegistry == nil {
 		return
@@ -243,6 +265,10 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 	if cfg.ContextCompression.EnabledValue() || compressionCfg.MaxTokens > 0 {
 		agenticCfg.ContextCompression = compressionCfg
 	}
+	// Remote-compaction opt-in gate (Codex Phase 2b): ANDed with the
+	// provider/model capability inside the agent. Default off keeps the local
+	// compression ladder unchanged; detection/gating only, no request logic.
+	agenticCfg.RemoteCompactionEnabled = cfg.Features.RemoteCompactionEnabled()
 	// Per-turn temporal context injection (gap CX6): off by default. The
 	// refresh interval string is parsed at build time; a malformed value is
 	// rejected by config validation, so an empty parse result here only
@@ -346,6 +372,18 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 		PreserveRecentTurns: ov.preserveRecentTurns,
 		MicroCompaction:     buildMicroCompactionConfig(cfg.ContextCompression.MicroCompaction),
 		ToolResultPruning:   buildToolResultPruningConfig(cfg.ContextCompression.ToolResultPruning),
+		FreshWindow:         buildFreshWindowConfig(cfg.ContextCompression.FreshWindow),
+	}
+}
+
+// buildFreshWindowConfig maps the YAML fresh-window settings (Codex Phase
+// 2b.3) to the SDK config: the enabled gate plus the preservation tail bound
+// (0 = inherit the SDK inheritance chain, which bottoms out at
+// PreserveRecentTurns → 2).
+func buildFreshWindowConfig(s config.FreshWindowSettings) agentic.FreshWindowConfig {
+	return agentic.FreshWindowConfig{
+		Enabled:             s.Enabled != nil && *s.Enabled,
+		PreserveRecentTurns: s.PreserveRecentTurns,
 	}
 }
 
@@ -364,11 +402,12 @@ func timeContextRefreshInterval(s string) time.Duration {
 }
 
 // buildToolResultPruningConfig maps the YAML tool-result pruner settings to
-// the SDK config. Zero fields inherit the SDK defaults (threshold 8192, head
-// 4096, tail 1024 Unicode code points); negative head/tail also reset to the
-// default so a misconfigured cascade cannot produce a zero-budget pass.
+// the SDK config. Enabled defaults OFF (nil = off): pre-compaction pruning
+// only runs when explicitly enabled; the character budgets inherit the SDK
+// defaults (threshold 8192, head 4096, tail 1024 code points) when zero.
 func buildToolResultPruningConfig(s config.ToolResultPruningSettings) agentic.ToolResultPruningConfig {
 	out := agentic.DefaultToolResultPruningConfig
+	out.Enabled = s.PruningEnabled()
 	if s.ThresholdChars > 0 {
 		out.ThresholdChars = s.ThresholdChars
 	}
@@ -424,39 +463,7 @@ func overlayCompressionForModel(cc config.ContextCompressionConfig, modelID stri
 	if !ok {
 		return ov
 	}
-	if o.MaxTokens != 0 {
-		ov.maxTokens = o.MaxTokens
-	}
-	if o.Strategy != "" {
-		ov.strategy = o.Strategy
-	}
-	if o.PreserveRecentTurns != 0 {
-		ov.preserveRecentTurns = o.PreserveRecentTurns
-	}
-	if o.ThresholdPercent != 0 {
-		ov.legacyTrigger = o.ThresholdPercent
-	}
-	if o.Thresholds.SoftPercent != 0 {
-		ov.thresholds.SoftPercent = o.Thresholds.SoftPercent
-	}
-	if o.Thresholds.TriggerPercent != 0 {
-		ov.thresholds.TriggerPercent = o.Thresholds.TriggerPercent
-	}
-	if o.Thresholds.HardPercent != 0 {
-		ov.thresholds.HardPercent = o.Thresholds.HardPercent
-	}
-	if o.Strategies.Soft != "" {
-		ov.strategies.Soft = o.Strategies.Soft
-	}
-	if o.Strategies.Trigger != "" {
-		ov.strategies.Trigger = o.Strategies.Trigger
-	}
-	if o.Strategies.Hard != "" {
-		ov.strategies.Hard = o.Strategies.Hard
-	}
-	if o.CacheGate != "" {
-		ov.cacheGate = o.CacheGate
-	}
+	applyCompressionOverride(&ov, o)
 	return ov
 }
 

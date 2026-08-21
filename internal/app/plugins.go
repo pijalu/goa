@@ -190,7 +190,7 @@ func pluginOAuthToken(ctx context.Context, store *authstore.Store, provider stri
 		return nil, fmt.Errorf("unsupported OAuth provider: %s", provider)
 	}
 	if store == nil {
-		return nil, fmt.Errorf("Goa auth store unavailable")
+		return nil, fmt.Errorf("goa auth store unavailable")
 	}
 	storeKey, tokens, ok := codexOAuthTokens(store)
 	if !ok {

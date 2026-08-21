@@ -21,13 +21,57 @@ func TestTurnRecorder_Empty(t *testing.T) {
 	}
 }
 
+// TestTurnRecorder_FinalizeTurnTagsIdentity covers the main-agent path: the
+// finalized record is tagged role=main and the supplied goal ID (bugs.md:
+// /stats:cache must section per goal/agent).
+func TestTurnRecorder_FinalizeTurnTagsIdentity(t *testing.T) {
+	tr := NewTurnRecorder()
+	tr.ResetTurn(time.Now())
+	tr.RecordTokenStats(100, 10, 80, 20, 0, 0, 0, 0)
+	rec := tr.FinalizeTurn(nil, "goal-7")
+	if rec.AgentRole != "main" {
+		t.Errorf("AgentRole = %q, want main", rec.AgentRole)
+	}
+	if rec.GoalID != "goal-7" {
+		t.Errorf("GoalID = %q, want goal-7", rec.GoalID)
+	}
+	if rec.TokenUsage.CacheRead != 80 || rec.TokenUsage.CacheWrite != 20 {
+		t.Errorf("TokenUsage cache = %+v, want read 80 write 20", rec.TokenUsage)
+	}
+}
+
+// TestTurnRecorder_RecordSubAgentTurn covers the sub-agent ingestion path:
+// a companion/stage agent's final token stats land as a completed,
+// identity-tagged turn continuing the shared numbering.
+func TestTurnRecorder_RecordSubAgentTurn(t *testing.T) {
+	tr := NewTurnRecorder()
+	tr.ResetTurn(time.Now())
+	main := tr.FinalizeTurn(nil, "g1")
+
+	sub := tr.RecordSubAgentTurn("companion", "g1", TurnTokenUsage{
+		PromptN: 1000, PredictedN: 50, CacheRead: 900, CacheWrite: 100,
+	})
+	if sub.Number != main.Number+1 {
+		t.Errorf("sub turn Number = %d, want %d (shared sequence)", sub.Number, main.Number+1)
+	}
+	if sub.AgentRole != "companion" || sub.GoalID != "g1" {
+		t.Errorf("sub turn identity = %q/%q, want companion/g1", sub.AgentRole, sub.GoalID)
+	}
+	if sub.TokenUsage.CacheRead != 900 || sub.TokensUsed != 1050 {
+		t.Errorf("sub turn usage = %+v tokens=%d, want read 900 tokens 1050", sub.TokenUsage, sub.TokensUsed)
+	}
+	if got := tr.TurnHistory(); len(got) != 2 {
+		t.Errorf("history = %d turns, want 2", len(got))
+	}
+}
+
 func TestTurnRecorder_RecordsToolCallsAndResults(t *testing.T) {
 	tr := NewTurnRecorder()
 	tr.ResetTurn(time.Now())
 	tr.RecordToolCall("bash", `{"command":"echo hi"}`, "call1")
 	tr.RecordToolResult("call1", "bash", "hi")
 
-	record := tr.FinalizeTurn(nil)
+	record := tr.FinalizeTurn(nil, "")
 	if len(record.ToolCalls) != 1 {
 		t.Fatalf("expected 1 tool call, got %d", len(record.ToolCalls))
 	}
@@ -50,7 +94,7 @@ func TestTurnRecorder_MultipleTurns(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		tr.ResetTurn(time.Now())
 		tr.RecordToolCall("bash", "", "call")
-		tr.FinalizeTurn(nil)
+		tr.FinalizeTurn(nil, "")
 	}
 
 	hist := tr.TurnHistory()
@@ -76,7 +120,7 @@ func TestTurnRecorder_FinalizeTurnCapturesHistory(t *testing.T) {
 
 	tr := NewTurnRecorder()
 	tr.ResetTurn(time.Now())
-	record := tr.FinalizeTurn(agent)
+	record := tr.FinalizeTurn(agent, "")
 
 	if record.RequestJSON == "" {
 		t.Error("expected non-empty RequestJSON")
@@ -91,7 +135,7 @@ func TestTurnRecorder_ResetTurnClearsAccumulators(t *testing.T) {
 	tr.ResetTurn(time.Now())
 	tr.RecordToolCall("bash", "", "c1")
 	tr.ResetTurn(time.Now())
-	record := tr.FinalizeTurn(nil)
+	record := tr.FinalizeTurn(nil, "")
 	if len(record.ToolCalls) != 0 {
 		t.Errorf("expected accumulators cleared, got %d tool calls", len(record.ToolCalls))
 	}
@@ -140,7 +184,7 @@ func TestTurnRecorder_CurrentTurn_AfterFinalize(t *testing.T) {
 	tr := NewTurnRecorder()
 	tr.ResetTurn(time.Now())
 	tr.RecordUserInput("hello")
-	tr.FinalizeTurn(nil)
+	tr.FinalizeTurn(nil, "")
 
 	// After finalize, CurrentTurn should return nil (no active turn).
 	if got := tr.CurrentTurn(); got != nil {
@@ -152,7 +196,7 @@ func TestTurnRecorder_CurrentTurn_AfterReset(t *testing.T) {
 	tr := NewTurnRecorder()
 	tr.ResetTurn(time.Now())
 	tr.RecordUserInput("hello")
-	tr.FinalizeTurn(nil)
+	tr.FinalizeTurn(nil, "")
 
 	// Start a new turn — CurrentTurn should reflect it.
 	tr.ResetTurn(time.Now())

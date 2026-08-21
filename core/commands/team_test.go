@@ -293,6 +293,26 @@ func TestTeamCommand_AddOpensWizard(t *testing.T) {
 	}
 }
 
+func TestTeamCommand_PickerDeleteConfirmsAndRemoves(t *testing.T) {
+	cfg := teamCmdConfig()
+	ctx := teamCmdContext(t, cfg)
+	var callbacks []func(string, bool)
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, _ string, cb func(string, bool)) {
+		callbacks = append(callbacks, cb)
+	}
+	if err := (&TeamCommand{}).Run(ctx, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	callbacks[0]("__delete__beta", true)
+	if len(callbacks) != 2 {
+		t.Fatalf("callbacks = %d, want selector plus confirmation", len(callbacks))
+	}
+	callbacks[1]("yes", true)
+	if _, ok := cfg.Teams.Definitions["beta"]; ok {
+		t.Fatal("beta should be removed after picker confirmation")
+	}
+}
+
 func TestTeamCommand_PickerAddOpensWizard(t *testing.T) {
 	cfg := teamCmdConfig()
 	ctx := teamCmdContext(t, cfg)
@@ -368,6 +388,87 @@ func TestTeamCommand_RemoveActiveRefused(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "active team") {
 		t.Errorf("out = %q, want an active-team refusal", out.String())
+	}
+}
+
+// Regression (bug: deleting the active team via the picker cleared
+// teams.active only in memory — the project LOCAL layer kept the stale value
+// and the next start hard-failed validation with "teams.active: team %q not
+// defined in teams.definitions"). The picker-delete path must persist the
+// cleared selection to the local layer so a cascade reload starts cleanly.
+func TestTeamCommand_PickerDeleteActiveClearsPersistedActive(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	projectDir := t.TempDir()
+
+	cfg := teamCmdConfig()
+	saver := config.NewCascadeLoader(projectDir, "", nil)
+	// Definitions persist to the home config; the reload below resolves
+	// teams.active against the on-disk definitions.
+	if err := saver.SaveHomeFieldValue([]string{"teams", "definitions"}, cfg.Teams.Definitions); err != nil {
+		t.Fatalf("seed home definitions: %v", err)
+	}
+	// Persist alpha as the active selection in the local layer (as
+	// /team:alpha would) before deleting it.
+	if err := saver.SaveLocalFieldValue([]string{"teams", "active"}, "alpha"); err != nil {
+		t.Fatalf("seed local teams.active: %v", err)
+	}
+
+	sess := &stubSession{providerID: "p0", modelID: "m0"}
+	m := team.NewManager(cfg, sess, nil, nil, nil, nil)
+	ctx := core.Context{
+		Config:      cfg,
+		TeamManager: m,
+		ConfigSaver: saver,
+	}
+	var out strings.Builder
+	ctx.OutputBuffer = &out
+
+	// Activate alpha, then delete it through the picker (selector delete
+	// hotkey → confirmation).
+	if err := (&TeamCommand{}).Run(ctx, []string{"alpha"}); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	var callbacks []func(string, bool)
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, _ string, cb func(string, bool)) {
+		callbacks = append(callbacks, cb)
+	}
+	if err := (&TeamCommand{}).Run(ctx, nil); err != nil {
+		t.Fatalf("picker: %v", err)
+	}
+	callbacks[0]("__delete__alpha", true)
+	if len(callbacks) != 2 {
+		t.Fatalf("callbacks = %d, want selector plus confirmation", len(callbacks))
+	}
+	callbacks[1]("yes", true)
+
+	if _, ok := cfg.Teams.Definitions["alpha"]; ok {
+		t.Fatal("alpha should be removed after picker confirmation")
+	}
+	if cfg.Teams.Active != "" {
+		t.Errorf("teams.active = %q in memory, want cleared", cfg.Teams.Active)
+	}
+
+	// The local layer must carry the cleared value — this is what the next
+	// start resolves.
+	localPath := filepath.Join(projectDir, ".goa", "config.local.yaml")
+	localData, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("read local config: %v", err)
+	}
+	if !strings.Contains(string(localData), `active: ""`) {
+		t.Errorf("local config = %q, want teams.active cleared", string(localData))
+	}
+
+	// Full restart path: reload through the cascade — must not fail
+	// validation and must resolve to no active team.
+	reloaded, err := config.NewCascadeLoader(projectDir, "", nil).Load()
+	if err != nil {
+		t.Fatalf("Load after active-team delete: %v", err)
+	}
+	if reloaded.Teams.Active != "" {
+		t.Errorf("Teams.Active = %q after reload, want empty", reloaded.Teams.Active)
 	}
 }
 
@@ -783,6 +884,32 @@ func TestConfigMenu_TeamsRootIsWizardForward(t *testing.T) {
 	sr.onSel("__add__", true)
 	// The wizard's first step is the team-name input.
 	// (inputRecorder.prompt is checked via the inputRecorder, not sr.)
+}
+
+// Regression: deleting a team from the Teams selector emits __delete__<name>.
+// The encoded value must be dispatched to the confirmation flow, not treated as
+// a literal team name and opened for editing.
+func TestConfigMenu_TeamDeleteHotkeyRemovesTeam(t *testing.T) {
+	cfg := teamCmdConfig()
+	cfg.Teams.Active = "beta"
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+
+	menu.openTeams()
+	sr.onSel("__delete__beta", true)
+	if sr.title != "Remove team beta?" {
+		t.Fatalf("delete title = %q, want Remove team beta?", sr.title)
+	}
+	sr.onSel("yes", true)
+	if _, exists := cfg.Teams.Definitions["beta"]; exists {
+		t.Fatal("beta still exists after delete confirmation")
+	}
+	if cfg.Teams.Active != "" {
+		t.Fatalf("active team = %q, want cleared", cfg.Teams.Active)
+	}
+	if _, exists := cfg.Teams.Definitions["alpha"]; !exists {
+		t.Fatal("alpha was unexpectedly deleted")
+	}
 }
 
 func TestConfigMenu_TeamWizardCreatesTeam(t *testing.T) {

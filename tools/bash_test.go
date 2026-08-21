@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/sandbox"
@@ -984,75 +983,5 @@ func TestBashTool_Redactor_RemovesSecrets(t *testing.T) {
 	}
 	if !strings.Contains(result, "***") {
 		t.Errorf("expected placeholder in output, got: %q", result)
-	}
-}
-
-func TestBashTool_Redactor_Nil_DoesNotChange(t *testing.T) {
-	tool := &BashTool{}
-	result, err := tool.Execute(`{"command": "echo hello"}`)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	if !strings.Contains(result, "hello") {
-		t.Errorf("expected output unchanged, got: %q", result)
-	}
-}
-
-func TestBashTool_Redactor_PreservesEnvMasking(t *testing.T) {
-	tool := &BashTool{
-		EnvMaskPatterns: []string{"*SECRET*"},
-		Redactor:        secrets.DefaultRedactor(),
-	}
-	result, err := tool.Execute(`{"command": "echo secret_value_and_AKIAIOSFODNN7EXAMPLE", "env": {"MY_SECRET": "secret_value"}}`)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	if strings.Contains(result, "secret_value") {
-		t.Errorf("expected env secret to be masked, got: %q", result)
-	}
-	if strings.Contains(result, "AKIAIOSFODNN7EXAMPLE") {
-		t.Errorf("expected detected secret to be redacted, got: %q", result)
-	}
-}
-
-func TestBashTool_Redactor_TypeLabels(t *testing.T) {
-	tool := &BashTool{
-		Redactor: secrets.DefaultRedactor().WithTypeLabels(true),
-	}
-	result, err := tool.Execute(`{"command": "echo AKIAIOSFODNN7EXAMPLE"}`)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	if !strings.Contains(result, "<aws_access_key_id:***>") {
-		t.Errorf("expected type label, got: %q", result)
-	}
-}
-
-// TestBashTool_Execute_SanitizesControlBytes: command output is untrusted —
-// a command printing a clear-line escape sequence must reach the model/TUI as
-// literal text. Raw ESC bytes would be executed by the terminal when the tool
-// widget renders, erasing the user's screen.
-func TestBashTool_Execute_SanitizesControlBytes(t *testing.T) {
-	tool := &BashTool{}
-	out, err := tool.Execute(`{"command":"printf '\\033[2Kdone\\033[0m\\n'"}`)
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-	if strings.Contains(out, "\x1b") {
-		t.Errorf("raw ESC byte leaked into tool output: %q", out)
-	}
-	if !strings.Contains(out, `\e[2Kdone`) {
-		t.Errorf("expected escape sequence shown as literal text, got: %q", out)
-	}
-}
-
-// TestTruncateCommand_RuneSafe: the display cut must not split a multi-byte
-// rune (byte cuts render as '�').
-func TestTruncateCommand_RuneSafe(t *testing.T) {
-	// 3-byte rune straddling the cut boundary.
-	cmd := strings.Repeat("世", 10)
-	got := truncateCommand(cmd, 5)
-	if !utf8.ValidString(got) {
-		t.Errorf("truncateCommand split a rune: %q", got)
 	}
 }

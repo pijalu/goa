@@ -63,63 +63,42 @@ func TestTodoListClear(t *testing.T) {
 func TestTodoList_GoalLinkage(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	tool := &TodoListTool{Mode: mode}
-
-	// Session items first.
-	if _, err := tool.Execute(`{"action":"add","description":"session task"}`); err != nil {
-		t.Fatal(err)
-	}
-
-	// Goal starts → list is blank and goal-linked; session items do not leak.
+	executeTodoRequest(t, tool, `{"action":"add","description":"session task"}`)
 	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "goal work"}, goal.GoalActorUser); err != nil {
 		t.Fatal(err)
 	}
-	out, err := tool.Execute(`{"action":"list"}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "linked to goal") && !strings.Contains(out, "goal-linked") {
-		t.Errorf("during a goal the list must be goal-linked: %q", out)
-	}
-	if strings.Contains(out, "session task") {
-		t.Errorf("goal list must start blank: %q", out)
-	}
-
-	// Add during the goal → goes to the goal's own list.
-	if _, err := tool.Execute(`{"action":"add","description":"goal task"}`); err != nil {
-		t.Fatal(err)
-	}
+	assertGoalListIsolated(t, tool)
+	executeTodoRequest(t, tool, `{"action":"add","description":"goal task"}`)
 	snap := mode.GetActiveGoal()
 	if snap == nil || len(snap.Todos) != 1 || snap.Todos[0].Title != "goal task" {
-		t.Fatalf("goal todos = %+v", snap.Todos)
+		t.Fatalf("goal todos = %+v", snap)
 	}
-	// Status updates route to the goal list too (goal ids).
 	if _, err := tool.Execute(`{"action":"complete","id":"` + snap.Todos[0].ID + `"}`); err != nil {
-		t.Fatalf("complete: %v", err)
+		t.Fatal(err)
 	}
 	if got := mode.GetActiveGoal().Todos[0].Status; got != goal.TodoDone {
-		t.Errorf("goal todo status = %q, want done", got)
+		t.Errorf("goal todo status = %q", got)
 	}
-
-	// remove/clear are refused while goal-linked (containment).
-	if _, err := tool.Execute(`{"action":"remove","id":"` + snap.Todos[0].ID + `"}`); err == nil {
-		t.Error("remove during a goal must error (todos are goal-contained)")
+	for _, request := range []string{`{"action":"remove","id":"` + snap.Todos[0].ID + `"}`, `{"action":"clear"}`} {
+		if _, err := tool.Execute(request); err == nil {
+			t.Error("goal-contained mutation should fail")
+		}
 	}
-	if _, err := tool.Execute(`{"action":"clear"}`); err == nil {
-		t.Error("clear during a goal must error (todos are goal-contained)")
-	}
-
-	// Goal ends → session list resurfaces; goal todos do not escape.
 	if _, err := mode.CancelGoal(goal.GoalActorUser); err != nil {
 		t.Fatal(err)
 	}
-	out, err = tool.Execute(`{"action":"list"}`)
-	if err != nil {
-		t.Fatal(err)
+	out := executeTodoRequest(t, tool, `{"action":"list"}`)
+	if !strings.Contains(out, "session task") || strings.Contains(out, "goal task") {
+		t.Errorf("session list after goal = %q", out)
 	}
-	if !strings.Contains(out, "session task") {
-		t.Errorf("session list must resurface after the goal: %q", out)
+}
+
+func assertGoalListIsolated(t *testing.T, tool *TodoListTool) {
+	out := executeTodoRequest(t, tool, `{"action":"list"}`)
+	if !strings.Contains(out, "linked to goal") && !strings.Contains(out, "goal-linked") {
+		t.Errorf("list must be goal-linked: %q", out)
 	}
-	if strings.Contains(out, "goal task") {
-		t.Errorf("goal todos must not escape the goal: %q", out)
+	if strings.Contains(out, "session task") {
+		t.Errorf("goal list leaked session task: %q", out)
 	}
 }

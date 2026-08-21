@@ -574,6 +574,7 @@ func (f *codexDeviceFlow) Run(ctx context.Context, w uiWriter, p prompter) (*oau
 //   - the device flow shows the verification URL as a hyperlink plus a
 //     prominent "Enter code: <userCode>" line and a waiting message,
 //   - the manual-paste prompt advertises "(esc to cancel, enter to submit)".
+//
 // A nil prompter disables the manual-paste fallback.
 func codexUIFromWriter(w uiWriter, p prompter) oauth.CodexUIOpts {
 	opts := oauth.CodexUIOpts{}

@@ -25,6 +25,9 @@ type StreamRequest struct {
 	Headers map[string]string
 	Body    []byte
 	URL     string
+	// Fingerprint is bounded request metadata for diagnostics; it never carries
+	// raw prompts or credentials.
+	Fingerprint RequestFingerprint
 
 	// OnResponse, when non-nil, is invoked by the terminal handler after the
 	// transport round-trip with the response status and headers, before the

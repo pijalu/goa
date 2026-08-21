@@ -418,50 +418,49 @@ func modelItemLess(items []tui.SelectorItem, activeModel string) func(i, j int) 
 // It first tries to show available models from ALL configured providers for
 // autocomplete-style selection, falling back to a plain text input.
 func promptCustomModel(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
-	// Fetch models from ALL configured providers, not just the active one.
 	allModels := fetchAllProviderModels(host, cfg)
 	if len(allModels) == 0 {
-		host.ShowInput("Enter custom model name:", "", func(customModel string, ok bool) {
-			if !ok || customModel == "" {
-				return
-			}
-			applyModelSelection(host, cfg, saver, customModel)
-		})
+		showCustomModelInput(host, cfg, saver)
 		return
 	}
+	host.SelectOption("Select model:", modelSelectorItems(allModels, cfg.ActiveModel), cfg.ActiveModel,
+		customModelSelectionHandler(host, cfg, saver))
+}
 
+func showCustomModelInput(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
+	host.ShowInput("Enter custom model name:", "", func(customModel string, ok bool) {
+		if ok && customModel != "" {
+			applyModelSelection(host, cfg, saver, customModel)
+		}
+	})
+}
+
+func modelSelectorItems(allModels []providerModelEntry, active string) []tui.SelectorItem {
 	items := make([]tui.SelectorItem, 0, len(allModels)+1)
 	for _, entry := range allModels {
 		desc := entry.ProviderID
-		if entry.Model.ID == cfg.ActiveModel {
+		if entry.Model.ID == active {
 			desc += " (active)"
 		}
 		items = append(items, tui.SelectorItem{
-			Value:       entry.Model.ID,
-			Label:       entry.Model.ID,
-			Description: desc,
+			Value: entry.Model.ID, Label: entry.Model.ID, Description: desc,
 			SearchLabel: modelSearchLabel(entry.Model.ID, entry.ProviderID, entry.Model.ID),
 		})
 	}
-	items = append(items, tui.SelectorItem{
-		Value: "__custom__", Label: "── custom model ──",
-		Description: "type any model name",
-	})
-	host.SelectOption("Select model:", items, cfg.ActiveModel, func(selected string, ok bool) {
+	return append(items, tui.SelectorItem{Value: "__custom__", Label: "── custom model ──", Description: "type any model name"})
+}
+
+func customModelSelectionHandler(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) func(string, bool) {
+	return func(selected string, ok bool) {
 		if !ok || selected == "" {
 			return
 		}
 		if selected == "__custom__" {
-			host.ShowInput("Enter custom model name:", "", func(customModel string, ok bool) {
-				if !ok || customModel == "" {
-					return
-				}
-				applyModelSelection(host, cfg, saver, customModel)
-			})
+			showCustomModelInput(host, cfg, saver)
 			return
 		}
 		applyModelSelection(host, cfg, saver, selected)
-	})
+	}
 }
 
 // providerModelEntry pairs a model with the provider it came from.

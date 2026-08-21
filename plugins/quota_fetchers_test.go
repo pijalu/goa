@@ -315,6 +315,154 @@ func TestFetcherOpencode_BalanceDerivation(t *testing.T) {
 	}
 }
 
+// --- fetchers/codex.js merge semantics ---
+
+// TestFetcherCodex_MergePreserveOnAbsent pins the preserve-on-absent merge
+// semantics mirrored from Codex's merge_rate_limit_fields (session.rs
+// 338-358): a sparse snapshot that OMITS plan/credits/limit_id must inherit
+// them from the previous snapshot, and a missing limit_id defaults to
+// "codex". This is preserve-on-ABSENT, not preserve-on-zero.
+func TestFetcherCodex_MergePreserveOnAbsent(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	v, err := bridge.vm.RunString(`
+		(function() {
+			var fetcher = globalThis.__require("fetchers/codex.js");
+			var previous = {
+				limit_id: "codex",
+				plan: "Pro",
+				credits: { balance: 750 }
+			};
+			// Sparse snapshot: omits plan, credits, and limit_id entirely.
+			var sparse = {};
+			var merged = fetcher.mergeRateLimitFields(previous, sparse);
+			return [
+				merged.limit_id,        // defaulted to "codex"
+				merged.plan,            // preserved from previous
+				merged.credits.balance  // preserved from previous
+			].join("|");
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.String(); got != "codex|Pro|750" {
+		t.Fatalf("preserve-on-absent merge = %q", got)
+	}
+}
+
+// TestFetcherCodex_MergeExplicitZeroReplaces is the regression pin for the
+// plan's core correction: an explicit authoritative zero/exhausted is a REAL
+// state change and must REPLACE the prior value — never be masked by
+// preserve-on-zero. Codex treats Some(0) as authoritative; only None (absent)
+// triggers preservation.
+func TestFetcherCodex_MergeExplicitZeroReplaces(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	v, err := bridge.vm.RunString(`
+		(function() {
+			var fetcher = globalThis.__require("fetchers/codex.js");
+			var previous = {
+				limit_id: "codex",
+				plan: "Pro",
+				credits: { balance: 750 }
+			};
+			// Authoritative exhausted snapshot: credits balance explicitly 0.
+			// This must REPLACE the prior 750, not preserve it.
+			var exhausted = { limit_id: "codex", plan: "Pro", credits: { balance: 0 } };
+			var merged = fetcher.mergeRateLimitFields(previous, exhausted);
+			return merged.credits.balance + "|" + merged.plan;
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.String(); got != "0|Pro" {
+		t.Fatalf("explicit authoritative zero must replace prior value, got %q", got)
+	}
+}
+
+// TestFetcherCodex_MergeLimitIDDefaultsToCodex covers the limit_id default in
+// isolation: a snapshot with no limit_id falls into the default "codex"
+// bucket, while an explicit limit_id is kept.
+func TestFetcherCodex_MergeLimitIDDefaultsToCodex(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	v, err := bridge.vm.RunString(`
+		(function() {
+			var fetcher = globalThis.__require("fetchers/codex.js");
+			var defaulted = fetcher.mergeRateLimitFields(null, {});
+			var explicit = fetcher.mergeRateLimitFields(null, { limit_id: "gpt-5-codex" });
+			return defaulted.limit_id + "|" + explicit.limit_id;
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.String(); got != "codex|gpt-5-codex" {
+		t.Fatalf("limit_id default = %q", got)
+	}
+}
+
+// TestFetcherCodex_FetchMergesAcrossCalls drives the full fetch path: the
+// fetcher retains its previous snapshot at module scope (mirroring Codex
+// session state) and merges each new /wham/usage response into it. A sparse
+// second response must preserve the first response's plan/credits; an
+// explicit-zero third response must replace them. The mock body is swapped
+// between calls via a JS-side queue so each fetch returns a different payload.
+func TestFetcherCodex_FetchMergesAcrossCalls(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	// Inject a Goa-managed OAuth token so codexToken() succeeds, and stub
+	// hq.getJSON's HTTP layer by feeding mapUsage-driven bodies through a queue.
+	// We bypass hq.getJSON by stubbing fetch's HTTP: simplest is to drive the
+	// exported mapUsage + mergeRateLimitFields through the module's own
+	// _previous retention via three sequential merge calls on the SAME cached
+	// module instance (require cache keeps _previous alive).
+	v, err := bridge.vm.RunString(`
+		(function() {
+			var fetcher = globalThis.__require("fetchers/codex.js");
+			// Snapshot 1: full — plan + credits present.
+			var s1 = fetcher.mapUsage({ plan_type: "Pro", credits: { balance: 750 }, rate_limit: {} });
+			var m1 = fetcher.mergeRateLimitFields(null, s1);
+			// Snapshot 2: sparse — omits plan + credits entirely.
+			var s2 = fetcher.mapUsage({ rate_limit: {} });
+			var m2 = fetcher.mergeRateLimitFields(m1, s2);
+			// Snapshot 3: authoritative exhausted — credits balance explicit 0.
+			var s3 = fetcher.mapUsage({ credits: { balance: 0 }, rate_limit: {} });
+			var m3 = fetcher.mergeRateLimitFields(m2, s3);
+			return [
+				m1.plan + ":" + m1.credits.balance + ":" + m1.limit_id, // Pro:750:codex
+				m2.plan + ":" + m2.credits.balance + ":" + m2.limit_id, // preserved
+				m3.plan + ":" + m3.credits.balance + ":" + m3.limit_id  // zero replaces
+			].join("|");
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Pro:750:codex|Pro:750:codex|Pro:0:codex"
+	if got := v.String(); got != want {
+		t.Fatalf("cross-call merge:\n got %q\nwant %q", got, want)
+	}
+}
+
 // --- oauth.js token refresh logic ---
 
 func TestOAuth_RefreshWithinSkew(t *testing.T) {

@@ -114,16 +114,11 @@ type mdModals struct {
 	Input []string `json:"input,omitempty"`
 }
 
-type modelsDevFile struct {
-	Providers map[string]map[string]modelsDevModel
-}
-
 // runtimeCatalog holds the models.dev-derived registrations.
 type runtimeCatalog struct {
-	loaded    bool
-	models    map[string]provider.Model              // ID → model (first-wins per provider applied at load)
-	byProv    map[provider.Provider][]provider.Model // provider → models
-	fetchedAt time.Time
+	loaded bool
+	models map[string]provider.Model              // ID → model (first-wins per provider applied at load)
+	byProv map[provider.Provider][]provider.Model // provider → models
 }
 
 var runtime struct {

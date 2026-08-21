@@ -200,7 +200,7 @@ func (am *AgentManager) finalizeTurn() {
 	agent := am.activeAgent
 	am.mu.Unlock()
 
-	am.turnRecorder.FinalizeTurn(agent)
+	am.turnRecorder.FinalizeTurn(agent, am.currentGoalID())
 	if am.loopDetector != nil {
 		am.loopDetector.ResetThinking()
 	}

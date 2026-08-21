@@ -50,11 +50,11 @@ const (
 // hints (env), and the models map. models.dev's doc URL and any future
 // marketing fields are dropped.
 type slimProvider struct {
-	ID     string              `json:"id"`
-	Name   string              `json:"name"`
-	API    string              `json:"api,omitempty"`
-	NPM    string              `json:"npm,omitempty"`
-	Env    []string            `json:"env,omitempty"`
+	ID     string               `json:"id"`
+	Name   string               `json:"name"`
+	API    string               `json:"api,omitempty"`
+	NPM    string               `json:"npm,omitempty"`
+	Env    []string             `json:"env,omitempty"`
 	Models map[string]slimModel `json:"models"`
 }
 

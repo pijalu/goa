@@ -27,74 +27,66 @@ import (
 func TestEchoCommandResult_MidStreamStartsNewBlockAfterResult(t *testing.T) {
 	app := New(testSubsystems())
 	app.subs.tuiEngine = tui.NewTUI(tui.NewProcessTerminal())
+	feedAssistant(app, "First part of the answer.", " More of the stream.")
+	app.echoCommandResult(&core.RouteResult{Command: &echoableCommand{}}, "/goal:list", "## Goals\n\n**1. [active] goal-01**\n\nA very long objective\n")
+	feedAssistant(app, "Second part after the command result.")
+	assertStreamBlocks(t, app.subs.chat.Messages())
+}
 
-	// Start a stream: the first content chunk opens the assistant block.
-	app.handleAssistantContent(&agentic.OutputEvent{
-		Type: agentic.EventContent, State: agentic.StateContent,
-		Role: agentic.Assistant, Text: "First part of the answer.",
-	})
-	app.handleAssistantContent(&agentic.OutputEvent{
-		Type: agentic.EventContent, State: agentic.StateContent,
-		Role: agentic.Assistant, Text: " More of the stream.",
-	})
-
-	// A command with output is echoed mid-stream (e.g. /goal:list filling the
-	// screen).
-	app.echoCommandResult(&core.RouteResult{Command: &echoableCommand{}}, "/goal:list",
-		"## Goals\n\n**1. [active] goal-01**\n\nA very long objective\n")
-
-	// The stream resumes.
-	app.handleAssistantContent(&agentic.OutputEvent{
-		Type: agentic.EventContent, State: agentic.StateContent,
-		Role: agentic.Assistant, Text: "Second part after the command result.",
-	})
-
-	msgs := app.subs.chat.Messages()
-
-	// Find the assistant blocks and the command result's system message.
-	assistantTexts := []string{}
-	commandResultIdx := -1
-	for i, m := range msgs {
-		switch m.Type {
-		case tui.ConsoleAssistantMessage:
-			assistantTexts = append(assistantTexts, m.Content)
-		case tui.ConsoleSystemMessage:
-			if strings.Contains(m.Content, "## Goals") {
-				commandResultIdx = i
-			}
-		}
+func feedAssistant(app *App, texts ...string) {
+	for _, text := range texts {
+		app.handleAssistantContent(&agentic.OutputEvent{Type: agentic.EventContent, State: agentic.StateContent, Role: agentic.Assistant, Text: text})
 	}
+}
 
-	// The stream must be split into TWO blocks (before and after the result),
-	// never one buried block.
-	if len(assistantTexts) != 2 {
-		t.Fatalf("expected 2 assistant blocks (before/after command result), got %d: %v", len(assistantTexts), assistantTexts)
+func assertStreamBlocks(t *testing.T, msgs []*tui.ChatMessage) {
+	assistant := assistantMessages(msgs)
+	result, first, second := streamMessageIndices(msgs)
+	if len(assistant) != 2 {
+		t.Fatalf("expected 2 assistant blocks, got %d: %v", len(assistant), assistant)
 	}
-	if !strings.Contains(assistantTexts[0], "First part") || !strings.Contains(assistantTexts[0], "More of the stream") {
-		t.Errorf("first block missing pre-interrupt text: %q", assistantTexts[0])
-	}
-	if !strings.Contains(assistantTexts[1], "Second part") {
-		t.Errorf("second block missing post-interrupt text: %q", assistantTexts[1])
-	}
-	if commandResultIdx < 0 {
+	assertAssistantText(t, assistant)
+	if result < 0 {
 		t.Fatal("command result system message not found")
 	}
-	// The command result must sit BETWEEN the two assistant blocks (the stream
-	// continues after it, not buried before it).
-	firstBlockIdx := -1
-	secondBlockIdx := -1
-	for i, m := range msgs {
-		if m.Type == tui.ConsoleAssistantMessage {
-			if firstBlockIdx < 0 {
-				firstBlockIdx = i
+	if !(first < result && result < second) {
+		t.Errorf("result ordering first=%d result=%d second=%d", first, result, second)
+	}
+}
+
+func assistantMessages(msgs []*tui.ChatMessage) []string {
+	var out []string
+	for _, msg := range msgs {
+		if msg.Type == tui.ConsoleAssistantMessage {
+			out = append(out, msg.Content)
+		}
+	}
+	return out
+}
+
+func streamMessageIndices(msgs []*tui.ChatMessage) (result, first, second int) {
+	result, first, second = -1, -1, -1
+	for i, msg := range msgs {
+		if msg.Type == tui.ConsoleSystemMessage && strings.Contains(msg.Content, "## Goals") {
+			result = i
+		}
+		if msg.Type == tui.ConsoleAssistantMessage {
+			if first < 0 {
+				first = i
 			} else {
-				secondBlockIdx = i
+				second = i
 			}
 		}
 	}
-	if !(firstBlockIdx < commandResultIdx && commandResultIdx < secondBlockIdx) {
-		t.Errorf("expected command result between the two assistant blocks, got first=%d result=%d second=%d",
-			firstBlockIdx, commandResultIdx, secondBlockIdx)
+	return
+}
+
+func assertAssistantText(t *testing.T, assistant []string) {
+	if !strings.Contains(assistant[0], "First part") || !strings.Contains(assistant[0], "More of the stream") {
+		t.Errorf("first block = %q", assistant[0])
+	}
+	if !strings.Contains(assistant[1], "Second part") {
+		t.Errorf("second block = %q", assistant[1])
 	}
 }
 
@@ -114,8 +106,8 @@ func TestEchoCommandResult_NoActiveStreamIsNoOp(t *testing.T) {
 // echoableCommand is a non-internal command so echoCommandResult echoes it.
 type echoableCommand struct{}
 
-func (c *echoableCommand) Name() string                  { return "echoable" }
-func (c *echoableCommand) Aliases() []string             { return nil }
-func (c *echoableCommand) ShortHelp() string             { return "echoable" }
-func (c *echoableCommand) LongHelp() string              { return "echoable" }
+func (c *echoableCommand) Name() string                              { return "echoable" }
+func (c *echoableCommand) Aliases() []string                         { return nil }
+func (c *echoableCommand) ShortHelp() string                         { return "echoable" }
+func (c *echoableCommand) LongHelp() string                          { return "echoable" }
 func (c *echoableCommand) Run(ctx core.Context, args []string) error { return nil }

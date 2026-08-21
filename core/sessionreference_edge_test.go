@@ -9,48 +9,25 @@ import (
 )
 
 func TestParseSessionReferenceMentions_EdgeCases(t *testing.T) {
-	// Bare URIs at start and end of text.
-	refs, out, err := ParseSessionReferenceMentions("goa-session:s1 and goa-session:s2")
+	assertSessionParse(t, "goa-session:s1 and goa-session:s2", 2, "@s1 and @s2")
+	assertSessionParse(t, "(@[x](goa-session:s1))", 1, "(@x)")
+	assertSessionParse(t, "@[a](goa-session:s1) goa-session:s1", 1, "@a @s1")
+	assertSessionParse(t, "path goa-session:../evil", 0, "path goa-session:../evil")
+	refs, _, err := ParseSessionReferenceMentions("goa-session:missing1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(refs) != 2 || out != "@s1 and @s2" {
-		t.Errorf("refs=%+v out=%q", refs, out)
+	if len(refs) != 1 || refs[0].ID != "missing1" {
+		t.Errorf("refs=%+v", refs)
 	}
+}
 
-	// Markdown mention inside a sentence with no surrounding spaces.
-	_, out2, err := ParseSessionReferenceMentions("(@[x](goa-session:s1))")
+func assertSessionParse(t *testing.T, input string, count int, want string) {
+	refs, out, err := ParseSessionReferenceMentions(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out2 != "(@x)" {
-		t.Errorf("out2=%q", out2)
-	}
-
-	// Dedup across markdown + bare forms keeps one reference.
-	refs3, out3, err := ParseSessionReferenceMentions("@[a](goa-session:s1) goa-session:s1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(refs3) != 1 || out3 != "@a @s1" {
-		t.Errorf("refs3=%+v out3=%q", refs3, out3)
-	}
-
-	// Bare URI with traversal id shape is left as text (not a reference).
-	refs4, out4, err := ParseSessionReferenceMentions("path goa-session:../evil")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(refs4) != 0 || out4 != "path goa-session:../evil" {
-		t.Errorf("refs4=%+v out4=%q", refs4, out4)
-	}
-
-	// Bare URI with a plausible id parses; resolution fails when absent.
-	refs5, _, err := ParseSessionReferenceMentions("goa-session:missing1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(refs5) != 1 || refs5[0].ID != "missing1" {
-		t.Errorf("refs5=%+v", refs5)
+	if len(refs) != count || out != want {
+		t.Errorf("input %q: refs=%+v out=%q", input, refs, out)
 	}
 }

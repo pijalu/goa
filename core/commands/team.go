@@ -101,7 +101,7 @@ func (c *TeamCommand) Run(ctx core.Context, args []string) error {
 	case "list":
 		return teamList(ctx)
 	case "remove":
-		return teamRemove(ctx, teamManager(ctx), rest)
+		return teamRemove(ctx, teamManager(ctx), rest, false)
 	}
 
 	m := teamManager(ctx)
@@ -176,7 +176,7 @@ func teamAdd(ctx core.Context) error {
 
 // teamRemove deletes a team definition after confirmation (mirrors /model
 // remove). Removing the active team is refused — deactivate it first.
-func teamRemove(ctx core.Context, m *team.Manager, name string) error {
+func teamRemove(ctx core.Context, m *team.Manager, name string, fromSelector bool) error {
 	if name == "" {
 		writeStr(ctx, "Usage: /team:remove:<name>\n")
 		return nil
@@ -187,13 +187,13 @@ func teamRemove(ctx core.Context, m *team.Manager, name string) error {
 		return nil
 	}
 	active := cfg.Teams.Active
-	if m != nil && m.Active() != "" {
-		active = m.Active()
-	}
-	if active == name {
+	if active == name && !fromSelector {
 		writeFmt(ctx, "Cannot remove the active team %q — deactivate it first (/team:off).\n", name)
 		return nil
 	}
+	// Interactive deletion still requires confirmation for the active team;
+	// clear the active selection after confirmation rather than silently
+	// refusing the selector action.
 	items := []tui.SelectorItem{
 		{Value: "yes", Label: "Remove " + name},
 		{Value: "no", Label: "Cancel"},
@@ -203,6 +203,15 @@ func teamRemove(ctx core.Context, m *team.Manager, name string) error {
 			return
 		}
 		delete(cfg.Teams.Definitions, name)
+		if active == name {
+			if m != nil && m.Active() == name {
+				_ = m.Deactivate()
+			}
+			// Persist the cleared selection to the project local layer —
+			// without this the stale teams.active resurfaces on next start
+			// and fails validation (teams.active must name a defined team).
+			persistActiveTeam(ctx, "")
+		}
 		persistTeamsDefinitions(ctx)
 		writeFmt(ctx, "Team removed: %s\n", name)
 	})
@@ -255,6 +264,10 @@ func showTeamSelector(ctx core.Context, m *team.Manager) error {
 		case "__add__":
 			_ = teamAdd(ctx)
 		default:
+			if name, deleted := strings.CutPrefix(selected, "__delete__"); deleted {
+				_ = teamRemove(ctx, m, name, true)
+				return
+			}
 			_ = teamActivate(ctx, m, selected)
 		}
 	})
