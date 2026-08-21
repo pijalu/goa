@@ -209,6 +209,29 @@ func saveHomeField(saver config.ConfigSaver, path []string, value any) error {
 	return saver.SaveHomeField(path, value)
 }
 
+// handleCycleAgentTab advances the multi-agent tab strip by dir steps (sign
+// matters: +1 next, -1 previous) — the Tab/Shift+Tab and Alt+]/Alt+[ handler.
+// The active-tab chrome (steer-prompt label + footer stats) follows the new
+// tab via remountAgentView.
+func (a *App) handleCycleAgentTab(dir int) {
+	a.cycleAgentView(dir)
+}
+
+// handleJumpAgentTab activates the tab at zero-based index (Alt+1..Alt+9).
+// Out-of-range indices are ignored (no flash noise on a stray digit). The
+// active-tab chrome follows via remountAgentView.
+func (a *App) handleJumpAgentTab(index int) {
+	reg := a.subs.agentRegistry
+	if reg == nil {
+		return
+	}
+	ids := reg.IDs()
+	if index < 0 || index >= len(ids) {
+		return
+	}
+	a.switchAgentView(ids[index])
+}
+
 func (a *App) flash(text string) {
 	subs := a.subs
 	if subs.chat != nil {

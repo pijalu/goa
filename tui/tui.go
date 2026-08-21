@@ -123,7 +123,8 @@ type TUI struct {
 	// for editing and empties the steering queue.
 	OnEditSteering func()
 
-	// OnCycleThinkingLevel is called when Shift+Tab is pressed.
+	// OnCycleThinkingLevel is called when Alt+T is pressed (moved off
+	// Shift+Tab, which now cycles multi-agent tabs).
 	OnCycleThinkingLevel func()
 
 	// OnChangeMode is called when the major-mode cycle key is pressed.
@@ -147,6 +148,16 @@ type TUI struct {
 	// char (safe under goa's raw terminal) and the callback name is source-
 	// agnostic so pipeline/swarm reuse it later.
 	OnOpenAgentTabs func()
+
+	// OnAgentTabNext / OnAgentTabPrev cycle the multi-agent tab strip
+	// forward/back (Alt+] / Alt+[). The names are deliberately source-
+	// agnostic — they describe the TAB action, not any one agent-view
+	// implementation — so other tabbed surfaces can bind the same mechanism.
+	OnAgentTabNext func()
+	OnAgentTabPrev func()
+
+	// OnAgentTabDigit jumps to the zero-based tab index (Alt+1..Alt+9).
+	OnAgentTabDigit func(index int)
 
 	// OnCancelInputRequest is called when Ctrl+C is pressed while the editor
 	// is empty and a main-input request is active. It lets the host cancel

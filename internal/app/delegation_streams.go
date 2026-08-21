@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/tui"
 	"github.com/pijalu/goa/tui/agentctx"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
@@ -97,6 +98,7 @@ func (a *App) handleDelegationViewEvent(ne orchpanel.AgentViewEvent) {
 	case orchpanel.EvAgentStarted:
 		// Tab spawns the moment the delegation is created (bug-2 fix: the
 		// delegation is visible even before its first streamed chunk).
+		a.setDelegationStatus(id, multiagent.DelegationRunning)
 		a.ensureDelegationView(id, ne.Role)
 	case orchpanel.EvAgentThinking:
 		a.handleDelegationThinking(id, ne.Text, ne.IsDelta)
@@ -105,6 +107,32 @@ func (a *App) handleDelegationViewEvent(ne orchpanel.AgentViewEvent) {
 	case orchpanel.EvAgentFinished:
 		a.handleDelegationFinished(id, ne.Role, ne.Status, ne.Text)
 	}
+}
+
+// setDelegationStatus records a delegation's lifecycle status (T5). The map
+// is lazily created; entries persist after terminal states so the active-tab
+// prompt/footer can keep reporting "completed"/"failed".
+func (a *App) setDelegationStatus(id, status string) {
+	if a.subs.delegationStatuses == nil {
+		a.subs.delegationStatuses = map[string]string{}
+	}
+	a.subs.delegationStatuses[id] = status
+}
+
+// delegationStatus returns the recorded lifecycle status for id ("", unknown).
+func (a *App) delegationStatus(id string) string {
+	return a.subs.delegationStatuses[id]
+}
+
+// hasRunningDelegations reports whether any tracked delegation is still
+// running — the condition for the "steer all" prompt label on the main tab.
+func (a *App) hasRunningDelegations() bool {
+	for _, st := range a.subs.delegationStatuses {
+		if st == multiagent.DelegationRunning {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureDelegationView returns the registry view for delegationID, creating
@@ -128,6 +156,9 @@ func (a *App) ensureDelegationView(delegationID, role string) *agentctx.AgentVie
 	// The new tab is background (main stays active): record activity so the
 	// badge state reflects the unseen work, and repaint so the strip shows.
 	reg.MarkActivity(delegationID)
+	// A new live delegation flips the active-tab chrome: the main tab's
+	// prompt becomes "steer all" while it runs.
+	a.refreshAgentCtxChrome()
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()
 	}
@@ -214,6 +245,7 @@ func (a *App) handleDelegationContent(id, text string, isDelta bool) {
 // the tab stays marked until viewed.
 func (a *App) handleDelegationFinished(id, role, status, detail string) {
 	a.delegationStreams().end(id)
+	a.setDelegationStatus(id, status)
 	reg := a.subs.agentRegistry
 	view := a.delegationView(id, role)
 	if view == nil || reg == nil {
@@ -252,13 +284,16 @@ func (a *App) flashDelegationFailure(label, detail string) {
 
 // requestDelegationRender records background activity and asks the engine for
 // a frame. When the delegation's tab is inactive the append was pure data and
-// only the tab strip changes; when active the transcript repaints.
+// only the tab strip changes; when active the transcript repaints. The
+// active-tab chrome (prompt label + footer stats, T5) is refreshed alongside:
+// block counts grow per chunk and lifecycle edges flip the steer target.
 func (a *App) requestDelegationRender(id string) {
 	if reg := a.subs.agentRegistry; reg != nil {
 		if activeID, _ := reg.Active(); activeID != id {
 			reg.MarkActivity(id)
 		}
 	}
+	a.refreshAgentCtxChrome()
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()
 	}

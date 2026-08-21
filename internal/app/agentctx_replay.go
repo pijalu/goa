@@ -107,6 +107,44 @@ func (a *App) replayEnabled() bool {
 	return a.subs.cfg != nil && a.subs.cfg.Features.MultiAgentScrollbackReplayEnabled()
 }
 
+// replayActiveView performs a DELIBERATE full-history replay of the ACTIVE
+// view (/agent:replay): it resets the view's saved watermark to zero so
+// driveReplayOnSwitch re-emits the WHOLE committed canvas [0, naturalVt)
+// exactly once through the ReplayRunner, then resumes on the watermark
+// hand-back. It reports whether a replay was actually started; false means
+// no engine, no runner (gate off), or an empty canvas.
+//
+// Runs entirely on the command loop via eng.Apply (R1).
+func (a *App) replayActiveView() bool {
+	eng := a.subs.tuiEngine
+	if eng == nil || a.subs.agentRegistry == nil {
+		return false
+	}
+	started := false
+	eng.Apply(func() {
+		id, view := a.subs.agentRegistry.Active()
+		if view == nil {
+			return
+		}
+		// Force the full canvas: a zeroed ScrollTop makes the switch-path
+		// emitter treat every row as not-yet-in-scrollback. The original
+		// snapshot is kept so a rejected replay can restore it untouched.
+		orig := view.Compositor.Snapshot()
+		forced := orig
+		forced.ScrollTop = 0
+		view.Compositor.Save(forced)
+		if !a.driveReplayOnSwitch(eng, id, view) {
+			// Gate OFF / no runner / nothing beyond row 0: undo the forced
+			// watermark and repaint in place so nothing is left half-applied.
+			view.Compositor.Save(orig)
+			eng.RestoreFrame(orig)
+			return
+		}
+		started = true
+	})
+	return started
+}
+
 // runReplayResultReader drains the runner's results channel, applying each
 // watermark on the command loop until shutdown. Mirrors the other event
 // readers in events.go.

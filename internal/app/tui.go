@@ -189,6 +189,10 @@ func (a *App) attachInputHandlers(inp *tui.Editor, engine *tui.TUI) {
 	engine.OnChangeModel = func() { a.handleChangeModel() }
 	engine.OnToggleThinkingBlocks = func() { a.handleToggleThinkingBlocks() }
 	engine.OnOpenAgentTabs = func() { a.openAgentTabSelector() }
+	// T5: multi-agent tab strip navigation (Tab/Shift+Tab, Alt+]/[, digits).
+	engine.OnAgentTabNext = func() { a.handleCycleAgentTab(1) }
+	engine.OnAgentTabPrev = func() { a.handleCycleAgentTab(-1) }
+	engine.OnAgentTabDigit = func(i int) { a.handleJumpAgentTab(i) }
 	engine.OnEditSteering = func() { a.handleEditSteering(engine, subs.chat) }
 	a.wireOrchCommandCallbacks()
 	engine.OnCancelInputRequest = func() bool { return a.cancelPendingMainInput() }

@@ -76,6 +76,19 @@ var optionKeyAliases = map[string]string{
 	"π": "alt+p",
 	"å": "alt+a",
 	"ê": "alt+e",
+	// Multi-agent tab navigation (T5): US-layout Option+[ / Option+] produce
+	// the curly quotes, Option+1..9 the digit row below.
+	"“": "alt+[",
+	"‘": "alt+]",
+	"¡": "alt+1",
+	"™": "alt+2",
+	"£": "alt+3",
+	"¢": "alt+4",
+	"∞": "alt+5",
+	"§": "alt+6",
+	"¶": "alt+7",
+	"•": "alt+8",
+	"ª": "alt+9",
 }
 
 // altKeyName returns the alt+<base> key name for a printable character that

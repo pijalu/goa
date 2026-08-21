@@ -4,6 +4,8 @@
 
 package tui
 
+import "strings"
+
 func (t *TUI) SetKeyLog(path string) error {
 	kl, err := newKeyLogger(path)
 	if err != nil {
@@ -134,11 +136,17 @@ func (t *TUI) handleCtrlC(key string, focused Component) bool {
 }
 
 // handleAppShortcuts handles Ctrl+O expand/collapse, Ctrl+G goal-bubble toggle,
-// Alt+M mode change, Shift+Tab thinking-level cycle, Ctrl+L model selector,
-// Ctrl+T thinking-blocks toggle.
+// Alt+M mode change, Tab/Shift+Tab multi-agent tab cycling, Alt+T thinking-level
+// cycle, Ctrl+L model selector, Ctrl+T thinking-blocks toggle.
 func (t *TUI) handleAppShortcuts(key string) bool {
 	if t.handleToggleExpand(key) {
 		return true
+	}
+	// Tab is shared between agent-tab cycling and editor completion (the
+	// opencode convention): a visible completion popup owns Tab, so the
+	// shortcut layer must yield it to the focused editor.
+	if matchesKey(key, KeyTab) && t.editorCompletionOwnsTab() {
+		return false
 	}
 	fn, ok := t.resolveAppShortcut(key)
 	if !ok {
@@ -146,6 +154,13 @@ func (t *TUI) handleAppShortcuts(key string) bool {
 	}
 	t.invokeCallback(fn)
 	return true
+}
+
+// editorCompletionOwnsTab reports whether the focused component is an editor
+// with an active completion popup (Tab then accepts the selected candidate).
+func (t *TUI) editorCompletionOwnsTab() bool {
+	ed, ok := t.Focused().(*Editor)
+	return ok && ed.AutoCompActive()
 }
 
 // resolveAppShortcut maps a decoded key to its application-level callback.
@@ -159,11 +174,56 @@ func (t *TUI) resolveAppShortcut(key string) (func(), bool) {
 			return sc.callback(t), true
 		}
 	}
+	// Multi-agent tab cycling (Tab/Shift+Tab + Alt+]/[ aliases): resolved
+	// conditionally so an unbound host callback never swallows the key.
+	if fn, ok := t.resolveAgentTabCycle(key); ok {
+		return fn, true
+	}
+	// Alt+<digit> jumps: also conditional, after the flat table so an
+	// explicit built-in binding always wins.
+	if fn, ok := t.resolveAgentTabJump(key); ok {
+		return fn, true
+	}
 	// Plugin-registered hotkeys take lowest precedence (built-ins win ties).
 	if fn, ok := t.resolvePluginHotkey(key); ok {
 		return fn, true
 	}
 	return nil, false
+}
+
+// resolveAgentTabCycle maps Tab/Shift+Tab (and the Alt+]/Alt+[ aliases) to
+// the multi-agent tab strip callbacks. Kept out of the flat appShortcuts
+// table because these keys are only consumed when the host actually bound a
+// handler — an unbound entry must fall through (e.g. plain Tab reaching the
+// focused editor).
+func (t *TUI) resolveAgentTabCycle(key string) (func(), bool) {
+	switch {
+	case matchesKey(key, KeyTab) && t.OnAgentTabNext != nil:
+		return t.OnAgentTabNext, true
+	case matchesKey(key, KeyShiftTab) && t.OnAgentTabPrev != nil:
+		return t.OnAgentTabPrev, true
+	case matchesKey(key, "alt+]") && t.OnAgentTabNext != nil:
+		return t.OnAgentTabNext, true
+	case matchesKey(key, "alt+[") && t.OnAgentTabPrev != nil:
+		return t.OnAgentTabPrev, true
+	}
+	return nil, false
+}
+
+// resolveAgentTabJump maps "alt+1".."alt+9" to a zero-based OnAgentTabDigit
+// jump. Kept out of the flat appShortcuts table so the jump does not need
+// nine near-identical rows; returns false when the key is not a digit jump
+// or no handler is bound.
+func (t *TUI) resolveAgentTabJump(key string) (func(), bool) {
+	if t.OnAgentTabDigit == nil || len(key) != 5 || !strings.HasPrefix(key, "alt+") {
+		return nil, false
+	}
+	d := key[4]
+	if d < '1' || d > '9' {
+		return nil, false
+	}
+	idx := int(d - '1')
+	return func() { t.OnAgentTabDigit(idx) }, true
 }
 
 // resolvePluginHotkey matches a decoded key against plugin-registered
@@ -226,7 +286,13 @@ var appShortcuts = []appShortcut{
 	{keys: []string{"alt+m", "alt+M"}, altAlias: "alt+m", callback: func(t *TUI) func() { return t.OnChangeMode }},
 	{keys: []string{"alt+o", "alt+O"}, altAlias: "alt+o", callback: func(t *TUI) func() { return t.OnOpenModeSelector }},
 	{keys: []string{"ctrl+shift+m"}, callback: func(t *TUI) func() { return t.OnCycleAutonomy }},
-	{keys: []string{KeyShiftTab}, callback: func(t *TUI) func() { return t.OnCycleThinkingLevel }},
+	// Multi-agent tab strip navigation (T5, opencode convention): Tab next /
+	// Shift+Tab previous — works on every keyboard, no Option needed on
+	// macOS — with Alt+]/Alt+[ as aliases. These four are resolved
+	// conditionally in resolveAgentTabCycle (Tab yields to a visible editor
+	// completion popup; unbound handlers must not swallow the key), and
+	// Alt+<digit> jumps in resolveAgentTabJump.
+	{keys: []string{"alt+t"}, callback: func(t *TUI) func() { return t.OnCycleThinkingLevel }},
 	{keys: []string{KeyCtrlL}, callback: func(t *TUI) func() { return t.OnChangeModel }},
 	{keys: []string{KeyCtrlT}, callback: func(t *TUI) func() { return t.OnToggleThinkingBlocks }},
 	{keys: []string{"ctrl+x"}, callback: func(t *TUI) func() { return t.OnOpenAgentTabs }},

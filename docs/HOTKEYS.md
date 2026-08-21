@@ -46,14 +46,18 @@ The table below shows the default keybindings. Customize them in your theme conf
 | Key | Action |
 |-----|--------|
 | `Ctrl+G` | Toggle the goal status bubble |
-| `Ctrl+T` | Cycle thinking/reasoning level |
+| `Tab` | Next multi-agent tab (yields to a visible completion popup) |
+| `Shift+Tab` | Previous multi-agent tab |
+| `Alt+]` / `Alt+[` | Next / previous multi-agent tab (aliases) |
+| `Alt+1`…`Alt+9` | Jump to multi-agent tab N |
+| `Alt+T` | Cycle thinking/reasoning level |
 | `Alt+M` | Cycle major mode (coder → planner → reviewer) |
 | `Alt+O` | Open the interactive mode selector |
 | `Ctrl+Shift+M` | Cycle autonomy level (yolo → solo → confirm → review) |
 | `Ctrl+L` | Open the model selector |
 | `Ctrl+P` | Show the assembled system prompt |
 | `Ctrl+X` | Switch orchestrator tab (Conversation ↔ Stats) |
-| `Ctrl+Tab` | Toggle thinking block visibility |
+| `Ctrl+T` | Toggle thinking block visibility |
 | `Ctrl+O` | Toggle all tool output (Summary/Full) |
 | `Ctrl+Shift+Z` | Delete the last chat message |
 | `Ctrl+C` | Cancel input request / quit when empty |

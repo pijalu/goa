@@ -53,6 +53,14 @@ func (f *Footer) SetTeam(name string, drifted bool) {
 	f.data.TeamDrifted = drifted
 }
 
+// SetAgentStats explicitly sets or clears the ACTIVE multi-agent tab's stat
+// line (T5), bypassing SetData's preservation logic — the tab equivalent of
+// SetGoalStatus. updateAgentCtxFooter is the sole caller: pass a non-empty
+// line when a delegation tab is active, "" when the main tab is (clearing the
+// extra footer line). Single-writer + preservation keeps the line stable
+// across routine stats rebuilds instead of flapping between them.
+func (f *Footer) SetAgentStats(line string) { f.data.AgentTabStats = line }
+
 // SetModelBusy sets the main model busy indicator directly.
 func (f *Footer) SetModelBusy(busy bool) { f.data.ModelBusy = busy }
 

@@ -105,6 +105,11 @@ type subsystems struct {
 	// delegationStreams owns the per-delegation in-flight streaming buffers
 	// (T4), keyed by delegation id. Lazily created on the command loop.
 	delegationStreams *delegationStreamRegistry
+	// delegationStatuses records each delegation's lifecycle status (T5:
+	// "running" / "completed" / "failed"), keyed by delegation id. Command-
+	// loop only (written by handleDelegationViewEvent); it drives active-tab
+	// steering eligibility, the input prompt label, and the footer stats.
+	delegationStatuses map[string]string
 	goalBubble        *goaltui.Bubble
 	steeringChrome    *tui.SteeringChrome
 	footer            *tui.Footer

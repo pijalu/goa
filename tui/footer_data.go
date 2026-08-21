@@ -36,6 +36,12 @@ type FooterData struct {
 	GoalCount              int    // total goals: 1 current + queued; drives the ◈ goal-count sign (1 → "◈", 3 → "◈◈◈", 25 → "25◈")
 	GoalPendingTodos       int    // count of not-done todos on the active goal; drives the ⬩ markers next to the mode
 	OrchestrationStats     string // per-model orchestration stats rendered as an extra footer line
+	// AgentTabStats is the ACTIVE multi-agent tab's stat line (T5), rendered
+	// as one extra footer line below the chrome. Written ONLY through
+	// Footer.SetAgentStats (the sole writer, mirroring SetGoalStatus) so
+	// routine SetData rebuilds never flap it; preserved on empty for the
+	// same reason.
+	AgentTabStats string
 
 	// PluginSegments holds pre-rendered status-bar segments contributed by JS
 	// plugins (e.g. the quota carousel). They are appended to the right-hand
@@ -62,6 +68,19 @@ func preserveFooterData(prev, data FooterData) FooterData {
 	data = preserveFooterPluginSegments(prev, data)
 	data = preserveFooterGoal(prev, data)
 	data = preserveFooterTeam(prev, data)
+	data = preserveFooterAgentStats(prev, data)
+	return data
+}
+
+// preserveFooterAgentStats keeps the active-tab stat line across routine
+// footer rebuilds (token stats, activity) that construct a fresh FooterData
+// without tab knowledge. SetAgentStats is the sole writer — an explicit
+// clear goes through it (mirroring SetGoalStatus) — so the preserved value
+// never goes stale and the line never flaps between writers.
+func preserveFooterAgentStats(prev, data FooterData) FooterData {
+	if data.AgentTabStats == "" {
+		data.AgentTabStats = prev.AgentTabStats
+	}
 	return data
 }
 

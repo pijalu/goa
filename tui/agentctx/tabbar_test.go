@@ -79,6 +79,62 @@ func TestAgentTabBar_RendersPerDelegationTabs(t *testing.T) {
 	}
 }
 
+// TestAgentTabBar_ActivityBadge is the T5 ✱ case: a background delegation
+// that accumulated activity while inactive carries a colored ✱ badge next to
+// its label; viewing the tab (activation) acknowledges it and the badge
+// disappears.
+func TestAgentTabBar_ActivityBadge(t *testing.T) {
+	reg, bar := newTabBarScenario(MainAgentID, "dlg-coder-03")
+	reg.MarkActivity("dlg-coder-03")
+
+	line := bar.Render(80)[0]
+	plain := ansi.Strip(line)
+	if !strings.Contains(plain, "coder·dlg-03 ✱") {
+		t.Errorf("activity badge missing: %q", plain)
+	}
+	if !strings.Contains(line, ansi.Fg(badgeActivityColor)+"✱") {
+		t.Errorf("✱ not rendered in activity color %q: %q", badgeActivityColor, line)
+	}
+	// The main tab stays unbadged.
+	mainPart := plain[:strings.Index(plain, "│")]
+	if strings.Contains(mainPart, "✱") {
+		t.Errorf("unmarked main tab must carry no badge: %q", plain)
+	}
+
+	// Activation acknowledges the badge.
+	reg.SelectByID("dlg-coder-03")
+	plain = ansi.Strip(bar.Render(80)[0])
+	if strings.Contains(plain, "✱") {
+		t.Errorf("badge must clear once the tab is viewed: %q", plain)
+	}
+}
+
+// TestAgentTabBar_ErrorBadge is the T5 ▲ case: a failed delegation carries
+// the error badge, which takes precedence over the activity badge; both flags
+// set still render exactly one ▲.
+func TestAgentTabBar_ErrorBadge(t *testing.T) {
+	reg, bar := newTabBarScenario(MainAgentID, "dlg-coder-07")
+	reg.MarkError("dlg-coder-07")
+
+	plain := ansi.Strip(bar.Render(80)[0])
+	if !strings.Contains(plain, "coder·dlg-07 ▲") {
+		t.Errorf("error badge missing: %q", plain)
+	}
+	if strings.Contains(plain, "✱") {
+		t.Errorf("plain error state must not render ✱: %q", plain)
+	}
+
+	// Error precedence: activity+error → only ▲.
+	reg.MarkActivity("dlg-coder-07")
+	plain = ansi.Strip(bar.Render(80)[0])
+	if !strings.Contains(plain, "▲") || strings.Contains(plain, "✱") {
+		t.Errorf("error badge must take precedence: %q", plain)
+	}
+	if n := strings.Count(plain, "▲"); n != 1 {
+		t.Errorf("expected exactly one ▲, got %d: %q", n, plain)
+	}
+}
+
 // TestAgentTabBar_LabelKeying pins the delegation-id → label mapping: main is
 // "main"; a minted dlg-<role>-<NN> id renders as "<role>·dlg-<NN>"; anything
 // else renders as-is.

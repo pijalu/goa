@@ -77,7 +77,22 @@ func (f *Footer) Render(width int) []string {
 
 	lines := []string{styler(line1), styler(line2)}
 	lines = append(lines, f.renderOrchStatsLines(width, styler)...)
+	lines = append(lines, f.renderAgentStatsLine(width, styler)...)
 	return lines
+}
+
+// renderAgentStatsLine renders the ACTIVE multi-agent tab's stat line (T5) as
+// one extra footer line in the status color. It returns nil when no line is
+// set so the idle footer stays exactly its chrome rows.
+func (f *Footer) renderAgentStatsLine(width int, styler func(string) string) []string {
+	s := strings.TrimSpace(f.data.AgentTabStats)
+	if s == "" {
+		return nil
+	}
+	if vw := visibleWidth(s); vw > width {
+		s = truncateToWidth(s, width, "")
+	}
+	return []string{styler(s)}
 }
 
 // renderOrchStatsLines renders the per-agent orchestration stats (one line per

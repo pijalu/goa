@@ -62,6 +62,11 @@ func hotkeysGroups() []hotkeysGroup {
 				{name: tui.KbCursorLineEnd, desc: "Move to end of line"},
 				{name: tui.KbPageUp, desc: "Scroll up by page"},
 				{name: tui.KbPageDown, desc: "Scroll down by page"},
+				// Multi-agent tab strip (T5). Tab yields to a visible
+				// completion popup.
+				{name: tui.KbAgentTabNext, desc: "Next multi-agent tab (Tab yields to completion)"},
+				{name: tui.KbAgentTabPrev, desc: "Previous multi-agent tab"},
+				{key: "alt+1…9", desc: "Jump to multi-agent tab N"},
 			},
 		},
 		{

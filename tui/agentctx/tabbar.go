@@ -15,18 +15,27 @@ import (
 // bars read as the same UI element.
 const tabActiveColor = "#58a6ff"
 
+// Badge colors mirror the footer's status palette: yellow for unseen
+// background activity (✱, same hue as a dirty git tree), red for a failure
+// (▲, same hue as merge conflicts).
+const (
+	badgeActivityColor = "#d29922"
+	badgeErrorColor    = "#f85149"
+)
+
 // AgentTabBar renders the 1-line per-delegation tab strip that sits
 // IMMEDIATELY ABOVE the input editor during multi-agent runs. It owns no
 // mutable state: it reads the shared *AgentViewRegistry (pull-based), so it
 // never needs invalidation beyond the normal frame request.
 //
-// Layout:  main │ coder·dlg-03 │ coder·dlg-07            [active/total]
+// Layout:  main │ coder·dlg-03 ✱ │ coder·dlg-07 ▲          [active/total]
 //
 // The active tab is bold+colored; separators are faint; the [n/total]
-// indicator is right-justified. The bar renders NIL (invisible, zero rows)
-// while fewer than two views are registered — the single-agent layout is
-// byte-identical to before the multi-agent work (the T1 invariant). Badge
-// glyphs (✱/▲) land in T5; the state already lives on the registry.
+// indicator is right-justified. Inactive tabs carry their unacknowledged
+// badge (✱ unseen activity, ▲ failure — registry-driven, T5). The bar
+// renders NIL (invisible, zero rows) while fewer than two views are
+// registered — the single-agent layout is byte-identical to before the
+// multi-agent work (the T1 invariant).
 type AgentTabBar struct {
 	reg *AgentViewRegistry
 }
@@ -73,13 +82,17 @@ func (b *AgentTabBar) renderLine(width int) string {
 	return left + strings.Repeat(" ", pad) + indicator
 }
 
-// tabLabels styles each view's label; the active one is bold+colored.
+// tabLabels styles each view's label; the active one is bold+colored, and
+// inactive tabs carry their unacknowledged badge (▲ error, else ✱ activity).
 func (b *AgentTabBar) tabLabels() []string {
 	ids := b.reg.IDs()
 	active := b.reg.ActiveIndex()
 	out := make([]string, len(ids))
 	for i, id := range ids {
 		label := TabLabel(id)
+		if badge := b.badgeFor(id); badge != "" {
+			label += " " + badge
+		}
 		if i == active {
 			out[i] = ansi.Bold + ansi.Fg(tabActiveColor) + label + ansi.Reset
 			continue
@@ -87,6 +100,22 @@ func (b *AgentTabBar) tabLabels() []string {
 		out[i] = label
 	}
 	return out
+}
+
+// badgeFor renders the view's unacknowledged notification badge: ▲ when the
+// delegation failed, ✱ when it has unseen background activity. The active
+// tab never carries one — activation acknowledges both flags, so its state
+// is empty by construction. An empty string means "no badge".
+func (b *AgentTabBar) badgeFor(id string) string {
+	activity, errFlag := b.reg.Badges(id)
+	switch {
+	case errFlag:
+		return ansi.Fg(badgeErrorColor) + "▲" + ansi.Reset
+	case activity:
+		return ansi.Fg(badgeActivityColor) + "✱" + ansi.Reset
+	default:
+		return ""
+	}
 }
 
 // TabLabel maps a registry id to its tab-strip label. The main agent is

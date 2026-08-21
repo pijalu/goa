@@ -61,6 +61,9 @@ const (
 	// KbEditSteering recalls a pending steering message into the input line for
 	// editing (the steering queue is flushed until resubmitted).
 	KbEditSteering = "app.steering.edit"
+	// Multi-agent tab strip navigation (T5).
+	KbAgentTabNext = "app.agentTabs.next"
+	KbAgentTabPrev = "app.agentTabs.prev"
 )
 
 // DefaultKeybindings returns the default keybinding definitions.
@@ -96,12 +99,16 @@ func DefaultKeybindings() map[string]KeybindingDef {
 		KbSelectCancel:         {[]string{KeyEscape, KeyCtrlC}, "Cancel selection"},
 		KbDeleteLastMsg:        {[]string{"ctrl+shift+backspace"}, "Delete last chat message"},
 		KbToggleExpand:         {[]string{"ctrl+o"}, "Toggle all tool output (Summary/Full)"},
-		KbCycleThinkingLevel:   {[]string{KeyShiftTab}, "Cycle thinking level"},
+		KbCycleThinkingLevel:   {[]string{"alt+t"}, "Cycle thinking level"},
 		KbChangeMode:           {[]string{"alt+m"}, "Cycle major mode"},
 		KbOpenModeSelector:     {[]string{"alt+o"}, "Open the mode selector"},
 		KbCycleAutonomy:        {[]string{"ctrl+shift+m"}, "Cycle autonomy level"},
 		KbChangeModel:          {[]string{KeyCtrlL}, "Open model selector"},
 		KbToggleThinkingBlocks: {[]string{KeyCtrlT}, "Toggle thinking blocks"},
+		// Multi-agent tab strip (T5): Tab next / Shift+Tab previous (opencode
+		// convention; Tab yields to a visible completion popup), Alt+]/[ aliases.
+		KbAgentTabNext: {[]string{KeyTab, "alt+]"}, "Next multi-agent tab"},
+		KbAgentTabPrev: {[]string{KeyShiftTab, "alt+["}, "Previous multi-agent tab"},
 		KbHistorySearch:        {[]string{"ctrl+r"}, "Reverse history search"},
 		KbHistorySearchPrev:    {[]string{"ctrl+s"}, "Cycle previous history match"},
 		KbEditSteering:         {[]string{"alt+e"}, "Edit pending steering message"},

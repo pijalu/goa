@@ -121,6 +121,13 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	}
 	_ = s.registry.Register(orchCmd)
 
+	// /agent: the multi-agent tab surface (T5). Registered here — not in
+	// RegisterAll — because its host callbacks need the assembled
+	// subsystems, exactly like /orchestrate. The callbacks execute at
+	// command time (long after assembly), so binding them through a throw-
+	// away App over the same subsystems pointer is safe.
+	_ = s.registry.Register((&App{subs: s}).newAgentCommand())
+
 	// Wire the plan command with execution support now that the adapter exists.
 	if cmd, ok := s.registry.Resolve("plan"); ok {
 		if planCmd, ok := cmd.(*commands.PlanCommand); ok {

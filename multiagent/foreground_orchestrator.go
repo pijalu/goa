@@ -125,6 +125,12 @@ type ForegroundOrchestrator struct {
 	// specs/async-delegation.md for the full design (out of T0 scope).
 	activeDelegations sync.Map // role string → delegation id string
 
+	// delegationSteering maps a delegation id to its in-flight steering queue
+	// (T5). DelegateTool binds one around each run so user input typed on the
+	// delegation's tab reaches that run mid-turn; see
+	// multiagent/delegation_steering.go.
+	delegationSteering sync.Map // delegation id → *DelegationSteeringQueue
+
 	// stageAdvanced is the sentinel that distinguishes a WorkflowNextTool-driven
 	// stage advance from a user/parent Cancel(). WorkflowNextTool sets it before
 	// cancelling the stage context; runStage treats a plain context.Canceled

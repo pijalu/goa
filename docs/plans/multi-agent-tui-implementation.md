@@ -627,7 +627,91 @@ primitives) — do not silence with `//nolint`.
 
 ---
 
-## 11. Implementation state (T4 checkpoint — 2026-08-21)
+## 11. Implementation state (T5 checkpoint — COMPLETE, plan §10 DoD)
+
+**Branch:** `feature/multi-agent`. T0–T5 all implemented and green. T0 `56e0537`,
+T1 `734bacc`, T2 `f7a7a8f`, T3 `d08cc56`, T4 `1d5b99a` (+`91b05e2` complexity
+fixes); **T5 = the feat(tui) multi-agent T5 commit (see git log)**.
+
+### T5 — what landed
+
+- **Badges** (`tui/agentctx/tabbar.go` MOD): inactive tabs render their
+  unacknowledged registry badge — `▲` red on error (precedence), else `✱`
+  yellow on unseen background activity; activation acknowledges both.
+- **`/agent` command** (`core/commands/agent.go` NEW): `/agent:tab:<id|label>`
+  explicit select by delegation id OR display label (unknown → actionable
+  flash listing every known tab); `/agent:replay` triggers the deliberate
+  full-history replay of the ACTIVE tab through the T3 ReplayRunner path
+  (`internal/app/agentctx_replay.go replayActiveView`: force ScrollTop=0,
+  driveReplayOnSwitch emits [0, naturalVt) exactly once). Host wiring in
+  `internal/app/agentctx_command.go`; registered next to /orchestrate in
+  `subsystems_assembly.go`.
+- **Hotkeys** (revised per user direction to the opencode convention — pi/opencode
+  parity over Alt-bracket-only): **Tab = next tab, Shift+Tab = previous**
+  (works on every Apple keyboard; no Option needed), **Alt+]/Alt+[ aliases**,
+  **Alt+1..9 jumps** (zero-based). Tab yields to a visible editor completion
+  popup (opencode's prompt-traits model); unbound handlers never swallow keys
+  (`tui/tui_keys.go resolveAgentTabCycle/resolveAgentTabJump`). Thinking-level
+  cycle moved off Shift+Tab to **Alt+T** (`†` macOS alias already existed).
+  macOS Option aliases added for `[`/`]` (“/‘) and the digit row (¡™£¢∞§¶•ª).
+  Keybinding metadata + `/hotkeys` output + `docs/HOTKEYS.md` updated.
+- **Steering targets the ACTIVE tab** (`internal/app/submithandler.go` +
+  `multiagent/delegation_steering.go` NEW): DelegateTool binds one
+  DelegationSteeringQueue per run (attached via SetSteeringSource, drained by
+  the delegated agent between stream rounds); app-side
+  maybeSteerActiveDelegation routes input on a RUNNING delegation's tab into
+  that queue (steering chrome included) and falls back to the normal paths
+  otherwise ("all"). Input prompt label follows the active tab:
+  "steer coder·dlg-03" on a running delegation tab, "steer all" on main while
+  delegations live, none otherwise.
+- **Per-tab footer stats** (`tui/footer*.go` + `internal/app/agentctx_ui.go`
+  NEW): Footer.SetAgentStats is the SOLE writer of FooterData.AgentTabStats
+  (mirrors SetGoalStatus; preservation rule prevents the old flapping), the
+  footer renders it as an extra status line, and refreshAgentCtxChrome keeps
+  prompt+footer in sync on every switch/lifecycle edge.
+
+### T5 — tests (all green)
+
+- `tui/agentctx/tabbar_test.go` — ✱ activity badge (+acknowledged-on-view),
+  ▲ error badge + precedence over ✱ (2 tests).
+- `core/commands/agent_command_test.go` — tab selects, unknown-id lists known
+  tabs, replay dispatch/unavailable, usage, nil-host degradation (6 tests).
+- `tui/shortcuts_test.go` — alt+t thinking, Tab/Shift+Tab/Alt+]/[ cycling,
+  Alt+digit jump, unbound-fallthrough.
+- `internal/app/shortcuts_test.go` — handleCycleAgentTab/handleJumpAgentTab:
+  active view moves AND prompt updates (steer <label> / steer all / empty).
+- `internal/app/submithandler_steering_test.go` — running-delegation tab
+  steers THAT id (queue drained); completed tab falls back; main never routes
+  into delegation queues (3 tests incl. NotRunning fallback).
+- `internal/app/agentctx_t5_filmstrip_test.go` — MANDATORY filmstrip: ✱ on
+  the correct tab while background work completes, ▲ after failure, badge
+  acknowledged on view, footer reflects active tab's stats after switch and
+  clears on main; PLUS /agent:replay scroll-count regression (full committed
+  history re-emitted exactly once more, spy-terminal counted).
+- `internal/app/agentctx_t5_mockllm_test.go` — MANDATORY mock-LLM: real stack
+  (scripted provider) — background coder completes while user is on main →
+  badge sets; switch → footer shows its stats; held-coder steering lands in
+  the right queue (2 tests).
+- `internal/app/agentctx_t5_e2e_test.go` (build tag `e2e`) — Local-LM e2e:
+  badges/footer/cycle on real delegations + completed-tab fallback + live-run
+  steering. SKIPPED at checkpoint (LM at http://localhost:1234 down); rerun
+  with `-tags e2e -run TestE2E_MultiAgentT5`.
+
+### Gates at checkpoint
+
+- `go vet ./...` — clean (also clean with `-tags e2e`).
+- `go test -count=1 -race -cover ./tui/agentctx/ ./core/commands/
+  ./internal/app/ ./multiagent/ ./tui/` — green (agentctx 94.9%, commands
+  62.1%, app 57.8%).
+- `gocognit -over 15 .` / `gocyclo -over 12 .` — no NEW violations from T5
+  (the T5 e2e was split into helpers/tests to fit budget; pre-existing
+  violations outside this plan's scope remain flagged as before).
+
+### Plan-wide DoD remainder
+
+Only §10's live smoke snapshot under `docs/archive/multi-agent-tui-smoke.<date>.md`
+is outstanding — it requires the Local LM up; run the qa-e2e suite + the two
+`-tags e2e` tests when the LM is reachable and capture the filmstrip snapshot.
 
 **Branch:** `feature/multi-agent`. T0–T3 committed (`56e0537` T0, `734bacc` T1,
 `f7a7a8f` T2, `d08cc56` T3). **T4 implemented** in the `feat(app): multi-agent

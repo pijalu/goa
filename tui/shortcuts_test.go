@@ -28,11 +28,53 @@ func TestTUI_HandleAppShortcuts_CycleThinkingLevel(t *testing.T) {
 	tui := NewTUI(NewProcessTerminal())
 	called := false
 	tui.OnCycleThinkingLevel = func() { called = true }
+	if !tui.handleAppShortcuts("alt+t") {
+		t.Error("alt+t should be consumed")
+	}
+	if !called {
+		t.Error("OnCycleThinkingLevel was not called for alt+t")
+	}
+}
+
+// TestTUI_HandleAppShortcuts_AgentTabCycle pins the T5 opencode-convention
+// bindings: Tab next, Shift+Tab previous, Alt+]/Alt+[ aliases, Alt+<digit>
+// jump. Tab must yield to a focused editor with an active completion popup.
+func TestTUI_HandleAppShortcuts_AgentTabCycle(t *testing.T) {
+	next, prev := 0, 0
+	tui := NewTUI(NewProcessTerminal())
+	tui.OnAgentTabNext = func() { next++ }
+	tui.OnAgentTabPrev = func() { prev++ }
+
+	if !tui.handleAppShortcuts("tab") {
+		t.Error("tab should be consumed")
+	}
 	if !tui.handleAppShortcuts("shift+tab") {
 		t.Error("shift+tab should be consumed")
 	}
-	if !called {
-		t.Error("OnCycleThinkingLevel was not called")
+	if !tui.handleAppShortcuts("alt+]") {
+		t.Error("alt+] should be consumed")
+	}
+	if !tui.handleAppShortcuts("alt+[") {
+		t.Error("alt+[ should be consumed")
+	}
+	if next != 2 || prev != 2 {
+		t.Errorf("tab cycles: next=%d (want 2), prev=%d (want 2)", next, prev)
+	}
+
+	// Alt+<digit> jumps to the zero-based index.
+	var jumped int = -1
+	tui.OnAgentTabDigit = func(i int) { jumped = i }
+	if !tui.handleAppShortcuts("alt+3") {
+		t.Error("alt+3 should be consumed")
+	}
+	if jumped != 2 {
+		t.Errorf("alt+3 jump index = %d, want 2", jumped)
+	}
+
+	// No handler bound → not consumed (falls through to the editor).
+	tui2 := NewTUI(NewProcessTerminal())
+	if tui2.handleAppShortcuts("tab") {
+		t.Error("unbound tab must not be consumed")
 	}
 }
 

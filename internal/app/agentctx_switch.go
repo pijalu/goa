@@ -79,6 +79,9 @@ func (a *App) remountAgentView(eng *tui.TUI, oldID string, oldView *agentctx.Age
 	if mainView, ok := a.subs.agentRegistry.Get(agentctx.MainAgentID); ok {
 		a.subs.chat = mainView.Transcript.View()
 	}
+	// The active tab owns the chrome (T5): the steer-prompt label and the
+	// footer stat line follow whichever transcript just mounted.
+	a.refreshAgentCtxChrome()
 	// Restore the target's baseline and arm the repaint. With the T3 gate ON
 	// this is the scrollback-replay path: suppress frames, hand the target's
 	// committed-but-unemitted backlog to the ReplayRunner, and defer the

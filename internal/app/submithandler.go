@@ -15,8 +15,10 @@ import (
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
+	"github.com/pijalu/goa/tui/agentctx"
 )
 
 func (a *App) makeSubmitHandler(engine *tui.TUI, chat *tui.ChatViewport) func(string) {
@@ -52,14 +54,20 @@ func (a *App) makeSubmitHandler(engine *tui.TUI, chat *tui.ChatViewport) func(st
 	}
 }
 
-// routeSteering checks the command, workflow, orchestrator, and main-agent
-// steering paths in order. It returns true if the input was consumed as
-// steering.
+// routeSteering checks the command, active-delegation, workflow, orchestrator,
+// and main-agent steering paths in order. It returns true if the input was
+// consumed as steering.
 func (a *App) routeSteering(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
 	if strings.HasPrefix(text, "/") {
 		return false
 	}
 	if a.maybeSteerCommand(engine, chat, text) {
+		return true
+	}
+	// The ACTIVE tab owns the input first (T5): typing on a running
+	// delegation's tab steers that delegation. Everything else falls through
+	// to the workflow/orchestrator/main-agent paths ("all").
+	if a.maybeSteerActiveDelegation(engine, chat, text) {
 		return true
 	}
 	if a.maybeSteerWorkflow(engine, chat, text) {
@@ -72,6 +80,34 @@ func (a *App) routeSteering(engine *tui.TUI, chat *tui.ChatViewport, text string
 		return true
 	}
 	return false
+}
+
+// maybeSteerActiveDelegation routes user input to the ACTIVE multi-agent
+// tab's delegation while it is running: the queue is drained by the delegated
+// agent between stream rounds and woven into its current turn. Non-running or
+// non-delegation tabs return false so the normal steering/dispatch paths run
+// (the "fall back to all" behavior).
+func (a *App) maybeSteerActiveDelegation(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
+	subs := a.subs
+	reg := subs.agentRegistry
+	if reg == nil || subs.foregroundOrch == nil {
+		return false
+	}
+	id, _ := reg.Active()
+	if id == "" || id == agentctx.MainAgentID {
+		return false
+	}
+	if a.delegationStatus(id) != multiagent.DelegationRunning {
+		return false
+	}
+	if !subs.foregroundOrch.SteerDelegation(id, text) {
+		return false
+	}
+	if subs.steeringChrome != nil {
+		subs.steeringChrome.Add(text)
+	}
+	engine.RequestRender()
+	return true
 }
 
 // maybeSteerCommand buffers user input as steering while an async (long-running)

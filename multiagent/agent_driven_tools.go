@@ -230,8 +230,26 @@ func (t *DelegateTool) Execute(input string) (string, error) {
 // delegation is visible from creation and a failure always leaves a terminal
 // marker), runs the agent, and — for the companion role — forwards its output
 // back to the main agent.
+// runDelegation executes one delegated sub-agent run under a minted delegation
+// id, bracketed by running→completed|failed lifecycle events. A per-delegation
+// steering queue is bound for the duration of the run and attached to the
+// sub-agent as its SteeringSource: user input typed on the delegation's tab
+// (routed via ForegroundOrchestrator.SteerDelegation) is drained by the agent
+// between stream rounds — the same mid-turn weaving the main agent gets.
 func (t *DelegateTool) runDelegation(subAgent *agentic.Agent, role, task, delegationID string) error {
 	defer beginDelegation(t.Orchestrator, role, delegationID)()
+
+	// Bind mid-turn steering for this run; unbind + detach afterwards so a
+	// reused pooled agent never keeps draining a dead delegation's queue.
+	if t.Orchestrator != nil {
+		if q := t.Orchestrator.BindDelegationSteering(delegationID); q != nil {
+			subAgent.SetSteeringSource(q)
+			defer func() {
+				subAgent.SetSteeringSource(nil)
+				t.Orchestrator.UnbindDelegationSteering(delegationID)
+			}()
+		}
+	}
 
 	ctx := delegationContext(t.Orchestrator)
 	if err := subAgent.Run(ctx, task); err != nil {
