@@ -19,6 +19,7 @@ import (
 	"github.com/pijalu/goa/internal/background"
 	"github.com/pijalu/goa/internal/spinner"
 	"github.com/pijalu/goa/tui"
+	"github.com/pijalu/goa/tui/agentctx"
 	bgpanel "github.com/pijalu/goa/tui/background"
 	goaltui "github.com/pijalu/goa/tui/goal"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
@@ -61,7 +62,16 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 	engine := tui.NewTUI(ft)
 	a.configureRenderTrace(engine)
 	a.initTitleController(engine)
-	chat := tui.NewChatViewport()
+	// T1: construct the main agent as an AgentTranscript owned by the
+	// per-agent view registry. chat is the main view's ChatViewport, mounted
+	// into the engine exactly as before — a pure extraction with no behavior
+	// change (the registry holds only this one, always-active view).
+	reg := agentctx.NewAgentViewRegistry()
+	mainTranscript := agentctx.NewAgentTranscript(agentctx.MainAgentID)
+	reg.Add(agentctx.MainAgentID, &agentctx.AgentView{Transcript: mainTranscript, Compositor: mainTranscript.Compositor()})
+	mainTranscript.Mount()
+	a.subs.agentRegistry = reg
+	chat := mainTranscript.View()
 	a.configureChat(chat)
 	return engine, chat, orchpanel.NewAgentContent(), orchpanel.NewAgentTabBar(), tui.NewStatusMsg(), goaltui.NewBubble(), tui.NewSteeringChrome(), tui.NewEditor(), a.newFooter(), bgpanel.NewPanel(nil)
 }

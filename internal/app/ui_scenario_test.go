@@ -11,6 +11,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/spinner"
 	"github.com/pijalu/goa/tui"
+	"github.com/pijalu/goa/tui/agentctx"
 	goaltui "github.com/pijalu/goa/tui/goal"
 )
 
@@ -66,7 +67,15 @@ func newUIScenarioCfg(tb testing.TB, w, h int, tuiCfg *config.TUIConfig) *uiScen
 	tb.Cleanup(func() { engine.Stop() })
 
 	header := tui.NewHeader("goa", "test")
-	chat := tui.NewChatViewport()
+	// Mirror production (createTUIComponents): the main agent's chat viewport
+	// is owned by an agentctx.AgentTranscript in the per-agent registry. This
+	// makes every uiScenario test exercise the T1 extraction path — so the
+	// whole filmstrip suite doubling as the no-behavior-change regression.
+	agentReg := agentctx.NewAgentViewRegistry()
+	mainTranscript := agentctx.NewAgentTranscript(agentctx.MainAgentID)
+	agentReg.Add(agentctx.MainAgentID, &agentctx.AgentView{Transcript: mainTranscript, Compositor: mainTranscript.Compositor()})
+	mainTranscript.Mount()
+	chat := mainTranscript.View()
 	pending := tui.NewStatusMsg()
 	statusBar := tui.NewStatusMsg()
 	goal := goaltui.NewBubble()
@@ -103,6 +112,7 @@ func newUIScenarioCfg(tb testing.TB, w, h int, tuiCfg *config.TUIConfig) *uiScen
 	subs.cfg = cfg
 	subs.tuiEngine = engine
 	subs.chat = chat
+	subs.agentRegistry = agentReg
 	subs.statusMsg = statusBar
 	subs.footer = footer
 	subs.goalBubble = goal

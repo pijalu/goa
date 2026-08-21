@@ -33,6 +33,7 @@ import (
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tools"
 	"github.com/pijalu/goa/tui"
+	"github.com/pijalu/goa/tui/agentctx"
 	bgpanel "github.com/pijalu/goa/tui/background"
 	goaltui "github.com/pijalu/goa/tui/goal"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
@@ -95,6 +96,12 @@ type subsystems struct {
 
 	// TUI components (set after InitSubsystems)
 	chat           *tui.ChatViewport
+	// agentRegistry owns the per-agent view contexts (AgentTranscript +
+	// saved compositor state), keyed by agent id. In T1 it holds exactly the
+	// main agent; chat above is agentRegistry's main view's ChatViewport, so
+	// every existing chat.* call site is byte-for-byte unchanged. Multi-agent
+	// switching (T2+) adds sub-agent views here.
+	agentRegistry  *agentctx.AgentViewRegistry
 	goalBubble     *goaltui.Bubble
 	steeringChrome *tui.SteeringChrome
 	footer         *tui.Footer

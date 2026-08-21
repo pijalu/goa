@@ -1,0 +1,19 @@
+== transcript ==
+3 | Hello! How can I help?
+4 | read
+== visible ==
+.                                                                                       coder │ SOLO
+Hello! How can I help?
+TC:1                                                                                        no-model
+ctrl+c/d exit  |  / commands  |  tab complete  |  ↑↓ history
+goa coding agent vtest
+────────────────────────────────────────────────────────────────────────────────────────────────────
+✓ read main.go
+== status trace ==
+Thinking...
+Thinking...
+Answering...
+Answering...
+Tool calling
+Sending request...
+
