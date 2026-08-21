@@ -126,10 +126,10 @@ func TestDelegateTool_FailedRunEmitsFailedState(t *testing.T) {
 	}
 }
 
-// T4: request_review must mint a delegation id, return it in the ack JSON,
-// and stamp it onto the companion's streamed messages so its stream lands in
-// its own per-delegation transcript (not the main interleave).
-func TestRequestReviewTool_CarriesDelegationID(t *testing.T) {
+// newReviewToolStack builds a review tool over a pool whose main role is
+// registered on a fresh bus, plus its orchestrator.
+func newReviewToolStack(t *testing.T) (*RequestReviewTool, *ForegroundOrchestrator) {
+	t.Helper()
 	pool := NewAgentPool(testModel("default"), provider.StreamOptions{}, nil)
 	bus := agentic.NewAgentBus()
 	if _, err := bus.Register(gorole.Main); err != nil {
@@ -137,21 +137,14 @@ func TestRequestReviewTool_CarriesDelegationID(t *testing.T) {
 	}
 	pool.SetAgentBus(bus)
 	orch := NewForegroundOrchestrator(pool)
-	tool := &RequestReviewTool{Orchestrator: orch, Pool: pool, Enabled: true}
+	return &RequestReviewTool{Orchestrator: orch, Pool: pool, Enabled: true}, orch
+}
 
-	out, err := tool.Execute(`{"content":"review this"}`)
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-	id := ackID(t, out)
-	if !strings.HasPrefix(id, "dlg-companion-") {
-		t.Errorf("ack.id %q is not a dlg-companion-* id", id)
-	}
-
-	msgs := drainAllMessages(orch)
-	// Stream messages from the companion role during the review must carry
-	// the minted id.
-	var streamed int
+// assertReviewStreamCarriesID checks every companion stream message (non
+// lifecycle kind) carries the minted delegation id.
+func assertReviewStreamCarriesID(t *testing.T, msgs []OrchestratorMessage, id string) {
+	t.Helper()
+	streamed := 0
 	for _, m := range msgs {
 		if m.From == gorole.Companion && m.Kind != "delegation_state" {
 			if m.DelegationID != id {
@@ -163,6 +156,25 @@ func TestRequestReviewTool_CarriesDelegationID(t *testing.T) {
 	if streamed == 0 {
 		t.Fatal("no companion stream messages observed; DelegationID propagation untested")
 	}
+}
+
+// T4: request_review must mint a delegation id, return it in the ack JSON,
+// and stamp it onto the companion's streamed messages so its stream lands in
+// its own per-delegation transcript (not the main interleave).
+func TestRequestReviewTool_CarriesDelegationID(t *testing.T) {
+	tool, orch := newReviewToolStack(t)
+
+	out, err := tool.Execute(`{"content":"review this"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	id := ackID(t, out)
+	if !strings.HasPrefix(id, "dlg-companion-") {
+		t.Errorf("ack.id %q is not a dlg-companion-* id", id)
+	}
+
+	msgs := drainAllMessages(orch)
+	assertReviewStreamCarriesID(t, msgs, id)
 
 	// Lifecycle bracket present and terminal state is completed.
 	states := delegationStates(msgs, id)

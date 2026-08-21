@@ -112,29 +112,43 @@ func (a *App) handleOrchestratorStreamMsg(
 		}
 		return true
 	}
+	return a.handleCompanionStreamMsg(msg, section, cycle, thinkingBuf, messageBuf)
+}
 
-	ensureCompanionSection := func() {
-		if a.subs.chat == nil {
-			return
-		}
-		if *section == nil || (*section).Done() {
-			*cycle++
-			*section = a.subs.chat.AddCompanionCycle(*cycle)
-			// Companion section started — mark companion as busy
-			a.subs.footer.SetCompanionBusy(true)
-			a.subs.footer.SetData(tui.FooterData{
-				CompanionActivity: "reviewing",
-			})
-			a.subs.tuiEngine.RequestRender()
-		}
+// ensureCompanionSection lazily opens a new companion cycle section in the
+// shared chat and flags the companion as busy in the footer.
+func (a *App) ensureCompanionSection(section **tui.CompanionSectionComponent, cycle *int) {
+	if a.subs.chat == nil {
+		return
 	}
+	if *section == nil || (*section).Done() {
+		*cycle++
+		*section = a.subs.chat.AddCompanionCycle(*cycle)
+		// Companion section started — mark companion as busy
+		a.subs.footer.SetCompanionBusy(true)
+		a.subs.footer.SetData(tui.FooterData{
+			CompanionActivity: "reviewing",
+		})
+		a.subs.tuiEngine.RequestRender()
+	}
+}
 
+// handleCompanionStreamMsg is the legacy companion interleave path for
+// non-delegation orchestrator stream messages. It returns true when the kind
+// was consumed; false lets the caller fall back to the InterAgent channel.
+func (a *App) handleCompanionStreamMsg(
+	msg multiagent.OrchestratorMessage,
+	section **tui.CompanionSectionComponent,
+	cycle *int,
+	thinkingBuf *strings.Builder,
+	messageBuf *strings.Builder,
+) bool {
 	switch msg.Kind {
 	case "content":
-		a.handleOrchestratorContentStream(msg, section, messageBuf, ensureCompanionSection)
+		a.handleOrchestratorContentStream(msg, section, cycle, messageBuf)
 		return true
 	case "thinking_start":
-		ensureCompanionSection()
+		a.ensureCompanionSection(section, cycle)
 		thinkingBuf.Reset()
 		// Show companion thinking activity
 		a.subs.footer.SetData(tui.FooterData{
@@ -143,7 +157,7 @@ func (a *App) handleOrchestratorStreamMsg(
 		a.subs.tuiEngine.RequestRender()
 		return true
 	case "thinking_chunk":
-		ensureCompanionSection()
+		a.ensureCompanionSection(section, cycle)
 		thinkingBuf.WriteString(msg.Content)
 		if *section != nil {
 			(*section).SetThinking(thinkingBuf.String())
@@ -172,15 +186,15 @@ func (a *App) handleOrchestratorStreamMsg(
 func (a *App) handleOrchestratorContentStream(
 	msg multiagent.OrchestratorMessage,
 	section **tui.CompanionSectionComponent,
+	cycle *int,
 	messageBuf *strings.Builder,
-	ensureSection func(),
 ) {
 	if a.subs.chat == nil {
 		return
 	}
 	switch msg.To {
 	case "stream_start":
-		ensureSection()
+		a.ensureCompanionSection(section, cycle)
 		messageBuf.Reset()
 		if *section != nil {
 			(*section).SetMessage("")

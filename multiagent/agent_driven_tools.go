@@ -51,6 +51,34 @@ func (t *RequestReviewTool) Schema() agentic.ToolSchema {
 // companion tool; core tools stay eager.
 func (*RequestReviewTool) Deferred() bool { return true }
 
+// delegationContext returns the orchestrator's cancellation context when
+// available, else a background context.
+func delegationContext(orch *ForegroundOrchestrator) context.Context {
+	if orch != nil {
+		return orch.Context()
+	}
+	return context.Background()
+}
+
+// emitDelegationState nil-safely reports a delegation lifecycle transition so
+// tools stay correct when the orchestrator is not wired yet.
+func emitDelegationState(orch *ForegroundOrchestrator, role, delegationID, state, errMsg string) {
+	if orch != nil {
+		orch.EmitDelegationState(role, delegationID, state, errMsg)
+	}
+}
+
+// beginDelegation binds delegationID to role for the run's duration and marks
+// the delegation running. The returned func clears the binding (defer it).
+func beginDelegation(orch *ForegroundOrchestrator, role, delegationID string) func() {
+	if orch == nil {
+		return func() {}
+	}
+	orch.SetActiveDelegation(role, delegationID)
+	orch.EmitDelegationState(role, delegationID, DelegationRunning, "")
+	return func() { orch.ClearActiveDelegation(role, delegationID) }
+}
+
 func (t *RequestReviewTool) Execute(input string) (string, error) {
 	if !t.Enabled {
 		return "", fmt.Errorf("agent-driven workflows are disabled. Enable with /companion:on, or use framework-driven companion mode with /companion:framework")
@@ -78,40 +106,25 @@ func (t *RequestReviewTool) Execute(input string) (string, error) {
 	// the run's duration, so the review's streamed messages carry it and land
 	// in their own per-delegation transcript (T4 — same seam as delegate_to).
 	delegationID := t.ids.mint(gorole.Companion)
-	if t.Orchestrator != nil {
-		t.Orchestrator.SetActiveDelegation(gorole.Companion, delegationID)
-		defer t.Orchestrator.ClearActiveDelegation(gorole.Companion, delegationID)
-		t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationRunning, "")
-	}
+	defer beginDelegation(t.Orchestrator, gorole.Companion, delegationID)()
 
-	ctx := context.Background()
-	if t.Orchestrator != nil {
-		ctx = t.Orchestrator.Context()
-	}
+	ctx := delegationContext(t.Orchestrator)
 	if err := companion.Run(ctx, params.Content); err != nil {
-		if t.Orchestrator != nil {
-			t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationFailed, err.Error())
-		}
+		emitDelegationState(t.Orchestrator, gorole.Companion, delegationID, DelegationFailed, err.Error())
 		return "", fmt.Errorf("companion run: %w", err)
 	}
 
 	review := collectAgentOutput(t.Pool, gorole.Companion)
 	if review == "" {
-		if t.Orchestrator != nil {
-			t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationCompleted, "")
-		}
+		emitDelegationState(t.Orchestrator, gorole.Companion, delegationID, DelegationCompleted, "")
 		return fmt.Sprintf(`{"status":"review_complete","id":"%s","message":"no review output"}`, delegationID), nil
 	}
 
 	if err := sendToMain(t.Pool, review); err != nil {
-		if t.Orchestrator != nil {
-			t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationFailed, err.Error())
-		}
+		emitDelegationState(t.Orchestrator, gorole.Companion, delegationID, DelegationFailed, err.Error())
 		return "", fmt.Errorf("send review to main: %w", err)
 	}
-	if t.Orchestrator != nil {
-		t.Orchestrator.EmitDelegationState(gorole.Companion, delegationID, DelegationCompleted, "")
-	}
+	emitDelegationState(t.Orchestrator, gorole.Companion, delegationID, DelegationCompleted, "")
 	return fmt.Sprintf(`{"status":"review_complete","id":"%s"}`, delegationID), nil
 }
 
@@ -218,25 +231,14 @@ func (t *DelegateTool) Execute(input string) (string, error) {
 // marker), runs the agent, and — for the companion role — forwards its output
 // back to the main agent.
 func (t *DelegateTool) runDelegation(subAgent *agentic.Agent, role, task, delegationID string) error {
-	if t.Orchestrator != nil {
-		t.Orchestrator.SetActiveDelegation(role, delegationID)
-		defer t.Orchestrator.ClearActiveDelegation(role, delegationID)
-		t.Orchestrator.EmitDelegationState(role, delegationID, DelegationRunning, "")
-	}
+	defer beginDelegation(t.Orchestrator, role, delegationID)()
 
-	ctx := context.Background()
-	if t.Orchestrator != nil {
-		ctx = t.Orchestrator.Context()
-	}
+	ctx := delegationContext(t.Orchestrator)
 	if err := subAgent.Run(ctx, task); err != nil {
-		if t.Orchestrator != nil {
-			t.Orchestrator.EmitDelegationState(role, delegationID, DelegationFailed, err.Error())
-		}
+		emitDelegationState(t.Orchestrator, role, delegationID, DelegationFailed, err.Error())
 		return fmt.Errorf("%s execution failed: %w", role, err)
 	}
-	if t.Orchestrator != nil {
-		t.Orchestrator.EmitDelegationState(role, delegationID, DelegationCompleted, "")
-	}
+	emitDelegationState(t.Orchestrator, role, delegationID, DelegationCompleted, "")
 
 	if role == gorole.Companion {
 		output := collectAgentOutput(t.Pool, role)

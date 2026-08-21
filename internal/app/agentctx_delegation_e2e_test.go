@@ -21,22 +21,14 @@ import (
 	"github.com/pijalu/goa/tui/agentctx"
 )
 
-// TestE2E_MultiAgentDelegationTabs is the Local-LM T4 e2e: a real delegate_to
-// run against the live LM spawns a per-delegation tab whose transcript holds
-// the result (and nothing leaks into the main transcript), and a delegation
-// whose provider is terminally unreachable surfaces a marked FAILED tab with
-// an error card (bug-2: delegations are visible from creation, failures
-// always).
-func TestE2E_MultiAgentDelegationTabs(t *testing.T) {
-	skipIfNoReplayLLM(t)
-
-	sc := newUIScenario(t, 100, 24)
-
-	// Pool against the live LM; the "broken" role resolves to a dead
-	// endpoint, and the non-eligible retry policy (a codes list matching
-	// nothing) makes its failure surface immediately instead of burning the
-	// real backoff schedule. The live role never errors, so the policy is
-	// inert for it.
+// newE2EDelegationStack wires a real AgentPool + orchestrator against the
+// live LM, with one twist: the "planner" role resolves to a dead endpoint so
+// its delegation fails terminally. The non-eligible retry policy (a codes
+// list matching nothing) makes that failure surface immediately instead of
+// burning the real backoff schedule; the live role never errors, so the
+// policy is inert for it.
+func newE2EDelegationStack(t *testing.T, sc *uiScenario) (*multiagent.ForegroundOrchestrator, *multiagent.DelegateTool) {
+	t.Helper()
 	live := agenticprovider.Model{
 		ID:         replayE2EModel,
 		Name:       replayE2EModel,
@@ -73,7 +65,56 @@ func TestE2E_MultiAgentDelegationTabs(t *testing.T) {
 	orch := multiagent.NewForegroundOrchestrator(pool)
 	sc.app.subs.foregroundOrch = orch
 	tool := &multiagent.DelegateTool{Orchestrator: orch, Pool: pool, Enabled: true}
+	return orch, tool
+}
 
+// assertLiveDelegationTab checks the live coder delegation's tab: the result
+// rendered in ITS transcript, terminal marker present, no leak into the main
+// transcript, and no error state.
+func assertLiveDelegationTab(t *testing.T, sc *uiScenario) {
+	t.Helper()
+	coderText := delegationTranscriptText(t, sc, "dlg-coder-01")
+	if !strings.Contains(coderText, "LIVE-DELEGATION-OK") {
+		t.Errorf("delegation transcript missing the live result:\n%s", coderText)
+	}
+	if !strings.Contains(coderText, "completed") {
+		t.Errorf("delegation transcript missing the terminal marker:\n%s", coderText)
+	}
+	if snapshotContains(sc.chat.Snapshot(), "LIVE-DELEGATION-OK") {
+		t.Error("delegation result leaked into the main transcript")
+	}
+	if _, errFlag := sc.app.subs.agentRegistry.Badges("dlg-coder-01"); errFlag {
+		t.Error("successful delegation must not carry the error state")
+	}
+}
+
+// assertFailedE2ETab checks bug-2's fix on the dead-endpoint delegation: the
+// FAILED tab is marked and its transcript holds the error card.
+func assertFailedE2ETab(t *testing.T, sc *uiScenario) {
+	t.Helper()
+	if _, errFlag := sc.app.subs.agentRegistry.Badges("dlg-planner-01"); !errFlag {
+		t.Error("failed delegation did not mark its tab")
+	}
+	failedText := delegationTranscriptText(t, sc, "dlg-planner-01")
+	if !strings.Contains(failedText, "FAILED") {
+		t.Errorf("failed delegation transcript missing the error card:\n%s", failedText)
+	}
+}
+
+// TestE2E_MultiAgentDelegationTabs is the Local-LM T4 e2e: a real delegate_to
+// run against the live LM spawns a per-delegation tab whose transcript holds
+// the result (and nothing leaks into the main transcript), and a delegation
+// whose provider is terminally unreachable surfaces a marked FAILED tab with
+// an error card (bug-2: delegations are visible from creation, failures
+// always).
+func TestE2E_MultiAgentDelegationTabs(t *testing.T) {
+	skipIfNoReplayLLM(t)
+
+	sc := newUIScenario(t, 100, 24)
+	orch, tool := newE2EDelegationStack(t, sc)
+
+	// drain feeds every buffered orchestrator message through the exact T4
+	// routing entry point, on the test goroutine.
 	drain := func() {
 		for {
 			select {
@@ -93,21 +134,7 @@ func TestE2E_MultiAgentDelegationTabs(t *testing.T) {
 		t.Fatalf("live delegate_to: %v", err)
 	}
 	drain()
-
-	// The tab appeared on creation and the result rendered in ITS transcript.
-	coderText := delegationTranscriptText(t, sc, "dlg-coder-01")
-	if !strings.Contains(coderText, "LIVE-DELEGATION-OK") {
-		t.Errorf("delegation transcript missing the live result:\n%s", coderText)
-	}
-	if !strings.Contains(coderText, "completed") {
-		t.Errorf("delegation transcript missing the terminal marker:\n%s", coderText)
-	}
-	if snapshotContains(sc.chat.Snapshot(), "LIVE-DELEGATION-OK") {
-		t.Error("delegation result leaked into the main transcript")
-	}
-	if _, errFlag := sc.app.subs.agentRegistry.Badges("dlg-coder-01"); errFlag {
-		t.Error("successful delegation must not carry the error state")
-	}
+	assertLiveDelegationTab(t, sc)
 
 	// A forced terminal failure: the dead endpoint rejects the request and
 	// the non-eligible retry policy surfaces it immediately.
@@ -115,15 +142,7 @@ func TestE2E_MultiAgentDelegationTabs(t *testing.T) {
 		t.Fatal("dead-endpoint delegate_to should fail")
 	}
 	drain()
-
-	// The FAILED delegation leaves a marked tab + error card (bug-2 fix).
-	if _, errFlag := sc.app.subs.agentRegistry.Badges("dlg-planner-01"); !errFlag {
-		t.Error("failed delegation did not mark its tab")
-	}
-	failedText := delegationTranscriptText(t, sc, "dlg-planner-01")
-	if !strings.Contains(failedText, "FAILED") {
-		t.Errorf("failed delegation transcript missing the error card:\n%s", failedText)
-	}
+	assertFailedE2ETab(t, sc)
 
 	// Tab strip state: main + two delegations, main still active.
 	if got := sc.app.subs.agentRegistry.Len(); got != 3 {

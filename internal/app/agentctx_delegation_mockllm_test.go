@@ -88,6 +88,138 @@ func delegationTranscriptText(t *testing.T, sc *uiScenario, id string) string {
 	return b.String()
 }
 
+// wantDelegationViews is every registry view the scenario must produce, in
+// creation order: the main agent plus four delegations.
+var wantDelegationViews = []string{
+	agentctx.MainAgentID, "dlg-coder-01", "dlg-planner-01", "dlg-coder-02", "dlg-planner-02",
+}
+
+// successfulDelegationIDs are the delegations expected to complete cleanly.
+var successfulDelegationIDs = []string{"dlg-coder-01", "dlg-planner-01", "dlg-coder-02"}
+
+// interleaveMarkers are delegation artifacts that must never reach the main chat.
+var interleaveMarkers = []string{"CODER-REPLY-ONE", "CODER-REPLY-TWO", "PLANNER-REPLY", "FAILED"}
+
+// startHeldCoderDelegation launches dlg-coder-01 on a background goroutine
+// with its provider reply held open mid-stream, and waits for its tab to be
+// created. It returns the release gate and the run's result channel.
+func startHeldCoderDelegation(t *testing.T, fx *delegationMockFixture, prov *mock.Provider) (chan struct{}, <-chan error) {
+	t.Helper()
+	turn := mock.TextTurn("CODER-REPLY-ONE")
+	gate := make(chan struct{})
+	prov.Script("coder-model", mock.Turn{Events: turn.Events, Final: turn.Final, Hold: gate})
+	prov.ReplyText("planner-model", "PLANNER-REPLY")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := fx.tool.Execute(`{"agent":"coder","task":"build feature one"}`)
+		done <- err
+	}()
+
+	// Wait until the coder delegation is created (tab spawned on creation).
+	waitFor(t, fx.sc.engine, 5*time.Second, func() bool {
+		_, ok := fx.sc.app.subs.agentRegistry.Get("dlg-coder-01")
+		if !ok {
+			fx.drainDelegationEvents(t)
+		}
+		return ok
+	}, "coder delegation tab did not appear on creation")
+	return gate, done
+}
+
+// runDelegationOK executes one delegate_to and fails the test if it errors.
+func runDelegationOK(t *testing.T, fx *delegationMockFixture, input string) {
+	t.Helper()
+	if _, err := fx.tool.Execute(input); err != nil {
+		t.Fatalf("delegate_to(%s): %v", input, err)
+	}
+	fx.drainDelegationEvents(t)
+}
+
+// runFailingDelegation executes one delegate_to expected to fail (scripted
+// provider error) and drains its terminal lifecycle into the views.
+func runFailingDelegation(t *testing.T, fx *delegationMockFixture, input string) {
+	t.Helper()
+	if _, err := fx.tool.Execute(input); err == nil {
+		t.Fatalf("delegate_to(%s) should fail", input)
+	}
+	fx.drainDelegationEvents(t)
+}
+
+// assertDelegationTabs checks that every delegation spawned exactly one tab.
+func assertDelegationTabs(t *testing.T, fx *delegationMockFixture) {
+	t.Helper()
+	got := fx.sc.app.subs.agentRegistry.IDs()
+	if strings.Join(got, ",") != strings.Join(wantDelegationViews, ",") {
+		t.Fatalf("registry views = %v, want %v", got, wantDelegationViews)
+	}
+}
+
+// assertDelegationIsolation proves each delegation's transcript holds ONLY its
+// own reply — no cross-contamination between concurrent delegations.
+func assertDelegationIsolation(t *testing.T, fx *delegationMockFixture) {
+	t.Helper()
+	coderOne := delegationTranscriptText(t, fx.sc, "dlg-coder-01")
+	if !strings.Contains(coderOne, "CODER-REPLY-ONE") || strings.Contains(coderOne, "CODER-REPLY-TWO") || strings.Contains(coderOne, "PLANNER-REPLY") {
+		t.Errorf("dlg-coder-01 transcript contaminated:\n%s", coderOne)
+	}
+	coderTwo := delegationTranscriptText(t, fx.sc, "dlg-coder-02")
+	if !strings.Contains(coderTwo, "CODER-REPLY-TWO") || strings.Contains(coderTwo, "CODER-REPLY-ONE") {
+		t.Errorf("dlg-coder-02 transcript contaminated:\n%s", coderTwo)
+	}
+	planner := delegationTranscriptText(t, fx.sc, "dlg-planner-01")
+	if !strings.Contains(planner, "PLANNER-REPLY") {
+		t.Errorf("dlg-planner-01 transcript missing its reply:\n%s", planner)
+	}
+}
+
+// assertDelegationTerminals checks the successful delegations carry a
+// completed marker and no error badge.
+func assertDelegationTerminals(t *testing.T, fx *delegationMockFixture) {
+	t.Helper()
+	for _, id := range successfulDelegationIDs {
+		s := delegationTranscriptText(t, fx.sc, id)
+		if !strings.Contains(s, "completed") {
+			t.Errorf("%s transcript missing terminal marker:\n%s", id, s)
+		}
+		if _, errFlag := fx.sc.app.subs.agentRegistry.Badges(id); errFlag {
+			t.Errorf("%s carries the error state but succeeded", id)
+		}
+	}
+}
+
+// assertFailedDelegationCard verifies the bug-2 regression: a scripted
+// provider-400 delegation leaves a marked tab plus an error card carrying the
+// provider detail in its own transcript.
+func assertFailedDelegationCard(t *testing.T, fx *delegationMockFixture) {
+	t.Helper()
+	if _, errFlag := fx.sc.app.subs.agentRegistry.Badges("dlg-planner-02"); !errFlag {
+		t.Error("failed delegation dlg-planner-02 did not mark its tab")
+	}
+	s := delegationTranscriptText(t, fx.sc, "dlg-planner-02")
+	if !strings.Contains(s, "FAILED") || !strings.Contains(s, "provider 400: invalid request") {
+		t.Errorf("failed delegation transcript missing the error card:\n%s", s)
+	}
+}
+
+// assertMainTranscriptClean proves the main chat holds no delegation content
+// and no companion-section entries at all — the AddCompanionCycle interleave
+// is retired for delegations.
+func assertMainTranscriptClean(t *testing.T, fx *delegationMockFixture) {
+	t.Helper()
+	main := fx.sc.chat.Snapshot()
+	for _, marker := range interleaveMarkers {
+		if snapshotContains(main, marker) {
+			t.Errorf("main transcript contains delegation marker %q — interleave not retired", marker)
+		}
+	}
+	for _, m := range main {
+		if m.Type == tui.ConsoleCompanionMessage {
+			t.Error("main transcript holds a companion section for delegation traffic")
+		}
+	}
+}
+
 // TestAgentCtx_DelegationMockLLM is the T4 mandatory scripted-provider test:
 // real delegate_to runs against the mock LLM — a coder held mid-stream while
 // a planner completes (true cross-role concurrency), a SECOND coder
@@ -100,41 +232,16 @@ func TestAgentCtx_DelegationMockLLM(t *testing.T) {
 	prov := mock.New(t)
 	fx := newDelegationMockFixture(t, prov)
 
-	// Coder 1 is held mid-stream so the planner runs while it is in flight.
-	coderGate := make(chan struct{})
-	prov.Script("coder-model", mock.Turn{
-		Events: mock.TextTurn("CODER-REPLY-ONE").Events,
-		Final:  mock.TextTurn("CODER-REPLY-ONE").Final,
-		Hold:   coderGate,
-	})
-	prov.ReplyText("planner-model", "PLANNER-REPLY")
-
-	// Delegation 1 (coder, dlg-coder-01) on a background goroutine: it blocks
-	// inside Run until the gate opens.
-	coderOneDone := make(chan error, 1)
-	go func() {
-		_, err := fx.tool.Execute(`{"agent":"coder","task":"build feature one"}`)
-		coderOneDone <- err
-	}()
-
-	// Wait until the coder delegation is created (tab spawned on creation).
-	waitFor(t, fx.sc.engine, 5*time.Second, func() bool {
-		_, ok := fx.sc.app.subs.agentRegistry.Get("dlg-coder-01")
-		if !ok {
-			fx.drainDelegationEvents(t)
-		}
-		return ok
-	}, "coder delegation tab did not appear on creation")
+	// Delegation 1 (coder, dlg-coder-01) blocks mid-stream on a background
+	// goroutine so delegation 2 is genuinely concurrent with it.
+	gate, coderOneDone := startHeldCoderDelegation(t, fx, prov)
 
 	// Delegation 2 (planner, dlg-planner-01) runs to completion while coder 1
-	// is still held — genuinely concurrent with the in-flight coder.
-	if _, err := fx.tool.Execute(`{"agent":"planner","task":"plan the work"}`); err != nil {
-		t.Fatalf("planner delegate_to: %v", err)
-	}
-	fx.drainDelegationEvents(t)
+	// is still held.
+	runDelegationOK(t, fx, `{"agent":"planner","task":"plan the work"}`)
 
 	// Release coder 1 and let it finish.
-	close(coderGate)
+	close(gate)
 	if err := <-coderOneDone; err != nil {
 		t.Fatalf("coder delegate_to: %v", err)
 	}
@@ -143,71 +250,19 @@ func TestAgentCtx_DelegationMockLLM(t *testing.T) {
 	// Delegation 3: a SECOND coder (dlg-coder-02) — the pooled coder agent is
 	// reused, but the stream routes under the new id.
 	prov.ReplyText("coder-model", "CODER-REPLY-TWO")
-	if _, err := fx.tool.Execute(`{"agent":"coder","task":"build feature two"}`); err != nil {
-		t.Fatalf("second coder delegate_to: %v", err)
-	}
-	fx.drainDelegationEvents(t)
+	runDelegationOK(t, fx, `{"agent":"coder","task":"build feature two"}`)
 
 	// Delegation 4: scripted provider-400 — the delegation fails before any
 	// chunk streams (the previously invisible case, bug-2). The error text is
 	// a plain non-retryable 400 (NOT the max_tokens/context-overflow class,
 	// which is deliberately recoverable via the agent's compress+retry path).
 	prov.FailNext("planner-model", errors.New("provider 400: invalid request"))
-	if _, err := fx.tool.Execute(`{"agent":"planner","task":"plan the impossible"}`); err == nil {
-		t.Fatal("failing planner delegate_to should return an error")
-	}
-	fx.drainDelegationEvents(t)
+	runFailingDelegation(t, fx, `{"agent":"planner","task":"plan the impossible"}`)
 
 	// --- Assertions -------------------------------------------------------
-
-	// Tabs: main + 4 delegations, each spawned on creation.
-	wantViews := []string{agentctx.MainAgentID, "dlg-coder-01", "dlg-planner-01", "dlg-coder-02", "dlg-planner-02"}
-	if got := fx.sc.app.subs.agentRegistry.IDs(); strings.Join(got, ",") != strings.Join(wantViews, ",") {
-		t.Fatalf("registry views = %v, want %v", got, wantViews)
-	}
-
-	// Isolation: each delegation's transcript holds ONLY its own reply.
-	coderOne := delegationTranscriptText(t, fx.sc, "dlg-coder-01")
-	if !strings.Contains(coderOne, "CODER-REPLY-ONE") || strings.Contains(coderOne, "CODER-REPLY-TWO") || strings.Contains(coderOne, "PLANNER-REPLY") {
-		t.Errorf("dlg-coder-01 transcript contaminated:\n%s", coderOne)
-	}
-	if s := delegationTranscriptText(t, fx.sc, "dlg-coder-02"); !strings.Contains(s, "CODER-REPLY-TWO") || strings.Contains(s, "CODER-REPLY-ONE") {
-		t.Errorf("dlg-coder-02 transcript contaminated:\n%s", s)
-	}
-	if s := delegationTranscriptText(t, fx.sc, "dlg-planner-01"); !strings.Contains(s, "PLANNER-REPLY") {
-		t.Errorf("dlg-planner-01 transcript missing its reply:\n%s", s)
-	}
-
-	// Terminal states: the three successful delegations are marked completed.
-	for _, id := range []string{"dlg-coder-01", "dlg-planner-01", "dlg-coder-02"} {
-		if s := delegationTranscriptText(t, fx.sc, id); !strings.Contains(s, "completed") {
-			t.Errorf("%s transcript missing terminal marker:\n%s", id, s)
-		}
-		if _, errFlag := fx.sc.app.subs.agentRegistry.Badges(id); errFlag {
-			t.Errorf("%s carries the error state but succeeded", id)
-		}
-	}
-
-	// FAILED delegation: marked tab (registry error state) + error card with
-	// the provider-400 detail in its own transcript.
-	if _, errFlag := fx.sc.app.subs.agentRegistry.Badges("dlg-planner-02"); !errFlag {
-		t.Error("failed delegation dlg-planner-02 did not mark its tab")
-	}
-	if s := delegationTranscriptText(t, fx.sc, "dlg-planner-02"); !strings.Contains(s, "FAILED") || !strings.Contains(s, "provider 400: invalid request") {
-		t.Errorf("failed delegation transcript missing the error card:\n%s", s)
-	}
-
-	// No interleave: the main transcript holds no delegation content and no
-	// companion-section entries at all.
-	main := fx.sc.chat.Snapshot()
-	for _, marker := range []string{"CODER-REPLY-ONE", "CODER-REPLY-TWO", "PLANNER-REPLY", "FAILED"} {
-		if snapshotContains(main, marker) {
-			t.Errorf("main transcript contains delegation marker %q — interleave not retired", marker)
-		}
-	}
-	for _, m := range main {
-		if m.Type == tui.ConsoleCompanionMessage {
-			t.Error("main transcript holds a companion section for delegation traffic")
-		}
-	}
+	assertDelegationTabs(t, fx)
+	assertDelegationIsolation(t, fx)
+	assertDelegationTerminals(t, fx)
+	assertFailedDelegationCard(t, fx)
+	assertMainTranscriptClean(t, fx)
 }
