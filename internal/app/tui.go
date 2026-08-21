@@ -33,12 +33,12 @@ const titleBrand = "⬡"
 func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	subs := a.subs
 
-	engine, chat, agentContent, agentTabBar, statusBar, goalBubble, steeringChrome, inp, statusFooter, bgPanel := a.createTUIComponents()
+	engine, chat, agentContent, agentTabBar, agentCtxBar, statusBar, goalBubble, steeringChrome, inp, statusFooter, bgPanel := a.createTUIComponents()
 	subs.goalBubble = goalBubble
 	subs.steeringChrome = steeringChrome
 	a.configureKeyLogging(engine)
 	a.attachInputHandlers(inp, engine)
-	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, statusBar, goalBubble, steeringChrome, bgPanel, inp, statusFooter)
+	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, agentCtxBar, statusBar, goalBubble, steeringChrome, bgPanel, inp, statusFooter)
 	a.configureInputEditor(inp, engine)
 	a.startBackgroundHistoryLoad(inp, engine)
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
@@ -57,7 +57,7 @@ func headerFrom(projectDir string) *tui.Header {
 	return h
 }
 
-func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.StatusMsg, *goaltui.Bubble, *tui.SteeringChrome, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
+func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *agentctx.AgentTabBar, *tui.StatusMsg, *goaltui.Bubble, *tui.SteeringChrome, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
 	ft := a.createTerminal()
 	engine := tui.NewTUI(ft)
 	a.configureRenderTrace(engine)
@@ -73,7 +73,10 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 	a.subs.agentRegistry = reg
 	chat := mainTranscript.View()
 	a.configureChat(chat)
-	return engine, chat, orchpanel.NewAgentContent(), orchpanel.NewAgentTabBar(), tui.NewStatusMsg(), goaltui.NewBubble(), tui.NewSteeringChrome(), tui.NewEditor(), a.newFooter(), bgpanel.NewPanel(nil)
+	// T2: the per-delegation tab strip reads the registry (pull-based); with a
+	// single view it renders nothing, so the single-agent layout is unchanged.
+	agentCtxBar := agentctx.NewAgentTabBar(reg)
+	return engine, chat, orchpanel.NewAgentContent(), orchpanel.NewAgentTabBar(), agentCtxBar, tui.NewStatusMsg(), goaltui.NewBubble(), tui.NewSteeringChrome(), tui.NewEditor(), a.newFooter(), bgpanel.NewPanel(nil)
 }
 
 func (a *App) createTerminal() tui.Terminal {
@@ -249,7 +252,7 @@ func spinnerLocation(cfg *config.Config) string {
 	return "chat"
 }
 
-func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, steeringChrome *tui.SteeringChrome, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {
+func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, agentCtxBar *agentctx.AgentTabBar, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, steeringChrome *tui.SteeringChrome, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {
 	_ = agentContent
 	_ = agentTabBar
 	engine.AddChild(header)
@@ -264,6 +267,10 @@ func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.Chat
 	engine.AddChild(goalBubble)
 	engine.AddChild(steeringChrome)
 	engine.AddChild(bgPanel)
+	// T2: the per-delegation tab strip sits immediately above the input editor
+	// (same insertion point as the orchestration tabs — minimal redraw
+	// surface). It renders zero rows while a single view is registered.
+	engine.AddChild(agentCtxBar)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
 	engine.SetFocus(inp)

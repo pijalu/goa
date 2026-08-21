@@ -144,3 +144,171 @@ func TestAgentViewRegistry_FirstAddedStaysActive(t *testing.T) {
 		t.Errorf("active id = %q after second Add, want it to stay %q", id, MainAgentID)
 	}
 }
+
+// registryWithThreeViews builds a registry holding main + two coder
+// delegation views (insertion order).
+func registryWithThreeViews() *AgentViewRegistry {
+	reg := NewAgentViewRegistry()
+	for _, id := range []string{MainAgentID, "dlg-coder-03", "dlg-coder-07"} {
+		tr := NewAgentTranscript(id)
+		reg.Add(id, &AgentView{Transcript: tr, Compositor: tr.Compositor()})
+	}
+	return reg
+}
+
+// TestAgentViewRegistry_Order asserts the insertion-order surface: IDs and
+// Index agree with the order views were added.
+func TestAgentViewRegistry_Order(t *testing.T) {
+	reg := registryWithThreeViews()
+	if reg.Len() != 3 {
+		t.Fatalf("Len = %d, want 3", reg.Len())
+	}
+	if got := reg.IDs(); len(got) != 3 || got[0] != MainAgentID || got[2] != "dlg-coder-07" {
+		t.Fatalf("IDs = %v, want insertion order", got)
+	}
+	if idx := reg.Index("dlg-coder-07"); idx != 2 {
+		t.Errorf("Index(dlg-coder-07) = %d, want 2", idx)
+	}
+	if idx := reg.Index("nope"); idx != -1 {
+		t.Errorf("Index(nope) = %d, want -1", idx)
+	}
+	assertActive(t, reg, MainAgentID, 0)
+}
+
+// TestAgentViewRegistry_Cycle covers pointer cycling: forward moves through
+// the insertion order, wraps at the end, and backward wraps the other way.
+func TestAgentViewRegistry_Cycle(t *testing.T) {
+	reg := registryWithThreeViews()
+
+	// Cycle forward: main → dlg-coder-03 → dlg-coder-07 → wraps to main.
+	for _, want := range []string{"dlg-coder-03", "dlg-coder-07", MainAgentID} {
+		id, v := reg.Cycle(1)
+		if id != want || v == nil {
+			t.Errorf("Cycle(1) = (%q, %v), want active %q", id, v, want)
+		}
+	}
+	// Cycle backward wraps the other way: main → dlg-coder-07.
+	if id, _ := reg.Cycle(-1); id != "dlg-coder-07" {
+		t.Errorf("Cycle(-1) = %q, want dlg-coder-07", id)
+	}
+	assertActive(t, reg, "dlg-coder-07", 2)
+}
+
+// TestAgentViewRegistry_SelectByID covers direct selection: known ids move
+// the pointer, unknown ids report false and leave it untouched.
+func TestAgentViewRegistry_SelectByID(t *testing.T) {
+	reg := registryWithThreeViews()
+
+	if v, ok := reg.SelectByID("dlg-coder-07"); !ok || v == nil {
+		t.Fatal("SelectByID(dlg-coder-07) should succeed")
+	}
+	assertActive(t, reg, "dlg-coder-07", 2)
+	if _, ok := reg.SelectByID("dlg-nope-99"); ok {
+		t.Error("SelectByID of unknown id should report false")
+	}
+	assertActive(t, reg, "dlg-coder-07", 2)
+}
+
+// assertActive verifies the active id and its tab-order index.
+func assertActive(t *testing.T, reg *AgentViewRegistry, wantID string, wantIdx int) {
+	t.Helper()
+	if id, v := reg.Active(); id != wantID || v == nil {
+		t.Errorf("Active = (%q, %v), want (%q, view)", id, v, wantID)
+	}
+	if idx := reg.ActiveIndex(); idx != wantIdx {
+		t.Errorf("ActiveIndex = %d, want %d", idx, wantIdx)
+	}
+}
+
+// TestAgentViewRegistry_RemoveInactive covers removing non-active views: the
+// order shrinks, unknown ids report false, and the active pointer is unmoved.
+func TestAgentViewRegistry_RemoveInactive(t *testing.T) {
+	reg := registryWithThreeViews()
+
+	if reg.Remove("dlg-nope") {
+		t.Error("Remove of unknown id should report false")
+	}
+	if !reg.Remove("dlg-coder-07") {
+		t.Fatal("Remove(dlg-coder-07) should succeed")
+	}
+	if reg.Len() != 2 {
+		t.Fatalf("Len = %d after remove, want 2", reg.Len())
+	}
+	assertActive(t, reg, MainAgentID, 0)
+	if got := reg.IDs(); len(got) != 2 || got[1] != "dlg-coder-03" {
+		t.Errorf("IDs after remove = %v, want [main dlg-coder-03]", got)
+	}
+}
+
+// TestAgentViewRegistry_RemoveActive covers removing the ACTIVE view: the
+// pointer hands off to the nearest neighbor (previous in insertion order when
+// present, else next) and never dangles, down to the empty registry.
+func TestAgentViewRegistry_RemoveActive(t *testing.T) {
+	reg := registryWithThreeViews()
+
+	// Removing the MIDDLE view while it is active lands on its predecessor.
+	if _, ok := reg.SelectByID("dlg-coder-03"); !ok {
+		t.Fatal("SelectByID(dlg-coder-03) should succeed")
+	}
+	if !reg.Remove("dlg-coder-03") {
+		t.Fatal("Remove(dlg-coder-03) should succeed")
+	}
+	assertActive(t, reg, MainAgentID, 0)
+
+	// Removing the FIRST view while active lands on its successor.
+	if !reg.Remove(MainAgentID) {
+		t.Fatal("Remove(main) should succeed")
+	}
+	assertActive(t, reg, "dlg-coder-07", 0)
+
+	// Removing the last view empties the registry; navigation stays inert.
+	reg.Remove("dlg-coder-07")
+	if reg.Len() != 0 {
+		t.Fatalf("Len = %d, want 0", reg.Len())
+	}
+	if id, v := reg.Active(); id != "" || v != nil {
+		t.Errorf("empty registry Active = (%q, %v), want (\"\", nil)", id, v)
+	}
+	if id, v := reg.Cycle(1); id != "" || v != nil {
+		t.Errorf("Cycle on empty registry = (%q, %v), want (\"\", nil)", id, v)
+	}
+}
+
+// TestAgentViewRegistry_BadgeBookkeeping covers the T2 badge STATE (rendering
+// lands in T5): background activity and errors are recorded per view, and
+// activating a view acknowledges (clears) its badges.
+func TestAgentViewRegistry_BadgeBookkeeping(t *testing.T) {
+	reg := NewAgentViewRegistry()
+	main := NewAgentTranscript(MainAgentID)
+	other := NewAgentTranscript("dlg-coder-03")
+	reg.Add(MainAgentID, &AgentView{Transcript: main, Compositor: main.Compositor()})
+	reg.Add("dlg-coder-03", &AgentView{Transcript: other, Compositor: other.Compositor()})
+
+	reg.MarkActivity("dlg-coder-03")
+	reg.MarkError("dlg-coder-03")
+	activity, hadErr := reg.Badges("dlg-coder-03")
+	if !activity || !hadErr {
+		t.Fatalf("Badges = (%v, %v), want (true, true)", activity, hadErr)
+	}
+	// Unknown ids are inert.
+	reg.MarkActivity("dlg-nope")
+	if activity, _ := reg.Badges("dlg-nope"); activity {
+		t.Error("MarkActivity on unknown id should be a no-op")
+	}
+
+	// Activating the view acknowledges both badges.
+	if _, ok := reg.SelectByID("dlg-coder-03"); !ok {
+		t.Fatal("SelectByID failed")
+	}
+	activity, hadErr = reg.Badges("dlg-coder-03")
+	if activity || hadErr {
+		t.Errorf("Badges after activation = (%v, %v), want (false, false)", activity, hadErr)
+	}
+
+	// Cycle acknowledges the target's badges too.
+	reg.MarkActivity(MainAgentID)
+	reg.Cycle(1) // → main (wrap)
+	if activity, _ := reg.Badges(MainAgentID); activity {
+		t.Error("Cycle to a view should clear its activity badge")
+	}
+}

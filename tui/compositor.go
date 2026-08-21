@@ -182,6 +182,68 @@ func (c *Compositor) Buffer() []string {
 	return copySlice(c.prevLines)
 }
 
+// FrameState is the compositor's detachable per-view baseline: the three
+// fields the single shared Compositor carries for the one conversation it
+// renders (previous-frame rows, scrollback watermark, viewport top). A
+// multi-view host (e.g. per-agent transcripts) saves one FrameState per view
+// around the single attached compositor so a view switch can detach the
+// current view and reattach another without a visible seam.
+//
+// It is pure data: capturing or holding a FrameState performs no terminal
+// writes.
+type FrameState struct {
+	// PrevLines is the previous frame's full visible-window baseline (the
+	// unchanged-row skip source), copied so later frames cannot mutate it.
+	PrevLines []string
+	// ScrollTop is the scrollback watermark: canvas rows already committed to
+	// terminal scrollback (immutable, never repainted).
+	ScrollTop int
+	// VT is the previous frame's viewport top (first visible canvas row).
+	VT int
+}
+
+// ExportFrame captures the live baseline so the currently-mounted view can be
+// detached and later reattached via RestoreFrame. The returned PrevLines is a
+// deep copy: subsequent frames cannot mutate the snapshot.
+func (c *Compositor) ExportFrame() FrameState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return FrameState{
+		PrevLines: copySlice(c.prevLines),
+		ScrollTop: c.scrollTop,
+		VT:        c.vt,
+	}
+}
+
+// RestoreFrame installs a saved per-view baseline on a view switch and arms a
+// FULL visible-window repaint of the new view:
+//
+//   - prevLines is DROPPED (never the saved one): the physical screen shows
+//     the previous view's rows, so diffing against any stale baseline would
+//     skip rows that are actually different. The next Render therefore takes
+//     the first-frame path, which repaints every window row in place (per-row
+//     CUP+EL — the region-scoped clear; terminal scrollback is untouched).
+//   - The saved watermark/viewport-top are restored so rows the target
+//     already committed while live are never RE-emitted, while rows it
+//     accumulated as inactive data scroll off exactly once via the normal
+//     overflow path (first-time emission — no scrollback replay).
+//   - clearGen is bumped so a scene snapshot taken BEFORE the switch is
+//     dropped instead of being diffed against the restored baseline (the same
+//     stale-scene guard Clear uses for /new).
+//   - scrollbackDirty is cleared: a pending deferred scrollback sync belongs
+//     to the detached view's canvas, and honoring it now would wipe and
+//     re-emit the NEW view's entire transcript.
+func (c *Compositor) RestoreFrame(s FrameState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.prevLines = nil
+	c.scrollTop = s.ScrollTop
+	c.vt = s.VT
+	c.scrollbackDirty = false
+	c.prevMutationGen = 0
+	c.clearGen++
+}
+
 // InitialClear wipes the terminal before the first frame.
 //
 // It runs on the caller's goroutine (TUI.Start), NOT the renderLoop, and

@@ -179,6 +179,21 @@ func (t *TUI) SetTitle(title string) {
 // AddChild adds a component to the tree.
 func (t *TUI) AddChild(c Component) { t.children = append(t.children, c) }
 
+// ReplaceChild swaps old for new at the SAME position in the component tree,
+// keeping the stacked layout (header → transcript → … → input → footer)
+// stable across a view switch. It returns false when old is not a child.
+// Command-loop only: like AddChild, the children slice is owned by the
+// commandLoop; callers route the swap through Apply.
+func (t *TUI) ReplaceChild(old, new Component) bool {
+	for i, ch := range t.children {
+		if ch == old {
+			t.children[i] = new
+			return true
+		}
+	}
+	return false
+}
+
 // SetFocus sets the focused component via the FocusStack. The first call
 // establishes the base focus; subsequent calls Replace the current top (used
 // by the host to restore the main editor, and by overlay capture toggles).
@@ -629,6 +644,19 @@ func (t *TUI) RequestRender() {
 // and must NOT call this.
 func (t *TUI) ClearTranscript() {
 	t.compositor.Clear()
+	t.RequestRender()
+}
+
+// ExportFrame captures the compositor's live per-view baseline (previous
+// frame rows, scrollback watermark, viewport top) so the currently-mounted
+// view can be detached on a view switch. See Compositor.ExportFrame.
+func (t *TUI) ExportFrame() FrameState { return t.compositor.ExportFrame() }
+
+// RestoreFrame installs a detached view's saved baseline and requests a full
+// visible-window repaint of it (the T2 view-switch behavior: in-place window
+// repaint, no scrollback replay). See Compositor.RestoreFrame.
+func (t *TUI) RestoreFrame(s FrameState) {
+	t.compositor.RestoreFrame(s)
 	t.RequestRender()
 }
 

@@ -99,6 +99,12 @@ func newUIScenarioCfg(tb testing.TB, w, h int, tuiCfg *config.TUIConfig) *uiScen
 	}
 	engine.AddChild(goal)
 	engine.AddChild(steering)
+	// Same production rule as assembleEngine (T2): the per-delegation tab
+	// strip sits immediately above the input editor; it renders zero rows
+	// while the registry holds a single view, so single-agent scenarios are
+	// layout-identical to before.
+	agentCtxBar := agentctx.NewAgentTabBar(agentReg)
+	engine.AddChild(agentCtxBar)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
 	engine.SetFocus(inp)
