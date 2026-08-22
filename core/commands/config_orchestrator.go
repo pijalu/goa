@@ -419,18 +419,20 @@ func (m *configMenu) promptRetentionDays(enabled *bool, days *int, save func(), 
 	})
 }
 
-// --- goals retention ---------------------------------------------------------
+// --- goals -------------------------------------------------------------------
 
 func (m *configMenu) openGoalsRetention() {
 	m.current = m.openGoalsRetention
-	cfg := m.ctx.Config.Goals.Retention
-	autoUnblock := m.ctx.Config.Goals.AutoUnblockEnabled()
-	freshContext := m.ctx.Config.Goals.FreshContextEnabled()
+	// Edit through a pointer to the LIVE config: saveGoalsSection serializes
+	// m.ctx.Config.Goals, so mutations on a copy would be silently dropped.
+	g := &m.ctx.Config.Goals
 	items := []tui.SelectorItem{
-		{Value: "enabled", Label: "Retention enabled", Description: boolLabel(cfg.Enabled)},
-		{Value: "days", Label: "Retention days", Description: goalsRetentionLabel(cfg)},
-		{Value: "auto_unblock", Label: "Auto-unblock goals", Description: boolLabel(autoUnblock)},
-		{Value: "fresh_context", Label: "Fresh context for new goals", Description: boolLabel(freshContext)},
+		{Value: "enabled", Label: "Retention enabled", Description: boolLabel(g.Retention.Enabled)},
+		{Value: "days", Label: "Retention days", Description: goalsRetentionLabel(g.Retention)},
+		{Value: "auto_unblock", Label: "Auto-unblock goals", Description: boolLabel(g.AutoUnblockEnabled())},
+		{Value: "fresh_context", Label: "Fresh context for new goals", Description: boolLabel(g.FreshContextEnabled())},
+		{Value: "turn_budget", Label: "Default turn budget", Description: goalTurnBudgetLabel(g.DefaultTurnBudget)},
+		{Value: "stall_turns", Label: "Stall watchdog", Description: goalStallTurnsLabel(g.StallTurns)},
 	}
 	m.ctx.SelectOption("Goals:", items, "", func(field string, ok bool) {
 		if !ok || field == "" {
@@ -439,16 +441,72 @@ func (m *configMenu) openGoalsRetention() {
 		}
 		switch field {
 		case "enabled":
-			cfg.Enabled = !cfg.Enabled
+			g.Retention.Enabled = !g.Retention.Enabled
 			m.saveGoalsSection()
 			m.openGoalsRetention()
 		case "days":
-			m.promptRetentionDays(&cfg.Enabled, &cfg.Days, m.saveGoalsSection, m.openGoalsRetention)
+			m.promptRetentionDays(&g.Retention.Enabled, &g.Retention.Days, m.saveGoalsSection, m.openGoalsRetention)
 		case "auto_unblock":
 			m.toggleGoalAutoUnblock()
 		case "fresh_context":
 			m.toggleGoalFreshContext()
+		case "turn_budget":
+			m.promptGoalLimit("Default turn budget for new goals (-1 = unlimited):", g.DefaultTurnBudget,
+				func(n int) {
+					g.DefaultTurnBudget = n
+					m.saveGoalsSection()
+					syncGoalLimits(m.ctx)
+				}, m.openGoalsRetention)
+		case "stall_turns":
+			m.promptGoalLimit("Stall watchdog turns (0 or -1 = disabled):", g.StallTurns,
+				func(n int) {
+					g.StallTurns = n
+					m.saveGoalsSection()
+					syncGoalLimits(m.ctx)
+				}, m.openGoalsRetention)
 		}
+	})
+}
+
+// goalTurnBudgetLabel renders goals.default_turn_budget for the menu
+// (-1 = unlimited; 0 = unset, no implicit ceiling).
+func goalTurnBudgetLabel(n int) string {
+	switch {
+	case n < 0:
+		return "unlimited"
+	case n == 0:
+		return "unset"
+	default:
+		return fmt.Sprintf("%d turns", n)
+	}
+}
+
+// goalStallTurnsLabel renders goals.stall_turns for the menu (0/-1 = off).
+func goalStallTurnsLabel(n int) string {
+	if n <= 0 {
+		return "disabled"
+	}
+	return fmt.Sprintf("%d turns", n)
+}
+
+// promptGoalLimit asks for an integer limit value and applies it via onSave.
+// Values below -1 are rejected (both goal limits share the >= -1 contract:
+// -1 = unlimited/disabled). Invalid input flashes an error and reopens the
+// page unchanged; cancel unwinds one level like the other prompts.
+func (m *configMenu) promptGoalLimit(prompt string, current int, onSave func(int), reopen func()) {
+	m.ctx.ShowInput(prompt, strconv.Itoa(current), func(value string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < -1 {
+			m.flash("Invalid number (-1 or greater)")
+			reopen()
+			return
+		}
+		onSave(n)
+		reopen()
 	})
 }
 

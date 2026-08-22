@@ -121,10 +121,13 @@ The goal driver fingerprints progress after every continuation turn of an **unma
 - A changed fingerprint resets the streak and the challenge count; a new goal resets both.
 - After **2 unanswered challenges** the goal is **auto-blocked** (reason "no measurable progress", expectation "user direction on how to proceed").
 - `stall_turns: -1` (or 0) disables the watchdog. Orchestrator-managed goals are never watched (the orchestrator supervises them).
+- Editable at `/config` → Goals → **Stall watchdog** or `/config:set goals.stall_turns <n>`; a changed threshold applies live to unmanaged goals.
 
 ### Default turn budget (`goals.default_turn_budget`)
 
 When > 0 (embedded default 50), every newly created goal gets that hard turn ceiling unless a budget is set explicitly later. `-1` = unlimited.
+
+Editable at `/config` → Goals → **Default turn budget** (applies to goals created afterwards) or `/config:set goals.default_turn_budget <n>`.
 
 ## Queued goals
 

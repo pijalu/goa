@@ -299,20 +299,16 @@ func syncLoopDetectorConfig(ctx core.Context, key string) bool {
 	return true
 }
 
-// syncStreamLoopThresholds pushes the stream-loop numeric knobs to the live
-// detector (nil-safe; invalid values restore detector defaults).
-func syncStreamLoopThresholds(ld *core.LoopDetector, exec config.ExecutionConfig) {
-	if ld == nil {
-		return
-	}
-	ld.SetStreamMaxRepeats(exec.StreamLoopMaxRepeats)
-	ld.SetStreamMinPeriod(exec.StreamLoopMinPeriod)
-}
-
 func syncRuntimeConfig(ctx core.Context, key, value string) error {
 	// Loop-detector overrides sync straight to the detector; they do not
 	// require a running agent, so handle them before the AgentManager guard.
 	if syncLoopDetectorConfig(ctx, key) {
+		return nil
+	}
+	// Goal-limit keys sync straight to the goal subsystem; they also do not
+	// require a running agent.
+	if key == "goals.default_turn_budget" || key == "goals.stall_turns" {
+		syncGoalLimits(ctx)
 		return nil
 	}
 	if ctx.AgentManager == nil {
@@ -492,6 +488,11 @@ var configSetters = map[string]configSetter{
 	"execution.max_tool_calls":                       setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolCalls }),
 	"execution.max_tool_repeat_total":                setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
 	"execution.max_tool_repeat_consecutive":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatConsecutive }),
+	"execution.max_tool_error_streak":                setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolErrorStreak }),
+	"execution.tool_call_limit_reset_window":         setInt(func(cfg *config.Config) *int { return &cfg.Execution.ToolCallLimitResetWindow }),
+	"execution.max_stream_rounds":                    setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxStreamRounds }),
+	"goals.default_turn_budget":                      setInt(func(cfg *config.Config) *int { return &cfg.Goals.DefaultTurnBudget }),
+	"goals.stall_turns":                              setInt(func(cfg *config.Config) *int { return &cfg.Goals.StallTurns }),
 	"execution.max_tool_repeat":                      setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
 	"execution.max_consecutive_tool_rounds":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxConsecutiveToolRounds }),
 	"tui.theme":                                      setString(func(cfg *config.Config) *string { return &cfg.TUI.Theme }),

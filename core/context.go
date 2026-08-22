@@ -234,6 +234,11 @@ type Context struct {
 	// GoalManager manages coding goals.
 	GoalManager *GoalManager
 
+	// GoalDriver drives goal continuation turns (nil when the goal subsystem
+	// is unavailable). Exposed so runtime config changes can tune the stall
+	// watchdog (goals.stall_turns) without a restart.
+	GoalDriver *GoalDriver
+
 	// MCP is the MCP client manager (nil when no MCP servers are configured).
 	// Commands use it to list/connect/disconnect MCP servers.
 	MCP *mcp.Manager

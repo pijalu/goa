@@ -49,6 +49,7 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 		SkillSubAgentRunner:    &skillSubAgentRunner{pool: subs.agentPool},
 		WorkflowRegistry:       subs.workflowReg,
 		GoalManager:            subs.goalManager,
+		GoalDriver:             subs.goalDriver,
 		MCP:                    subs.mcpManager,
 		ReloadHandler:          &ReloadHandler{subs: subs},
 		PTYManager:             subs.ptyMgr,
