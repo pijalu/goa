@@ -5,6 +5,7 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -659,7 +660,7 @@ func TestResolvePlanFilePath_DefaultUsesProjectDir(t *testing.T) {
 	base := t.TempDir()
 	cfg := Config{}
 	got := cfg.ResolvePlanFilePath(base)
-	want := base + "/.goa/plan.md"
+	want := filepath.Join(base, ".goa", "plan.md")
 	if got != want {
 		t.Errorf("ResolvePlanFilePath = %q, want %q", got, want)
 	}
@@ -669,16 +670,17 @@ func TestResolvePlanFilePath_ExplicitPath(t *testing.T) {
 	base := t.TempDir()
 	cfg := Config{Mode: ModeConfig{PlanFilePath: "plans/my-plan.md"}}
 	got := cfg.ResolvePlanFilePath(base)
-	want := base + "/plans/my-plan.md"
+	want := filepath.Join(base, "plans", "my-plan.md")
 	if got != want {
 		t.Errorf("ResolvePlanFilePath = %q, want %q", got, want)
 	}
 }
 
 func TestResolvePlanFilePath_AbsolutePath(t *testing.T) {
-	cfg := Config{Mode: ModeConfig{PlanFilePath: "/tmp/plans/plan.md"}}
+	abs := filepath.Join(t.TempDir(), "plans", "plan.md")
+	cfg := Config{Mode: ModeConfig{PlanFilePath: abs}}
 	got := cfg.ResolvePlanFilePath("/should/be/ignored")
-	want := "/tmp/plans/plan.md"
+	want := abs
 	if got != want {
 		t.Errorf("ResolvePlanFilePath = %q, want %q", got, want)
 	}

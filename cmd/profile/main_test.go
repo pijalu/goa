@@ -39,3 +39,39 @@ func TestSyntheticRunProducesProfiles(t *testing.T) {
 		}
 	}
 }
+
+func TestRusageHelpersDoNotPanic(t *testing.T) {
+	// Regression for vet failure: syscall.Getrusage is undefined on Windows.
+	// rusage helpers are now split by build tag (rusage_unix.go / rusage_windows.go)
+	// and must compile + run on every GOOS. This test would have caught the
+	// vet break by exercising the same abstraction.
+	r := rusageNow()
+	if r == nil {
+		t.Fatal("rusageNow returned nil")
+	}
+	if got := rusageSeconds(nil); got != 0 {
+		t.Errorf("rusageSeconds(nil) = %v, want 0", got)
+	}
+	if got := rusageSeconds(r); got < 0 {
+		t.Errorf("rusageSeconds(rusageNow()) = %v, want >= 0", got)
+	}
+	if got := processRusage(nil); got == nil {
+		t.Error("processRusage(nil) should return non-nil stub")
+	}
+	if got := rusageSeconds(processRusage(nil)); got != 0 {
+		t.Errorf("rusageSeconds(processRusage(nil)) = %v, want 0", got)
+	}
+}
+
+func TestReportPTYResultsHandlesStubRusage(t *testing.T) {
+	// Ensures report path tolerates the Windows stub (zero CPU time) without panic.
+	cfg := config{
+		cpuFile:    "cpu.prof",
+		memFile:    "mem.prof",
+		traceFile:  "trace.out",
+		ptyLogFile: "pty.log",
+	}
+	// Should not panic even when childUsage is the Windows stub.
+	reportPTYResults(2*time.Second, cfg, &cpuRusage{})
+	reportPTYResults(2*time.Second, cfg, processRusage(nil))
+}

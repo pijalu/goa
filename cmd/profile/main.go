@@ -30,7 +30,6 @@ import (
 	"runtime/trace"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -262,7 +261,7 @@ func runPTY(cfg config) error {
 	<-copyDone
 
 	elapsed := time.Since(start)
-	childUsage, _ := cmd.ProcessState.SysUsage().(*syscall.Rusage)
+	childUsage := processRusage(cmd.ProcessState)
 	reportPTYResults(elapsed, cfg, childUsage)
 	return nil
 }
@@ -370,7 +369,7 @@ func waitForCommand(cmd *exec.Cmd, timeout time.Duration) error {
 
 // reportPTYResults prints the run summary and warns if CPU usage exceeds the
 // 15% target.
-func reportPTYResults(elapsed time.Duration, cfg config, childUsage *syscall.Rusage) {
+func reportPTYResults(elapsed time.Duration, cfg config, childUsage *cpuRusage) {
 	cpuSec := rusageSeconds(childUsage)
 	cpuPct := 100 * cpuSec / elapsed.Seconds()
 
@@ -441,20 +440,4 @@ func writeMemProfile(path string) error {
 		return fmt.Errorf("write heap profile: %w", err)
 	}
 	return nil
-}
-
-func rusageNow() *syscall.Rusage {
-	var r syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &r); err != nil {
-		return &syscall.Rusage{}
-	}
-	return &r
-}
-
-func rusageSeconds(r *syscall.Rusage) float64 {
-	if r == nil {
-		return 0
-	}
-	return float64(r.Utime.Sec) + float64(r.Utime.Usec)/1e6 +
-		float64(r.Stime.Sec) + float64(r.Stime.Usec)/1e6
 }

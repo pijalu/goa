@@ -69,17 +69,36 @@ clean:
 
 # ── Test ─────────────────────────────────────────────────────────────────
 
+# The race detector (-race) needs cgo, which on Windows requires a C
+# toolchain (MinGW-w64 gcc) plus CGO_ENABLED=1. The stock Windows Go build
+# disables cgo when no compiler is on PATH, so `go test -race` fails with
+# "requires cgo". Detect a usable gcc and only add -race where cgo can run;
+# otherwise run the suite plainly. CI on Linux/macOS always uses -race.
+ifeq ($(HOST_OS),windows)
+  ifeq ($(shell command -v gcc >/dev/null 2>&1 && echo yes || echo no),yes)
+    TEST_CGO := CGO_ENABLED=1
+    TEST_RACE := -race
+  else
+    TEST_CGO :=
+    TEST_RACE :=
+    $(warning No C compiler (gcc) on PATH; running tests without -race. Install MinGW-w64 gcc and retry for race detection.)
+  endif
+else
+  TEST_CGO :=
+  TEST_RACE := -race
+endif
+
 test: fmt vet
-	$(GO) test -count=1 -race -cover ./...
+	$(TEST_CGO) $(GO) test -count=1 $(TEST_RACE) -cover ./...
 
 test-short:
 	$(GO) test -count=1 -short ./...
 
 test-race:
-	$(GO) test -count=1 -race ./...
+	$(TEST_CGO) $(GO) test -count=1 -race ./...
 
 test-cover:
-	$(GO) test -count=1 -race -coverprofile=coverage.out ./...
+	$(TEST_CGO) $(GO) test -count=1 $(TEST_RACE) -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
