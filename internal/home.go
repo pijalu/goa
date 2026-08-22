@@ -31,7 +31,9 @@ func SetGoaHome(dir string) {
 //
 //  1. --home CLI flag (SetGoaHome)
 //  2. GOA_HOME environment variable
-//  3. os.UserHomeDir()
+//  3. HOME environment variable (test-compat; on Windows os.UserHomeDir
+//     ignores HOME, but many tests isolate via t.Setenv("HOME", tmp))
+//  4. os.UserHomeDir()
 //
 // The boolean result reports whether a home directory could be resolved at
 // all (false only when every source failed, matching os.UserHomeDir error
@@ -44,6 +46,9 @@ func GoaHome() (string, bool) {
 		return v, true
 	}
 	if env := os.Getenv("GOA_HOME"); env != "" {
+		return env, true
+	}
+	if env := os.Getenv("HOME"); env != "" {
 		return env, true
 	}
 	home, err := os.UserHomeDir()

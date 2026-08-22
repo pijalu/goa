@@ -118,6 +118,7 @@ func TestAgentManager_StartSession_FreshConversationID(t *testing.T) {
 	cfg := &config.Config{}
 	dir := t.TempDir()
 	ss := NewSessionStore(dir)
+	defer ss.Close()
 	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
 	tuiEvents := event.MakeBus(10, 10, 10, 10)
 	am := NewAgentManager(cfg, ss, nil, sessionState, tuiEvents, dir)
@@ -161,6 +162,7 @@ func TestAgentManager_ResetConversationID(t *testing.T) {
 	cfg := &config.Config{}
 	dir := t.TempDir()
 	ss := NewSessionStore(dir)
+	defer ss.Close()
 	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
 	tuiEvents := event.MakeBus(10, 10, 10, 10)
 	am := NewAgentManager(cfg, ss, nil, sessionState, tuiEvents, dir)
@@ -454,6 +456,7 @@ func TestAgentManager_StartSession_WiresSpillPolicy(t *testing.T) {
 	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
 	tuiEvents := event.MakeBus(10, 10, 10, 10)
 	sessionStore := NewSessionStore(t.TempDir())
+	defer sessionStore.Close()
 	am := NewAgentManager(cfg, sessionStore, nil, sessionState, tuiEvents, "")
 
 	var gotSessionID string

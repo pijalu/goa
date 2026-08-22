@@ -5,9 +5,9 @@
 package app
 
 import (
-	"os"
 	"context"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/pijalu/goa/config"

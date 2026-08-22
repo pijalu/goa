@@ -25,7 +25,9 @@ const DefaultRemoteCompactRetainedBudget = 64_000
 // of it does.
 type errRemoteCompactFailed struct{ cause error }
 
-func (e *errRemoteCompactFailed) Error() string { return "remote compaction failed: " + e.cause.Error() }
+func (e *errRemoteCompactFailed) Error() string {
+	return "remote compaction failed: " + e.cause.Error()
+}
 func (e *errRemoteCompactFailed) Unwrap() error { return e.cause }
 
 // isRemoteCompactFailure reports whether err is a remote-compaction failure

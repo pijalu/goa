@@ -640,6 +640,7 @@ func TestAgentManager_StartSession_SetsSessionID(t *testing.T) {
 	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
 	tuiEvents := event.MakeBus(10, 10, 10, 10)
 	sessionStore := NewSessionStore(t.TempDir())
+	defer sessionStore.Close()
 	am := NewAgentManager(cfg, sessionStore, nil, sessionState, tuiEvents, "")
 
 	mdl := agenticprovider.Model{

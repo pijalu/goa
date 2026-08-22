@@ -49,10 +49,10 @@ type Config struct {
 	Goals              GoalsConfig              `yaml:"goals,omitempty"`
 	// Features holds opt-in feature gates (e.g. features.remote_compaction).
 	// All gates default off; see FeaturesConfig.
-	Features           FeaturesConfig           `yaml:"features,omitempty"`
-	Plan               PlanConfig               `yaml:"plan,omitempty"`
-	RegistryLoaders    RegistryLoaders          `yaml:"registry_loaders,omitempty"`
-	Permissions        []perms.Rule             `yaml:"permissions,omitempty"`
+	Features        FeaturesConfig  `yaml:"features,omitempty"`
+	Plan            PlanConfig      `yaml:"plan,omitempty"`
+	RegistryLoaders RegistryLoaders `yaml:"registry_loaders,omitempty"`
+	Permissions     []perms.Rule    `yaml:"permissions,omitempty"`
 	// MCP holds Model Context Protocol server definitions keyed by server name.
 	// Goa acts as an MCP client: each enabled server's tools are exposed to the
 	// agent under the "mcp__<server>__<tool>" namespace.

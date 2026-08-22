@@ -106,10 +106,11 @@ func TestDefaultSkillDirs(t *testing.T) {
 	if !foundAgents {
 		t.Errorf("Expected a directory containing '.agents/skills', got %v", dirs)
 	}
-	// Check project-scoped dir is present
+	// Check project-scoped dir is present (cross-platform: normalize \ → / on Windows)
 	foundProject := false
 	for _, d := range dirs {
-		if strings.Contains(d, "/tmp/test-project/.agents/skills") {
+		norm := strings.ReplaceAll(d, "\\", "/")
+		if strings.Contains(norm, "/tmp/test-project/.agents/skills") {
 			foundProject = true
 			break
 		}

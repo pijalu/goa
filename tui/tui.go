@@ -76,7 +76,7 @@ type TUI struct {
 	stopOnce  sync.Once // guards the full synchronous shutdown sequence
 	started   atomic.Bool
 
-	focus        *FocusStack
+	focus *FocusStack
 	// overlayMu guards overlayStack: mutation happens on the commandLoop
 	// (or inline via Apply pre-RunLoops), while buildOverlayLayers reads it
 	// from the render path; the two can overlap when Apply runs inline.

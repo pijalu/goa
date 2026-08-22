@@ -37,7 +37,7 @@ func (am *AgentManager) CurrentTurn() *TurnRecord  { return am.turnRecorder.Curr
 // sub-agent turn ingestion (companion / workflow stage cache stats feeding
 // the per-agent /stats:cache sections).
 func (am *AgentManager) TurnRecorder() *TurnRecorder { return am.turnRecorder }
-func (am *AgentManager) EmitEvent(text string)     { am.emitFlash(text) }
+func (am *AgentManager) EmitEvent(text string)       { am.emitFlash(text) }
 func (am *AgentManager) SetForegroundOrchestrator(orch *multiagent.ForegroundOrchestrator) {
 	am.mu.Lock()
 	am.foregroundOrch = orch
