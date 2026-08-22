@@ -700,13 +700,19 @@ Opens a pager where you can scroll, add comments, and submit to the agent.
 
   /review              → Review working tree vs HEAD (or HEAD^1..HEAD)
   /review:<commit>     → Review against a specific base commit
+  /review:file:<path>  → Review a single text file (no git required)
   /review:list         → List last 10 commits
   /review:status       → Show active review sessions
   /review:submit       → Send the review to the main agent
   /review:export       → Export review to review_<base>_<timestamp>.md
 
+Example:
+
+  /review:file:internal/app/tui.go
+
 Pager keys: ↑/↓ (scroll), c (comment), e (edit comment), d (delete comment),
-b (change base), s (submit), x (export), q/Esc (close).
+b (change base), s (submit), x (export), q/Esc (close). The single-file pager
+(/review:file:<path>) shares all keys except b.
 ```
 
 ### `/reviewer` — Code review with coder+reviewer cycle

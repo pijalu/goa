@@ -52,6 +52,19 @@ func (c Comment) AnchorLabel() string {
 	return label
 }
 
+// Kind distinguishes what a Session reviews. The zero value is KindDiff so
+// every stored legacy session (whose JSON has no "kind" field) decodes as a
+// diff review unchanged.
+type Kind string
+
+const (
+	// KindDiff is a git diff review (base..head). It is the zero value of
+	// Kind, which keeps stored sessions JSON-compatible.
+	KindDiff Kind = ""
+	// KindFile is a single-file review; it does not involve git at all.
+	KindFile Kind = "file"
+)
+
 // Session tracks an in-progress code review.
 type Session struct {
 	ID         string    `json:"id"`
@@ -59,6 +72,8 @@ type Session struct {
 	BaseRef    string    `json:"base_ref"`
 	HeadRef    string    `json:"head_ref"`
 	Dirty      bool      `json:"dirty"`
+	Kind       Kind      `json:"kind,omitempty"`      // zero value = diff review
+	FilePath   string    `json:"file_path,omitempty"` // anchor path: project-relative when inside the project, else absolute
 	CreatedAt  time.Time `json:"created_at"`
 	Comments   []Comment `json:"comments"`
 }
@@ -96,10 +111,62 @@ func NewSession(projectDir string) (*Session, error) {
 	}, nil
 }
 
+// NewFileSession creates a single-file review session. Unlike NewSession it
+// requires no git repository: the file itself is the review subject. It does
+// not read the file — loading and validation are LoadReviewFile's job (the
+// caller needs that content for the pager anyway). filePath may be absolute
+// or project-relative; FilePath stores the anchor path (project-relative when
+// the file lives inside projectDir, else absolute) so comment anchors stay
+// stable regardless of how the path was spelled.
+func NewFileSession(projectDir, filePath string) (*Session, error) {
+	if projectDir == "" {
+		return nil, fmt.Errorf("project dir is required")
+	}
+	if filePath == "" {
+		return nil, fmt.Errorf("file path is required")
+	}
+	return &Session{
+		ID:         generateID(),
+		ProjectDir: projectDir,
+		Kind:       KindFile,
+		FilePath:   anchorPath(projectDir, filePath),
+		CreatedAt:  time.Now(),
+	}, nil
+}
+
+// anchorPath returns the canonical anchor path for a reviewed file: the
+// path relative to projectDir when it resolves inside the project, else the
+// cleaned absolute path.
+func anchorPath(projectDir, path string) string {
+	if filepath.IsAbs(path) {
+		if rel, err := filepath.Rel(projectDir, path); err == nil &&
+			rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return rel
+		}
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(path)
+}
+
+// fileAbsPath returns the absolute location of the reviewed file: an
+// already-absolute FilePath passes through; a relative one resolves against
+// ProjectDir.
+func (s *Session) fileAbsPath() string {
+	if filepath.IsAbs(s.FilePath) {
+		return s.FilePath
+	}
+	return filepath.Join(s.ProjectDir, s.FilePath)
+}
+
 // AddComment appends a new comment to the session. The side identifies
 // which diff coordinate space lineNum belongs to (SideNew for added/context
-// lines, SideOld for removed lines).
+// lines, SideOld for removed lines). File-kind sessions have a single
+// coordinate space, so their comments always attach to SideNew regardless of
+// the side passed in (D3).
 func (s *Session) AddComment(file string, lineNum int, side Side, content string) Comment {
+	if s.Kind == KindFile {
+		side = SideNew
+	}
 	c := Comment{
 		ID:        generateID(),
 		File:      file,
@@ -152,13 +219,16 @@ func (s *Session) CommentsFor(file string, lineNum int, side Side) []Comment {
 }
 
 // MarkdownSummary returns a Markdown formatted review summary intended for
-// the LLM and for human readers. It contains the base/head refs and the
-// review comments. It deliberately does NOT embed any diff content: diffs
-// can be huge and would bloat the agent's context. Instead it points to the
-// exact command that produces the diff under review, so the agent can
-// inspect the changes itself (run the command, or read the referenced files
-// at the comment anchors).
+// the LLM and for human readers. For diff sessions it contains the base/head
+// refs and the review comments. It deliberately does NOT embed any diff
+// content: diffs can be huge and would bloat the agent's context. Instead it
+// points to the exact command that produces the diff under review, so the
+// agent can inspect the changes itself (run the command, or read the
+// referenced files at the comment anchors).
 func (s *Session) MarkdownSummary() string {
+	if s.Kind == KindFile {
+		return s.fileMarkdownSummary()
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Code Review\n\n")
 	fmt.Fprintf(&b, "- **Base:** %s\n", s.BaseRef)
@@ -171,6 +241,39 @@ func (s *Session) MarkdownSummary() string {
 		"Do not expect the diff inline; run that command or read the referenced files to see them.\n\n",
 		DiffCommand(s.BaseRef))
 
+	return s.appendComments(&b)
+}
+
+// fileMarkdownSummary renders the single-file review summary: the absolute
+// path (the "link" — read tools resolve absolute paths directly), how much of
+// the file was reviewed, and the comments anchored to project-relative paths.
+func (s *Session) fileMarkdownSummary() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# File Review\n\n")
+	fmt.Fprintf(&b, "- **File:** %s\n", s.fileAbsPath())
+
+	// Reload to report how much was reviewed. If the file disappeared since
+	// the review started, degrade gracefully and keep the summary usable.
+	if content, err := LoadReviewFile(s.ProjectDir, s.FilePath); err == nil {
+		lineCount := fmt.Sprintf("- **Lines reviewed:** %d", len(content.Lines))
+		if content.Truncated {
+			lineCount += " (truncated)"
+		}
+		fmt.Fprintf(&b, "%s\n", lineCount)
+	}
+
+	fmt.Fprintf(&b, "\nRead the file to see each comment in context. Comments are anchored to the "+
+		"line numbers of that file.\n\n")
+
+	return s.appendComments(&b)
+}
+
+// appendComments writes the shared comment block: either "No comments yet."
+// or a "## Comments" section with one bullet per comment. The bullets use
+// AnchorLabel() so removed-line comments stay distinguishable from new-file
+// numbering in diff reviews; in file reviews SideNew labels are plain
+// "file:line".
+func (s *Session) appendComments(b *strings.Builder) string {
 	if len(s.Comments) == 0 {
 		b.WriteString("No comments yet.\n")
 		return b.String()
@@ -178,11 +281,8 @@ func (s *Session) MarkdownSummary() string {
 
 	b.WriteString("## Comments\n\n")
 	for _, c := range s.Comments {
-		// AnchorLabel marks removed-line comments so the reader (human or
-		// LLM) does not confuse the old-side number with new-file numbering.
-		fmt.Fprintf(&b, "- `%s`: %s\n", c.AnchorLabel(), c.Content)
+		fmt.Fprintf(b, "- `%s`: %s\n", c.AnchorLabel(), c.Content)
 	}
-
 	return b.String()
 }
 
@@ -194,9 +294,19 @@ func (s *Session) Export(path string) error {
 	return os.WriteFile(path, []byte(s.MarkdownSummary()), 0644)
 }
 
-// ExportPath returns a default export filename under projectDir using the
-// resolved base SHA and current timestamp.
+// ExportPath returns a default export filename under projectDir. Diff
+// sessions use the resolved base SHA; file sessions use the sanitized file
+// base name (capped to keep filesystems happy).
 func (s *Session) ExportPath(projectDir string) (string, error) {
+	ts := time.Now().UTC().Format("2006-01-02T15-04-05")
+	if s.Kind == KindFile {
+		base := filepath.Base(s.FilePath)
+		sanitized := strings.Map(sanitizeRef, base)
+		if len(sanitized) > maxExportNamePart {
+			sanitized = sanitized[:maxExportNamePart]
+		}
+		return filepath.Join(projectDir, fmt.Sprintf("review_file_%s_%s.md", sanitized, ts)), nil
+	}
 	baseSHA, err := ResolveSHA(projectDir, s.BaseRef)
 	if err != nil {
 		baseSHA = strings.Map(sanitizeRef, s.BaseRef)
@@ -208,9 +318,12 @@ func (s *Session) ExportPath(projectDir string) (string, error) {
 	if len(baseShort) > 7 {
 		baseShort = baseShort[:7]
 	}
-	ts := time.Now().UTC().Format("2006-01-02T15-04-05")
 	return filepath.Join(projectDir, fmt.Sprintf("review_%s_%s.md", baseShort, ts)), nil
 }
+
+// maxExportNamePart caps the variable part of an export filename so hostile
+// or pathological names cannot exceed filesystem limits.
+const maxExportNamePart = 40
 
 func sanitizeRef(r rune) rune {
 	if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {

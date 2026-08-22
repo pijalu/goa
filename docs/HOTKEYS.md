@@ -93,6 +93,10 @@ When the interactive review pager is open (`/review`):
 | `x` | Export the review to a Markdown file |
 | `q` / `Esc` | Close the pager |
 
+> **Single-file review:** `/review:file:<path>` opens the same pager for one
+> text file (no git required). It shares every key above except `b`
+> (change base), and `Ctrl+C` also closes it.
+
 > **Note:** Keybindings may vary by terminal emulator. Some keys (like
 > `Ctrl+Enter`) require Kitty keyboard protocol support.
 > Use `/hotkeys` inside Goa to see your active keybindings.

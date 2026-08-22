@@ -297,68 +297,31 @@ func (p *ReviewPager) currentLine() review.DiffLine {
 	return p.lines[p.cursor]
 }
 
+// requestAddComment routes through the shared comment lifecycle (D6).
 func (p *ReviewPager) requestAddComment() {
 	anchor, ok := p.currentLine().Anchor()
 	if !ok || anchor.LineNum <= 0 {
 		return
 	}
-	if p.OnCommentRequest == nil {
-		return
-	}
-	prompt := fmt.Sprintf("Add comment on %s:", anchorLabel(anchor))
-	p.OnCommentRequest(prompt, "", func(text string) {
-		if text == "" {
-			return
-		}
-		p.Session.AddComment(anchor.File, anchor.LineNum, anchor.Side, text)
-		p.saveComments()
-	})
+	p.newActions().AddCommentAt(anchor)
 }
 
+// requestEditComment routes through the shared comment lifecycle (D6).
 func (p *ReviewPager) requestEditComment() {
 	anchor, ok := p.currentLine().Anchor()
 	if !ok {
 		return
 	}
-	comments := p.Session.CommentsFor(anchor.File, anchor.LineNum, anchor.Side)
-	if len(comments) == 0 {
-		return
-	}
-	if p.OnCommentRequest == nil {
-		return
-	}
-	c := comments[0]
-	prompt := fmt.Sprintf("Edit comment on %s:", anchorLabel(anchor))
-	p.OnCommentRequest(prompt, c.Content, func(text string) {
-		if text == "" {
-			return
-		}
-		p.Session.UpdateComment(c.ID, text)
-		p.saveComments()
-	})
+	p.newActions().EditCommentAt(anchor)
 }
 
+// requestDeleteComment routes through the shared comment lifecycle (D6).
 func (p *ReviewPager) requestDeleteComment() {
 	anchor, ok := p.currentLine().Anchor()
 	if !ok {
 		return
 	}
-	comments := p.Session.CommentsFor(anchor.File, anchor.LineNum, anchor.Side)
-	if len(comments) == 0 {
-		return
-	}
-	if p.OnConfirm == nil {
-		return
-	}
-	c := comments[0]
-	question := fmt.Sprintf("Delete comment on %s?", anchorLabel(anchor))
-	p.OnConfirm(question, func(yes bool) {
-		if !yes {
-			return
-		}
-		p.Session.RemoveComment(c.ID)
-		p.saveComments()
-	})
+	p.newActions().DeleteCommentAt(anchor)
 }
 
 func (p *ReviewPager) requestSelectBase() {
@@ -375,16 +338,9 @@ func (p *ReviewPager) requestSelectBase() {
 	})
 }
 
+// requestSubmitReview routes through the shared comment lifecycle (D6).
 func (p *ReviewPager) requestSubmitReview() {
-	if p.OnConfirm == nil {
-		return
-	}
-	p.OnConfirm("Submit review to agent?", func(yes bool) {
-		if !yes {
-			return
-		}
-		p.submitReview()
-	})
+	p.newActions().SubmitWithConfirm()
 }
 
 // requestExportReview writes the review Markdown to disk via the host. It is
@@ -428,14 +384,17 @@ func (p *ReviewPager) changeBase(base string) {
 	p.requestRender()
 }
 
-func (p *ReviewPager) submitReview() {
-	// MarkdownSummary is the single source of truth for the review body; the
-	// 'x' export action writes the exact same string to a file.
-	if p.OnSubmitReview != nil {
-		p.OnSubmitReview(p.Session.MarkdownSummary())
-	}
-	if p.OnClose != nil {
-		p.OnClose()
+// newActions wires the shared comment lifecycle to this pager's current
+// callbacks. Built on demand so callbacks assigned after construction are
+// always honored.
+func (p *ReviewPager) newActions() *reviewActions {
+	return &reviewActions{
+		session:          p.Session,
+		onCommentRequest: p.OnCommentRequest,
+		onConfirm:        p.OnConfirm,
+		onCommentSaved:   p.saveComments,
+		onSubmitReview:   p.OnSubmitReview,
+		onClose:          p.OnClose,
 	}
 }
 

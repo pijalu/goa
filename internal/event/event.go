@@ -80,6 +80,8 @@ type ChatEvent struct {
 	ShowOutputModal *ShowOutputModal
 	// ShowReviewPager opens the code-review diff pager.
 	ShowReviewPager *ShowReviewPager
+	// ShowFileReviewPager opens the single-file review pager.
+	ShowFileReviewPager *ShowFileReviewPager
 	// ShowPlanPager opens the plan-annotation pager.
 	ShowPlanPager *ShowPlanPager
 	// ShowPlanStatus opens the plan-status overlay.
@@ -122,6 +124,11 @@ type ShowOutputModal struct {
 // ShowReviewPager requests the TUI to open the code-review diff pager.
 type ShowReviewPager struct {
 	Pager any // concrete type is *tui.ReviewPager to avoid an import cycle
+}
+
+// ShowFileReviewPager requests the TUI to open the single-file review pager.
+type ShowFileReviewPager struct {
+	Pager any // concrete type is *tui.FileReviewPager to avoid an import cycle
 }
 
 // ShowPlanPager requests the TUI to open the plan-annotation pager.

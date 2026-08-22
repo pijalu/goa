@@ -5,11 +5,10 @@
 package tui
 
 import (
-	"context"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/pijalu/goa/internal/filefind"
 )
 
 // Completer defines the tab completion interface.
@@ -396,7 +395,8 @@ func NewFileCompleter(workdir string) *FileCompleter {
 
 // Complete returns file path completions for the given prefix.
 // Only activates when prefix starts with @ (e.g., @src/main.go).
-// Uses `fd` CLI for fast gitignore-aware search, falls back to os.ReadDir.
+// The search runs through the shared internal/filefind engine: `fd` CLI for
+// fast gitignore-aware search when available, os.ReadDir fallback otherwise.
 // Results are ranked exact > prefix > fuzzy and carry the CatFiles category
 // (Issue 8); a token that already names an existing file completes
 // to nothing (popup suppressed — the path is done).
@@ -404,151 +404,11 @@ func (f *FileCompleter) Complete(prefix string) []Completion {
 	if prefix == "" || !strings.HasPrefix(prefix, "@") {
 		return nil
 	}
-	// Strip the @ prefix
+	// Strip the @ prefix; the shared engine applies exact-file suppression,
+	// directory drill-down, the 50-result cap and Issue-8 ranking.
 	pathPrefix := prefix[1:]
-	dir, partial := splitPathPrefix(pathPrefix)
-	searchDir := resolveSearchDir(dir, f.workdir)
-
-	// Exact-path suppression: the typed token already names an existing file.
-	if partial != "" && isExistingFile(searchDir, partial) {
-		return nil
-	}
-
-	home := os.Getenv("HOME")
-	var result []Completion
-
-	// Try fd first for fast, gitignore-aware search
-	if fdAvailable {
-		if comps := f.tryFdCompletion(searchDir, partial, home); comps != nil {
-			return rankFileCompletions(comps, partial)
-		}
-	}
-
-	// Fallback: os.ReadDir
-	entries, err := os.ReadDir(searchDir)
-	if err != nil {
-		return nil
-	}
-	for _, entry := range entries {
-		comp := fileCompletion(dir, partial, prefix, entry, home, f.workdir)
-		if comp != nil {
-			result = append(result, *comp)
-		}
-	}
-	return rankFileCompletions(result, partial)
-}
-
-// isExistingFile reports whether dir/name is an existing regular file.
-func isExistingFile(dir, name string) bool {
-	info, err := os.Stat(filepath.Join(dir, name))
-	return err == nil && info.Mode().IsRegular()
-}
-
-// rankFileCompletions orders candidates exact > case-sensitive prefix >
-// case-insensitive prefix > fuzzy, with shorter basenames first inside a
-// tier (closest to a complete path), and stamps the CatFiles category. fd
-// and readdir return filesystem order, which left exact matches buried
-// under fuzzy ones (Issue 8: @plans/plan offered
-// PLAN-00-TEST-INFRA.md before plan.md — both are case-insensitive prefix
-// matches, so case sensitivity is the tie-breaker).
-func rankFileCompletions(comps []Completion, partial string) []Completion {
-	lower := strings.ToLower(partial)
-	tier := func(c Completion) int {
-		base := filepath.Base(c.Value)
-		switch {
-		case base == partial:
-			return 0 // exact
-		case strings.HasPrefix(base, partial):
-			return 1 // prefix, same case as typed
-		case strings.HasPrefix(strings.ToLower(base), lower):
-			return 2 // prefix, case-insensitive
-		default:
-			return 3 // fuzzy
-		}
-	}
-	sort.SliceStable(comps, func(i, j int) bool {
-		ti, tj := tier(comps[i]), tier(comps[j])
-		if ti != tj {
-			return ti < tj
-		}
-		bi, bj := filepath.Base(comps[i].Value), filepath.Base(comps[j].Value)
-		if len(bi) != len(bj) {
-			return len(bi) < len(bj)
-		}
-		return bi < bj
-	})
-	for i := range comps {
-		comps[i].Category = CatFiles
-	}
-	return comps
-}
-
-func (f *FileCompleter) tryFdCompletion(searchDir, partial, home string) []Completion {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	entries, err := fdSearch(ctx, searchDir, partial, 50)
-	if err != nil || len(entries) == 0 {
-		return nil
-	}
-	result := make([]Completion, 0, len(entries))
-	for _, entry := range entries {
-		value := entry.Path
-		display := entry.Path
-		if home != "" && strings.HasPrefix(value, home) {
-			display = "~" + value[len(home):]
-		}
-		result = append(result, Completion{
-			Value:   "@" + value,
-			Display: "@" + display,
-		})
-	}
-	return result
-}
-
-func splitPathPrefix(prefix string) (dir, partial string) {
-	if strings.Contains(prefix, "/") {
-		idx := strings.LastIndex(prefix, "/")
-		return prefix[:idx+1], prefix[idx+1:]
-	}
-	return "", prefix
-}
-
-func resolveSearchDir(dir, workdir string) string {
-	searchDir := dir
-	if !strings.HasPrefix(dir, "/") && workdir != "" {
-		searchDir = workdir + "/" + dir
-	}
-	if searchDir == "" {
-		return "."
-	}
-	return searchDir
-}
-
-func fileCompletion(dir, partial, origPrefix string, entry os.DirEntry, home string, workdir string) *Completion {
-	name := entry.Name()
-	if !strings.HasPrefix(name, partial) && !fuzzyMatch(partial, name) {
-		return nil
-	}
-	// Build full path: use absolute or relative to workdir
-	pathVal := dir + name
-	if entry.IsDir() {
-		pathVal += "/"
-	}
-	// Make relative to workdir for cleaner display
-	value := pathVal
-	display := pathVal
-	if workdir != "" && strings.HasPrefix(pathVal, workdir+"/") {
-		rel := pathVal[len(workdir)+1:]
-		value = rel
-		display = rel
-		if entry.IsDir() {
-			display += "/"
-		}
-	} else if home != "" && strings.HasPrefix(pathVal, home) {
-		display = "~" + pathVal[len(home):]
-	}
-	// Prepend @ for completion value so replacePrefix keeps it
-	return &Completion{Value: "@" + value, Display: "@" + display}
+	entries := filefind.New(f.workdir).WithFD(fdAvailable).Complete(pathPrefix)
+	return rankFileCompletions(completionsFromEntries("@", entries), pathPrefix)
 }
 
 // CombinedCompleter combines multiple completers, removing duplicates.

@@ -26,13 +26,25 @@ func (c *ReviewCommand) ShortHelp() string { return "Review code changes with co
 func (c *ReviewCommand) LongHelp() string  { return help.LongHelp(c.Name()) }
 
 // CompleteArgs implements core.ArgCompleter. It suggests diff bases for
-// /review:<base>: HEAD^N ancestry plus the most recent tags and branches.
-// With no prefix typed, "^1" (the default review base) leads the list so the
-// user sees the sensible default before providing more input; once the user
-// types, candidates filter to prefix-matching refs.
+// /review:<base>: HEAD^N ancestry plus the most recent tags and branches,
+// with the "file:" single-file scope offered right after the ancestry trio.
+// Once the prefix enters that nested scope ("file:<path>"), completion
+// switches to filesystem paths via internal/filefind (@-like); values keep
+// the "file:" scope prefix so the popup expands to "/review:file:<path>".
 func (c *ReviewCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
+	if sub, rest, ok := splitGoalCompletionPrefix(prefix); ok && sub == "file" {
+		return c.fileCompletions(ctx, rest)
+	}
 	comps := reviewAncestryCompletions(prefix)
+	comps = append(comps, filterCompletions(reviewFileScopeCompletions, prefix)...)
 	return append(comps, reviewRefCompletions(ctx.ProjectDir, prefix)...)
+}
+
+// reviewFileScopeCompletions offers the nested single-file review scope. The
+// trailing colon mirrors the goal command's subcommand scopes: it is part of
+// the value so accepting it puts the editor into "/review:file:" path mode.
+var reviewFileScopeCompletions = []core.ArgCompletion{
+	{Value: "file:", Description: "Review a single file"},
 }
 
 // reviewAncestryCompletions suggests HEAD^N bases. "^1" is the default and
@@ -82,20 +94,16 @@ func filterCompletions(candidates []core.ArgCompletion, prefix string) []core.Ar
 }
 
 func (c *ReviewCommand) Run(ctx core.Context, args []string) error {
-	projectDir := ctx.ProjectDir
-	if projectDir == "" {
-		projectDir, _ = os.Getwd()
-	}
-	if !review.IsGitRepo(projectDir) {
-		writeStr(ctx, "Review is only available in git projects.\n")
-		return nil
-	}
-
 	if len(args) == 0 {
 		return c.startReview(ctx, "")
 	}
 
 	switch args[0] {
+	case "file":
+		// First-class subcommand (D4): single-file review needs no git, so it
+		// dispatches before any git-dependent work. A branch literally named
+		// "file" is shadowed — same as "list", "status", "submit", "export".
+		return c.startFileReview(ctx, args[1:])
 	case "list":
 		return c.listCommits(ctx)
 	case "status":
@@ -109,8 +117,26 @@ func (c *ReviewCommand) Run(ctx core.Context, args []string) error {
 	}
 }
 
+// reviewProjectDir resolves the directory review operations run against:
+// the configured project dir, or the process working directory when unset.
+func reviewProjectDir(ctx core.Context) string {
+	if ctx.ProjectDir != "" {
+		return ctx.ProjectDir
+	}
+	dir, _ := os.Getwd()
+	return dir
+}
+
 func (c *ReviewCommand) startReview(ctx core.Context, baseRef string) error {
-	session, err := review.NewSession(ctx.ProjectDir)
+	// The git guard lives here rather than in Run (D4): only the diff review
+	// needs git — file review, status, submit and export work in any project.
+	projectDir := reviewProjectDir(ctx)
+	if !review.IsGitRepo(projectDir) {
+		writeStr(ctx, "Review is only available in git projects.\n")
+		return nil
+	}
+
+	session, err := review.NewSession(projectDir)
 	if err != nil {
 		writeFmt(ctx, "Cannot start review: %v\n", err)
 		return nil
@@ -155,7 +181,14 @@ func (c *ReviewCommand) startReview(ctx core.Context, baseRef string) error {
 }
 
 func (c *ReviewCommand) listCommits(ctx core.Context) error {
-	commits, err := review.RecentCommits(ctx.ProjectDir, 10, 80)
+	// Same guard rationale as startReview (D4): listing commits is a
+	// git-only view; everything else under /review is not.
+	projectDir := reviewProjectDir(ctx)
+	if !review.IsGitRepo(projectDir) {
+		writeStr(ctx, "Review is only available in git projects.\n")
+		return nil
+	}
+	commits, err := review.RecentCommits(projectDir, 10, 80)
 	if err != nil {
 		writeFmt(ctx, "Cannot list commits: %v\n", err)
 		return nil

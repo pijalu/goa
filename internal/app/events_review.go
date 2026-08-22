@@ -15,6 +15,7 @@ import (
 
 const planPagerHelpTitle = "q:close n/p:item c:comment s:submit a:approve"
 const planStatusHelpTitle = "q:close ↑↓:select enter:detail"
+const fileReviewHelpTitle = "q:close ↑↓:scroll c:comment e:edit d:delete s:submit x:export"
 
 // showPlanPager opens the plan-annotation pager as an overlay. The pager was
 // constructed by the /plan review command, which wired store-close into
@@ -334,6 +335,73 @@ func (a *App) makeReviewSelectBaseHandler(pager *tui.ReviewPager) func(commits [
 				a.apply(func() { onSelect(selected) })
 			}
 		}()
+	}
+}
+
+// showFileReviewPager opens the single-file review pager as an overlay,
+// mirroring showReviewPager (D7): geometry via reviewOverlayGeometryFor, text
+// entry routed through the main input line via the shared comment/confirm
+// handlers under the file-review help title, export through
+// makeFileReviewExportHandler; close hides the overlay and resets the title.
+func (a *App) showFileReviewPager(m *event.ShowFileReviewPager) {
+	if a.subs.tuiEngine == nil || m == nil || m.Pager == nil {
+		return
+	}
+	pager, ok := m.Pager.(*tui.FileReviewPager)
+	if !ok {
+		return
+	}
+	pager.RequestRender = func() {
+		a.subs.tuiEngine.RequestRender()
+	}
+	geo := reviewOverlayGeometryFor(terminalRowsOr(a.subs.tuiEngine.TerminalRows(), 24))
+	pager.SetViewport(terminalColsOr(a.subs.tuiEngine.TerminalCols(), 80), geo.height)
+
+	// Wire callbacks before showing the overlay so that input events that
+	// arrive immediately (e.g. the user already pressing 'q') are handled.
+	var handle *tui.OverlayHandle
+	pager.OnClose = func() {
+		if h := handle; h != nil && h.Hide != nil {
+			h.Hide()
+		}
+		a.reviewSetTitle("")
+	}
+	pager.OnCommentRequest = a.makeCommentRequestHandler(&handle, fileReviewHelpTitle)
+	pager.OnConfirm = a.makeConfirmHandler(&handle, fileReviewHelpTitle)
+	pager.OnExportReview = a.makeFileReviewExportHandler(&handle, pager)
+
+	handle = a.subs.tuiEngine.ShowOverlay(pager, tui.OverlayOptions{
+		Width:        geo.width,
+		Height:       geo.height,
+		BottomOffset: geo.bottomOffset,
+		CaptureInput: true,
+	})
+	a.reviewSetTitle(fileReviewHelpTitle)
+}
+
+// makeFileReviewExportHandler writes the file-review Markdown to disk when
+// the user presses 'x' — mirrors makeReviewExportHandler for a file session:
+// Session.ExportPath picks the file-variant name (review_file_*.md) and
+// Session.Export writes the same content submit sends to the agent. The
+// result is shown on the input separator line; the pager stays open.
+func (a *App) makeFileReviewExportHandler(handlePtr **tui.OverlayHandle, pager *tui.FileReviewPager) func() {
+	return func() {
+		projectDir := a.subs.projectDir
+		if projectDir == "" {
+			a.reviewSetTitle("Cannot export: project directory unknown")
+			return
+		}
+		path, err := pager.Session.ExportPath(projectDir)
+		if err != nil {
+			a.reviewSetTitle("Cannot export: " + err.Error())
+			return
+		}
+		if err := pager.Session.Export(path); err != nil {
+			a.reviewSetTitle("Cannot export: " + err.Error())
+			return
+		}
+		a.reviewSetTitle("Exported review to " + filepath.Base(path))
+		a.subs.tuiEngine.RequestRender()
 	}
 }
 

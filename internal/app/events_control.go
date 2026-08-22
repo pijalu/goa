@@ -177,6 +177,8 @@ func (a *App) handleChatEvent(ev event.ChatEvent) {
 		a.showOutputModal(ev.ShowOutputModal)
 	case ev.ShowReviewPager != nil:
 		a.showReviewPager(ev.ShowReviewPager)
+	case ev.ShowFileReviewPager != nil:
+		a.showFileReviewPager(ev.ShowFileReviewPager)
 	case ev.ShowPlanPager != nil:
 		a.showPlanPager(ev.ShowPlanPager)
 	case ev.ShowPlanStatus != nil:
