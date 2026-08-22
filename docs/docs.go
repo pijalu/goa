@@ -118,6 +118,7 @@ var docDescriptions = map[string]string{
 	"CONFIGURATION":         "Configuration cascade, all settings, environment overrides, schema",
 	"DEVELOPMENT":           "Development guide — building, testing, debugging, contributing",
 	"GOALS":                 "Autonomous goals — lifecycle, budgets, queues, and control commands",
+	"LIMITS":                "Limits & defaults reference — every cap, threshold, timeout and built-in default, with keys to customize",
 	"MCP":                   "MCP servers — install via CLI or /mcp, global vs project scope, enable/disable",
 	"ORCHESTRATION-DESIGN":  "Design document for the orchestration track",
 	"ORCHESTRATOR":          "Orchestrator usage, roles, topologies, and quick start",
