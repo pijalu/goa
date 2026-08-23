@@ -859,6 +859,14 @@ type Config struct {
 	// sessionStart, sessionEnd). When nil, no hooks run.
 	HookEngine hooks.AgentHookEngine
 
+	// PluginHookSink receives plugin interception points from the agent loop
+	// (message:pre-send, tool-call:pre/post, reply:pre, reply:delta,
+	// llm:error). internal/app injects the adapter backed by the plugin hook
+	// registry — the same dependency direction as HookEngine (agentic never
+	// imports plugins). When nil every seam short-circuits with zero
+	// behavior change.
+	PluginHookSink PluginHookSink
+
 	// SpillPolicy bounds oversized plain-text tool results (gap CX2): a final
 	// result over the configured cap is saved verbatim to the session spill
 	// dir and replaced by a budgeted head/tail preview + locator notice.

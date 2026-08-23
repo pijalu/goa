@@ -64,6 +64,18 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 	var err error
 
 	for {
+		// Plugin seam (M1): message:pre-send interception, strictly before any
+		// history mutation for this input — a denied input leaves zero trace
+		// (append-only rule). On denial the input is skipped and the next
+		// queued one is taken; an empty queue ends the loop cleanly.
+		if a.interceptMessagePreSend(ctx, &currentInput, &images, &metadata) {
+			next, ok := a.nextQueuedInput()
+			if !ok {
+				break
+			}
+			currentInput = next
+			continue
+		}
 		// One turn per user input; the temporal-context reading (CX6) uses
 		// the count in its "turn N" label.
 		a.turnCounter++
@@ -98,14 +110,11 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 		}
 
 		// Check for queued inputs
-		a.mu.Lock()
-		if len(a.queue) == 0 {
-			a.mu.Unlock()
+		if next, ok := a.nextQueuedInput(); ok {
+			currentInput = next
+		} else {
 			break
 		}
-		currentInput = a.queue[0]
-		a.queue = a.queue[1:]
-		a.mu.Unlock()
 	}
 
 	// Cleanup on every exit path (success, error, empty queue). Mark not
@@ -118,6 +127,20 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 	a.finishProcessing()
 
 	return err
+}
+
+// nextQueuedInput pops the oldest queued user input under lock. ok=false
+// means the queue is empty. Shared by the normal turn advance and the
+// message:pre-send denial path so both keep identical queue semantics.
+func (a *Agent) nextQueuedInput() (input string, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) == 0 {
+		return "", false
+	}
+	next := a.queue[0]
+	a.queue = a.queue[1:]
+	return next, true
 }
 
 // finishProcessing marks the agent idle and cancels the per-turn child context.

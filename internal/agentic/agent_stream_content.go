@@ -45,6 +45,10 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 	a.thinkingBuf.WriteString(event.Delta)
 	a.checkStreamLoop(a.thinkingBuf.String())
 
+	// Plugin seam (M1): thinking deltas are notify-only (rewriting reasoning
+	// risks breaking providers' reasoning-signature verification).
+	a.notifyThinkingDelta(event.Delta)
+
 	// Track extended thinking without progress. This watchdog is independent
 	// from the stream loop detector and toggled separately
 	// (/config:temp:thinking_stall_detection:off or

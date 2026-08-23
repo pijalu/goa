@@ -22,8 +22,11 @@ var streamEventHandlers = map[provider.EventType]streamEventHandler{
 	provider.EventError:         (*Agent).handleStreamError,
 }
 
-func (a *Agent) handleStreamTextDelta(_ context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
+func (a *Agent) handleStreamTextDelta(ctx context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
 	a.markGenStart()
+	// Plugin seam (M1): reply:delta interception — the rewritten delta flows
+	// through buffering AND display so history and UI stay consistent.
+	event.Delta = a.rewriteReplyDelta(ctx, event.Delta)
 	a.handleTextDelta(event)
 	return false, false, nil
 }

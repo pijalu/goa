@@ -468,7 +468,7 @@ func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 	}
 
 	// No tool calls: finalizeTurn appends the message and emits end events.
-	a.finalizeStreamTurn()
+	a.finalizeStreamTurn(ctx)
 	return false
 }
 
@@ -555,9 +555,13 @@ func (a *Agent) resolveStreamError(ctx context.Context, stream *provider.Assista
 	return fmt.Errorf("LLM stream disconnected unexpectedly")
 }
 
-// finalizeStreamTurn appends the assistant buffer to history and emits EventEnd.
-func (a *Agent) finalizeStreamTurn() {
-	msg := a.synthesizeAssistantBuffer()
+// finalizeStreamTurn applies the reply:pre seam, appends the assistant buffer
+// to history and emits EventEnd.
+func (a *Agent) finalizeStreamTurn(ctx context.Context) {
+	// Plugin seam (M1): reply:pre — the last chance to rewrite the finished
+	// reply before the single append below (the ordering anchor for this
+	// point; asserted in plugin_hooks_test.go).
+	msg := a.applyReplyPreHook(ctx, a.synthesizeAssistantBuffer())
 	a.mu.Lock()
 	a.history = append(a.history, msg)
 	a.mu.Unlock()

@@ -44,7 +44,13 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	// The parent context is passed so that context.Canceled from a transport
 	// abort (ctx still alive) is retried, while user-cancel (ctx also done)
 	// is surfaced immediately.
-	if !shouldRetryStreamError(ctx, streamErr, opts.RetryPolicy) {
+	retryable := shouldRetryStreamError(ctx, streamErr, opts.RetryPolicy)
+	// Plugin seam (M1): llm:error notification — notify-only even for
+	// intercept-mode registrations. Every LLM failure funnels through here
+	// exactly once (stream error events arrive via handleStreamError →
+	// resolveStreamError), so the notification cannot double-fire.
+	a.notifyLLMError(streamErr, model, opts, retryable)
+	if !retryable {
 		a.cfg.Logger.Log(Warn, "stream error not retryable; surfacing immediately: %v", streamErr)
 		a.emitEvent(OutputEvent{
 			Type:     EventContent,

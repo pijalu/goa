@@ -343,6 +343,13 @@ func (a *Agent) confirmToolIfNeeded(ctx context.Context, name, input string) err
 }
 
 func (a *Agent) executeToolWithResult(ctx context.Context, name, input, callID string) (ToolResult, error) {
+	// Plugin seam (M1): tool-call:pre runs BEFORE fireBeforeToolHook so shell
+	// hooks see (and veto against) the possibly-mutated final input. A denial
+	// returns the veto text as both output and error, matching the existing
+	// shell-veto style so the model sees the reason.
+	if veto, denied := a.interceptToolCallPre(ctx, name, &input, callID); denied {
+		return ToolResult{Output: veto}, fmt.Errorf("%s", veto)
+	}
 	if err := a.fireBeforeToolHook(ctx, name, input, callID); err != nil {
 		return ToolResult{}, err
 	}
@@ -364,6 +371,11 @@ func (a *Agent) executeToolWithResult(ctx context.Context, name, input, callID s
 		execCtx = WithProgress(ctx, emit)
 	}
 	result, err := a.runTool(execCtx, name, input)
+	// Plugin seam (M1): tool-call:post runs AFTER execution and BEFORE the
+	// caller appends the result to history, so rewrites reach history and
+	// observers exactly like a real execution outcome. fireAfterToolHook then
+	// audits what actually took effect (chain semantics).
+	result, err = a.interceptToolCallPost(ctx, name, input, callID, result, err)
 	a.fireAfterToolHook(ctx, name, input, callID, result, err)
 	return result, err
 }
