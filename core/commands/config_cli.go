@@ -989,35 +989,46 @@ func parseProviderRetryKey(path []string) (providerID, field string, ok bool) {
 
 func setProviderRetryField(cfg *config.Config, providerID, field, value string) error {
 	for i := range cfg.Providers {
-		if cfg.Providers[i].ID != providerID {
-			continue
-		}
-		switch field {
-		case "max_retry_delay":
-			if _, err := time.ParseDuration(value); err != nil {
-				return fmt.Errorf("max_retry_delay must be a duration: %w", err)
-			}
-			cfg.Providers[i].MaxRetryDelay = value
-			return nil
-		case "retry_policy.max_retries":
-			n, err := strconv.Atoi(value)
-			if err != nil || n < 0 {
-				return fmt.Errorf("max_retries must be a non-negative integer")
-			}
-			ensureRetryPolicy(&cfg.Providers[i])
-			cfg.Providers[i].RetryPolicy.MaxRetries = n
-			return nil
-		case "retry_policy.backoff.max_ms":
-			n, err := strconv.Atoi(value)
-			if err != nil || n < 0 {
-				return fmt.Errorf("max_ms must be a non-negative integer")
-			}
-			ensureRetryPolicy(&cfg.Providers[i])
-			cfg.Providers[i].RetryPolicy.Backoff.MaxMS = n
-			return nil
+		if cfg.Providers[i].ID == providerID {
+			return setProviderRetryValue(&cfg.Providers[i], field, value)
 		}
 	}
 	return fmt.Errorf("unknown provider or retry key: providers.%s.%s", providerID, field)
+}
+
+func setProviderRetryValue(p *config.ProviderConfig, field, value string) error {
+	switch field {
+	case "max_retry_delay":
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("max_retry_delay must be a duration: %w", err)
+		}
+		p.MaxRetryDelay = value
+	case "retry_policy.max_retries":
+		n, err := parseNonNegativeInt(value, "max_retries")
+		if err != nil {
+			return err
+		}
+		ensureRetryPolicy(p)
+		p.RetryPolicy.MaxRetries = n
+	case "retry_policy.backoff.max_ms":
+		n, err := parseNonNegativeInt(value, "max_ms")
+		if err != nil {
+			return err
+		}
+		ensureRetryPolicy(p)
+		p.RetryPolicy.Backoff.MaxMS = n
+	default:
+		return fmt.Errorf("unknown retry key: %s", field)
+	}
+	return nil
+}
+
+func parseNonNegativeInt(value, name string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	return n, nil
 }
 
 func ensureRetryPolicy(p *config.ProviderConfig) {
