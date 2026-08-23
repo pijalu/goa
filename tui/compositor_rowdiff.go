@@ -165,6 +165,13 @@ func planTailRow(prev, cur string, width, p int) (rowUpdate, bool) {
 	if !startsPrintable(seg) {
 		return rowUpdate{}, false // bare combining mark cannot repaint a cell
 	}
+	if !penClosed(cur, seg) {
+		// Truncate returns at the first cluster that does not fit, discarding
+		// everything after it — the row's closing reset included. An open pen
+		// at the end of the row would color every later row whose cut-point
+		// state is default (SGRStateAt emits no restoring prefix for it).
+		seg += ansi.Reset
+	}
 	state, ok := ansi.SGRStateAt(cur, p)
 	if !ok {
 		return rowUpdate{}, false // prefix unmodellable: full row is the only safe emit
@@ -286,6 +293,30 @@ func rowEmittable(s string) bool {
 	return !hasEsc || strings.HasSuffix(s, ansi.Reset)
 }
 
+// penClosed reports whether writing truncated (in place of row) leaves the
+// terminal pen at default attributes. Only styled rows are at risk, and the
+// canvas convention guarantees they end with a reset (rowEmittable), so it
+// suffices to check the emitted text still ends style-closed.
+func penClosed(row, truncated string) bool {
+	if !strings.ContainsRune(row, 0x1b) {
+		return true // the row never opened a style
+	}
+	return truncated == "" || strings.HasSuffix(truncated, ansi.Reset)
+}
+
+// writeRowText writes row, truncated to the terminal width, into buf while
+// keeping the pen closed: a styled row truncated past the margin loses its
+// trailing reset (see penClosed), and the lingering style would color every
+// row emitted after it. The redundant close is free when the pen is already
+// default — the emit-time SGR coalescer elides it.
+func writeRowText(buf *strings.Builder, row string, width int) {
+	tr := truncateToWidth(row, width, "")
+	buf.WriteString(tr)
+	if !penClosed(row, tr) {
+		buf.WriteString(ansi.Reset)
+	}
+}
+
 // emitRowUpdate writes one changed row into the frame buffer: a partial
 // column-range update when planPartialRow found a safe dirty range excluding
 // a row edge, otherwise the legacy full-row clear+rewrite.
@@ -293,7 +324,7 @@ func (c *Compositor) emitRowUpdate(buf *strings.Builder, screenRow int, prev, cu
 	up := planPartialRow(prev, cur, width)
 	if !up.partial {
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		buf.WriteString(truncateToWidth(cur, width, ""))
+		writeRowText(buf, cur, width)
 		return
 	}
 	buf.WriteString(fmt.Sprintf("\x1b[%d;%dH", screenRow, up.col+1))

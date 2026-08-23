@@ -253,3 +253,34 @@ func TestEmitRowUpdate_Formats(t *testing.T) {
 		t.Fatalf("full emit = %q, want %q", got, want)
 	}
 }
+
+// Pen-close regression: a styled row whose visible width overflows the
+// terminal is truncated mid-style — ansi.Truncate returns at the first
+// non-fitting cluster and discards the row's trailing reset. Both emission
+// modes must then append an explicit close, or the open pen colors every
+// later row (streaming color bleed across rows).
+func TestEmitRowUpdate_OverflowStyledRowClosesPen(t *testing.T) {
+	const fg = "\x1b[38;2;255;80;80m" // truecolor: fully modeled by SGRStateAt
+	c := &Compositor{}
+
+	// Partial (tail) mode: stable 4-col prefix, overflowing new tail.
+	var b strings.Builder
+	c.emitRowUpdate(&b, 5, fg+"AAAA"+rdR, fg+"AAAABBBBBB"+rdR, 8)
+	if got, want := b.String(), "\x1b[5;5H"+fg+"BBBB"+rdR; got != want {
+		t.Fatalf("tail overflow emit = %q, want %q", got, want)
+	}
+
+	// Full-row mode: whole row overflows the margin.
+	b.Reset()
+	c.emitRowUpdate(&b, 5, "", fg+"AAAAAAAAAA"+rdR, 8)
+	if got, want := b.String(), "\x1b[5;1H\x1b[2K"+fg+"AAAAAAAA"+rdR; got != want {
+		t.Fatalf("full overflow emit = %q, want %q", got, want)
+	}
+
+	// Unstyled overflow rows gain nothing (no pen was opened).
+	b.Reset()
+	c.emitRowUpdate(&b, 5, "", "0123456789", 8)
+	if got, want := b.String(), "\x1b[5;1H\x1b[2K01234567"; got != want {
+		t.Fatalf("plain overflow emit = %q, want %q", got, want)
+	}
+}

@@ -22,12 +22,20 @@ const escByte byte = 0x1b
 //   - consecutive duplicate escape runs (a maximal SGR run whose application
 //     leaves the tracked state unchanged), and
 //   - a reset immediately re-opening what was already active ("\x1b[0m" +
-//     identical prefix collapses to nothing; any other post-reset target
-//     merges into one canonical run),
+//     identical prefix collapses to nothing),
 //
-// while passing every non-SGR sequence (cursor positioning, erases, scroll
-// region, sync markers, OSC hyperlinks) through verbatim. Tracker state
-// persists across Filter calls, mirroring the contiguous wire stream, so an
+// and rewrites a run to a shorter canonical form when — and only when — that
+// form provably reaches the run's target state from the state the terminal is
+// known to hold. A canonical run only ADDS attributes; it clears nothing, so
+// it may not replace a run whose target drops an attribute the terminal
+// currently has (e.g. Reset + fgWhite while faint is active: re-emitting
+// fgWhite alone would leave faint on, dimming the "white" text). For those
+// runs the original bytes pass through, or Reset + canonical is used when
+// shorter.
+//
+// Every non-SGR sequence (cursor positioning, erases, scroll region, sync
+// markers, OSC hyperlinks) passes through verbatim. Tracker state persists
+// across Filter calls, mirroring the contiguous wire stream, so an
 // unterminated style at one frame's tail can suppress the matching prefix at
 // the next frame's head.
 //
@@ -114,9 +122,18 @@ func (sc *SGRCoalescer) Filter(frame string) string {
 //
 // Decision table (elisions only while trusted, unpoisoned and fully modeled):
 //
-//	target == current          → ""                       (rules a + b)
-//	target != current, shorter → canonical single run     (merge / normalize)
-//	otherwise                  → the run verbatim
+//	target == current → ""                        (rules a + b)
+//	otherwise        → shortest of the candidates that provably reach
+//	                  target from current:
+//	                  - canonical run   (only when valid, see below)
+//	                  - Reset + canonical run (valid from any state)
+//	                  - the run verbatim
+//
+// The bare canonical run re-states target's attributes from scratch but
+// clears nothing: it is valid only when current holds no attribute that
+// target lacks (apply(canonical, current) == target). Otherwise it would
+// silently preserve stale attributes and corrupt rendering (streaming color
+// bleed: a dropped faint/dim making following "white" text render gray).
 func (sc *SGRCoalescer) decide(group string) string {
 	st := sc.st
 	sawReset, grpPoison := walkSGRRun(group, &st)
@@ -127,9 +144,7 @@ func (sc *SGRCoalescer) decide(group string) string {
 		case st.EqualSGR(&sc.st):
 			out = ""
 		default:
-			if canon := st.sgrSequence(); len(canon) < len(group) {
-				out = canon
-			}
+			out = shortestEquivalentRun(group, &sc.st, &st)
 		}
 	}
 	sc.st = st
@@ -142,6 +157,40 @@ func (sc *SGRCoalescer) decide(group string) string {
 		sc.trusted, sc.poisoned = false, true
 	}
 	return out
+}
+
+// shortestEquivalentRun returns the shortest emission for group's state
+// transition current → target among the provably-equivalent candidates:
+//
+//   - canonical: re-states every target attribute. Valid only when current
+//     holds no attribute target lacks (reachesTarget), since a canonical run
+//     adds attributes but never clears them.
+//   - resetCanonical: hard reset then re-open. Valid from ANY state, so it is
+//     always a legal fallback when it is shorter than the original bytes.
+//   - group verbatim: always correct, never shorter than itself.
+//
+// Ties prefer canonical (it avoids a hard reset) then the original run.
+func shortestEquivalentRun(group string, current, target *AnsiState) string {
+	best := group
+
+	canon := target.sgrSequence()
+	if reachesTarget(canon, current, target) && len(canon) < len(best) {
+		best = canon
+	}
+	resetCanon := Reset + canon
+	if canon != Reset && len(resetCanon) < len(best) {
+		best = resetCanon
+	}
+	return best
+}
+
+// reachesTarget reports whether emitting seq starting from current leaves the
+// terminal in target's state. seq is a canonical run built by sgrSequence, so
+// it only contains fully-modeled tokens and the walk is exact.
+func reachesTarget(seq string, current, target *AnsiState) bool {
+	sim := *current
+	walkSGRRun(seq, &sim)
+	return sim.EqualSGR(target)
 }
 
 // walkSGRRun applies every SGR parameter of one maximal escape run to st,

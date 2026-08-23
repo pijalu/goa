@@ -258,7 +258,7 @@ func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, heigh
 	for i := vt; i < transcriptEnd; i++ {
 		screenRow := i - vt + 1
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		writeRowText(&buf, canvas[i], width)
 		c.traceWroteRow(screenRow)
 	}
 	// Clear any stale transcript rows between the transcript end and the
@@ -275,7 +275,7 @@ func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, heigh
 			break
 		}
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		writeRowText(&buf, canvas[i], width)
 		c.traceWroteRow(screenRow)
 	}
 	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)
@@ -326,7 +326,7 @@ func (c *Compositor) drawWindowResetScrollback(canvas []string, cursor *CursorPo
 	for i := vt; i < transcriptEnd; i++ {
 		screenRow := i - vt + 1
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		writeRowText(&buf, canvas[i], width)
 		c.traceWroteRow(screenRow)
 	}
 	// Draw the pinned chrome band in the rows below the transcript region.
@@ -336,7 +336,7 @@ func (c *Compositor) drawWindowResetScrollback(canvas []string, cursor *CursorPo
 			break
 		}
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		writeRowText(&buf, canvas[i], width)
 		c.traceWroteRow(screenRow)
 	}
 	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)

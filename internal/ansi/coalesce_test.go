@@ -15,8 +15,10 @@ const (
 	fgRed     = "\x1b[38;2;255;80;80m"
 	fgBlue    = "\x1b[38;2;80;120;255m"
 	fgGray    = "\x1b[38;2;139;148;158m"
+	fgWhite   = "\x1b[38;2;255;255;255m"
 	boldOn    = "\x1b[1m"
 	italOn    = "\x1b[3m"
+	faintOn   = "\x1b[2m"
 	linkOpen  = "\x1b]8;;https://goa.test\x07"
 	linkClose = "\x1b]8;;\x07"
 )
@@ -126,6 +128,31 @@ func TestSGRCoalescer_Filter(t *testing.T) {
 			in:   "\x1b[;mA",
 			want: "A",
 		},
+		{
+			name: "run dropping an attribute keeps its reset (subset target)",
+			// Regression: canonical fgRed alone must NOT replace
+			// Reset+fgRed here — bold is active and would survive the
+			// swap, re-styling "B" bold. The reset-clearing bytes stay.
+			in:   piece(boldOn+fgRed, "A") + piece(fgRed, "B"),
+			want: "\x1b[1;38;2;255;80;80m" + "A" + Reset + fgRed + "B" + Reset,
+		},
+		{
+			name: "thinking-block seam keeps white content free of label faint",
+			// The streaming color-bleed report: faint+gray label piece
+			// followed by white content piece. Replacing Reset+fgWhite
+			// with bare fgWhite leaves faint active — "white" text renders
+			// dim gray and appears to flicker as later resets land.
+			in:   piece(faintOn+fgGray, "thinking") + piece(fgWhite, "analyzing input"),
+			want: "\x1b[2;38;2;139;148;158m" + "thinking" + Reset + fgWhite + "analyzing input" + Reset,
+		},
+		{
+			name: "reset+reopen canonicalizes when provably equivalent",
+			// Reset+fgRed+fgRed after a bold+blue piece: target {red} drops
+			// bold, so bare fgRed is invalid — but Reset+fgRed is provably
+			// equivalent from ANY state and shorter, so it wins.
+			in:   piece(boldOn+fgBlue, "x") + Reset + fgRed + fgRed + "y" + Reset,
+			want: "\x1b[1;38;2;80;120;255m" + "x" + Reset + fgRed + "y" + Reset,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -206,5 +233,64 @@ func TestSGRCoalescer_EquivalentToRaw(t *testing.T) {
 	}
 	if len(got) >= len(raw) {
 		t.Errorf("expected reduction: raw=%d got=%d (%q)", len(raw), len(got), got)
+	}
+}
+
+// literalStates simulates a terminal over stream, recording the SGR state in
+// effect at every literal (non-escape) byte.
+func literalStates(stream string) []AnsiState {
+	var st AnsiState
+	var states []AnsiState
+	buf := []byte(stream)
+	for i := 0; i < len(buf); {
+		if buf[i] == escByte {
+			j := skipANSISequence(buf, i)
+			if j <= i {
+				i++
+				continue
+			}
+			if isSGRSequence(buf[i:j]) {
+				walkSGRRun(string(buf[i:j]), &st)
+			}
+			i = j
+			continue
+		}
+		states = append(states, st)
+		i++
+	}
+	return states
+}
+
+// TestSGRCoalescer_RenderEquivalence is the visual-equality gate: for every
+// literal byte of the input, the terminal state the filtered stream establishes
+// must equal the state the raw stream establishes. Any elision or rewrite that
+// drops an attribute-clearing sequence (e.g. replacing Reset+fgWhite with bare
+// fgWhite while faint is active) diverges here — that was the streaming
+// grey/white color-bleed regression.
+func TestSGRCoalescer_RenderEquivalence(t *testing.T) {
+	streams := []string{
+		// Markdown seam: faint+gray label → white body → gray note → plain.
+		piece(faintOn+fgGray, "Thinking") + piece(fgWhite, "let me consider the options") +
+			piece(fgGray, "…") + "trailing plain",
+		// Attribute drop mid-stream in both directions.
+		piece(boldOn+fgRed, "A") + piece(fgRed, "B") + piece(boldOn+italOn+fgRed, "C") + piece(fgRed, "D"),
+		// Same-style seam then style change then return to default.
+		piece(fgBlue, "x") + piece(fgBlue, "y") + piece(fgGray, "z") + "plain",
+		// Underline color (SGR 58) participate in state equivalence.
+		piece("\x1b[4m\x1b[58;2;10;20;30m", "linked") + piece(fgWhite, "after"),
+	}
+	for idx, raw := range streams {
+		got := NewSGRCoalescer().Filter(raw)
+		rawStates := literalStates(raw)
+		gotStates := literalStates(got)
+		if len(rawStates) != len(gotStates) {
+			t.Fatalf("stream %d: literal count changed raw=%d got=%d\nraw: %q\ngot: %q", idx, len(rawStates), len(gotStates), raw, got)
+		}
+		for i := range rawStates {
+			if !rawStates[i].EqualSGR(&gotStates[i]) {
+				t.Errorf("stream %d: state divergence at literal %d\nraw: %q\ngot: %q\nraw state:  %+v\ngot state:  %+v", idx, i, raw, got, rawStates[i], gotStates[i])
+				break
+			}
+		}
 	}
 }

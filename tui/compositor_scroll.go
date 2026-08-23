@@ -152,7 +152,7 @@ func (c *Compositor) emitFirstFrameScroll(buf *strings.Builder, canvas []string,
 			buf.WriteString("\n")
 		}
 		buf.WriteString("\r\x1b[2K")
-		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		writeRowText(buf, canvas[i], width)
 	}
 }
 
@@ -198,7 +198,7 @@ func (c *Compositor) emitSteadyScroll(buf *strings.Builder, canvas []string, fro
 	for i := writeFrom; i < writeTo; i++ {
 		buf.WriteString("\n")
 		buf.WriteString("\r\x1b[2K")
-		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		writeRowText(buf, canvas[i], width)
 	}
 }
 
@@ -223,7 +223,7 @@ func (c *Compositor) emitTopDownScroll(buf *strings.Builder, canvas []string, fr
 			buf.WriteString("\n")
 		}
 		buf.WriteString("\r\x1b[2K")
-		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		writeRowText(buf, canvas[i], width)
 	}
 }
 
