@@ -51,6 +51,8 @@ func (c *Compositor) repaintWindow(buf *strings.Builder, canvas []string, vt, wi
 
 // repaintTranscriptRows paints screen rows [1, windowH] from canvas transcript
 // rows [vt, vt+windowH), skipping unchanged rows and the scroll-skip window.
+// Changed rows go through emitRowUpdate: a partial column-range update when a
+// safe dirty range exists, else the legacy full-row clear+rewrite.
 func (c *Compositor) repaintTranscriptRows(buf *strings.Builder, canvas []string, vt, windowH, contentEnd, skipFrom, skipTo, width int) {
 	for screenRow := 1; screenRow <= windowH; screenRow++ {
 		i := vt + screenRow - 1
@@ -64,14 +66,16 @@ func (c *Compositor) repaintTranscriptRows(buf *strings.Builder, canvas []string
 		if c.unchangedRowTranscript(canvas, i, vt) {
 			continue
 		}
-		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		buf.WriteString(truncateToWidth(line, width, ""))
+		prev, _ := c.prevRowTranscript(i, vt)
+		c.emitRowUpdate(buf, screenRow, prev, line, width)
 		c.traceWroteRow(screenRow)
 	}
 }
 
 // repaintChromeRows paints screen rows [windowH+1, height] from the canvas
 // chrome band [contentEnd, len(canvas)), keeping chrome pinned at the bottom.
+// Changed rows go through emitRowUpdate exactly like the transcript path —
+// partial and full-row emission behave identically on both paths.
 func (c *Compositor) repaintChromeRows(buf *strings.Builder, canvas []string, windowH, height, contentEnd, width int) {
 	for screenRow := windowH + 1; screenRow <= height; screenRow++ {
 		i := contentEnd + (screenRow - windowH - 1)
@@ -82,8 +86,8 @@ func (c *Compositor) repaintChromeRows(buf *strings.Builder, canvas []string, wi
 		if c.unchangedRowChrome(canvas, i, screenRow, windowH) {
 			continue
 		}
-		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		buf.WriteString(truncateToWidth(line, width, ""))
+		prev, _ := c.prevRowChrome(i, screenRow, windowH)
+		c.emitRowUpdate(buf, screenRow, prev, line, width)
 		c.traceWroteRow(screenRow)
 	}
 }

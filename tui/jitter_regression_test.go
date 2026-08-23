@@ -43,11 +43,11 @@ func TestCompositor_DiffSkipsUnchangedLinesBetweenChangingRegions(t *testing.T) 
 			}},
 		}
 	}
-
 	term := &fakeTerminal{w: w, h: h}
 	comp := NewCompositor(term)
 
 	comp.Render(frame("spin-A-top", "spin-A-bottom"))
+	firstFrame := term.Writes()
 	term.writes = nil // drop the first-frame full render; capture only the diff
 
 	// Second frame: ONLY y=0 and y=4 changed (a spinner tick), no scrolling.
@@ -59,21 +59,61 @@ func TestCompositor_DiffSkipsUnchangedLinesBetweenChangingRegions(t *testing.T) 
 	// height there is no scrolling, so viewportTop stays 0 and their screen
 	// rows are 2 and 4 (1-indexed CUP). Erasing either proves an unchanged
 	// separator was needlessly rewritten.
-	if rowErased(diff, 2) {
-		t.Errorf("UNCHANGED top separator (screen row 2) was erased+rewritten by the diff:\n%s", diff)
+	for _, row := range []struct {
+		screenRow int
+		what      string
+	}{
+		{2, "top separator"}, {4, "bottom separator"}, {3, "editor content"},
+	} {
+		if rowErased(diff, row.screenRow) {
+			t.Errorf("UNCHANGED %s (screen row %d) was erased+rewritten by the diff:\n%s", row.what, row.screenRow, diff)
+		}
 	}
-	if rowErased(diff, 4) {
-		t.Errorf("UNCHANGED bottom separator (screen row 4) was erased+rewritten by the diff:\n%s", diff)
+	assertDiffFrameScreenIntegrity(t, emuForClampedScene(w, h, firstFrame), term.Writes())
+}
+
+// emuForClampedScene replays first-frame writes into a TermEmulator sized to
+// the EFFECTIVE terminal the compositor drives: Render clamps undersized
+// scenes (height<10 → 24 rows, width<20 → 80 cols).
+func emuForClampedScene(w, h int, firstFrame []string) *TermEmulator {
+	effW, effH := w, h
+	if effW < 20 {
+		effW = 80
 	}
-	if rowErased(diff, 3) {
-		t.Errorf("UNCHANGED editor content (screen row 3) was erased+rewritten by the diff:\n%s", diff)
+	if effH < 10 {
+		effH = 24
 	}
-	// Sanity: the two lines that genuinely changed MUST be rewritten.
-	if !rowErased(diff, 1) {
-		t.Errorf("changed status line (screen row 1) was NOT rewritten:\n%s", diff)
+	emu := NewTermEmulator(effH, effW)
+	for _, wr := range firstFrame {
+		emu.Process(wr)
 	}
-	if !rowErased(diff, 5) {
-		t.Errorf("changed footer line (screen row 5) was NOT rewritten:\n%s", diff)
+	return emu
+}
+
+// assertDiffFrameScreenIntegrity verifies a captured diff frame through the
+// emulator: the genuinely changed rows show their NEW content and every
+// other row stays CELL-identical to the pre-diff frame — a strictly stronger
+// check than an erase-byte proxy, because column-range emission may repaint
+// via partial CUP+segment instead of a full-row erase.
+func assertDiffFrameScreenIntegrity(t *testing.T, emu *TermEmulator, diffWrites []string) {
+	t.Helper()
+	prevRows := make([]string, emu.h)
+	for r := 0; r < emu.h; r++ {
+		prevRows[r] = emu.Visible(r)
+	}
+	for _, wr := range diffWrites {
+		emu.Process(wr)
+	}
+	if got, want := emu.Visible(0), "spin-B-top"; !strings.Contains(got, want) {
+		t.Errorf("changed status line (screen row 1) does not show %q:\n%s", want, got)
+	}
+	if got, want := emu.Visible(4), "spin-B-bottom"; !strings.Contains(got, want) {
+		t.Errorf("changed footer line (screen row 5) does not show %q:\n%s", want, got)
+	}
+	for r := 1; r <= 3; r++ {
+		if got := emu.Visible(r); got != prevRows[r] {
+			t.Errorf("UNCHANGED screen row %d mutated by the diff: %q -> %q", r+1, prevRows[r], got)
+		}
 	}
 }
 
