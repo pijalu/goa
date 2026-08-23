@@ -40,6 +40,14 @@ func confirmConsumer(t *testing.T, b *UIBridge) func() int {
 	}
 }
 
+// assertPendingCount fails the test unless exactly want confirms are pending.
+func assertPendingCount(t *testing.T, b *UIBridge, want int) {
+	t.Helper()
+	if got := b.PendingConfirmCount(); got != want {
+		t.Fatalf("pending = %d, want %d", got, want)
+	}
+}
+
 // TestRequestConfirm_HappyPath covers the full request → present → resolve
 // round trip with the exact chosen option ID.
 func TestRequestConfirm_HappyPath(t *testing.T) {
@@ -53,9 +61,7 @@ func TestRequestConfirm_HappyPath(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no queue signal for pending confirm")
 	}
-	if b.PendingConfirmCount() != 1 {
-		t.Fatalf("pending = %d, want 1", b.PendingConfirmCount())
-	}
+	assertPendingCount(t, b, 1)
 
 	job, ok := b.NextConfirm()
 	if !ok {
@@ -67,9 +73,8 @@ func TestRequestConfirm_HappyPath(t *testing.T) {
 	if job.Req.PluginID != "test-plugin" || len(job.Req.Options) != 2 {
 		t.Fatalf("request not preserved through queue: %+v", job.Req)
 	}
-	if b.PendingConfirmCount() != 1 {
-		t.Fatalf("pending = %d, want 1 (popped job stays pending until resolved)", b.PendingConfirmCount())
-	}
+	// A popped job stays pending until it is resolved.
+	assertPendingCount(t, b, 1)
 
 	job.Resolve(ConfirmResponse{ID: "yes"})
 	select {
@@ -80,9 +85,7 @@ func TestRequestConfirm_HappyPath(t *testing.T) {
 	default:
 		t.Fatal("reply channel not ready after Resolve")
 	}
-	if b.PendingConfirmCount() != 0 {
-		t.Fatalf("pending = %d, want 0 after resolve", b.PendingConfirmCount())
-	}
+	assertPendingCount(t, b, 0)
 }
 
 // TestRequestConfirm_Cancelled pins Esc/implicit-cancel semantics: Cancelled

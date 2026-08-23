@@ -72,19 +72,45 @@ function runFetch(desc, ctx) {
 // getJSON performs the GET and funnels transport/status/parse failures onto
 // the shared error vocabulary, calling onBody(parsed) on success.
 function getJSON(url, headers, onBody) {
-	var resp = goa.http.fetch(url, { method: "GET", headers: headers, timeoutMs: 15000 });
+	var out = requestJSON("GET", url, headers, null, onBody);
+	if (out && out.error) {
+		// Preserve the historical quota-error shape ({plan, limits}) that
+		// plugin.js and the segment renderer consume on failed fetches.
+		return { error: out.error, plan: null, limits: [] };
+	}
+	return out;
+}
+
+// postJSON performs the POST with a JSON-encoded body beside getJSON,
+// reusing the identical error vocabulary (auth_required on 401/403,
+// http_<status>, bad_response). Unlike the quota-fetch helpers the success
+// result is whatever onBody returns — reset endpoints answer outcome
+// objects, not {plan, limits} quota snapshots.
+function postJSON(url, headers, bodyObj, onBody) {
+	return requestJSON("POST", url, headers, JSON.stringify(bodyObj || {}), onBody);
+}
+
+// requestJSON is the single transport funnel behind getJSON/postJSON so the
+// error mapping exists exactly once.
+function requestJSON(method, url, headers, bodyStr, onBody) {
+	var resp = goa.http.fetch(url, {
+		method: method,
+		headers: headers,
+		body: bodyStr,
+		timeoutMs: 15000
+	});
 	if (resp.error) {
-		return { error: resp.error, plan: null, limits: [] };
+		return { error: resp.error };
 	}
 	if (resp.status === 401 || resp.status === 403) {
-		return { error: "auth_required", plan: null, limits: [] };
+		return { error: "auth_required" };
 	}
 	if (resp.status !== 200) {
-		return { error: "http_" + resp.status, plan: null, limits: [] };
+		return { error: "http_" + resp.status };
 	}
 	var body = parseJSON(resp.body);
 	if (!body) {
-		return { error: "bad_response", plan: null, limits: [] };
+		return { error: "bad_response" };
 	}
 	return onBody(body);
 }
@@ -136,6 +162,7 @@ exports.oauthTokenAuth = oauthTokenAuth;
 exports.bearerHeaders = bearerHeaders;
 exports.runFetch = runFetch;
 exports.getJSON = getJSON;
+exports.postJSON = postJSON;
 exports.windowedUsageMapper = windowedUsageMapper;
 exports.num = num;
 exports.parseJSON = parseJSON;

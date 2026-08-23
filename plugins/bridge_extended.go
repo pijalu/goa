@@ -627,6 +627,36 @@ func (b *JSBridge) setupHooks(goaObj *goja.Object) {
 // parseHookDef validates one registerHook definition object. Returns a
 // descriptive error string ("" = valid), following the registerCommand
 // convention of surfacing mistakes at registration time.
+// parseHookMode reads and validates the optional "mode" field (absent =
+// notify). Returns ("", msg) on an invalid value.
+func parseHookMode(obj *goja.Object) (HookMode, string) {
+	modeStr := fieldString(obj, "mode")
+	if modeStr == "" {
+		modeStr = string(HookNotify)
+	}
+	mode := HookMode(modeStr)
+	if mode != HookNotify && mode != HookIntercept {
+		return "", fmt.Sprintf("mode must be %q or %q, got %q", HookNotify, HookIntercept, modeStr)
+	}
+	return mode, ""
+}
+
+// hookPriority reads the optional numeric "priority" field (absent = 0).
+// goja's Get returns nil for missing properties, so the value must be
+// nil-guarded before ToInteger.
+func hookPriority(obj *goja.Object) int {
+	pv := obj.Get("priority")
+	if pv == nil || goja.IsUndefined(pv) || goja.IsNull(pv) {
+		return 0
+	}
+	return int(pv.ToInteger())
+}
+
+// isMissingValue reports whether a goja value is nil/undefined/null.
+func isMissingValue(v goja.Value) bool {
+	return v == nil || goja.IsUndefined(v) || goja.IsNull(v)
+}
+
 func (b *JSBridge) parseHookDef(obj *goja.Object) (HookSpec, goja.Value, string) {
 	name := fieldString(obj, "name")
 	if name == "" {
@@ -636,33 +666,23 @@ func (b *JSBridge) parseHookDef(obj *goja.Object) (HookSpec, goja.Value, string)
 	if !isValidHookPoint(point) {
 		return HookSpec{}, nil, fmt.Sprintf("unknown hook point %q (valid points: %s)", point, strings.Join(ValidHookPoints(), ", "))
 	}
-	modeStr := fieldString(obj, "mode")
-	if modeStr == "" {
-		modeStr = string(HookNotify)
-	}
-	mode := HookMode(modeStr)
-	if mode != HookNotify && mode != HookIntercept {
-		return HookSpec{}, nil, fmt.Sprintf("mode must be %q or %q, got %q", HookNotify, HookIntercept, modeStr)
+	mode, merr := parseHookMode(obj)
+	if merr != "" {
+		return HookSpec{}, nil, merr
 	}
 	handlerVal := obj.Get("handler")
-	if handlerVal == nil || goja.IsUndefined(handlerVal) || goja.IsNull(handlerVal) {
+	if isMissingValue(handlerVal) {
 		return HookSpec{}, nil, "handler function is required"
 	}
 	if _, ok := goja.AssertFunction(handlerVal); !ok {
 		return HookSpec{}, nil, "handler must be a function(payload)"
-	}
-	// priority defaults to 0 when absent; goja's Get returns nil for missing
-	// properties, so the value must be nil-guarded before ToInteger.
-	priority := 0
-	if pv := obj.Get("priority"); pv != nil && !goja.IsUndefined(pv) && !goja.IsNull(pv) {
-		priority = int(pv.ToInteger())
 	}
 	spec := HookSpec{
 		PluginID: b.def.ID,
 		Name:     name,
 		Point:    point,
 		Mode:     mode,
-		Priority: priority,
+		Priority: hookPriority(obj),
 	}
 	return spec, handlerVal, ""
 }

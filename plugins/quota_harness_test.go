@@ -5,6 +5,8 @@
 package plugins
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +30,9 @@ type quotaTestEnv struct {
 	scheduler   *Scheduler
 	config      map[string]any
 	bridge      *JSBridge // set by load, used to inject test stubs
+	// oauthTokens maps provider id → Goa-managed token returned by
+	// goa.auth.oauthToken (nil/absent ⇒ auth unavailable, as before).
+	oauthTokens map[string]map[string]any
 }
 
 type quotaResponder struct {
@@ -44,16 +49,26 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 		t.Fatal(err)
 	}
 	return &quotaTestEnv{
-		commands:  map[string]func([]string) (string, error){},
-		segments:  NewUIBridge(),
-		hotkeys:   NewHotkeyBridge(),
-		storage:   st,
-		scheduler: NewScheduler(),
+		commands:    map[string]func([]string) (string, error){},
+		segments:    NewUIBridge(),
+		hotkeys:     NewHotkeyBridge(),
+		storage:     st,
+		scheduler:   NewScheduler(),
+		oauthTokens: map[string]map[string]any{},
 		config: map[string]any{
 			"providers":      map[string]any{},
 			"activeProvider": "anthropic",
 		},
 	}
+}
+
+// setOAuthToken installs a Goa-managed OAuth token for provider id so the
+// goa_oauth fetchers (codex) pass codexToken()-style checks. Call BEFORE
+// load; the token fn reads live state so later mutations also apply.
+func (e *quotaTestEnv) setOAuthToken(provider string, tok map[string]any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.oauthTokens[provider] = tok
 }
 
 // setActiveProvider sets the active provider id in the mocked goa.config().
@@ -157,6 +172,15 @@ func (e *quotaTestEnv) context() PluginContext {
 				return map[string]string{
 					"ok": "#3fb950", "warn": "#d29922", "critical": "#f85149", "pending": "#8b949e",
 				}[name]
+			},
+			OAuthToken: func(ctx context.Context, provider string) (map[string]any, error) {
+				e.mu.Lock()
+				tok, ok := e.oauthTokens[provider]
+				e.mu.Unlock()
+				if !ok || tok == nil {
+					return nil, fmt.Errorf("no test oauth token for %q", provider)
+				}
+				return tok, nil
 			},
 		},
 	}
