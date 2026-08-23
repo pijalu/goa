@@ -76,6 +76,24 @@ func cacheTurnsFromHistory(history []core.TurnRecord, current *core.TurnRecord) 
 	return out
 }
 
+// cacheCompletionsFromHistory maps the per-API-call completion log onto the
+// cacheTurn shape so it flows through the same rate/grouping helpers. Unlike
+// the turn series, one multi-call turn yields one entry per LLM completion.
+func cacheCompletionsFromHistory(comps []core.CompletionRecord) []cacheTurn {
+	out := make([]cacheTurn, 0, len(comps))
+	for _, c := range comps {
+		out = append(out, cacheTurn{
+			Num:        c.TurnNumber,
+			CacheRead:  c.CacheRead,
+			CacheWrite: c.CacheWrite,
+			PromptN:    c.PromptN,
+			AgentRole:  c.AgentRole,
+			GoalID:     c.GoalID,
+		})
+	}
+	return out
+}
+
 // cacheTurnRate computes the per-completion cache hit rate for one turn
 // using the shared formula (Anthropic- and OpenAI-style branches).
 func cacheTurnRate(t cacheTurn) float64 {
@@ -129,24 +147,34 @@ func cacheLevelColor(pct float64) string {
 
 // cacheGroup is one agent/goal section of the cache view.
 type cacheGroup struct {
-	key   string // display label ("main", "companion", …)
-	turns []cacheTurn
+	key         string // display label ("main", "companion", …)
+	turns       []cacheTurn
+	completions []cacheTurn // per-API-call series (superset granularity of turns)
+}
+
+// cacheGroupKey derives the section key of a turn/completion from its
+// identity. Solo sessions collapse to a single unlabeled group so the output
+// keeps today's header-less look.
+func cacheGroupKey(t cacheTurn) string {
+	key := t.AgentRole
+	if key == "" {
+		key = "main"
+	}
+	if t.GoalID != "" {
+		key += " · goal:" + t.GoalID
+	}
+	return key
 }
 
 // groupCacheTurns partitions the turn series by (AgentRole, GoalID) in
-// first-appearance order. Solo sessions collapse to a single unlabeled group
-// so the output keeps today's header-less look.
-func groupCacheTurns(turns []cacheTurn) []cacheGroup {
+// first-appearance order, then assigns each completion of the per-call log to
+// its matching section (creating a section when the completion log covers a
+// group the turn series does not, e.g. after a history reset).
+func groupCacheTurns(turns []cacheTurn, completions []cacheTurn) []cacheGroup {
 	var groups []cacheGroup
 	index := map[string]int{}
 	for _, t := range turns {
-		key := t.AgentRole
-		if key == "" {
-			key = "main"
-		}
-		if t.GoalID != "" {
-			key += " · goal:" + t.GoalID
-		}
+		key := cacheGroupKey(t)
 		i, ok := index[key]
 		if !ok {
 			groups = append(groups, cacheGroup{key: key})
@@ -155,31 +183,41 @@ func groupCacheTurns(turns []cacheTurn) []cacheGroup {
 		}
 		groups[i].turns = append(groups[i].turns, t)
 	}
+	for _, c := range completions {
+		key := cacheGroupKey(c)
+		i, ok := index[key]
+		if !ok {
+			groups = append(groups, cacheGroup{key: key})
+			i = len(groups) - 1
+			index[key] = i
+		}
+		groups[i].completions = append(groups[i].completions, c)
+	}
 	return groups
 }
 
 // writeCacheView renders the /stats:cache output: per agent/goal group, the
-// last-10 cache-hit chart, the per-turn average bars, the weighted session
+// last-10 completions chart, the per-turn average bars, the weighted session
 // total, and the cache-miss list. A single group (the common solo session)
 // renders without a section header.
-func writeCacheView(b *strings.Builder, turns []cacheTurn) {
-	groups := groupCacheTurns(turns)
+func writeCacheView(b *strings.Builder, turns, completions []cacheTurn) {
+	groups := groupCacheTurns(turns, completions)
 	multi := len(groups) > 1
 	for _, g := range groups {
 		if multi {
 			fmt.Fprintf(b, "## %s\n", g.key)
 		}
-		writeCacheGroupSections(b, g.turns)
+		writeCacheGroupSections(b, g)
 	}
 }
 
 // writeCacheGroupSections renders the four required sections for one group.
-func writeCacheGroupSections(b *strings.Builder, turns []cacheTurn) {
-	writeCacheHitLast10(b, turns)
-	writeCacheAvgPerTurn(b, turns)
-	writeCacheSessionTotal(b, turns)
-	writeCacheMissList(b, turns)
-	writeCacheDrops(b, detectCacheDrops(turns, cacheDropThresholdPts))
+func writeCacheGroupSections(b *strings.Builder, g cacheGroup) {
+	writeCacheHitLast10(b, g.completions)
+	writeCacheAvgPerTurn(b, g.turns)
+	writeCacheSessionTotal(b, g.turns)
+	writeCacheMissList(b, g.turns)
+	writeCacheDrops(b, detectCacheDrops(g.turns, cacheDropThresholdPts))
 }
 
 func cacheMisses(turns []cacheTurn) []cacheMissTurn {
@@ -203,11 +241,16 @@ func cacheMisses(turns []cacheTurn) []cacheMissTurn {
 }
 
 // writeCacheHitLast10 renders section 1: an MD table of the last ≤10
-// cache-active completions (oldest first, newest last), one row per turn
-// with its cache-hit rate. Rendered on screen through the MD pipeline.
-func writeCacheHitLast10(b *strings.Builder, turns []cacheTurn) {
+// completions (oldest first, newest last), one row per LLM API call with its
+// own cache-hit rate. Unlike the old turn-keyed view this keeps cache-bust
+// calls (0%) — hiding the very call that dropped the rate would defeat the
+// per-call window — so the filter is "actually called the LLM" (any
+// prompt-side volume), matching the per-turn table's semantics. The call
+// ordinal distinguishes the multiple calls a single multi-round turn
+// contributes. Rendered on screen through the MD pipeline.
+func writeCacheHitLast10(b *strings.Builder, completions []cacheTurn) {
 	b.WriteString("# Cache hit — last completions\n")
-	active := cacheActiveTurns(turns)
+	active := cacheTurnsOnActivity(completions)
 	if len(active) == 0 {
 		b.WriteString("No cache activity recorded yet.\n")
 		return
@@ -215,9 +258,17 @@ func writeCacheHitLast10(b *strings.Builder, turns []cacheTurn) {
 	if len(active) > cacheChartBars {
 		active = active[len(active)-cacheChartBars:]
 	}
-	b.WriteString("| Turn | CH % |\n|---|---|\n")
+	b.WriteString("| Turn | Call | CH % |\n|---|---|---|\n")
+	// Ordinal of each call within its turn: consecutive completions sharing a
+	// turn number are calls 1, 2, … of that turn.
+	callNo, lastTurn := 0, 0
 	for _, t := range active {
-		fmt.Fprintf(b, "| T%d | %.1f%% |\n", t.Num, cacheTurnRate(t))
+		if t.Num != lastTurn {
+			callNo, lastTurn = 1, t.Num
+		} else {
+			callNo++
+		}
+		fmt.Fprintf(b, "| T%d | #%d | %.1f%% |\n", t.Num, callNo, cacheTurnRate(t))
 	}
 }
 
@@ -384,13 +435,14 @@ func (c *StatsCommand) runCacheStats(ctx core.Context, _ []string) error {
 func showCacheStats(w core.OutputWriter, rec core.SessionRecorder) error {
 	history := rec.TurnHistory()
 	current := rec.CurrentTurn()
-	if len(history) == 0 && current == nil {
+	completions := rec.CompletionHistory()
+	if len(history) == 0 && current == nil && len(completions) == 0 {
 		writeStr(w, "No turn history available. Send a message first.\n")
 		return nil
 	}
 	turns := cacheTurnsFromHistory(history, current)
 	var b strings.Builder
-	writeCacheView(&b, turns)
+	writeCacheView(&b, turns, cacheCompletionsFromHistory(completions))
 	writeFmt(w, "%s", b.String())
 	return nil
 }

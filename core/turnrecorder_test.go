@@ -65,6 +65,62 @@ func TestTurnRecorder_RecordSubAgentTurn(t *testing.T) {
 	}
 }
 
+// TestTurnRecorder_RecordSubAgentTurn_CompletionLog pins the sub-agent half
+// of the bugs.md §1 fix: each sub-agent turn is also logged as one individual
+// completion carrying the same identity and usage.
+func TestTurnRecorder_RecordSubAgentTurn_CompletionLog(t *testing.T) {
+	tr := NewTurnRecorder()
+	tr.ResetTurn(time.Now())
+	tr.FinalizeTurn(nil, "g1")
+
+	sub := tr.RecordSubAgentTurn("companion", "g1", TurnTokenUsage{
+		PromptN: 1000, PredictedN: 50, CacheRead: 900, CacheWrite: 100,
+	})
+	comps := tr.CompletionHistory()
+	if len(comps) != 1 {
+		t.Fatalf("completions = %d, want 1", len(comps))
+	}
+	c := comps[0]
+	if c.TurnNumber != sub.Number || c.AgentRole != "companion" || c.GoalID != "g1" {
+		t.Errorf("completion = %+v, want turn %d companion/g1", c, sub.Number)
+	}
+	if c.CacheRead != 900 || c.CacheWrite != 100 || c.PromptN != 1000 {
+		t.Errorf("completion usage = %+v, want read 900 write 100 prompt 1000", c)
+	}
+}
+
+// TestTurnRecorder_RecordCompletion covers the per-API-call log: every
+// EventTokenStats of an in-progress main turn appends one completion keyed to
+// that turn, and CompletionHistory returns a defensive copy.
+func TestTurnRecorder_RecordCompletion(t *testing.T) {
+	tr := NewTurnRecorder()
+	tr.ResetTurn(time.Now())
+
+	// Two LLM calls inside the same turn (tool loop round 1 and 2).
+	tr.RecordCompletion("main", "goal-1", TurnTokenUsage{PromptN: 100, CacheRead: 0, CacheWrite: 200}, 0)
+	tr.RecordCompletion("main", "goal-1", TurnTokenUsage{PromptN: 50, CacheRead: 250, CacheWrite: 0}, 0)
+
+	comps := tr.CompletionHistory()
+	if len(comps) != 2 {
+		t.Fatalf("completions = %d, want 2 (one per API call)", len(comps))
+	}
+	// Both calls belong to the in-progress turn (number 1).
+	for i, want := range []int{0, 250} {
+		if comps[i].TurnNumber != 1 || comps[i].AgentRole != "main" || comps[i].GoalID != "goal-1" {
+			t.Errorf("completion[%d] = %+v, want turn 1 main/goal-1", i, comps[i])
+		}
+		if comps[i].CacheRead != want {
+			t.Errorf("completion[%d].CacheRead = %d, want %d (per-call, not flattened)", i, comps[i].CacheRead, want)
+		}
+	}
+
+	// Defensive copy: mutating the returned slice must not affect the recorder.
+	comps[0].CacheRead = 999999
+	if got := tr.CompletionHistory()[0].CacheRead; got != 0 {
+		t.Errorf("CompletionHistory must return a copy; mutation leaked (%d)", got)
+	}
+}
+
 func TestTurnRecorder_RecordsToolCallsAndResults(t *testing.T) {
 	tr := NewTurnRecorder()
 	tr.ResetTurn(time.Now())

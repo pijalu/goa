@@ -47,10 +47,14 @@ func (f *fakeOutputWriter) Lines() []string { return f.lines }
 // fakeSessionRecorder implements core.SessionRecorder for testing.
 type fakeSessionRecorder struct {
 	history     []core.TurnRecord
-	currentTurn *core.TurnRecord // non-nil simulates an in-progress turn
+	currentTurn *core.TurnRecord        // non-nil simulates an in-progress turn
+	completions []core.CompletionRecord // per-API-call completion log
 }
 
 func (f *fakeSessionRecorder) TurnHistory() []core.TurnRecord { return f.history }
+func (f *fakeSessionRecorder) CompletionHistory() []core.CompletionRecord {
+	return f.completions
+}
 func (f *fakeSessionRecorder) LastTurn() *core.TurnRecord {
 	if len(f.history) == 0 {
 		return nil

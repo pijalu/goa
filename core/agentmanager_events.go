@@ -169,18 +169,36 @@ func (am *AgentManager) handleTokenStatsEvent(event agentic.OutputEvent) {
 		ctxEstimate = event.ContextStats.EstimatedTokens
 		ctxMax = event.ContextStats.MaxTokens
 	}
+	usage := coreUsageFromTimings(event.Timings, ctxEstimate, ctxMax)
+	// The turn record keeps one flattened snapshot per turn (last call wins);
+	// the completion log keeps every API call so /stats:cache's per-call view
+	// does not lose multi-round turns (bugs.md §1).
 	am.turnRecorder.RecordTokenStats(
-		event.Timings.PromptN,
-		event.Timings.PredictedN,
-		event.Timings.CacheReadTokens,
-		event.Timings.CacheWriteTokens,
+		usage.PromptN,
+		usage.PredictedN,
+		usage.CacheRead,
+		usage.CacheWrite,
 		event.Timings.PredictedPerSecond,
 		0, // cost computed at display time
 		ctxEstimate, ctxMax,
 	)
+	am.turnRecorder.RecordCompletion("main", am.currentGoalID(), usage, 0)
 	// Report cumulative token usage to the goal system.
 	if am.goalTokenRecorder != nil {
 		am.goalTokenRecorder(event.Timings.PromptN + event.Timings.PredictedN)
+	}
+}
+
+// coreUsageFromTimings maps one completion's provider timings onto the core
+// usage shape used by the recorder.
+func coreUsageFromTimings(t *agentic.TokenTimings, ctxEstimate, ctxMax int) TurnTokenUsage {
+	return TurnTokenUsage{
+		PromptN:         t.PromptN,
+		PredictedN:      t.PredictedN,
+		CacheRead:       t.CacheReadTokens,
+		CacheWrite:      t.CacheWriteTokens,
+		ContextEstimate: ctxEstimate,
+		ContextMax:      ctxMax,
 	}
 }
 

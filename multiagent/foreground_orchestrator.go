@@ -327,10 +327,11 @@ func (o *ForegroundOrchestrator) SetCacheStatsCallback(cb func(role, goalID stri
 	o.cacheGoalID = goalIDFn
 }
 
-// forwardCacheStats relays a sub-agent's final EventTokenStats to the
-// installed cache-stats callback. EventTokenStats fires once per turn with
-// the turn's cumulative timings (see agent_turn_stats.go), so no
-// accumulation or dedup is needed here.
+// forwardCacheStats relays a sub-agent's EventTokenStats to the installed
+// cache-stats callback. EventTokenStats fires once per streaming round with
+// that round's usage (provider streams attach per-call Usage), so a multi-call
+// sub-agent turn yields one callback per API call — no accumulation or dedup
+// is needed here.
 func (o *ForegroundOrchestrator) forwardCacheStats(role string, ev agentic.OutputEvent) {
 	if ev.Type != agentic.EventTokenStats || ev.Timings == nil {
 		return

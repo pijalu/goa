@@ -27,6 +27,22 @@ func cacheTurns(triples ...[3]int) []core.TurnRecord {
 	return out
 }
 
+// cacheCalls builds a chronological completion log from (turn, prompt, read,
+// write) tuples — one entry per LLM API call. Several entries sharing a turn
+// number model a multi-round (multi-call) turn.
+func cacheCalls(tuples ...[4]int) []core.CompletionRecord {
+	out := make([]core.CompletionRecord, len(tuples))
+	for i, tu := range tuples {
+		out[i] = core.CompletionRecord{
+			TurnNumber: tu[0],
+			PromptN:    tu[1],
+			CacheRead:  tu[2],
+			CacheWrite: tu[3],
+		}
+	}
+	return out
+}
+
 // TestDetectCacheDropsSession covers drop detection feeding the drops table.
 func TestDetectCacheDropsSession(t *testing.T) {
 	t.Run("drop to zero after warm cache detected", func(t *testing.T) {
@@ -82,6 +98,13 @@ func TestStatsCommand_CacheView(t *testing.T) {
 			[3]int{500, 0, 0},   // 0% — bust
 			[3]int{0, 200, 400}, // 33.3% — recovery
 		),
+		// Completion log mirrors the turn series (one call per turn here).
+		completions: cacheCalls(
+			[4]int{1, 0, 300, 100},
+			[4]int{2, 0, 400, 100},
+			[4]int{3, 500, 0, 0},
+			[4]int{4, 0, 200, 400},
+		),
 	}
 
 	w := newWriter()
@@ -121,8 +144,8 @@ func assertCacheViewSkeleton(t *testing.T, plain string) {
 		t.Errorf("want ≥4 MD tables (last10/per-turn/misses/drops), found %d separators:\n%s", got, plain)
 	}
 	for _, want := range []string{
-		"| T1 | 75.0% |",                  // last-10 row (75%)
-		"| T4 | 33.3% |",                  // last-10 row (recovery)
+		"| T1 | #1 | 75.0% |",             // last-completions row (75%)
+		"| T4 | #1 | 33.3% |",             // last-completions row (recovery)
 		"| T1 | 000000.4 | 0-0 | 75.0% |", // per-turn row
 		"| T3 | 000000.5 | 1-0 | 0.0% |",  // per-turn row after bust
 		"| T3 | 80.0% | 0.0% | 80.0 |",    // drops row before/after/Δ
@@ -174,26 +197,97 @@ func TestCacheLevelColor(t *testing.T) {
 }
 
 // TestWriteCacheHitLast10 verifies the last-completions MD table: capped at
-// 10 rows, oldest first, one row per cache-active completion with its rate.
+// 10 rows, oldest first, one row per cache-active API call with its rate.
 func TestWriteCacheHitLast10(t *testing.T) {
-	// 12 cache-active turns at 95% — only the last 10 may appear.
-	var triples [][3]int
+	// 12 cache-active completions at 95% — only the last 10 may appear.
+	var tuples [][4]int
 	for i := 0; i < 12; i++ {
-		triples = append(triples, [3]int{0, 95, 5}) // 95%
+		tuples = append(tuples, [4]int{i + 1, 0, 95, 5}) // 95%
 	}
 	var b strings.Builder
-	writeCacheHitLast10(&b, cacheTurnsFromHistory(cacheTurns(triples...), nil))
+	writeCacheHitLast10(&b, cacheCompletionsFromHistory(cacheCalls(tuples...)))
 	out := b.String()
 	rows := strings.Count(out, "| T") - strings.Count(out, "| Turn |")
 	if rows != 10 {
 		t.Errorf("table must cap at 10 data rows, got %d:\n%s", rows, out)
 	}
-	if !strings.HasPrefix(out, "# Cache hit — last completions\n| Turn | CH % |\n|---|---|\n") {
+	if !strings.HasPrefix(out, "# Cache hit — last completions\n| Turn | Call | CH % |\n|---|---|---|\n") {
 		t.Errorf("missing heading or table skeleton:\n%s", out)
 	}
 	// Oldest first, newest last: first data row is T3, last is T12.
-	if !strings.Contains(out, "| T3 | 95.0% |") || !strings.Contains(out, "| T12 | 95.0% |") {
+	if !strings.Contains(out, "| T3 | #1 | 95.0% |") || !strings.Contains(out, "| T12 | #1 | 95.0% |") {
 		t.Errorf("rows must run oldest→newest (T3…T12):\n%s", out)
+	}
+	if strings.Contains(out, "| T2 |") {
+		t.Errorf("dropped completion T2 must not render:\n%s", out)
+	}
+}
+
+// TestWriteCacheHitLast10_PerCallRows pins the bug-1 fix: a multi-call turn
+// contributes one row per LLM API call — not one flattened turn row — each
+// with its own cache-hit rate and a per-turn call ordinal, newest last.
+func TestWriteCacheHitLast10_PerCallRows(t *testing.T) {
+	// Turn 2 made 3 API calls: 75%, 0% (bust), 33.3% (recovery). Turn 3 is a
+	// single-call turn. The table must show 4 rows total.
+	comps := cacheCalls(
+		[4]int{2, 0, 300, 100}, // 75.0%
+		[4]int{2, 500, 0, 0},   // 0.0% — the per-call rate the old turn row lost
+		[4]int{2, 0, 200, 400}, // 33.3%
+		[4]int{3, 0, 900, 100}, // 90.0%
+	)
+	var b strings.Builder
+	writeCacheHitLast10(&b, cacheCompletionsFromHistory(comps))
+	out := b.String()
+	want := []string{
+		"| T2 | #1 | 75.0% |",
+		"| T2 | #2 | 0.0% |",
+		"| T2 | #3 | 33.3% |",
+		"| T3 | #1 | 90.0% |",
+	}
+	last := -1
+	for _, w := range want {
+		idx := strings.Index(out, w)
+		if idx < 0 {
+			t.Fatalf("missing per-call row %q:\n%s", w, out)
+		}
+		if idx < last {
+			t.Errorf("rows must be ordered oldest→newest: %q after later row:\n%s", w, out)
+		}
+		last = idx
+	}
+	if got := strings.Count(out, "| T") - 1; got != len(want) { // minus header row
+		t.Errorf("data row count = %d, want %d:\n%s", got, len(want), out)
+	}
+}
+
+// TestWriteCacheHitLast10_GroupsPerAgentGoal verifies per-call rows respect
+// the agent/goal sections: main-agent completions never leak into a
+// sub-agent section and vice versa.
+func TestWriteCacheHitLast10_GroupsPerAgentGoal(t *testing.T) {
+	turns := []core.TurnRecord{
+		{Number: 1, AgentRole: "main", TokenUsage: core.TurnTokenUsage{CacheRead: 300, CacheWrite: 100}},
+		{Number: 2, AgentRole: "companion", TokenUsage: core.TurnTokenUsage{CacheRead: 800, CacheWrite: 200}},
+	}
+	comps := []core.CompletionRecord{
+		{TurnNumber: 1, AgentRole: "main", CacheRead: 300, CacheWrite: 100},
+		{TurnNumber: 1, AgentRole: "main", CacheRead: 900, CacheWrite: 100},
+		{TurnNumber: 2, AgentRole: "companion", CacheRead: 800, CacheWrite: 200},
+	}
+	var b strings.Builder
+	writeCacheView(&b, cacheTurnsFromHistory(turns, nil), cacheCompletionsFromHistory(comps))
+	out := b.String()
+	// Two sections, each carrying only its own completions: main keeps its
+	// two per-call rows, companion its one.
+	for _, want := range []string{
+		"## main\n",
+		"## companion\n",
+		"| T1 | #1 | 75.0% |",
+		"| T1 | #2 | 90.0% |",
+		"| T2 | #1 | 80.0% |",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sectioned output missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -306,6 +400,11 @@ func TestWriteCacheMDOutput_RendersThroughMarkdownPipeline(t *testing.T) {
 			[3]int{0, 300, 100},
 			[3]int{0, 400, 100},
 			[3]int{500, 0, 0},
+		),
+		completions: cacheCalls(
+			[4]int{1, 0, 300, 100},
+			[4]int{2, 0, 400, 100},
+			[4]int{3, 500, 0, 0},
 		),
 	}
 	w := newWriter()

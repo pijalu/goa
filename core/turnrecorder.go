@@ -13,11 +13,26 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
+// CompletionRecord captures the usage of ONE LLM API call (completion),
+// recorded at the moment its EventTokenStats arrives. Unlike a TurnRecord —
+// which flattens every call of a turn into a single usage snapshot — the
+// completion log keeps per-call granularity so views like /stats:cache's
+// "last completions" window can show each API call's own cache hit rate.
+type CompletionRecord struct {
+	TurnNumber int    // turn the call belongs to (1-based, shared sequence)
+	PromptN    int    // uncached input tokens of this call
+	CacheRead  int    // cache-read tokens of this call
+	CacheWrite int    // cache-write tokens of this call
+	AgentRole  string // ""/"main" for the primary agent, else the multiagent role
+	GoalID     string // active goal at call time ("" = none)
+}
+
 // TurnRecorder captures completed agent turns, including tool calls and results.
 // It is safe for concurrent use and is owned by AgentManager.
 type TurnRecorder struct {
 	mu                   sync.Mutex
 	turnHistory          []TurnRecord
+	completions          []CompletionRecord // session-scoped per-API-call log
 	turnToolCallsAccum   []TurnToolCall
 	turnToolResultsAccum []TurnToolResult
 	turnTokenUsage       TurnTokenUsage // accumulated usage for current turn
@@ -132,7 +147,7 @@ func (tr *TurnRecorder) FinalizeTurn(agent *agentic.Agent, goalID string) TurnRe
 	tr.turnResponses.Reset()
 
 	record := TurnRecord{
-		Number:       len(tr.turnHistory) + 1,
+		Number:       tr.currentTurnNumberLocked(),
 		RequestJSON:  requestJSON,
 		ResponseJSON: responseJSON,
 		TokensUsed:   tokensUsed,
@@ -160,17 +175,59 @@ func (tr *TurnRecorder) FinalizeTurn(agent *agentic.Agent, goalID string) TurnRe
 	return record
 }
 
+// currentTurnNumberLocked returns the number the next history append will
+// carry. Callers must hold tr.mu.
+func (tr *TurnRecorder) currentTurnNumberLocked() int {
+	return len(tr.turnHistory) + 1
+}
+
+// RecordCompletion appends one LLM API call's usage to the session-scoped
+// completion log. Called for every EventTokenStats observed on the main agent
+// (one per streaming round) and for every sub-agent stats callback, so a
+// multi-call turn keeps its per-call granularity. turnNumber of 0 resolves to
+// the current in-progress turn number.
+func (tr *TurnRecorder) RecordCompletion(role, goalID string, u TurnTokenUsage, turnNumber int) CompletionRecord {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if turnNumber <= 0 {
+		turnNumber = tr.currentTurnNumberLocked()
+	}
+	rec := CompletionRecord{
+		TurnNumber: turnNumber,
+		PromptN:    u.PromptN,
+		CacheRead:  u.CacheRead,
+		CacheWrite: u.CacheWrite,
+		AgentRole:  role,
+		GoalID:     goalID,
+	}
+	tr.completions = append(tr.completions, rec)
+	return rec
+}
+
+// CompletionHistory returns a copy of the per-API-call completion log in
+// chronological order.
+func (tr *TurnRecorder) CompletionHistory() []CompletionRecord {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	result := make([]CompletionRecord, len(tr.completions))
+	copy(result, tr.completions)
+	return result
+}
+
 // RecordSubAgentTurn appends a completed sub-agent turn (companion, workflow
 // stage, team member) directly to history. Sub-agent turns are observed
 // end-of-turn through the multiagent pool's per-agent observer — they are
 // never accumulated incrementally like the main agent's — so this takes the
 // final token usage as a whole. Numbering continues the shared sequence so
 // the cache view can interleave main and sub-agent turns chronologically.
+// Each sub-agent turn is also logged as one completion so the per-call view
+// covers sub-agents alongside the main agent.
 func (tr *TurnRecorder) RecordSubAgentTurn(role, goalID string, u TurnTokenUsage) TurnRecord {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
+	num := tr.currentTurnNumberLocked()
 	record := TurnRecord{
-		Number:     len(tr.turnHistory) + 1,
+		Number:     num,
 		TokensUsed: u.PromptN + u.PredictedN,
 		TokenUsage: u,
 		Timing:     TurnTiming{Phases: make(map[string]float64)},
@@ -178,6 +235,14 @@ func (tr *TurnRecorder) RecordSubAgentTurn(role, goalID string, u TurnTokenUsage
 		GoalID:     goalID,
 	}
 	tr.turnHistory = append(tr.turnHistory, record)
+	tr.completions = append(tr.completions, CompletionRecord{
+		TurnNumber: num,
+		PromptN:    u.PromptN,
+		CacheRead:  u.CacheRead,
+		CacheWrite: u.CacheWrite,
+		AgentRole:  role,
+		GoalID:     goalID,
+	})
 	return record
 }
 

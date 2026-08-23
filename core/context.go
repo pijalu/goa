@@ -454,6 +454,10 @@ type SessionRecorder interface {
 	// CurrentTurn returns a snapshot of the in-progress turn, or nil if no
 	// turn is active. Used by /stats:session to show live stats.
 	CurrentTurn() *TurnRecord
+	// CompletionHistory returns the per-API-call completion log (every
+	// EventTokenStats of main and sub-agents) in chronological order. Used by
+	// /stats:cache to list individual completions, not turns.
+	CompletionHistory() []CompletionRecord
 }
 
 // Writef writes formatted output to the command's output buffer, or falls
@@ -724,6 +728,15 @@ func (c Context) CurrentTurn() *TurnRecord {
 		return nil
 	}
 	return c.AgentManager.CurrentTurn()
+}
+
+// CompletionHistory returns the per-API-call completion log via
+// AgentManager. Implements SessionRecorder.
+func (c Context) CompletionHistory() []CompletionRecord {
+	if c.AgentManager == nil {
+		return nil
+	}
+	return c.AgentManager.CompletionHistory()
 }
 
 // SystemPrompt returns the assembled system prompt for the current session
