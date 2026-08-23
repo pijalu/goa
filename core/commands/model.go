@@ -430,7 +430,21 @@ func promptCustomModel(host core.UIHost, cfg *config.Config, saver config.Config
 		return
 	}
 	host.SelectOption("Select model:", modelSelectorItems(allModels, cfg.ActiveModel), cfg.ActiveModel,
-		customModelSelectionHandler(host, cfg, saver))
+		customModelSelectionHandler(host, cfg, saver, providerByModelID(allModels)))
+}
+
+// providerByModelID maps each fetched model ID to the provider it was
+// listed under, so a selection can carry its true provider instead of
+// being re-derived from cfg.Models (where remote IDs are usually absent).
+// First entry wins, mirroring fetchAllProviderModels' dedup order.
+func providerByModelID(entries []providerModelEntry) map[string]string {
+	m := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if _, ok := m[e.Model.ID]; !ok {
+			m[e.Model.ID] = e.ProviderID
+		}
+	}
+	return m
 }
 
 func showCustomModelInput(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
@@ -456,7 +470,7 @@ func modelSelectorItems(allModels []providerModelEntry, active string) []tui.Sel
 	return append(items, tui.SelectorItem{Value: "__custom__", Label: ansi.RepeatHorizontal(2) + " custom model " + ansi.RepeatHorizontal(2), Description: "type any model name"})
 }
 
-func customModelSelectionHandler(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) func(string, bool) {
+func customModelSelectionHandler(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerByID map[string]string) func(string, bool) {
 	return func(selected string, ok bool) {
 		if !ok || selected == "" {
 			return
@@ -465,7 +479,7 @@ func customModelSelectionHandler(host core.UIHost, cfg *config.Config, saver con
 			showCustomModelInput(host, cfg, saver)
 			return
 		}
-		applyModelSelection(host, cfg, saver, selected)
+		applyModelSelectionForProvider(host, cfg, saver, providerByID[selected], selected)
 	}
 }
 
@@ -579,11 +593,33 @@ func isModelSentinel(v string) bool {
 // switch (provider follows its configured provider when needed), then
 // notifies the UI. Extracted to keep showModelSelector within the complexity
 // budget.
+// applyModelSelection switches to a model selected by ID alone. The provider
+// is re-derived from cfg.Models; models absent from the local configuration
+// (custom/remote catalog picks) keep the current provider.
 func applyModelSelection(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, selected string) {
+	applyModelSelectionForProvider(host, cfg, saver, "", selected)
+}
+
+// applyModelSelectionForProvider is applyModelSelection with an explicit
+// provider candidate. pickerProvider comes from the selection context that
+// already knows where the model lives (e.g. the all-providers fetch list);
+// it wins over the cfg.Models lookup because a remote/catalog model ID is
+// not necessarily present there. An empty pickerProvider keeps the legacy
+// behavior: derive from cfg.Models, else stay on the current provider.
+//
+// Bug1: the custom-model picker knew each entry's ProviderID but dropped
+// it, so picking e.g. "stealth/ox-alpha" served by configured provider
+// "stealth" silently attached it to the current provider — the footer then
+// showed the mixed pair "(openai-codex) stealth/ox-alpha" and requests went
+// to the wrong endpoint.
+func applyModelSelectionForProvider(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, pickerProvider, selected string) {
 	if isModelSentinel(selected) {
 		return
 	}
-	np := providerIDForModel(cfg, selected)
+	np := pickerProvider
+	if np == "" {
+		np = providerIDForModel(cfg, selected)
+	}
 	if np != "" && np != cfg.ActiveProvider && cfg.GetProviderByID(np) == nil {
 		host.Flash(fmt.Sprintf("Provider %q is not configured. Run /config to add it.", np))
 		return

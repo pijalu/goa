@@ -28,18 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## Wrong statusbar after selecting ox-alpha and sending a message
-
-**Observed:** Selecting ox-alpha and sending a message ends with an incorrect
-statusbar:
-
-```
-(openai-codex) stealth/ox-alpha
-```
-
-**Expected:** The statusbar must reflect the provider/model actually active for
-the running session after the switch.
-
 ## Stats cache view renders barcharts instead of a clear table
 
 **Observed:** `/stats:cache` draws the cache-hit evolution as block
