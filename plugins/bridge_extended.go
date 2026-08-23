@@ -325,18 +325,30 @@ func (b *JSBridge) setupHotkeys(goaObj *goja.Object, hk *HotkeyBridge) {
 		}
 		if handler := obj.Get("handler"); handler != nil {
 			if fn, ok := goja.AssertFunction(handler); ok {
-				def.Handler = func() {
-					unlock := lockVM()
-					defer unlock()
-					if _, err := fn(goja.Undefined()); err != nil {
-						b.ctx.Logger.Error(fmt.Sprintf("hotkey %s failed: %v", def.KeyName(), err))
-					}
-				}
+				def.Handler = b.buildHotkeyHandler(def, fn)
 			}
 		}
 		hk.Register(def)
 		return b.vm.ToValue("hotkey registered: " + def.KeyName())
 	})
+}
+
+// buildHotkeyHandler wraps the JS hotkey callback. It defers while a logical
+// frame is live (command parked on HTTP/confirm): entering then would
+// interleave a second goja frame on this runtime (item E). The user can press
+// the hotkey again once the UI is responsive.
+func (b *JSBridge) buildHotkeyHandler(def HotkeyDef, fn goja.Callable) func() {
+	return func() {
+		if vmBusy() {
+			b.ctx.Logger.Warn(fmt.Sprintf("hotkey %s deferred: plugin busy", def.KeyName()))
+			return
+		}
+		unlock := lockVM()
+		defer unlock()
+		if _, err := fn(goja.Undefined()); err != nil {
+			b.ctx.Logger.Error(fmt.Sprintf("hotkey %s failed: %v", def.KeyName(), err))
+		}
+	}
 }
 
 // setupUI registers goa.ui.addSegment / refreshSegment / addPane / addModal.
@@ -353,22 +365,7 @@ func (b *JSBridge) setupUI(goaObj *goja.Object, ui *UIBridge) {
 		}
 		if rv := obj.Get("render"); rv != nil {
 			if fn, ok := goja.AssertFunction(rv); ok {
-				def.Render = func() string {
-					// The app render loop calls this from its own goroutine
-					// (drainSegmentRefreshes), which does NOT hold the VM lock.
-					// Serialize with timers/hotkeys so goja's single-goroutine
-					// rule is preserved, and contain panics so a broken plugin
-					// cannot crash the UI goroutine (see the provider-quota
-					// nil-deref crash in vm.halted).
-					unlock := lockVM()
-					defer unlock()
-					defer func() { _ = recover() }()
-					res, err := fn(goja.Undefined())
-					if err != nil {
-						return ""
-					}
-					return b.segmentText(res)
-				}
+				def.Render = b.buildSegmentRender(fn)
 			}
 		}
 		ui.AddSegment(def)
@@ -388,7 +385,153 @@ func (b *JSBridge) setupUI(goaObj *goja.Object, ui *UIBridge) {
 		ui.AddModal(UIDialogDef{ID: obj.Get("id").String(), Title: obj.Get("title").String()})
 		return b.vm.ToValue("modal registered: " + obj.Get("id").String())
 	})
+	// goa.ui.confirm(spec) — blocking multiple-choice prompt (plan §4). The
+	// wait happens OUTSIDE vmMu (runOutsideVMLock, precedent: setupOAuth)
+	// with a fresh logical frame held (enterVM) so scheduler work defers
+	// instead of interleaving a second frame on this runtime (item E).
+	b.setupConfirm(uiObj, ui)
 	goaObj.Set("ui", uiObj)
+}
+
+// buildSegmentRender wraps the JS render function for goa.ui.addSegment.
+// The app render loop calls this from its own goroutine
+// (drainSegmentRefreshes), which does NOT hold the VM lock; serialize with
+// timers/hotkeys so goja's single-goroutine rule is preserved, and contain
+// panics so a broken plugin cannot crash the UI goroutine (see the
+// provider-quota nil-deref crash in vm.halted).
+//
+// Skip while another logical frame is live (a command parked on HTTP/confirm):
+// two frames on one runtime must never overlap (item E). The next refresh
+// re-renders, so skipping is safe — only delayed, never lost.
+func (b *JSBridge) buildSegmentRender(fn goja.Callable) func() string {
+	return func() string {
+		if vmBusy() {
+			return ""
+		}
+		unlock := lockVM()
+		defer unlock()
+		defer func() { _ = recover() }()
+		res, err := fn(goja.Undefined())
+		if err != nil {
+			return ""
+		}
+		return b.segmentText(res)
+	}
+}
+
+// setupConfirm registers goa.ui.confirm on the ui namespace object.
+// Returns {id} | {cancelled:true} | {error} (the error form also carries
+// cancelled:true when the failure is a dismissal flavor — timeout/no-ui).
+func (b *JSBridge) setupConfirm(uiObj *goja.Object, ui *UIBridge) {
+	uiObj.Set("confirm", func(call goja.FunctionCall) goja.Value {
+		// Fail closed on the UI thread: the overlay can only be shown and
+		// answered while that thread runs its loop; blocking it here would
+		// deadlock until the 5m cap. Plugin commands run async (their
+		// wrapper implements core.AsyncCommand), so legitimate callers are
+		// never on this goroutine.
+		if ui.onForbiddenThread() {
+			return b.vm.ToValue(map[string]any{
+				"cancelled": true,
+				"error":     "goa.ui.confirm cannot block the UI thread; call it from a timer or background context",
+			})
+		}
+		req, verr := b.parseConfirmSpec(call.Argument(0))
+		if verr != "" {
+			return b.vm.ToValue(map[string]any{"error": verr})
+		}
+		var resp ConfirmResponse
+		leave := enterVM()
+		runOutsideVMLock(func() {
+			resp = <-ui.RequestConfirm(req)
+		})
+		leave()
+		if resp.Err != "" {
+			return b.vm.ToValue(map[string]any{"cancelled": resp.Cancelled, "error": resp.Err})
+		}
+		if resp.Cancelled {
+			return b.vm.ToValue(map[string]any{"cancelled": true})
+		}
+		return b.vm.ToValue(map[string]any{"id": resp.ID})
+	})
+}
+
+// parseConfirmSpec converts the JS spec object into a ConfirmRequest using
+// plain-Go data BEFORE any lock release (goja values must not be touched once
+// vmMu is dropped). Returns a descriptive error string ("" = valid), matching
+// the registerHook validation convention.
+func (b *JSBridge) parseConfirmSpec(v goja.Value) (ConfirmRequest, string) {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return ConfirmRequest{}, "confirm expects an options object"
+	}
+	obj := v.ToObject(b.vm)
+	req := ConfirmRequest{
+		PluginID:    b.def.ID,
+		Title:       fieldString(obj, "title"),
+		Body:        fieldString(obj, "body"),
+		DefaultID:   fieldString(obj, "defaultId"),
+		AllowCancel: jsBool(obj.Get("allowCancel")),
+	}
+	opts, errStr := b.parseConfirmOptions(obj.Get("options"))
+	if errStr != "" {
+		return ConfirmRequest{}, errStr
+	}
+	req.Options = opts
+	req.Timeout = confirmTimeoutFrom(obj)
+	return req, ""
+}
+
+// parseConfirmOptions converts the JS options array into ConfirmOption rows.
+func (b *JSBridge) parseConfirmOptions(v goja.Value) ([]ConfirmOption, string) {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return nil, `"options" is required`
+	}
+	items, ok := v.Export().([]interface{})
+	if !ok {
+		return nil, `"options" must be an array`
+	}
+	if len(items) == 0 {
+		return nil, "confirm requires at least one option"
+	}
+	opts := make([]ConfirmOption, 0, len(items))
+	for i, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Sprintf("options[%d] must be an object", i)
+		}
+		id, _ := m["id"].(string)
+		label, _ := m["label"].(string)
+		style, _ := m["style"].(string)
+		opt := ConfirmOption{ID: id, Label: label, Style: style}
+		if errStr := validateConfirmOption(opt); errStr != "" {
+			return nil, fmt.Sprintf("options[%d]: %s", i, errStr)
+		}
+		opts = append(opts, opt)
+	}
+	return opts, ""
+}
+
+// confirmTimeoutFrom reads timeoutMs; ≤0/absent keeps the zero Duration
+// (= MaxConfirmTimeout cap downstream).
+func confirmTimeoutFrom(obj *goja.Object) time.Duration {
+	tv := obj.Get("timeoutMs")
+	if tv == nil || goja.IsUndefined(tv) || goja.IsNull(tv) {
+		return 0
+	}
+	if ms := tv.ToInteger(); ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return 0
+}
+
+// validateConfirmOption checks one option row ("", = valid).
+func validateConfirmOption(opt ConfirmOption) string {
+	if opt.ID == "" {
+		return "id is required"
+	}
+	if opt.Label == "" {
+		return "label is required"
+	}
+	return ""
 }
 
 // setupSegmentColor registers goa.segmentColor(name), returning the active
@@ -537,6 +680,13 @@ func (b *JSBridge) buildHookWrapper(handlerVal goja.Value) HookHandler {
 		return func(map[string]any) map[string]any { return nil }
 	}
 	return func(payload map[string]any) map[string]any {
+		// Pass through when a logical frame is live (command parked on
+		// HTTP/confirm): running now would interleave a second goja frame on
+		// this runtime (item E). Availability beats enforcement — the hook
+		// simply does not apply to this invocation.
+		if vmBusy() {
+			return nil
+		}
 		data, err := json.Marshal(payload)
 		if err != nil {
 			b.logWarn("hook payload marshal failed: %v", err)
@@ -546,32 +696,38 @@ func (b *JSBridge) buildHookWrapper(handlerVal goja.Value) HookHandler {
 		defer unlock()
 		leave := enterVM()
 		defer leave()
-
-		jsPayload, err := jsonParse(b.vm, data)
-		if err != nil {
-			b.logWarn("hook payload parse failed: %v", err)
-			return nil
-		}
-		res, err := fn(goja.Undefined(), jsPayload)
-		if err != nil {
-			b.logWarn("hook handler threw: %v", err)
-			return nil // JS exception ⇒ pass-through for this handler
-		}
-		if res == nil || goja.IsUndefined(res) || goja.IsNull(res) {
-			return nil // explicit pass-through
-		}
-		out, err := jsonStringify(b.vm, res)
-		if err != nil {
-			b.logWarn("hook result stringify failed: %v", err)
-			return nil
-		}
-		var result map[string]any
-		if err := json.Unmarshal(out, &result); err != nil {
-			b.logWarn("hook result is not an object — ignored")
-			return nil
-		}
-		return result
+		return b.invokeHook(fn, data)
 	}
+}
+
+// invokeHook runs the JS hook handler over a JSON-marshalled payload and
+// converts the result back to a plain map. Every failure mode degrades to
+// pass-through (nil).
+func (b *JSBridge) invokeHook(fn goja.Callable, data []byte) map[string]any {
+	jsPayload, err := jsonParse(b.vm, data)
+	if err != nil {
+		b.logWarn("hook payload parse failed: %v", err)
+		return nil
+	}
+	res, err := fn(goja.Undefined(), jsPayload)
+	if err != nil {
+		b.logWarn("hook handler threw: %v", err)
+		return nil // JS exception ⇒ pass-through for this handler
+	}
+	if res == nil || goja.IsUndefined(res) || goja.IsNull(res) {
+		return nil // explicit pass-through
+	}
+	out, err := jsonStringify(b.vm, res)
+	if err != nil {
+		b.logWarn("hook result stringify failed: %v", err)
+		return nil
+	}
+	var result map[string]any
+	if err := json.Unmarshal(out, &result); err != nil {
+		b.logWarn("hook result is not an object — ignored")
+		return nil
+	}
+	return result
 }
 
 // logWarn emits through the plugin logger when wired; nil-safe by design so

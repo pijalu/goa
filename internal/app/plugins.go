@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync/atomic"
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal/agentic"
@@ -38,6 +39,10 @@ type pluginRuntime struct {
 	// hooks is the boot-created shared registry (subsystems.pluginHooks);
 	// goa.registerHook calls land here and the agent-side sink reads it live.
 	hooks *plugins.HookRegistry
+	// confirmDrainActive guards the confirm presenter goroutine against
+	// double-start (activatePluginUI runs both synchronously at startup and
+	// again on the command loop after the async plugin load).
+	confirmDrainActive atomic.Bool
 }
 
 // loadEnabledPlugins materializes bundled plugins, then loads all enabled
@@ -524,3 +529,16 @@ func (c *pluginCommandWrapper) Run(ctx core.Context, args []string) error {
 }
 
 var _ core.Command = (*pluginCommandWrapper)(nil)
+var _ core.AsyncCommand = (*pluginCommandWrapper)(nil)
+
+// AsyncCommand: plugin commands ALWAYS run off the TUI command loop with a
+// spinner label. Root-cause fix for goa.ui.confirm (plan §4): the JS command
+// blocks on the user's answer while the modal itself needs the command loop
+// free to render and route keys — a synchronous Execute on the loop would
+// deadlock until the 5-minute confirm cap. The same reasoning covers any
+// slow bridge call (goa.http.fetch) inside a command. Interactive submits
+// route through runAsyncCommand (steering stays live); direct router
+// callers (headless, tests) keep synchronous semantics.
+func (c *pluginCommandWrapper) AsyncHint(args []string) string {
+	return "Running /" + c.name + "…"
+}

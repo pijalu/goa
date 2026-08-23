@@ -406,9 +406,55 @@ segments.
 
 Adds a modal dialog.
 
+### `goa.ui.confirm({title, body, options, defaultId, allowCancel, timeoutMs})`
+
+Asks the user a multiple-choice question and **blocks until they answer**
+(plugins plan §4). The TUI shows a modal selection card — one at a time,
+FIFO-serialized; while it is up, other plugin timers/segments pause (they
+re-fire after the answer) because two JavaScript frames must never run on one
+runtime.
+
+```javascript
+const r = goa.ui.confirm({
+  title: "Use rate-limit reset?",
+  body: "This consumes one credit.",
+  options: [
+    { id: "yes", label: "Yes, use reset", style: "danger" },
+    { id: "no",  label: "Not now" },
+  ],
+  defaultId: "no",
+  allowCancel: true,
+  timeoutMs: 60000,
+});
+if (r.error)      { /* timeout / no UI / bad spec */ }
+else if (r.cancelled) { /* user dismissed */ }
+else              { goa.output("chose " + r.id); }
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `title` | `string` | Card heading |
+| `body` | `string` | Explanatory text (optional) |
+| `options` | `array` | ≥1 `{id, label, style}` rows; `style` = `ok` \| `danger` \| `default` |
+| `defaultId` | `string` | Initially highlighted option |
+| `allowCancel` | `boolean` | Adds an implicit Cancel row + Esc dismissal |
+| `timeoutMs` | `number` | Wait bound; 0/absent = capped at 5 minutes |
+
+Return shape: `{id}` on a real choice, `{cancelled:true}` on dismissal, or
+`{cancelled:true, error}` when the wait failed (`timeout`, `no-ui`) or the
+spec was invalid. Without a visible TUI (headless runs) the call fails closed
+immediately with `{cancelled:true, error:"no-ui"}` — treat cancellation as
+"the user declined", never as consent. Confirm is display + choice only:
+option IDs are opaque strings handed back to the plugin; no capability is
+granted by answering, and M6 will additionally require external plugins to
+declare the `ui-confirm` permission. Calls from a command context are safe
+(plugin commands execute off the UI thread); calling from code that runs on
+the TUI thread itself fails closed with an error instead of freezing the UI.
+
 > **Note:** The UI bridge is namespaced under `goa.ui` — use
-> `goa.ui.addSegment(...)`, `goa.ui.addPane(...)`, `goa.ui.addModal(...)`, and
-> `goa.ui.refreshSegment(id)`. The bare `goa.addSegment`/`goa.addPane`/
+> `goa.ui.addSegment(...)`, `goa.ui.addPane(...)`, `goa.ui.addModal(...)`,
+> `goa.ui.refreshSegment(id)`, and `goa.ui.confirm(...)`. The bare
+> `goa.addSegment`/`goa.addPane`/
 > `goa.addModal` forms are deprecated aliases.
 
 ### `goa.registerHotkey({key, ctrl, alt, shift, description, handler})`

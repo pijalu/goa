@@ -333,6 +333,13 @@ func (a *App) activatePluginUI(engine *tui.TUI) {
 	// Segments: push the initial render, then re-render on refresh requests.
 	a.pushPluginSegments(engine)
 	go a.drainSegmentRefreshes(engine, rt)
+	// Confirms (plan §4): attach the bridge consumer to the FIFO presenter
+	// loop. Idempotent-safe: activatePluginUI may run twice (sync + async
+	// load), and a second drain would double-present — guard by only
+	// starting when no drain is attached yet.
+	if rt.confirmDrainActive.CompareAndSwap(false, true) {
+		a.startConfirmDrain(engine, rt)
+	}
 }
 
 // pushPluginSegments evaluates every registered plugin segment on the plugin

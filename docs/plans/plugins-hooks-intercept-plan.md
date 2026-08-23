@@ -478,9 +478,21 @@ degradation).
    Default YES (single choke point in `runInternal` covers all) — confirm no
    path appends user messages without `runInternal` (orchestrator sub-agents
    use their own Agents ⇒ covered by their own sinks).
-3. Confirm modal vs streaming contention: confirm steals focus mid-stream —
-   M3 decides render-as-overlay-without-focus-steal vs queue-until-idle based
-   on how clarify cards behave today.
+3. Confirm modal vs streaming contention — **DECIDED (M3)**: selector-style
+   capturing overlay, FIFO-serialized one-at-a-time; NOT clarify-style and NOT
+   queue-until-idle. Grounding (read from today's behavior): ClarifyCard is
+   display-only because its answer is FREE TEXT typed on the main editor
+   ("Input discipline", docs/TUI.md) — a confirm has no typing, so that model
+   does not apply. Discrete choice already owns a focus-capturing precedent
+   (`ShowSelector`, `CaptureInput` overlay + FocusStack exact restore); the
+   compositor renders capturing-overlay frames mid-stream safely
+   (`tui/compositor_confirm_stream_repro_test.go`). Queue-until-idle would
+   delay plugin prompts behind arbitrarily long streams for no safety gain.
+   Implementation notes/deviations recorded in the M3 commit and code:
+   timers/hotkeys/segments/hooks defer while a confirm frame is live (item-E
+   invariant: never two goja frames on one runtime — delayed-not-lost), plugin
+   commands run async so the command loop stays free to serve the modal, and a
+   block guard fails `goa.ui.confirm` closed if invoked on the UI thread.
 
 ## 10. Milestone order & ship criteria
 
