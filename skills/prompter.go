@@ -30,6 +30,7 @@ func ToSkillSummaries(skills []*Skill) []SkillSummary {
 			// (both true when omitted) for YAML-parsed skills.
 			ModelInvocable: s.Meta.ModelInvocable,
 			UserInvocable:  s.Meta.UserInvocable,
+			Hidden:         s.Meta.Hidden,
 		})
 	}
 	return out

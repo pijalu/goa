@@ -48,15 +48,6 @@ config file; the change is lost after the next load.
 **Expected:** Tool-related changes made via `/config` must persist through the
 cascade (home/project/local config) and survive the next launch.
 
-## Dream is not wired into the agent session
-
-**Observed:** Memory consolidation (dream) only runs as a standalone CLI mode
-(`--dream`) or via the app-layer scheduler; it is not wired into the running
-agent/session lifecycle.
-
-**Expected:** Dream either works end-to-end where advertised or stays fully
-disabled by default until wired.
-
 ## Stats cache view renders barcharts instead of a clear table
 
 **Observed:** `/stats:cache` draws the cache-hit evolution as block

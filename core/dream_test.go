@@ -13,7 +13,6 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic/provider"
-	"github.com/pijalu/goa/internal/agentic/provider/protocol"
 	"github.com/pijalu/goa/memory"
 )
 
@@ -46,7 +45,11 @@ func TestDreamEngine_Run_Stream(t *testing.T) {
 		t.Fatalf("write memory: %v", err)
 	}
 
-	resolver := &fakeProviderResolver{model: provider.Model{Provider: "test", Api: provider.ApiOpenAICompletions}}
+	// Register the canned dream stream under a test-unique API name so this
+	// test never touches the shared openai-completions transport (which other
+	// tests in this binary may point at the real local LM).
+	api := registerFakeDreamStream(t)
+	resolver := &fakeProviderResolver{model: provider.Model{Provider: "test", Api: api}}
 	engine := NewDreamEngine(
 		&config.Config{
 			Memory:         config.MemoryConfig{Enabled: true},
@@ -161,10 +164,13 @@ func (f *fakeProviderResolver) BuildStreamOptions() provider.StreamOptions {
 // compile-time check that fakeProviderResolver implements the interface.
 var _ ProviderResolver = (*fakeProviderResolver)(nil)
 
-// fakeStreamProvider registers a fake ApiProvider so provider.Stream works.
-type fakeStreamProvider struct{}
+// fakeStreamProvider is a fake ApiProvider so provider.Stream works without
+// network. It registers under a UNIQUE per-test API name (see
+// registerFakeDreamStream) so it never hijacks the shared
+// "openai-completions" transport used by other tests in this binary.
+type fakeStreamProvider struct{ api provider.Api }
 
-func (p *fakeStreamProvider) API() provider.Api { return provider.ApiOpenAICompletions }
+func (p *fakeStreamProvider) API() provider.Api { return p.api }
 
 func (p *fakeStreamProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
 	s := provider.NewAssistantMessageEventStream(8)
@@ -178,9 +184,13 @@ func (p *fakeStreamProvider) StreamSimple(model provider.Model, ctx provider.Con
 	return p.Stream(model, ctx, opts.StreamOptions)
 }
 
-func TestMain(m *testing.M) {
-	provider.ClearApiProviders()
-	protocol.Clear()
-	provider.RegisterApiProvider(&fakeStreamProvider{})
-	os.Exit(m.Run())
+// registerFakeDreamStream registers the canned dream stream under a unique,
+// test-scoped API name and returns it. The name embeds t.Name() so repeated
+// registrations can never collide with real providers or each other
+// (RegisterApiProvider panics on duplicates).
+func registerFakeDreamStream(t *testing.T) provider.Api {
+	t.Helper()
+	api := provider.Api("dream-fake-" + t.Name())
+	provider.RegisterApiProvider(&fakeStreamProvider{api: api})
+	return api
 }

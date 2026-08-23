@@ -319,3 +319,38 @@ func writeRunnerTestSkillWithPolicy(t *testing.T, dir, name, policy string) {
 		t.Fatalf("write skill: %v", err)
 	}
 }
+
+// TestHiddenSkill_NotModelInvocableAndRejectedByRunTool is the regression for
+// "dream tool/skill disabled for the agent": a hidden:true internal skill
+// (e.g. dream) stays loaded so internal features can Get it by name, but it
+// must (a) never appear in the model-invocable catalog and (b) be refused by
+// the run_skill tool — the agent's execution surface.
+func TestHiddenSkill_NotModelInvocableAndRejectedByRunTool(t *testing.T) {
+	dir := t.TempDir()
+	writeRunnerTestSkillWithPolicy(t, dir, "internal-thing", "hidden: true")
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("load skills: %v", err)
+	}
+
+	// (a) Loaded but not advertised to the model.
+	skill, ok := reg.Get("internal-thing")
+	if !ok {
+		t.Fatal("hidden skill must stay loaded for internal feature use")
+	}
+	if skill.IsModelInvocable() {
+		t.Error("hidden skill must not be model-invocable")
+	}
+	tool := NewSkillRunnerTool(reg, nil, nil, true)
+	for _, n := range tool.modelInvocableSkillNames() {
+		if n == "internal-thing" {
+			t.Error("hidden skill listed in the model-invocable catalog")
+		}
+	}
+
+	// (b) The run_skill tool refuses hidden skills.
+	if _, err := tool.Execute(`{"skill_name":"internal-thing","task":"go"}`); err == nil {
+		t.Error("run_skill must reject hidden/internal skills")
+	}
+}

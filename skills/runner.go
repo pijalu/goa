@@ -102,6 +102,14 @@ func (t *SkillRunnerTool) Execute(input string) (string, error) {
 		return "", fmt.Errorf("skill %q not found — available skills: %s (use /skills for details)",
 			skillName, strings.Join(t.modelInvocableSkillNames(), ", "))
 	}
+	// Hidden/internal skills are never executable through the run_skill tool:
+	// they exist for internal features that load them by name (e.g. dream),
+	// and the tool schema/catalog must never offer them to the agent. This
+	// gate is deliberately orthogonal to model_invocable:false — those skills
+	// remain runnable from the UI path per P16.
+	if skill.Meta.Hidden {
+		return "", fmt.Errorf("skill %q is not available to the agent", skillName)
+	}
 
 	if t.Inline {
 		return t.executeInline(skill, task), nil

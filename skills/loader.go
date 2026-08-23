@@ -109,12 +109,11 @@ func (s *Skill) IsSticky() bool {
 }
 
 // IsModelInvocable reports whether the skill may be invoked by the model via
-// the <available_skills> catalog listing. The model-facing
-// predicate requires BOTH flags (P16): a skill the user cannot invoke is
-// never advertised to the model, so the model catalog is always a subset of
-// what the user can run from the UI.
+// the <available_skills> catalog listing. The model-facing predicate requires
+// BOTH flags (P16) and NOT hidden: hidden/internal skills (e.g. dream) stay
+// loaded for internal features but are never advertised to the model.
 func (s *Skill) IsModelInvocable() bool {
-	return s.Meta.ModelInvocable && s.Meta.UserInvocable
+	return s.Meta.ModelInvocable && s.Meta.UserInvocable && !s.Meta.Hidden
 }
 
 // IsUserInvocable reports whether the skill may be invoked by the user from
@@ -201,14 +200,16 @@ type SkillSummary struct {
 	// IsModelInvocable, the user-facing TUI menu uses IsUserInvocable.
 	ModelInvocable bool
 	UserInvocable  bool
+	// Hidden marks internal skills (e.g. dream): loaded for internal feature
+	// use, but never advertised to or invocable by the model.
+	Hidden bool
 }
 
 // IsModelInvocable reports whether the skill may be advertised to the model.
-// The model-facing predicate requires BOTH flags (P16 acceptance): a skill
-// the user cannot invoke never appears in the model's <available_skills>
-// catalog.
+// The model-facing predicate requires BOTH flags (P16) and NOT hidden: a
+// hidden skill is internal-only, regardless of its invocation flags.
 func (s SkillSummary) IsModelInvocable() bool {
-	return s.ModelInvocable && s.UserInvocable
+	return s.ModelInvocable && s.UserInvocable && !s.Hidden
 }
 
 // IsUserInvocable reports whether the skill may appear in the user-facing
@@ -670,6 +671,7 @@ func (r *SkillRegistry) ListEmbeddedDiscoverable() []SkillSummary {
 				// SkillMeta.UnmarshalYAML (both true when omitted).
 				ModelInvocable: skill.Meta.ModelInvocable,
 				UserInvocable:  skill.Meta.UserInvocable,
+				Hidden:         skill.Meta.Hidden,
 			})
 		}
 		return nil
@@ -769,6 +771,7 @@ func (r *SkillRegistry) List() []SkillSummary {
 			Source:           s.Source,
 			ModelInvocable:   s.Meta.ModelInvocable,
 			UserInvocable:    s.Meta.UserInvocable,
+			Hidden:           s.Meta.Hidden,
 		})
 	}
 	return summaries
