@@ -28,7 +28,7 @@ var pickerProviderMu sync.Mutex
 //
 // Consolidated command (replaces the former /providers, /prs, and /provider):
 //
-//	/provider             open interactive picker (lists all providers)
+//	/provider             open interactive picker (switch providers; choose "add provider" or press + to browse the full catalog)
 //	/provider <id>        switch to <id>
 //	/provider?            display current provider + model
 //	/provider??           long help
@@ -115,7 +115,7 @@ func showProviderPicker(host core.UIHost, cfg *config.Config, saver config.Confi
 		return nil
 	}
 
-	items := make([]tui.SelectorItem, 0, len(cfg.Providers))
+	items := make([]tui.SelectorItem, 0, len(cfg.Providers)+1)
 	for _, p := range cfg.Providers {
 		items = append(items, tui.SelectorItem{
 			Value:       p.ID,
@@ -123,6 +123,17 @@ func showProviderPicker(host core.UIHost, cfg *config.Config, saver config.Confi
 			Description: providerPickerDesc(cfg, p),
 		})
 	}
+	// Surface the full ~190-provider catalog goa ships with. The picker lists
+	// configured providers as switch targets; this add entry opens the catalog
+	// browse so every preset (OpenRouter, Moonshot, Together, …) is reachable,
+	// not just the ones already set up. Mirrors /config → provider, which shows
+	// the same row. The '+' hotkey emits "__add__" too, so both paths share
+	// runAddProviderFromPicker.
+	items = append(items, tui.SelectorItem{
+		Value:       "__add__",
+		Label:       "— add provider —",
+		Description: "browse the full provider catalog",
+	})
 
 	current := cfg.ActiveProvider
 	host.SelectOption("Select provider:", items, current, func(selected string, ok bool) {

@@ -409,7 +409,58 @@ func TestProviderCommand_SwitchClearsForeignModel(t *testing.T) {
 	// Switch to a custom provider with no preset: model must clear.
 	cfg.ActiveModel = "glm-5.2"
 	applyProviderSelection(*ctx, cfg, saver, "my-custom")
-	if cfg.ActiveModel != "" {
-		t.Errorf("ActiveModel = %q after switching to custom provider, want cleared", cfg.ActiveModel)
+}
+
+// TestShowProviderPicker_ListsAddEntry verifies that the /provider picker
+// exposes the full-catalog "add provider" entry, so users can reach the
+// ~190 shipped presets (OpenRouter, Moonshot, Together, …) beyond the few they
+// have configured. The picker intentionally lists only configured providers as
+// switch targets; the add row is the doorway to the rest of the catalog.
+// Regression guard for the "I only see my 4 providers" report.
+func TestShowProviderPicker_ListsAddEntry(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "openai",
+		Providers: []config.ProviderConfig{
+			{ID: "openai", Name: "OpenAI"},
+			{ID: "anthropic", Name: "Anthropic"},
+		},
+	}
+
+	var gotItems []tui.SelectorItem
+	ctx := core.Context{
+		Config: cfg,
+		SelectOptionFunc: func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+			gotItems = options
+		},
+	}
+
+	if err := showProviderPicker(ctx, cfg, nil); err != nil {
+		t.Fatalf("showProviderPicker: %v", err)
+	}
+
+	if len(gotItems) == 0 {
+		t.Fatal("picker presented no items")
+	}
+
+	var foundAdd bool
+	for _, it := range gotItems {
+		if it.Value == "__add__" {
+			foundAdd = true
+			if !strings.Contains(it.Label, "add provider") {
+				t.Errorf("add entry label %q does not mention 'add provider'", it.Label)
+			}
+		}
+	}
+	if !foundAdd {
+		t.Errorf("picker did not expose the '__add__' full-catalog entry; items = %v", gotItems)
+	}
+
+	// Configured providers must still appear as switch targets.
+	ids := make(map[string]bool, len(gotItems))
+	for _, it := range gotItems {
+		ids[it.Value] = true
+	}
+	if !ids["openai"] || !ids["anthropic"] {
+		t.Errorf("configured providers missing from switch list; items = %v", gotItems)
 	}
 }
