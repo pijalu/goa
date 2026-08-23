@@ -29,7 +29,8 @@ per item with a short title, the observed behavior, and the expected behavior.
 # To fix
 
 *(empty — all reported items are fixed, validated, and archived under
-`docs/archive/`.)*
+`docs/archive/`. Last closed: TUI cut-point SGR state loss →
+`docs/archive/tui-color-sgr-cutpoint.2026-08-23.md`.)*
 
 # TODO
 

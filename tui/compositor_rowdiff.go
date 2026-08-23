@@ -81,7 +81,8 @@ func (c *Compositor) unchangedRowChrome(canvas []string, i, screenRow, windowH i
 // overwrites every visible cell from col through the end of the row (tail
 // mode: a stable prefix exists) or exactly the changed leading cells (head
 // mode: a stable suffix keeps its columns); untouched cells retain their
-// previous frame's content.
+// previous frame's content. A tail segment begins with the SGR state active
+// at the cut column so the repainted cells carry the row's own styling.
 type rowUpdate struct {
 	partial bool
 	col     int    // 0-indexed first rewritten visible column
@@ -104,7 +105,8 @@ const (
 //   - every cut point lies outside escape sequences and grapheme clusters
 //     (ansi.SafeCut): slicing never splits an escape sequence or wide grapheme
 //   - both rows are emittable (no tabs/C0 controls, no OSC, style-closed) so
-//     SGR/hyperlink state cannot leak across frames via untouched cells
+//     SGR/hyperlink state cannot leak across frames via untouched cells, and
+//     the cut-point SGR state is either default or restorable (ansi.SGRStateAt)
 //   - tail mode: the new tail is not narrower than the old one, so no stale
 //     trailing cells survive; the segment never starts with a bare combining
 //     mark (it would compose with stale cell content instead of repainting)
@@ -134,6 +136,16 @@ func planPartialRow(prev, cur string, width int) rowUpdate {
 // planTailRow builds the stable-prefix plan: rewrite from the first differing
 // column THROUGH the end of the row, overwriting every stale cell to the
 // right of it. p is the aligned shared byte-prefix length.
+//
+// The cut can land mid-styled-run (an SGR opened before the cut is still
+// active at that column). The terminal pen at the start of a row update is
+// whatever the previous frame's row ended with — default, since canvas rows
+// are style-closed — so the segment carries the row's active SGR state as a
+// prefix (ansi.SGRStateAt). Without it the repainted cells render with the
+// default pen while their untouched neighbours keep their colors: the
+// streaming color bleed regression (blue headings, green tool backgrounds,
+// half-white borders). Prefixes the tracker cannot model exactly reject the
+// partial plan in favor of the full-row fallback.
 func planTailRow(prev, cur string, width, p int) (rowUpdate, bool) {
 	if p <= 0 || !ansi.SafeCut(cur, p) {
 		return rowUpdate{}, false
@@ -153,7 +165,11 @@ func planTailRow(prev, cur string, width, p int) (rowUpdate, bool) {
 	if !startsPrintable(seg) {
 		return rowUpdate{}, false // bare combining mark cannot repaint a cell
 	}
-	return rowUpdate{partial: true, col: col, seg: seg}, true
+	state, ok := ansi.SGRStateAt(cur, p)
+	if !ok {
+		return rowUpdate{}, false // prefix unmodellable: full row is the only safe emit
+	}
+	return rowUpdate{partial: true, col: col, seg: state + seg}, true
 }
 
 // planHeadRow builds the stable-suffix plan: rewrite only the changed leading

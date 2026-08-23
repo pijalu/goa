@@ -85,6 +85,77 @@ func assertColRange(t *testing.T, got rowUpdate, want colRangeWant) {
 	}
 }
 
+// TestPlanTailRow_RestoresCutPointSGRState guards the streaming color bleed
+// regression: a tail cut landing mid-styled-run must carry the row's active
+// SGR state as a prefix, because the terminal pen at the start of a row
+// update is default (canvas rows are style-closed). Each case reproduces a
+// symptom observed in the wild (term.log 2026-08-23 / export
+// goa-export-20260823-140941.zip).
+func TestPlanTailRow_RestoresCutPointSGRState(t *testing.T) {
+	tests := []struct {
+		name string
+		prev string
+		cur  string
+		want colRangeWant
+	}{
+		{
+			// "## What it is" streamed char-by-char: the appended text
+			// rendered default instead of heading blue.
+			name: "streaming heading append keeps bold blue fg",
+			prev: " \x1b[1;38;2;88;166;255m## What it i" + rdR,
+			cur:  " \x1b[1;38;2;88;166;255m## What it is" + rdR,
+			want: colRangeWant{partial: true, col: 13, seg: "\x1b[1;38;2;88;166;255ms" + rdR},
+		},
+		{
+			// Tool widget line repaint during scroll dropped the green bg
+			// (term.log: ESC[2;2H"Took 0.04s" with no background).
+			name: "tool row repaint keeps green bg",
+			prev: "\x1b[48;2;42;50;41m \x1b[38;2;139;148;158m7\x1b[39m      " + rdR,
+			cur:  "\x1b[48;2;42;50;41m \x1b[38;2;139;148;158mTook 0.04s\x1b[39m  " + rdR,
+			want: colRangeWant{partial: true, col: 1, seg: "\x1b[38;2;139;148;158;48;2;42;50;41mTook 0.04s\x1b[39m  " + rdR},
+		},
+		{
+			// Arch-tree row reflow during scroll lost the connector fg.
+			name: "tree row append keeps fg",
+			prev: "\x1b[38;2;139;148;158m  │  Header    │ Chat" + rdR,
+			cur:  "\x1b[38;2;139;148;158m  │  Header    │ ChatViewport" + rdR,
+			want: colRangeWant{partial: true, col: 21, seg: "\x1b[38;2;139;148;158mViewport" + rdR},
+		},
+		{
+			// Editor titled border: a title change mid-row made the right
+			// half of the input top line render default white.
+			name: "titled border change keeps border fg",
+			prev: "\x1b[38;2;48;54;61m╭─── claude ───" + rdR,
+			cur:  "\x1b[38;2;48;54;61m╭─── gpt-5 ─────" + rdR,
+			want: colRangeWant{partial: true, col: 5, seg: "\x1b[38;2;48;54;61mgpt-5 ─────" + rdR},
+		},
+		{
+			// Cut at a default-pen position must NOT gain a spurious prefix.
+			name: "default-pen cut gains no state prefix",
+			prev: "plain \x1b[0m tail  " + rdR,
+			cur:  "plain \x1b[0m tail x" + rdR,
+			want: colRangeWant{partial: true, col: 12, seg: "x" + rdR},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := planPartialRow(tt.prev, tt.cur, 80)
+			assertColRange(t, got, tt.want)
+		})
+	}
+}
+
+// TestPlanTailRow_RejectsUnmodellablePrefix ensures a prefix the SGR tracker
+// cannot replay exactly (here: an erase sequence) forces the safe full-row
+// fallback instead of a guessed state.
+func TestPlanTailRow_RejectsUnmodellablePrefix(t *testing.T) {
+	prev := "\x1b[2K\x1b[31mred tail a" + rdR
+	cur := "\x1b[2K\x1b[31mred tail b" + rdR
+	if got := planPartialRow(prev, cur, 80); got.partial {
+		t.Fatalf("unmodellable prefix accepted: %+v", got)
+	}
+}
+
 // TestPlanTailRow_RejectsBareCombiningMark exercises the startsPrintable guard
 // directly: a tail whose FIRST visible cluster is a bare combining mark cannot
 // repaint its cell in isolation and must fall back.
