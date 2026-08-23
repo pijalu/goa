@@ -40,14 +40,6 @@ statusbar:
 **Expected:** The statusbar must reflect the provider/model actually active for
 the running session after the switch.
 
-## /config tool fixes are not saved / do not survive next load
-
-**Observed:** Fixing tool settings through `/config` does not get saved to the
-config file; the change is lost after the next load.
-
-**Expected:** Tool-related changes made via `/config` must persist through the
-cascade (home/project/local config) and survive the next launch.
-
 ## Stats cache view renders barcharts instead of a clear table
 
 **Observed:** `/stats:cache` draws the cache-hit evolution as block
@@ -87,6 +79,33 @@ table rows (no fallback-to-preformatted).
 Validation steps: `go test ./core/commands ./tui -run 'StatsCache|Cache'`;
 quality gates separately; filmstrip/manual check of `/stats:cache` in the
 running TUI showing rendered tables; commit.
+
+## Last-used model is global (home) instead of per-project; no usage-based default
+
+**Observed:** Switching models persists `active_provider` / `active_model`
+to the HOME config (`saveHomeProvidersAndModels`), so every project shares
+one "last used" model. When no default model is configured, startup falls
+back to an arbitrary/hardcoded choice rather than learning from usage.
+
+**Expected:** The last-used model is saved first to the PROJECT layer
+(`.goa/config.yaml`) so each project keeps its own active model; home stays
+as fallback. When no default model exists in any config layer, pick the
+most-used model from the persistent usage stats (`.goa/usage.json`) instead.
+
+**Fix plan:**
+1. Persist model switches to the PROJECT layer first via
+   `ConfigSaver.SaveProjectField`; fall back to the existing home write
+   only when there is no writable project dir.
+2. On boot, resolve active model: config value → else most-used entry from
+   usage store (top by request count among configured providers/models) →
+   else existing fallback.
+3. Tests: (a) switch in project A writes `.goa/config.yaml` there and
+   leaves home untouched; (b) second project keeps its own pinned pair;
+   (c) empty config + seeded usage store selects top-used model; (d) empty
+   stats fall back as before.
+4. Validation: `go test ./internal/app ./core/commands -run
+   'ModelSwitch|ActiveModel|Usage'`; quality gates separately; filmstrip
+   check of footer showing each project's own model; commit.
 
 # TODO
 

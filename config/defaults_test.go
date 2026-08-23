@@ -30,6 +30,12 @@ func TestDefaultConfigYAML(t *testing.T) {
 // auto-heal OFF (adopted tuned default): auto-healing malformed XML tool
 // calls is only wanted for local models that need it.
 func TestDefaultConfig_AutoHealToolCalls(t *testing.T) {
+	// Isolate from the developer's real ~/.goa/config.yaml: this test asserts
+	// the SHIPPED default, and home pins are legitimate overrides (they flow
+	// through mergeExecution since the AutoHealToolCalls persistence fix).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	loader := NewCascadeLoader(t.TempDir(), "", nil)
 	cfg, err := loader.Load()
 	if err != nil {

@@ -184,6 +184,11 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	}
 	dst.AutoSaveModel = src.AutoSaveModel
 	dst.DisableToolBudget = src.DisableToolBudget
+	// AutoHealToolCalls is the /config "Tool call fixing" toggle. Copied
+	// unconditionally like its sibling bools: it has no meaningful "unset"
+	// state, and skipping it here silently dropped every persisted change on
+	// the next load (bugs.md /config tool fixes not saved).
+	dst.AutoHealToolCalls = src.AutoHealToolCalls
 	mergeIntIfSet(&dst.MaxToolRepeatTotal, src.MaxToolRepeatTotal)
 	mergeIntIfSet(&dst.MaxToolRepeatConsecutive, src.MaxToolRepeatConsecutive)
 	mergeIntIfSet(&dst.MaxToolCalls, src.MaxToolCalls)
