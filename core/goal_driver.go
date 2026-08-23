@@ -113,10 +113,13 @@ type AgentRunner interface {
 // History is preserved by the implementation and restored when the goal ends.
 type FreshAgentRunner interface {
 	AgentRunner
-	// RunFresh runs one turn on a clean context. begin is true on the first
-	// continuation turn of a fresh-context goal (the implementation should
-	// snapshot/reset context and surface a visible boundary); it is false on
-	// subsequent turns of the same fresh-context goal.
+	// RunFresh runs one turn on a clean context. begin is true while no
+	// RunFresh call of this fresh-context goal has succeeded yet — the first
+	// attempt, and any retry after an early failure like ErrAgentBusy (which
+	// returns before any context is cleared). The implementation resets
+	// context and surfaces a visible boundary exactly when begin is true;
+	// begin is false once a prior call completed, so later turns of the same
+	// fresh-context goal reuse the already-clean conversation.
 	RunFresh(ctx context.Context, input string, begin bool) error
 }
 
@@ -127,8 +130,11 @@ type GoalDriver struct {
 	mu      sync.Mutex
 	driving bool
 	// freshBegun tracks whether the current fresh-context goal has already
-	// emitted its begin (context-reset) turn, so only the first continuation
-	// passes begin=true. Reset whenever the active goal changes or clears.
+	// completed its begin (context-reset) turn, so only the first continuation
+	// passes begin=true. It is set ONLY after a RunFresh call succeeds: an
+	// attempt that fails early (ErrAgentBusy's guard returns before any
+	// history is cleared) performed no reset and must not consume the marker.
+	// Reset whenever the active goal changes or clears.
 	freshBegunFor string
 	// stop cancels the current drive loop's context. Set by Drive while a
 	// loop is active; called by Stop (ESC hard stop — "ESC: hard
@@ -374,11 +380,16 @@ func (d *GoalDriver) runTurn(ctx context.Context, active *goal.GoalSnapshot) err
 	if active.FreshContext {
 		if fr, ok := d.Agent.(FreshAgentRunner); ok {
 			begin := d.freshBegunFor != active.GoalID
-			d.freshBegunFor = active.GoalID
 			err = fr.RunFresh(ctx, prompt, begin)
 			if err != nil {
+				// The failed attempt performed no reset (the ErrAgentBusy
+				// guard in particular returns before any history is
+				// cleared): leave freshBegunFor unset so the next drive
+				// retries with begin=true instead of silently continuing
+				// on the pre-goal conversation.
 				return err
 			}
+			d.freshBegunFor = active.GoalID
 			return d.checkSilentStop()
 		}
 	}
