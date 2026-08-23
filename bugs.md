@@ -28,46 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## Stats cache view renders barcharts instead of a clear table
-
-**Observed:** `/stats:cache` draws the cache-hit evolution as block
-barcharts — a vertical █ chart for the last ≤10 completions and a
-20-column horizontal █ bar per turn — plus an ASCII-aligned drops table.
-The bars are hard to read precisely, waste vertical space, and bypass the
-app's own table rendering.
-
-**Expected:** No barchart. Every tabular section emits clean Markdown
-output that the on-screen MD rendering pipeline (systemMessage →
-MDStreamRenderer) draws as proper tables:
-- Cache hit last completions: `| Turn | CH % |` (newest last)
-- Cache usage per turn: `| Turn | Tokens kT | CM | CH % |`
-- Session total: one heading line with the weighted percentage
-- Cache misses: `| Turn | Kind | % of prefix | Tokens recomputed |`
-- Cache drops: `| Turn | Before | After | Δ |`
-
-**Fix plan:**
-1. Rewrite `writeCacheHitLast10` to emit an MD table instead of
-   `writeCacheChart`; keep newest-last ordering and per-band values.
-2. Rewrite `writeCacheAvgPerTurn` rows as MD table rows (drop the 20-col
-   bar); keep the exact same numeric columns.
-3. Convert `writeCacheMissList` and `writeCacheDrops` to MD tables.
-4. Remove the now-unused chart helpers (`writeCacheChart`, `cacheBarHeights`,
-   `writeCacheChartRow`, `cacheRowGutter`, `writeCacheRowCells`,
-   `writeCacheChartBaseline`, chart width constants) and keep shared logic
-   (rates, colors for value coloring if trivially reusable).
-5. Keep output markdown-looking so it routes through MDStreamRenderer.
-
-Test approach: extend `core/commands/stats_cache_test.go` — table-driven
-cases per section asserting (a) no `█` block chars remain in any output,
-(b) each section contains a valid MD table header + `|---|` separator row,
-(c) numeric values match the existing formulas. Add a TUI-side test feeding
-the new output through `MDStreamRenderer` to assert it renders box-drawn
-table rows (no fallback-to-preformatted).
-
-Validation steps: `go test ./core/commands ./tui -run 'StatsCache|Cache'`;
-quality gates separately; filmstrip/manual check of `/stats:cache` in the
-running TUI showing rendered tables; commit.
-
 ## Last-used model is global (home) instead of per-project; no usage-based default
 
 **Observed:** Switching models persists `active_provider` / `active_model`
