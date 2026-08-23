@@ -178,6 +178,7 @@ func (m *configMenu) showRoot() error {
 		{Value: "provider", Label: "Provider", Description: cfg.ActiveProvider},
 		{Value: "models", Label: "Manage models", Description: "Add, edit, remove, or select models"},
 		{Value: "mode", Label: "Execution mode", Description: string(cfg.Execution.Mode)},
+		{Value: "retry", Label: "Retry settings", Description: retrySettingsLabel(cfg)},
 		{Value: "compression", Label: "Compression", Description: compressionLabel(cfg)},
 		{Value: "theme", Label: "Theme", Description: cfg.TUI.Theme},
 		{Value: "spinner", Label: "Spinner", Description: spinnerLabel(cfg)},
@@ -221,6 +222,7 @@ func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 		"provider":         (*configMenu).openProvider,
 		"models":           (*configMenu).openModels,
 		"mode":             (*configMenu).openExecutionMode,
+		"retry":            (*configMenu).openRetrySettings,
 		"compression":      (*configMenu).openCompression,
 		"theme":            (*configMenu).openTheme,
 		"spinner":          (*configMenu).openSpinner,
@@ -245,6 +247,7 @@ func (m *configMenu) openMajorMode()     { m.open(m.settingMajorMode) }
 func (m *configMenu) openProvider()      { m.open(m.settingProvider) }
 func (m *configMenu) openModels()        { m.open(m.settingModels) }
 func (m *configMenu) openExecutionMode() { m.open(m.settingExecutionMode) }
+func (m *configMenu) openRetrySettings() { m.open(m.settingRetrySettings) }
 func (m *configMenu) openCompression()   { m.open(m.settingCompression) }
 func (m *configMenu) openTheme()         { m.open(m.settingTheme) }
 func (m *configMenu) openSpinner()       { m.open(m.settingSpinner) }
@@ -397,6 +400,59 @@ func (m *configMenu) settingExecutionMode() {
 		m.applySet("execution.mode", v)
 		m.back()
 	})
+}
+
+func retrySettingsLabel(cfg *config.Config) string {
+	maxRetries := cfg.Execution.Retries
+	if maxRetries <= 0 {
+		maxRetries = 5
+	}
+	return fmt.Sprintf("%d retries, 5m cap", maxRetries)
+}
+
+func (m *configMenu) settingRetrySettings() {
+	m.current = m.settingRetrySettings
+	cfg := m.ctx.Config
+	items := []tui.SelectorItem{
+		{Value: "retries", Label: "Maximum retries", Description: retrySettingsLabel(cfg)},
+		{Value: "provider_delay", Label: "Active provider retry cap", Description: activeProviderRetryDelay(cfg)},
+	}
+	m.ctx.SelectOption("Retry settings:", items, "", func(selected string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		switch selected {
+		case "retries":
+			m.ctx.ShowInput("Maximum retries:", fmt.Sprintf("%d", cfg.Execution.Retries), func(v string, accepted bool) {
+				if accepted && v != "" {
+					m.applySet("execution.retries", v)
+				}
+				m.settingRetrySettings()
+			})
+		case "provider_delay":
+			if cfg.ActiveProvider == "" {
+				m.flash("Select an active provider first.")
+				m.settingRetrySettings()
+				return
+			}
+			m.ctx.ShowInput("Provider retry cap (duration):", activeProviderRetryDelay(cfg), func(v string, accepted bool) {
+				if accepted && v != "" {
+					m.applySet("providers."+cfg.ActiveProvider+".max_retry_delay", v)
+				}
+				m.settingRetrySettings()
+			})
+		}
+	})
+}
+
+func activeProviderRetryDelay(cfg *config.Config) string {
+	for _, p := range cfg.Providers {
+		if p.ID == cfg.ActiveProvider && p.MaxRetryDelay != "" {
+			return p.MaxRetryDelay
+		}
+	}
+	return "5m (default)"
 }
 
 // toggleBoolLabel returns the string representation of the opposite bool,

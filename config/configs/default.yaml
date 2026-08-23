@@ -17,7 +17,7 @@ mode:
 
 execution:
   mode: "yolo"
-  retries: 2
+  retries: 5
   token_warning: 70
   token_critical: 90
   loop_warning: 10

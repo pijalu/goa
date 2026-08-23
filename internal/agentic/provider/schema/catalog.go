@@ -114,15 +114,15 @@ var DefaultRetryCodes = []string{
 
 // DefaultRetryPolicy is the package-wide normal-mode retry policy applied when
 // neither the provider config nor the catalog entry declares one. It keeps
-// Goa's established retry budget (5 retries, 1s→30s exponential, symmetric
-// jitter) with the default transient code set.
+// Goa's established retry budget (5 retries, Fibonacci backoff capped at five
+// minutes, symmetric jitter) with the default transient code set.
 var DefaultRetryPolicy = &RetryPolicy{
 	Mode:       RetryModeNormal,
 	MaxRetries: 5,
 	Backoff: RetryBackoff{
 		InitialDelay: time.Second,
-		MaxDelay:     30 * time.Second,
-		Jitter:       0.25,
+		MaxDelay:     5 * time.Minute,
+		Jitter:       0,
 	},
 	Codes: DefaultRetryCodes,
 }

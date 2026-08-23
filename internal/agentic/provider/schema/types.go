@@ -218,14 +218,13 @@ const (
 	RetryModeAlways RetryMode = "always"
 )
 
-// RetryBackoff is the resolved exponential-backoff schedule for one retry
-// policy. Zero values mean "use the package default" for that axis.
+// RetryBackoff is the resolved retry-backoff schedule for one retry policy.
+// Zero values mean "use the package default" for that axis.
 type RetryBackoff struct {
-	// InitialDelay is the base delay for the first retry (doubles per
-	// attempt). Zero falls back to the default 1s.
+	// InitialDelay is the base delay for the first retry. Zero falls back to 1s.
 	InitialDelay time.Duration `json:"initial_delay,omitempty"`
-	// MaxDelay caps both the local exponential delay and any accepted
-	// provider Retry-After. Zero falls back to the default 30s.
+	// MaxDelay caps local delay and accepted provider Retry-After. Zero falls back
+	// to the default five-minute cap.
 	MaxDelay time.Duration `json:"max_delay,omitempty"`
 	// Jitter is the symmetric random multiplier range around one (0.1 = ±10%).
 	// Zero falls back to the default 0.25 (legacy fixed +250ms is replaced by

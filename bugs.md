@@ -29,37 +29,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 # To fix
 
 
-## 3. 429 rate-limit retry: fibonacci backoff, 5-attempt default, /config exposure
-
-**Observed:** an `Error: 429` from the provider aborts the turn too early.
-The retry machinery exists (429 is classified `RATE_LIMIT`, server
-`Retry-After` is honored — internal/agentic/retry_classify.go,
-agent_stream_retry.go), but the defaults and surface do not match expected
-behavior:
-
-- **Retry budget defaults to 2** (`execution.retries: 2`,
-  config/configs/default.yaml:20) — a sustained rate limit exhausts the
-  budget after two attempts and surfaces the error to the user.
-- **Backoff cap defaults to 30s** (`maxStreamBackoff = 30 * time.Second`,
-  internal/agentic/retry_classify.go:21) — providers asking for longer
-  cooldowns cannot be waited out.
-- **Backoff curve is exponential** (legacy schedule 1s, 2s, 4s, … with
-  ≤250ms jitter) — not the requested fibonacci growth.
-- **Neither knob is exposed in `/config`**: `execution.retries` and the
-  per-provider `retry_policy` (config/config_types.go `RetryPolicyConfig`:
-  mode, max_retries, backoff.initial/max/jitter, codes) are YAML-only;
-  nothing in core/commands/config*.go offers them.
-
-**Expected:**
-
-1. On 429 (and other rate-limit class errors), retry with **fibonacci**
-   delay growth (1s, 1s, 2s, 3s, 5s, 8s, …), **maxed at 5 minutes** by
-   default. A server-supplied `Retry-After` should still win when present
-   and within the cap (keep current dsh semantics).
-2. **Total retries configurable, default 5** (up from 2).
-3. **Max delay and max retry exposed in `/config`** (Execution or Provider
-   section) with persistence through the config cascade, alongside the
-   existing YAML keys — no new parallel setting.
 
 ## 4. Streaming render CPU exceeds the 10–20% budget (pre-existing; optimization)
 
@@ -118,6 +87,12 @@ in core/commands/config_cli.go) may shadow the tiered value.
 when its context usage crosses the configured trigger (here 20%), compression
 runs using the overridden strategy (hard/summarize), same semantics as the
 global configuration.
+
+## 6. Status line shows configured default provider instead of session provider
+
+**Observed:** the provider displayed in the status line can differ from the provider currently used by the active session. It appears to fall back to the current configuration default rather than reflecting the provider selected for the running session.
+
+**Expected:** the status line must show the provider actually used by the active session, including after provider/model switches, and remain consistent with the request path.
 
 # TODO
 

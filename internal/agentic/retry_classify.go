@@ -18,7 +18,7 @@ import (
 
 // maxStreamBackoff caps the delay between stream retries so a huge
 // server-supplied Retry-After cannot stall the agent for minutes.
-const maxStreamBackoff = 30 * time.Second
+const maxStreamBackoff = 5 * time.Minute
 
 // errEmptyResponse is synthesized when a stream ends cleanly (2xx + [DONE]/EOF)
 // but produced no content, no thinking, and no tool calls. Under provider load
@@ -279,25 +279,13 @@ var transientStreamPatterns = []string{
 // with up to 250ms of jitter to avoid thundering-herd retries against a
 // shared endpoint.
 func retryBackoff(err error, attempt int, policies ...*provider.RetryPolicy) time.Duration {
-	var policy *provider.RetryPolicy
-	if len(policies) > 0 {
-		policy = policies[0]
+	policy := retryPolicyOf(policies...)
+	if d, handled := retryAfterBackoff(err, policy); handled {
+		return d
 	}
-
-	var provErr *hooks.ProviderError
-	if errors.As(err, &provErr) && provErr.IsRateLimit {
-		if d := retryAfterDuration(provErr.RetryAfter, provErr.RetryAfterMs); d > 0 {
-			if policy != nil && policy.Backoff.MaxDelay > 0 {
-				if d <= policy.Backoff.MaxDelay {
-					return d
-				}
-				// Over-cap provider delay: use local backoff below.
-			} else {
-				return clampBackoff(d)
-			}
-		}
+	if isRateLimitError(err) {
+		return rateLimitBackoff(attempt, policy)
 	}
-
 	if policy != nil {
 		return policyBackoff(policy, attempt)
 	}
@@ -306,6 +294,69 @@ func retryBackoff(err error, attempt int, policies ...*provider.RetryPolicy) tim
 	base := time.Duration(1<<uint(attempt)) * time.Second
 	jitter := time.Duration(rand.Intn(250)) * time.Millisecond
 	return clampBackoff(base + jitter)
+}
+
+func isRateLimitError(err error) bool {
+	var provErr *hooks.ProviderError
+	return errors.As(err, &provErr) && provErr.IsRateLimit
+}
+
+func retryAfterBackoff(err error, policy *provider.RetryPolicy) (time.Duration, bool) {
+	var provErr *hooks.ProviderError
+	if !errors.As(err, &provErr) || !provErr.IsRateLimit {
+		return 0, false
+	}
+	d := retryAfterDuration(provErr.RetryAfter, provErr.RetryAfterMs)
+	if d <= 0 {
+		return 0, false
+	}
+	if policy != nil && policy.Backoff.MaxDelay > 0 {
+		if d <= policy.Backoff.MaxDelay {
+			return d, true
+		}
+		return 0, false
+	}
+	return clampBackoff(d), true
+}
+
+// rateLimitBackoff computes Fibonacci growth for rate-limit failures. The
+// first two retries both wait the initial delay; later waits sum the prior two.
+func rateLimitBackoff(attempt int, policy *provider.RetryPolicy) time.Duration {
+	initial, maxDelay, jitter := time.Second, maxStreamBackoff, float64(0)
+	if policy != nil {
+		if policy.Backoff.InitialDelay > 0 {
+			initial = policy.Backoff.InitialDelay
+		}
+		if policy.Backoff.MaxDelay > 0 {
+			maxDelay = policy.Backoff.MaxDelay
+		}
+		jitter = policy.Backoff.Jitter
+	}
+	if attempt < 0 {
+		attempt = 0
+	}
+	a, b := initial, initial
+	for i := 1; i < attempt; i++ {
+		if b >= maxDelay-a {
+			b = maxDelay
+			break
+		}
+		a, b = b, a+b
+	}
+	if b > maxDelay {
+		b = maxDelay
+	}
+	if jitter <= 0 {
+		return b
+	}
+	if jitter > 1 {
+		jitter = 1
+	}
+	d := time.Duration(float64(b) * (1 - jitter + 2*jitter*rand.Float64()))
+	if d > maxDelay {
+		return maxDelay
+	}
+	return d
 }
 
 // policyBackoff computes the local exponential-backoff delay for one retry

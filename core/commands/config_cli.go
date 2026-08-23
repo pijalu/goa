@@ -482,6 +482,7 @@ var configSetters = map[string]configSetter{
 	"active_model":                                   setActiveModel,
 	"multi_agent.companion_model":                    setStringWithValidate(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionModel }, validateActiveModel),
 	"execution.mode":                                 setExecutionMode,
+	"execution.retries":                              setInt(func(cfg *config.Config) *int { return &cfg.Execution.Retries }),
 	"execution.auto_save_model":                      setBool(func(cfg *config.Config) *bool { return &cfg.Execution.AutoSaveModel }),
 	"execution.auto_heal_tool_calls":                 setBool(func(cfg *config.Config) *bool { return &cfg.Execution.AutoHealToolCalls }),
 	"mode.plan_file_path":                            setString(func(cfg *config.Config) *string { return &cfg.Mode.PlanFilePath }),
@@ -965,11 +966,66 @@ func setConfigField(cfg *config.Config, path []string, value string) error {
 	if modelID, field, ok := parsePerModelCompressionKey(path); ok {
 		return setPerModelCompressionField(cfg, modelID, field, value)
 	}
+	if providerID, field, ok := parseProviderRetryKey(path); ok {
+		return setProviderRetryField(cfg, providerID, field, value)
+	}
 	return fmt.Errorf("unknown config key: %s", key)
 }
 
 // parsePerModelCompressionKey splits a context_compression.per_model.<modelID>.<field>
 // path into its model ID and field. ok is false for any other key shape.
+func parseProviderRetryKey(path []string) (providerID, field string, ok bool) {
+	if len(path) < 3 || path[0] != "providers" || path[1] == "" {
+		return "", "", false
+	}
+	field = strings.Join(path[2:], ".")
+	switch field {
+	case "max_retry_delay", "retry_policy.max_retries", "retry_policy.backoff.max_ms":
+		return path[1], field, true
+	default:
+		return "", "", false
+	}
+}
+
+func setProviderRetryField(cfg *config.Config, providerID, field, value string) error {
+	for i := range cfg.Providers {
+		if cfg.Providers[i].ID != providerID {
+			continue
+		}
+		switch field {
+		case "max_retry_delay":
+			if _, err := time.ParseDuration(value); err != nil {
+				return fmt.Errorf("max_retry_delay must be a duration: %w", err)
+			}
+			cfg.Providers[i].MaxRetryDelay = value
+			return nil
+		case "retry_policy.max_retries":
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 0 {
+				return fmt.Errorf("max_retries must be a non-negative integer")
+			}
+			ensureRetryPolicy(&cfg.Providers[i])
+			cfg.Providers[i].RetryPolicy.MaxRetries = n
+			return nil
+		case "retry_policy.backoff.max_ms":
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 0 {
+				return fmt.Errorf("max_ms must be a non-negative integer")
+			}
+			ensureRetryPolicy(&cfg.Providers[i])
+			cfg.Providers[i].RetryPolicy.Backoff.MaxMS = n
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown provider or retry key: providers.%s.%s", providerID, field)
+}
+
+func ensureRetryPolicy(p *config.ProviderConfig) {
+	if p.RetryPolicy == nil {
+		p.RetryPolicy = &config.RetryPolicyConfig{}
+	}
+}
+
 func parsePerModelCompressionKey(path []string) (modelID, field string, ok bool) {
 	// path = [context_compression, per_model, <modelID>, <field...>]
 	if len(path) < 4 || path[0] != "context_compression" || path[1] != "per_model" {

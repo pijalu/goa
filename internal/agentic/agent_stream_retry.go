@@ -288,7 +288,7 @@ func defaultRetryPolicy(opts provider.StreamOptions) *provider.RetryPolicy {
 	}
 	maxDelay := opts.MaxRetryDelay
 	if maxDelay <= 0 {
-		maxDelay = 30 * time.Second
+		maxDelay = 5 * time.Minute
 	}
 	return &provider.RetryPolicy{
 		Mode:       provider.RetryModeNormal,

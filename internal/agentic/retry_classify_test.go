@@ -111,11 +111,11 @@ func TestRetryBackoffHonorsRetryAfter(t *testing.T) {
 	rlMs := &hooks.ProviderError{IsRateLimit: true, IsRetryable: true, RetryAfter: 12, RetryAfterMs: 2500}
 	assert.Equal(t, 2500*time.Millisecond, retryBackoff(rlMs, 0))
 
-	// Rate limit with no header falls back to exponential backoff.
+	// Rate limit with no header follows Fibonacci backoff without jitter.
 	rlNoHeader := &hooks.ProviderError{IsRateLimit: true, IsRetryable: true}
-	d := retryBackoff(rlNoHeader, 0)
-	assert.GreaterOrEqual(t, d, time.Second)
-	assert.LessOrEqual(t, d, 1250*time.Millisecond) // 1s base + up to 250ms jitter
+	for attempt, want := range []time.Duration{time.Second, time.Second, 2 * time.Second, 3 * time.Second, 5 * time.Second, 8 * time.Second} {
+		assert.Equal(t, want, retryBackoff(rlNoHeader, attempt))
+	}
 
 	// Non-rate-limit error uses exponential base (attempt 1 -> 2s).
 	d1 := retryBackoff(errors.New("boom"), 1)
@@ -127,6 +127,7 @@ func TestRetryBackoffCapped(t *testing.T) {
 	// A maliciously large Retry-After is capped.
 	rl := &hooks.ProviderError{IsRateLimit: true, IsRetryable: true, RetryAfter: 3600}
 	assert.Equal(t, maxStreamBackoff, retryBackoff(rl, 0))
+	assert.Equal(t, maxStreamBackoff, retryBackoff(&hooks.ProviderError{IsRateLimit: true, IsRetryable: true}, 30))
 }
 
 // TestShouldRetryStreamError_MidStream5xxFrame is the end-to-end regression
