@@ -30,43 +30,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 
 
-## 4. Streaming render CPU exceeds the 10–20% budget (pre-existing; optimization)
-
-**Measured** (controlled stub SSE stream, PTY 160×48, cputime-delta method;
-harness: `e2e/perfdrive` + stub recipe in this entry):
-
-| Scenario | branch | main | Δ |
-|---|---|---|---|
-| idle | 0.0% | — | — |
-| sustained 20 tok/s (45s) | **23.2%** | 23.8% | parity |
-| burst 100 tok/s (20s) | **74.6%** | 72.2% | parity |
-| wire bytes (sustained) | 2.47MB | 2.66MB | −7.0% |
-| SGR sequences on wire | 3,578 | 18,646 | −81% |
-| frames emitted | 1,025 | 1,025 | 1:1 |
-
-**Analysis:** CPU per delta is ~7–9ms and roughly constant regardless of
-document length (cost is viewport/canvas-bound, not document-bound), and the
-compositor emits one frame per delta (~2.5KB each) with no batching — so
-CPU scales linearly with token rate. At the user-facing target (≤10–20%)
-20 tok/s already fails; a fast local model at 100–200 tok/s pins 0.75–1.5+
-cores. Present identically on main — **not** a regression of this branch
-(the branch's SGR coalescing actually cuts wire bytes 7% and resets 91% at
-frame parity).
-
-**Expected:** delta→frame batching or throttling — render on a fixed ticker
-(e.g. ≤30fps) with a dirty flag so N deltas arriving in one tick coalesce
-into one frame (100 tok/s → ~3× CPU cut), keeping per-delta latency ≤1
-frame interval. Bonus (trivial): after a turn ends the TUI still emits a
-cursor-only empty frame (`?2026h` + CUP + `?2026l`) every ~2–3s — stop the
-idle re-anchor timer once the cursor is parked.
-
-**Harness recipe (repro):** stub OpenAI-compatible SSE server streaming
-non-repeating filler (⚠ every word must be unique — a cycling 12-word
-vocab is aborted in ~13s by the stream loop detector, which is CORRECT
-behavior: "stream loop detected … after 4 warnings"), project config pinning
-the stub provider, then `perfdrive --bin <goa> --dir <proj> --prompt …` and
-poll `ps -o time= -p PID` deltas (ps `%cpu` decaying average reads 0.0%
-during 23% real usage on macOS — do not use it).
 
 ## 5. Per-model compression override never triggers
 

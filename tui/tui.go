@@ -81,7 +81,7 @@ type TUI struct {
 	// switch Apply, read by the render loop.
 	replaySuppressed atomic.Bool
 
-	focus        *FocusStack
+	focus *FocusStack
 	// overlayMu guards overlayStack: mutation happens on the commandLoop
 	// (or inline via Apply pre-RunLoops), while buildOverlayLayers reads it
 	// from the render path; the two can overlap when Apply runs inline.
@@ -98,10 +98,10 @@ type TUI struct {
 	loopsRunning  atomic.Bool
 	loopGoroutine atomic.Uint64 // commandLoop's goroutine ID; lets ApplySync detect re-entrancy
 
-	// dirtyChan signals the renderLoop that a new frame is needed. The channel
-	// is buffered so that only one pending signal is kept; the renderLoop
-	// throttles to a maximum of 60fps.
-	dirtyChan chan struct{}
+	// renderDirty is set by mutations and consumed by the fixed frame ticker.
+	// Keeping this as a flag (rather than rendering directly from each delta)
+	// coalesces bursts into one frame while retaining bounded ticker latency.
+	renderDirty atomic.Bool
 
 	// Async render scheduling
 	done chan struct{}
@@ -435,7 +435,7 @@ func (t *TUI) RunLoops() {
 	}
 	t.cmds = make(chan func(), 256)
 	t.snapReq = make(chan chan<- *Scene)
-	t.dirtyChan = make(chan struct{}, 1)
+
 	if !t.loopsRunning.CompareAndSwap(false, true) {
 		return // another caller won the race
 	}
@@ -480,30 +480,29 @@ func (t *TUI) applyCommand(cmd func()) {
 	t.RequestRender()
 }
 
-// renderLoop is the SOLE terminal outputter. It waits for render requests
-// and, when one arrives, requests an immutable Scene snapshot from the
-// commandLoop and hands it to the Compositor. A 16ms throttle ensures the
-// terminal is updated at most 60 times per second (a ceiling, not a target),
-// so bursty state changes coalesce into a single frame.
+// renderLoop is the SOLE terminal outputter. State changes set renderDirty;
+// this fixed ticker is the only path that renders streaming deltas. At 30fps,
+// several deltas arriving between ticks coalesce into one frame and each delta
+// waits no longer than one frame interval in the normal case.
 //
 // When at least one tool widget is running, a 100ms periodic ticker fires
-// alongside dirtyChan so the elapsed-time display in tool widgets updates
-// smoothly (~10fps) even when no streaming events arrive. Without this,
-// the elapsed time freezes between events (B002).
+// alongside the frame ticker so elapsed-time displays update even without
+// streaming events (B002).
 func (t *TUI) renderLoop() {
 	live := newLiveRenderTicker()
+	frame := time.NewTicker(frameInterval)
+	defer frame.Stop()
 	defer live.stop()
 
 	for {
 		select {
-		case <-t.dirtyChan:
+		case <-frame.C:
 			if t.stopped.Load() {
 				return
 			}
-			t.renderOneFrame()
-			live.sync(t.findChatViewport())
-			if !t.throttle() {
-				return
+			if t.renderDirty.Swap(false) {
+				t.renderOneFrame()
+				live.sync(t.findChatViewport())
 			}
 		case <-live.tick:
 			if t.handleLiveTick(live) {
@@ -548,16 +547,7 @@ func (t *TUI) renderOneFrame() {
 	}()
 }
 
-// throttle sleeps ~16ms to cap the frame rate at ~60fps. Returns false if
-// the done channel fired during the wait (loop should exit).
-func (t *TUI) throttle() bool {
-	select {
-	case <-time.After(16 * time.Millisecond):
-		return true
-	case <-t.done:
-		return false
-	}
-}
+const frameInterval = 33 * time.Millisecond
 
 // liveRenderTicker manages a 100ms periodic ticker that fires when running
 // tool widgets need their elapsed-time display refreshed.
@@ -650,16 +640,10 @@ func (t *TUI) ApplySync(cmd func()) {
 	<-done
 }
 
-// RequestRender flags the renderLoop that state changed and a new frame is
-// due. Safe from any goroutine (atomic/channel). The channel is buffered so a
-// burst of requests collapses into a single pending signal.
+// RequestRender marks the next fixed-ticker frame dirty. Safe from any
+// goroutine; repeated requests before a tick are intentionally coalesced.
 func (t *TUI) RequestRender() {
-	if ch := t.dirtyChan; ch != nil {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
+	t.renderDirty.Store(true)
 }
 
 // ClearTranscript resets the compositor for a deliberate transcript reset

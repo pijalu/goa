@@ -164,6 +164,34 @@ func TestShowOverlay_OffLoopRegistration(t *testing.T) {
 // TestRequestRender_DirtyFlag proves the renderLoop picks up mutations flagged
 // via Apply and publishes a frame. This closes the loop: mutation → dirty →
 // snapshot → compositor output.
+func TestRenderLoop_CoalescesBurstOnFixedTicker(t *testing.T) {
+	engine, stop := startWithLoops(t, 80, 24)
+	defer stop()
+	term := engine.terminal.(*fakeTerminal)
+	term.writes = nil
+
+	const deltas = 40
+	for i := 0; i < deltas; i++ {
+		engine.Apply(func() {
+			engine.findChatViewport().AddSystemMessage("stream-delta")
+		})
+	}
+	// Allow multiple ticker intervals, then verify the burst did not produce one
+	// terminal frame per delta. The final delta must still be visible.
+	time.Sleep(150 * time.Millisecond)
+	writes := strings.Join(term.Writes(), "")
+	frames := strings.Count(writes, "\x1b[?2026h")
+	if frames == 0 {
+		t.Fatal("coalesced stream produced no frame")
+	}
+	if frames >= deltas {
+		t.Fatalf("burst rendered %d frames for %d deltas; expected ticker coalescing", frames, deltas)
+	}
+	if !strings.Contains(ansi.Strip(writes), "stream-delta") {
+		t.Fatal("coalesced frame omitted streamed content")
+	}
+}
+
 func TestRequestRender_DirtyFlag(t *testing.T) {
 	engine, stop := startWithLoops(t, 80, 24)
 	defer stop()
