@@ -6,6 +6,7 @@ package tui
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/pijalu/goa/internal/ansi"
@@ -136,6 +137,18 @@ type ChatViewport struct {
 	// by the renderLoop's live ticker via HasRunningToolWidgets. Atomic so
 	// both goroutines can access it without a lock (B002).
 	runningToolCount atomic.Int64
+
+	// scrollbackResync, when set, requests the compositor's one-time
+	// scrollback resync (wipe + re-emit from the canvas). Wired by TUI.Start
+	// to Compositor.RequestScrollbackResync before the loops run; nil in
+	// isolated tests disables the off-screen boundary resyncs.
+	scrollbackResync func()
+	// offscreenResynced guards the resync at once-per-episode per widget:
+	// key = widget, value = true once its current off-screen episode has
+	// requested a resync. The terminal-status transition re-arms the entry
+	// (chat_viewport_offscreen.go). sync.Map because it is written from the
+	// widget hooks on the command loop while remaining lock-free to read.
+	offscreenResynced sync.Map
 }
 
 // SetScrollWatermark records the compositor's scrollback watermark (the

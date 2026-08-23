@@ -323,6 +323,22 @@ func (c *Compositor) ScrollWatermark() int {
 	return c.scrollTop
 }
 
+// RequestScrollbackResync asks the next eligible frame to wipe the terminal
+// scrollback and re-emit the whole transcript from the canvas (the single
+// full reset behind scrollbackDirty). It is the one-time boundary resync for
+// content the incremental paths can never repaint again: a tool widget whose
+// rows are committed to scrollback changed state (went off-screen while
+// running, or completed) — without it the committed rows keep a stale
+// "elapsed" forever (bugs.md: tool execution scrolled out of view stops
+// updating). Idempotent per episode: the caller guards how often it requests,
+// and the reset itself clears the flag, so this cannot become a per-tick
+// reset storm.
+func (c *Compositor) RequestScrollbackResync() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.scrollbackDirty = true
+}
+
 // ClearGen reports the current clear generation. Snapshot builders stamp it
 // into Scene.ClearGen; see the clearGen field docs for the stale-scene drop.
 func (c *Compositor) ClearGen() uint64 {

@@ -405,6 +405,13 @@ func (t *TUI) Start() error {
 	t.termW.Store(int64(w))
 	t.termH.Store(int64(h))
 
+	// Off-screen tool boundary resyncs (bugs.md §2): route the viewport's
+	// requests to the compositor's one-time scrollback resync. Installed
+	// before the loops run so the callback is never raced.
+	if cv := t.findChatViewport(); cv != nil {
+		cv.SetScrollbackResyncRequest(t.compositor.RequestScrollbackResync)
+	}
+
 	// Full screen clear then render first content (inline; loops not running).
 	t.compositor.InitialClear()
 	return nil

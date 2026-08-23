@@ -268,6 +268,10 @@ func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.Chat
 	_ = agentTabBar
 	engine.AddChild(header)
 	engine.AddChild(chat)
+	// Pinned live status for a running tool whose widget scrolled into
+	// terminal scrollback (bugs.md §2): renders zero rows while none exists,
+	// one ticking row while one does. Sits directly under the transcript.
+	engine.AddChild(tui.NewToolLiveStrip(chat))
 	// In "statusbar" spinner-location mode the busy spinner renders only next
 	// to the model in the footer: the in-chat status line stays out of the
 	// timeline/scrollback. The StatusMsg still runs (Show/Clear/tick drive the

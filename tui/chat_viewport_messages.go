@@ -209,17 +209,29 @@ func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionCo
 			if cv.entries[i].View == tc {
 				cv.entries[i].dirty = true
 				cv.generation++
+				// Off-screen boundary: a live widget whose rows are committed to
+				// scrollback just changed (progress/status) — its update can never
+				// be painted there, so request the one-time scrollback resync.
+				cv.maybeResyncOffscreenTool(tc)
 				return
 			}
 		}
 	})
-	// Track running-tool count for the render loop's live ticker (B002).
+	// Track running-tool count for the render loop's live ticker (B002), and
+	// re-arm the off-screen resync at the completion boundary: the terminal
+	// status must rewrite the stale running rows (frozen "elapsed") with the
+	// true final "Took" line.
 	tc.onStatusChange = func(old, new ToolStatus) {
 		if old == ToolRunning {
 			cv.runningToolCount.Add(-1)
 		}
 		if new == ToolRunning {
 			cv.runningToolCount.Add(1)
+			return
+		}
+		if old != ToolSuccess && old != ToolError {
+			cv.rearmOffscreenResync(tc)
+			cv.maybeResyncOffscreenTool(tc)
 		}
 	}
 	// Attach the global tool-view policy so the widget honours the config

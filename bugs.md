@@ -28,34 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## 2. Tool execution scrolled out of view stops updating (elapsed frozen)
-
-**Observed:** when a running tool's widget scrolls above the viewport top,
-its live status line freezes at the value it had when it left the screen —
-e.g. a long `go test` run keeps showing `elapsed 123.5s` forever instead of
-ticking, and the final duration is never reflected on scrollback:
-
-```
- ● $ go test -count=1 -race -cover ./... 2>&1 | grep -v "^ok" | head -30; echo "=== SUMMARY ==="; go test -count=1 -race -... (timeout 3
- elapsed 123.5s          ← never advances once the block is off-screen
-```
-
-The ticking text is recomputed per frame in
-`tui/tool_execution.go`/`tool_execution_status.go` and pushed as a canvas
-row update, but a terminal cannot rewrite rows already pushed into
-scrollback: once the widget scrolls above the viewport, the diff repaint
-(culled at the `scrollTop` watermark) never touches its rows again.
-`scrollOffUnstable` (tui/compositor_frame.go) deliberately treats the
-in-place tick as "benign" — one tick stale — to avoid a full-transcript
-reset on every animation tick, and no one-time scrollback resync
-(`scrollbackDirty`) is triggered when the tool finally completes, so the
-stale `elapsed` value persists forever.
-
-**Expected:** a live tool block that moves out of the visible window must
-keep its status current — either it keeps receiving row updates while
-running (updating scrollback in place) or the running widget is pinned
-visible until completion; the final row must always end with the true final
-duration, never a stale intermediate `elapsed`.
 
 ## 3. 429 rate-limit retry: fibonacci backoff, 5-attempt default, /config exposure
 
@@ -126,6 +98,26 @@ behavior: "stream loop detected … after 4 warnings"), project config pinning
 the stub provider, then `perfdrive --bin <goa> --dir <proj> --prompt …` and
 poll `ps -o time= -p PID` deltas (ps `%cpu` decaying average reads 0.0%
 during 23% real usage on macOS — do not use it).
+
+## 5. Per-model compression override never triggers
+
+**Observed:** a custom per-model compression configuration does not trigger.
+Example: an override for a given model setting a 20% trigger with
+hard/summarize strategies (`models.<id>.context_compression.thresholds.
+trigger_percent: 20` + strategies, i.e. `ModelCompressionOverride`,
+config/config_compression_types.go) never compresses — usage climbs past 20%
+with no compression attempt on that model. Global compression settings fire,
+so the suspect path is the override plumbing: config merge
+(config/config_merge.go) → overlay application (core/compression_overlay.go)
+→ threshold resolution (core/agentmanager_lifecycle.go
+`resolveAgenticThresholds`) → SDK soft/hard mapping. Note the legacy
+`threshold_percent` alias interactions (`legacyTrigger`, cleared-alias logic
+in core/commands/config_cli.go) may shadow the tiered value.
+
+**Expected:** per-model compression overrides take effect for that model:
+when its context usage crosses the configured trigger (here 20%), compression
+runs using the overridden strategy (hard/summarize), same semantics as the
+global configuration.
 
 # TODO
 
