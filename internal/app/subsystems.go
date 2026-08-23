@@ -88,7 +88,12 @@ type subsystems struct {
 	// so access is guarded by pluginRTMu.
 	pluginRTMu sync.RWMutex
 	pluginRT   *pluginRuntime
-	noPlugins  bool // --no-plugins: skip plugin load entirely
+	// pluginHooks + pluginSched are created at boot (initAgentBundle) so the
+	// hook sink handed to agents exists before the async plugin load; the
+	// plugin runtime reuses them when it loads (M2 §3.5).
+	pluginHooks *plugins.HookRegistry
+	pluginSched *plugins.Scheduler
+	noPlugins   bool // --no-plugins: skip plugin load entirely
 	// sessionUsageFn supplies cumulative token stats to plugins (goa.sessionUsage).
 	// Wired in New() once the App (which owns the counters) exists.
 	sessionUsageFn func() map[string]any
@@ -362,6 +367,11 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 				agentBundle.stateSnapshot.MinorMode == "companion"
 			requestReviewTool, delegateTool = registerAgentDrivenTools(subs.toolRegistry, agentDrivenTools, cfg, companionActive)
 			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus, agentBundle.agentMgr, agentBundle.eventBus)
+			if agentBundle.pluginSink != nil {
+				// Sub-agents inherit the same plugin hook sink as the main
+				// agent (M2 §3.5): one adapter, one live registry.
+				agentPool.SetPluginHookSink(agentBundle.pluginSink)
+			}
 			foregroundOrch = wireForegroundOrchestrator(agentPool, promptReg, agentBundle.agentMgr, cfg, workflowReg, agentBundle.sessionStore)
 			agentPool.SetOrchestrator(foregroundOrch)
 			wireCacheStatsIdentity(foregroundOrch, agentBundle.agentMgr, goalManager)

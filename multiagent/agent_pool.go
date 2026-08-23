@@ -70,6 +70,9 @@ type AgentPool struct {
 	// sub-agents. When nil, sub-agents are created with minimal defaults.
 	Config *config.Config
 
+	// pluginHookSink is inherited by every pool-built agent config (M2 §3.5).
+	pluginHookSink agentic.PluginHookSink
+
 	// PolicySource supplies the autonomy level, guard rules, and tool
 	// confirmation callback that sub-agents must inherit so they are subject to
 	// the SAME safety gating as the main agent. Without it, a spawned coder
@@ -154,6 +157,15 @@ func (p *AgentPool) SetAgentBus(bus *agentic.AgentBus) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.agentBus = bus
+}
+
+// SetPluginHookSink wires the plugin hook adapter inherited by every
+// pool-built agent (M2 §3.5), mirroring the main agent's injection so
+// interception points fire uniformly across main and sub-agents.
+func (p *AgentPool) SetPluginHookSink(sink agentic.PluginHookSink) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pluginHookSink = sink
 }
 
 // RoleConfig returns the configured AgentConfig for a role, or zero value.
@@ -436,6 +448,9 @@ func (p *AgentPool) inheritGoaConfig(ac *agentic.Config) {
 	}
 	if p.ProjectDir != "" {
 		ac.ProjectDir = p.ProjectDir
+	}
+	if p.pluginHookSink != nil {
+		ac.PluginHookSink = p.pluginHookSink
 	}
 
 	if p.Config == nil {

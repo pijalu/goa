@@ -156,6 +156,12 @@ type AgentManager struct {
 	companionReviewSet     bool
 	hookEngine             hooks.AgentHookEngine
 
+	// pluginHookSink receives plugin interception points from the agent loop
+	// (M2 §3.5). Wired once at boot by the app layer; nil = plugin hooks
+	// disabled. The sink reads a live registry, so later plugin loads are
+	// visible to already-constructed agents without any re-wiring.
+	pluginHookSink agentic.PluginHookSink
+
 	// disableToolBudget is a session-level flag that disables the per-turn
 	// tool-call budget check. When set, the agent allows unlimited tool calls
 	// per turn. Not persisted — resets on restart.

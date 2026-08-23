@@ -42,6 +42,11 @@ type CommandHandler func(name string, aliases []string, shortHelp, longHelp stri
 // The callback receives (eventName string, payload interface{}).
 type ObserverHandler func(callback func(string, interface{}))
 
+// HookRegisterHandler is invoked when a JS plugin calls goa.registerHook.
+// The spec's PluginID is stamped by the bridge from its own manifest, so the
+// shared PluginContext needs no per-plugin cloning.
+type HookRegisterHandler func(spec HookSpec, handler HookHandler) error
+
 // CallToolHandler is called when a JS plugin invokes goa.callTool(name, params).
 type CallToolHandler func(name string, params map[string]any) (interface{}, error)
 
@@ -59,7 +64,10 @@ type PluginContext struct {
 	RegisterObserver  ObserverHandler                         // called when JS calls goa.registerObserver
 	RegisterLifecycle func(hook HookType, h LifecycleHandler) // called when JS calls goa.registerLifecycle
 	CallTool          CallToolHandler                         // called when JS calls goa.callTool
-	EventBus          *EventBus
+	// RegisterHook is called when JS calls goa.registerHook. Nil disables the
+	// API (plugins receive the standard "not configured" error string).
+	RegisterHook HookRegisterHandler
+	EventBus     *EventBus
 	// Extended carries optional bridges (http, storage, timers, ui, hotkeys,
 	// browser, output, sessionUsage). Nil disables those goa.* APIs.
 	Extended *ExtendContext
@@ -166,6 +174,7 @@ func (b *JSBridge) setupGlobals() {
 	goaObj.Set("registerObserver", b.wrapRegisterObserver())
 	goaObj.Set("registerLifecycle", b.wrapRegisterLifecycle())
 	goaObj.Set("callTool", b.wrapCallTool())
+	b.setupHooks(goaObj)
 
 	b.setupExtendedGlobals(goaObj)
 

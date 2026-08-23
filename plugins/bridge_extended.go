@@ -6,8 +6,10 @@ package plugins
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -446,4 +448,190 @@ func (b *JSBridge) setupSessionUsage(goaObj *goja.Object, fn func() map[string]a
 	goaObj.Set("sessionUsage", func(call goja.FunctionCall) goja.Value {
 		return b.vm.ToValue(fn())
 	})
+}
+
+// setupHooks registers goa.registerHook(def) — the plugin hook API (plan
+// §3.3). Validation errors return descriptive "error: …" strings, matching
+// the registerCommand convention. Unknown-but-well-formed point strings are
+// rejected against the constant list (typo protection).
+//
+// v1 reentrancy contract: a hook handler runs UNDER the global VM lock and
+// must not call goa.callTool on a JS-plugin tool (that path would re-acquire
+// the non-reentrant VM lock on the same goroutine). Pure-Go bridges
+// (http/storage/output) release or avoid the lock and are safe.
+func (b *JSBridge) setupHooks(goaObj *goja.Object) {
+	if b.ctx.RegisterHook == nil {
+		return
+	}
+	goaObj.Set("registerHook", func(call goja.FunctionCall) goja.Value {
+		arg := call.Argument(0)
+		if arg == nil || goja.IsUndefined(arg) || goja.IsNull(arg) {
+			return b.vm.ToValue("error: registerHook expects an object argument")
+		}
+		obj := arg.ToObject(b.vm)
+		spec, handlerVal, verr := b.parseHookDef(obj)
+		if verr != "" {
+			return b.vm.ToValue("error: " + verr)
+		}
+		wrapper := b.buildHookWrapper(handlerVal)
+		if err := b.ctx.RegisterHook(spec, wrapper); err != nil {
+			return b.vm.ToValue("error: " + err.Error())
+		}
+		return b.vm.ToValue(fmt.Sprintf("hook registered: %s@%s (%s)", spec.Name, spec.Point, spec.Mode))
+	})
+}
+
+// parseHookDef validates one registerHook definition object. Returns a
+// descriptive error string ("" = valid), following the registerCommand
+// convention of surfacing mistakes at registration time.
+func (b *JSBridge) parseHookDef(obj *goja.Object) (HookSpec, goja.Value, string) {
+	name := fieldString(obj, "name")
+	if name == "" {
+		return HookSpec{}, nil, "name is required"
+	}
+	point := fieldString(obj, "point")
+	if !isValidHookPoint(point) {
+		return HookSpec{}, nil, fmt.Sprintf("unknown hook point %q (valid points: %s)", point, strings.Join(ValidHookPoints(), ", "))
+	}
+	modeStr := fieldString(obj, "mode")
+	if modeStr == "" {
+		modeStr = string(HookNotify)
+	}
+	mode := HookMode(modeStr)
+	if mode != HookNotify && mode != HookIntercept {
+		return HookSpec{}, nil, fmt.Sprintf("mode must be %q or %q, got %q", HookNotify, HookIntercept, modeStr)
+	}
+	handlerVal := obj.Get("handler")
+	if handlerVal == nil || goja.IsUndefined(handlerVal) || goja.IsNull(handlerVal) {
+		return HookSpec{}, nil, "handler function is required"
+	}
+	if _, ok := goja.AssertFunction(handlerVal); !ok {
+		return HookSpec{}, nil, "handler must be a function(payload)"
+	}
+	// priority defaults to 0 when absent; goja's Get returns nil for missing
+	// properties, so the value must be nil-guarded before ToInteger.
+	priority := 0
+	if pv := obj.Get("priority"); pv != nil && !goja.IsUndefined(pv) && !goja.IsNull(pv) {
+		priority = int(pv.ToInteger())
+	}
+	spec := HookSpec{
+		PluginID: b.def.ID,
+		Name:     name,
+		Point:    point,
+		Mode:     mode,
+		Priority: priority,
+	}
+	return spec, handlerVal, ""
+}
+
+// buildHookWrapper converts a JS hook handler into the Go HookHandler stored
+// in the registry. The payload crosses the VM boundary as JSON in BOTH
+// directions — no goja value aliasing, nested-map fidelity, trivially
+// versionable. The JS call happens UNDER the global VM lock (mirroring
+// buildToolWrapper's enterVM+lockVM discipline). Any throw, panic-adjacent
+// failure, or non-JSON result degrades to pass-through (nil): availability
+// beats enforcement for user-installed plugins.
+func (b *JSBridge) buildHookWrapper(handlerVal goja.Value) HookHandler {
+	fn, _ := goja.AssertFunction(handlerVal)
+	if fn == nil {
+		return func(map[string]any) map[string]any { return nil }
+	}
+	return func(payload map[string]any) map[string]any {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			b.logWarn("hook payload marshal failed: %v", err)
+			return nil
+		}
+		unlock := lockVM()
+		defer unlock()
+		leave := enterVM()
+		defer leave()
+
+		jsPayload, err := jsonParse(b.vm, data)
+		if err != nil {
+			b.logWarn("hook payload parse failed: %v", err)
+			return nil
+		}
+		res, err := fn(goja.Undefined(), jsPayload)
+		if err != nil {
+			b.logWarn("hook handler threw: %v", err)
+			return nil // JS exception ⇒ pass-through for this handler
+		}
+		if res == nil || goja.IsUndefined(res) || goja.IsNull(res) {
+			return nil // explicit pass-through
+		}
+		out, err := jsonStringify(b.vm, res)
+		if err != nil {
+			b.logWarn("hook result stringify failed: %v", err)
+			return nil
+		}
+		var result map[string]any
+		if err := json.Unmarshal(out, &result); err != nil {
+			b.logWarn("hook result is not an object — ignored")
+			return nil
+		}
+		return result
+	}
+}
+
+// logWarn emits through the plugin logger when wired; nil-safe by design so
+// minimal test contexts never crash hook execution.
+func (b *JSBridge) logWarn(format string, args ...any) {
+	if b.ctx.Logger.Warn != nil {
+		b.ctx.Logger.Warn(fmt.Sprintf(format, args...))
+	}
+}
+
+// fieldString reads a string property from a JS object, normalizing
+// undefined/null to "" so optional fields (e.g. mode) can default.
+func fieldString(obj *goja.Object, key string) string {
+	v := obj.Get(key)
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return ""
+	}
+	return v.String()
+}
+
+// jsonParse evaluates JSON bytes into a fresh goja value using the VM's own
+// JSON.parse (object literals are ambiguous at program level).
+func jsonParse(vm *goja.Runtime, data []byte) (goja.Value, error) {
+	parse, err := jsonMethod(vm, "parse")
+	if err != nil {
+		return nil, err
+	}
+	return parse(goja.Undefined(), vm.ToValue(string(data)))
+}
+
+// jsonStringify serializes a goja value to JSON bytes via the VM's own
+// JSON.stringify (guarantees only JSON-safe values cross back to Go).
+func jsonStringify(vm *goja.Runtime, v goja.Value) ([]byte, error) {
+	stringify, err := jsonMethod(vm, "stringify")
+	if err != nil {
+		return nil, err
+	}
+	res, err := stringify(goja.Undefined(), v)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil || goja.IsUndefined(res) {
+		return nil, fmt.Errorf("value has no JSON representation")
+	}
+	return []byte(res.String()), nil
+}
+
+// jsonMethod resolves a function on the runtime's intrinsic JSON object.
+func jsonMethod(vm *goja.Runtime, name string) (goja.Callable, error) {
+	jsonObj := vm.Get("JSON")
+	if jsonObj == nil || goja.IsUndefined(jsonObj) {
+		return nil, fmt.Errorf("JSON intrinsics unavailable")
+	}
+	m := jsonObj.ToObject(vm).Get(name)
+	if m == nil {
+		return nil, fmt.Errorf("JSON.%s unavailable", name)
+	}
+	fn, ok := goja.AssertFunction(m)
+	if !ok {
+		return nil, fmt.Errorf("JSON.%s is not a function", name)
+	}
+	return fn, nil
 }

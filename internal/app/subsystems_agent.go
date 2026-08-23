@@ -179,6 +179,15 @@ func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
 	agentLogger := initAgentLogger(cfg, projectDir, agentMgr)
 	execCtrl := core.NewExecutionController(cfg, sessionState)
 
+	// Plugin hooks (M2 §3.5): registry + sink adapter exist from boot so
+	// every agent config carries a live sink even though the plugin load is
+	// async — an empty registry costs one map lookup per seam call. M6 will
+	// install the manifest/grant validator; nil = allow for now.
+	pluginSched := plugins.NewScheduler()
+	pluginHooks := plugins.NewHookRegistry(nil)
+	pluginSink := plugins.NewHookSink(pluginHooks, pluginLogger())
+	agentMgr.SetPluginHookSink(pluginSink)
+
 	return agentBundle{
 		sessionStore:  sessionStore,
 		stateStore:    stateStore,
@@ -187,6 +196,9 @@ func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
 		execCtrl:      execCtrl,
 		eventBus:      eventBus,
 		agentLogger:   agentLogger,
+		pluginHooks:   pluginHooks,
+		pluginSched:   pluginSched,
+		pluginSink:    pluginSink,
 	}
 }
 
@@ -198,6 +210,9 @@ type agentBundle struct {
 	execCtrl       *core.ExecutionController
 	eventBus       *event.Bus
 	agentLogger    *agentic.Logger
+	pluginHooks    *plugins.HookRegistry  // shared hook chains; handed to the plugin runtime at load
+	pluginSched    *plugins.Scheduler     // shared scheduler: plugin timers + async hook notify delivery
+	pluginSink     agentic.PluginHookSink // long-lived adapter wired into the AgentManager + AgentPool
 	stickyProvider *stickySkillProvider
 }
 

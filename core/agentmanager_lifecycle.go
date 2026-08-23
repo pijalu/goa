@@ -135,6 +135,15 @@ func (am *AgentManager) SetHookEngine(e hooks.AgentHookEngine) {
 	am.hookEngine = e
 }
 
+// SetPluginHookSink wires the plugin hook adapter (M2 §3.5). Nil disables
+// plugin interception. Called once at boot, before any agent exists; the sink
+// reads a live registry so plugin loads/unloads after boot need no re-wiring.
+func (am *AgentManager) SetPluginHookSink(sink agentic.PluginHookSink) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.pluginHookSink = sink
+}
+
 // SetContextWindowRefresher sets a callback that re-detects the active local
 // model's loaded context window after the model has finished loading. The
 // callback is invoked once on the first state-change event after a new session
@@ -244,6 +253,7 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		ThinkingStallStop: time.Duration(cfg.Execution.ThinkingStallStopSeconds) * time.Second,
 		ConfirmTool:       am.confirmTool,
 		HookEngine:        am.hookEngine,
+		PluginHookSink:    am.pluginHookSink,
 		// The streaming text loop detector lives in the agent, but its
 		// enable/disable state and repeat threshold are shared with the other
 		// loop detectors (temp + persist overrides) via the core loop detector.

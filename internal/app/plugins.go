@@ -35,6 +35,9 @@ type pluginRuntime struct {
 	hotkeys   *plugins.HotkeyBridge
 	bus       *plugins.EventBus
 	scheduler *plugins.Scheduler
+	// hooks is the boot-created shared registry (subsystems.pluginHooks);
+	// goa.registerHook calls land here and the agent-side sink reads it live.
+	hooks *plugins.HookRegistry
 }
 
 // loadEnabledPlugins materializes bundled plugins, then loads all enabled
@@ -91,13 +94,25 @@ func (s *subsystems) getPluginRT() *pluginRuntime {
 	return s.pluginRT
 }
 
-// newPluginRuntime builds the shared extended bridges for a plugin load.
+// newPluginRuntime builds the shared extended bridges for a plugin load. It
+// reuses the boot-created hook registry + scheduler (M2 §3.5) so the sink
+// already held by agents observes registrations from these plugins; fresh
+// instances are only created when boot wiring did not run (tests).
 func newPluginRuntime(s *subsystems) *pluginRuntime {
+	sched := s.pluginSched
+	if sched == nil {
+		sched = plugins.NewScheduler()
+	}
+	hooks := s.pluginHooks
+	if hooks == nil {
+		hooks = plugins.NewHookRegistry(nil)
+	}
 	return &pluginRuntime{
 		ui:        plugins.NewUIBridge(),
 		hotkeys:   plugins.NewHotkeyBridge(),
 		bus:       plugins.NewEventBus(),
-		scheduler: plugins.NewScheduler(),
+		scheduler: sched,
+		hooks:     hooks,
 	}
 }
 
@@ -140,6 +155,7 @@ func (rt *pluginRuntime) contextFor(s *subsystems) plugins.PluginContext {
 		RegisterObserver:  rt.pluginRegisterObserver(),
 		RegisterLifecycle: pluginRegisterLifecycle(s),
 		CallTool:          pluginCallTool(s),
+		RegisterHook:      rt.pluginRegisterHook(),
 		EventBus:          rt.bus,
 		Extended:          rt.extendedContext(s),
 	}
@@ -341,6 +357,23 @@ func (rt *pluginRuntime) pluginRegisterObserver() plugins.ObserverHandler {
 	return func(callback func(string, interface{})) {
 		// Observers receive all events; the plugin filters by event name.
 		rt.bus.On("*", callback)
+	}
+}
+
+// pluginRegisterHook routes goa.registerHook calls into the shared registry.
+// The bridge stamps spec.PluginID from its own manifest, so the shared
+// PluginContext needs no per-plugin cloning. Registrations become visible to
+// agents immediately (the sink reads this live registry).
+func (rt *pluginRuntime) pluginRegisterHook() plugins.HookRegisterHandler {
+	return func(spec plugins.HookSpec, handler plugins.HookHandler) error {
+		if rt.hooks == nil {
+			return fmt.Errorf("hook registry not available")
+		}
+		if err := rt.hooks.Register(spec, handler); err != nil {
+			return err
+		}
+		log.Printf("[plugin] registered hook %s@%s (%s)\n", spec.Name, spec.Point, spec.Mode)
+		return nil
 	}
 }
 
