@@ -44,11 +44,6 @@ tmp/
 /agentic/
 stuffs/
 
-# ── Profiling artifacts ──────────────────────────────────────────────────
-cpu.prof
-mem.prof
-profile
-trace.out
 
 # ── Local build output ───────────────────────────────────────────────────
 /goa-test
