@@ -49,9 +49,10 @@ type cacheMissTurn struct {
 
 // cacheDrop is one detected cache-rate fall between consecutive completions.
 type cacheDrop struct {
-	Turn   int // turn number where the drop occurred
-	Before float64
-	After  float64
+	Turn       int // turn number where the drop occurred
+	Before     float64
+	After      float64
+	LostTokens int // cached-but-lost tokens: prev cache-read − current cache-read (0 when the read grew)
 }
 
 // cacheTurnsFromHistory flattens the session turn history (plus the optional
@@ -104,7 +105,10 @@ func cacheTurnRate(t cacheTurn) float64 {
 // consecutive cache-active turns. A cache-active turn is one with any prompt
 // tokens (it called the LLM); turns with zero prompt tokens are skipped
 // (no LLM call). A drop to 0% (TTL expiry, prefix invalidation) is the
-// classic bust signature and is caught here.
+// classic bust signature and is caught here. Each drop also carries the
+// cached-but-lost token delta: how many of the previous prefix's cache-read
+// tokens stopped being served (a full bust loses the entire previous prefix;
+// a rate fall driven by writes with an intact read loses nothing).
 func detectCacheDrops(turns []cacheTurn, thresholdPts float64) []cacheDrop {
 	var active []cacheTurn
 	for _, t := range turns {
@@ -117,10 +121,27 @@ func detectCacheDrops(turns []cacheTurn, thresholdPts float64) []cacheDrop {
 		rate := cacheTurnRate(active[i])
 		prev := cacheTurnRate(active[i-1])
 		if prev-rate >= thresholdPts {
-			drops = append(drops, cacheDrop{Turn: active[i].Num, Before: prev, After: rate})
+			drops = append(drops, cacheDrop{
+				Turn:       active[i].Num,
+				Before:     prev,
+				After:      rate,
+				LostTokens: lostCachedTokens(active[i-1], active[i]),
+			})
 		}
 	}
 	return drops
+}
+
+// lostCachedTokens returns how many previously-cached tokens stopped being
+// served across one drop: max(0, prev read − cur read). A full bust (read 0)
+// loses the entire previous prefix — the same figure the misses table's full
+// miss shows — while a write-driven rate fall with an intact or grown read
+// loses nothing.
+func lostCachedTokens(prev, cur cacheTurn) int {
+	if lost := prev.CacheRead - cur.CacheRead; lost > 0 {
+		return lost
+	}
+	return 0
 }
 
 // cacheChartBars caps the last-completions table at the latest N entries.
@@ -410,17 +431,18 @@ func groupThousands(n int64) string {
 }
 
 // writeCacheDrops renders the cache drop table as MD: turn number,
-// before/after rates, and the fall in points.
+// before/after rates, the fall in points, and the cached-but-lost token
+// delta (grouped like the misses table's token figure).
 func writeCacheDrops(b *strings.Builder, drops []cacheDrop) {
 	if len(drops) == 0 {
 		b.WriteString("No cache drops detected.\n")
 		return
 	}
 	b.WriteString("# Cache drops\n")
-	b.WriteString("| Turn | Before | After | Δ |\n|---|---|---|---|\n")
+	b.WriteString("| Turn | Before | After | Δ | Lost tokens |\n|---|---|---|---|---|\n")
 	for _, d := range drops {
-		fmt.Fprintf(b, "| T%d | %.1f%% | %.1f%% | %.1f |\n",
-			d.Turn, d.Before, d.After, d.Before-d.After)
+		fmt.Fprintf(b, "| T%d | %.1f%% | %.1f%% | %.1f | %s |\n",
+			d.Turn, d.Before, d.After, d.Before-d.After, groupThousands(int64(d.LostTokens)))
 	}
 }
 

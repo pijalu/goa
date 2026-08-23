@@ -56,6 +56,10 @@ func TestDetectCacheDropsSession(t *testing.T) {
 		if d.Before != 80 || d.After != 0 || d.Turn != 3 {
 			t.Errorf("drop = %+v, want Before=80 After=0 Turn=3", d)
 		}
+		// Cached-but-lost tokens: the entire previous read prefix (400).
+		if d.LostTokens != 400 {
+			t.Errorf("LostTokens = %d, want 400 (full bust loses the prev prefix)", d.LostTokens)
+		}
 	})
 
 	t.Run("small wobble under threshold ignored", func(t *testing.T) {
@@ -85,6 +89,40 @@ func TestDetectCacheDropsSession(t *testing.T) {
 			t.Errorf("drops = %+v, want one drop at turn 2 (75%%→0%%)", drops)
 		}
 	})
+}
+
+// TestDetectCacheDrops_LostTokens pins the cached-but-lost token delta of
+// each drop (bugs.md §5): full bust loses the entire previous prefix, partial
+// shed loses the difference, and a write-driven rate fall with an intact read
+// loses nothing.
+func TestDetectCacheDrops_LostTokens(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		turns [][3]int
+		want  int
+	}{{
+		name:  "partial shed loses only the shed suffix",
+		turns: [][3]int{{0, 400, 100}, {0, 250, 300}}, // 80% → 45.5%
+		want:  150,
+	}, {
+		name:  "full bust loses the entire previous prefix",
+		turns: [][3]int{{0, 400, 100}, {500, 0, 0}}, // 80% → 0%
+		want:  400,
+	}, {
+		name:  "write-driven fall with intact read loses nothing",
+		turns: [][3]int{{0, 400, 100}, {0, 400, 3400}}, // 80% → ~10.5%
+		want:  0,
+	}} {
+		t.Run(tt.name, func(t *testing.T) {
+			drops := detectCacheDrops(cacheTurnsFromHistory(cacheTurns(tt.turns...), nil), 5)
+			if len(drops) != 1 {
+				t.Fatalf("drops = %+v, want 1", drops)
+			}
+			if drops[0].LostTokens != tt.want {
+				t.Errorf("LostTokens = %d, want %d", drops[0].LostTokens, tt.want)
+			}
+		})
+	}
 }
 
 // TestStatsCommand_CacheView covers the routed /stats:cache output rendered
@@ -144,11 +182,11 @@ func assertCacheViewSkeleton(t *testing.T, plain string) {
 		t.Errorf("want ≥4 MD tables (last10/per-turn/misses/drops), found %d separators:\n%s", got, plain)
 	}
 	for _, want := range []string{
-		"| T1 | #1 | 75.0% |",             // last-completions row (75%)
-		"| T4 | #1 | 33.3% |",             // last-completions row (recovery)
-		"| T1 | 000000.4 | 0-0 | 75.0% |", // per-turn row
-		"| T3 | 000000.5 | 1-0 | 0.0% |",  // per-turn row after bust
-		"| T3 | 80.0% | 0.0% | 80.0 |",    // drops row before/after/Δ
+		"| T1 | #1 | 75.0% |",                // last-completions row (75%)
+		"| T4 | #1 | 33.3% |",                // last-completions row (recovery)
+		"| T1 | 000000.4 | 0-0 | 75.0% |",    // per-turn row
+		"| T3 | 000000.5 | 1-0 | 0.0% |",     // per-turn row after bust
+		"| T3 | 80.0% | 0.0% | 80.0 | 400 |", // drops row before/after/Δ/lost
 	} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("table missing expected row %q:\n%s", want, plain)
@@ -373,14 +411,15 @@ func TestWriteCacheMissList(t *testing.T) {
 	}
 }
 
-// TestWriteCacheDrops verifies the drops MD table rows and the empty case.
+// TestWriteCacheDrops verifies the drops MD table rows (including the
+// cached-but-lost token delta) and the empty case.
 func TestWriteCacheDrops(t *testing.T) {
-	drops := []cacheDrop{{Turn: 3, Before: 80, After: 0}}
+	drops := []cacheDrop{{Turn: 3, Before: 80, After: 0, LostTokens: 8000}}
 	var b strings.Builder
 	writeCacheDrops(&b, drops)
 	out := b.String()
-	if !strings.Contains(out, "| Turn | Before | After | Δ |") ||
-		!strings.Contains(out, "| T3 | 80.0% | 0.0% | 80.0 |") {
+	if !strings.Contains(out, "| Turn | Before | After | Δ | Lost tokens |") ||
+		!strings.Contains(out, "| T3 | 80.0% | 0.0% | 80.0 | 8,000 |") {
 		t.Errorf("drops table wrong:\n%s", out)
 	}
 
