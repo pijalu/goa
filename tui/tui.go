@@ -718,8 +718,9 @@ func (t *TUI) ReplaySnapshot() (canvas []string, naturalVt, contentEnd, width, h
 }
 
 // listenResize reacts to terminal size changes by requesting a re-render.
-// The platform-specific signal source lives in resize_unix.go / resize_windows.go
-// (SIGWINCH is unavailable on Windows, where size changes are polled instead).
+// The source lives in resize_common.go + platform files: SIGWINCH watcher on
+// Unix; console input events (WaitForSingleObject + WINDOW_BUFFER_SIZE_EVENT)
+// on Windows, with the legacy 250ms poller as automatic fallback.
 func (t *TUI) listenResize() {
 	for {
 		select {

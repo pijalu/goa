@@ -17,7 +17,6 @@ import (
 
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/multiagent"
-	"github.com/pijalu/goa/tui"
 	"github.com/pijalu/goa/tui/agentctx"
 )
 

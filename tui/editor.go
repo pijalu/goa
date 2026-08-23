@@ -111,7 +111,7 @@ type Editor struct {
 	thinkingLevel string
 
 	// title is an optional label rendered on the top border
-	// (e.g. "───┨ title ┠───"). Used by RequestMainInput prompts.
+	// (e.g. ───┨ title ┠───). Used by RequestMainInput prompts.
 	title string
 
 	// OnImagePaste is called when an image is pasted from the clipboard.
@@ -195,8 +195,8 @@ func (e *Editor) SetThinkingLevel(level string) {
 // An empty string clears the title and restores a plain separator.
 //
 // A single trailing colon (optionally preceded by whitespace) is stripped so
-// prompts such as "Describe the issue:" do not render as "┨ Describe the
-// issue: ┠" — the colon collides visually with the closing "┠" bracket drawn
+// prompts such as "Describe the issue:" do not render as ┨ Describe the
+// issue: ┠ — the colon collides visually with the closing ┠ bracket drawn
 // by renderTitledBorder. Only the visual title is normalized; callers that
 // need the original prompt text should keep their own copy (e.g. the chat
 // system message).
@@ -206,7 +206,7 @@ func (e *Editor) SetTitle(title string) {
 
 // normalizeEditorTitle trims surrounding whitespace and removes a single
 // trailing colon (with any preceding space) so the bordered title does not end
-// with ":" adjacent to the closing "┠" bracket. Only one trailing colon is
+// with ":" adjacent to the closing ┠ bracket. Only one trailing colon is
 // stripped ("a::" → "a:"); leading/internal colons are preserved.
 func normalizeEditorTitle(title string) string {
 	t := strings.TrimSpace(title)

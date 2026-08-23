@@ -12,25 +12,29 @@ import (
 	"syscall"
 )
 
-// resizeEvents returns a channel that fires on terminal resize (SIGWINCH) on
-// Unix-like systems. It stops emitting when done is closed.
-func resizeEvents(done <-chan struct{}) <-chan struct{} {
-	out := make(chan struct{}, 4)
-	sig := make(chan os.Signal, 4)
+// sigwinchWatcher delivers terminal resizes via SIGWINCH, the native resize
+// signal on Unix-like systems. Behavior is identical to the pre-abstraction
+// implementation: a buffered signal channel feeding sendResize, stopped via
+// signal.Stop when done closes.
+type sigwinchWatcher struct{}
+
+// newPlatformResizeWatcher returns the SIGWINCH watcher; signals are always
+// available on Unix, so this never requests polling fallback.
+func newPlatformResizeWatcher() resizeWatcher {
+	return sigwinchWatcher{}
+}
+
+// watch emits into out on every SIGWINCH until done is closed.
+func (sigwinchWatcher) watch(out chan<- struct{}, done <-chan struct{}) {
+	sig := make(chan os.Signal, resizeChannelBuffer)
 	signal.Notify(sig, syscall.SIGWINCH)
-	go func() {
-		defer signal.Stop(sig)
-		for {
-			select {
-			case <-sig:
-				select {
-				case out <- struct{}{}:
-				default:
-				}
-			case <-done:
-				return
-			}
+	defer signal.Stop(sig)
+	for {
+		select {
+		case <-sig:
+			sendResize(out)
+		case <-done:
+			return
 		}
-	}()
-	return out
+	}
 }

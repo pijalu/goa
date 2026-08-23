@@ -15,6 +15,7 @@ import (
 	"github.com/pijalu/goa/core/commands/help"
 	"github.com/pijalu/goa/docs"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/tools"
 	"github.com/pijalu/goa/tui"
 )
@@ -489,7 +490,7 @@ func showToolDetail(out core.OutputWriter, reg core.ToolRegistry, name string) e
 	}
 	schema := tool.Schema()
 	writeFmt(out, "🔧 Tool: %s\n", schema.Name)
-	writeStr(out, "────────────────────────────────────────\n")
+	writeStr(out, ansi.RepeatHorizontal(40)+"\n")
 	if isDeferredTool(tool) {
 		writeStr(out, "  🔍 Must use search — schema withheld from the prompt; the model loads it via tool_search before calling.\n")
 	} else {
@@ -580,7 +581,7 @@ func renderMarkdownForTerminal(md string, width int) []string {
 
 func listTools(out core.OutputWriter, reg core.ToolRegistry) error {
 	writeStr(out, "🔧 Goa Tools\n")
-	writeStr(out, "────────────────────────────────────────\n\n")
+	writeStr(out, ansi.RepeatHorizontal(40)+"\n\n")
 
 	if reg == nil {
 		knownTools := []string{"read", "write", "edit", "search", "bash", "python", "run_code", "ssh_bash", "bg_exec", "memento", "goa_command", "run_skill"}
@@ -648,7 +649,7 @@ func listDocs(out core.OutputWriter, dp core.DocsProvider) error {
 	}
 
 	writeStr(out, "📚 Goa Documentation\n")
-	writeStr(out, "────────────────────────────────────────\n\n")
+	writeStr(out, ansi.RepeatHorizontal(40)+"\n\n")
 	for _, d := range docList {
 		writeFmt(out, "  %-25s %s\n", d.Name, d.Description)
 	}
@@ -671,7 +672,7 @@ func showDoc(out core.OutputWriter, dp core.DocsProvider, query string) error {
 	}
 
 	writeFmt(out, "📖 %s\n", info.Path)
-	writeStr(out, "────────────────────────────────────────\n\n")
+	writeStr(out, ansi.RepeatHorizontal(40)+"\n\n")
 	writeStr(out, content+"\n")
 	return nil
 }
@@ -685,7 +686,7 @@ func listBuiltinDocs(out core.OutputWriter) error {
 	}
 
 	writeStr(out, "📚 Goa Documentation\n")
-	writeStr(out, "────────────────────────────────────────\n\n")
+	writeStr(out, ansi.RepeatHorizontal(40)+"\n\n")
 	for _, d := range docList {
 		writeFmt(out, "  %-25s %s\n", d.Name, d.Description)
 	}
@@ -708,7 +709,7 @@ func showBuiltinDoc(out core.OutputWriter, name string) error {
 		path = "docs/" + strings.ToUpper(name) + ".md"
 	}
 	writeFmt(out, "📖 %s\n", path)
-	writeStr(out, "────────────────────────────────────────\n\n")
+	writeStr(out, ansi.RepeatHorizontal(40)+"\n\n")
 	writeStr(out, content+"\n")
 	return nil
 }

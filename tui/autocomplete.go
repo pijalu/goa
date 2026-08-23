@@ -27,7 +27,7 @@ const (
 	CatHistory                      // history-search entries
 	// CatFiles groups @-file completions. It must be explicit: the zero value
 	// is CatMostUsed, so an unset Category used to render files under the
-	// "── Most Used ──" header (Issue 8).
+	// ── Most Used ── header (Issue 8).
 	CatFiles // @-file path completions
 )
 

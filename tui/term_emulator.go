@@ -24,9 +24,11 @@ type TermEmulator struct {
 	w, h        int
 	screen      [][]string // [row][col] cell text (ANSI-stripped for assertion)
 	screenBg    [][]string // [row][col] cell background SGR ("" = default)
+	screenFg    [][]string // [row][col] cell foreground SGR ("" = default)
 	scrollback  []string
 	row, col    int
 	curBg       string // current SGR background params (e.g. "48;2;42;50;41")
+	curFg       string // current SGR foreground params (e.g. "38;2;139;148;158")
 	pendingWrap bool   // DEC deferred wrap: last cell filled, next char wraps
 	// scrollTop/scrollBot model the DECSTBM scroll region (0-indexed,
 	// inclusive). \n scrolls only within [scrollTop, scrollBot]; rows outside
@@ -39,9 +41,11 @@ func NewTermEmulator(h, w int) *TermEmulator {
 	e := &TermEmulator{w: w, h: h, scrollTop: 0, scrollBot: h - 1}
 	e.screen = make([][]string, h)
 	e.screenBg = make([][]string, h)
+	e.screenFg = make([][]string, h)
 	for i := range e.screen {
 		e.screen[i] = make([]string, w)
 		e.screenBg[i] = make([]string, w)
+		e.screenFg[i] = make([]string, w)
 	}
 	return e
 }
@@ -107,6 +111,7 @@ func (e *TermEmulator) writePrintable(s string, i int) int {
 			}
 			e.screen[e.row][e.col] = ch
 			e.screenBg[e.row][e.col] = e.curBg
+			e.screenFg[e.row][e.col] = e.curFg
 		}
 		e.col++
 	}
@@ -229,16 +234,51 @@ func (e *TermEmulator) applySGR(params string) {
 		switch codes[i] {
 		case "", "0", "49":
 			e.curBg = ""
+			if codes[i] != "49" {
+				e.curFg = "" // 0/empty reset both; 49 clears background only
+			}
+		case "39":
+			e.curFg = "" // default foreground
 		case "48":
-			if i+1 < len(codes) && codes[i+1] == "2" && i+4 < len(codes) {
-				e.curBg = strings.Join(codes[i:i+5], ";")
-				i += 4
-			} else if i+1 < len(codes) && codes[i+1] == "5" && i+2 < len(codes) {
-				e.curBg = strings.Join(codes[i:i+3], ";")
-				i += 2
+			if n := extendedColorLen(codes, i); n > 0 {
+				e.curBg = strings.Join(codes[i:i+n], ";")
+				i += n - 1
+			}
+		case "38":
+			if n := extendedColorLen(codes, i); n > 0 {
+				e.curFg = strings.Join(codes[i:i+n], ";")
+				i += n - 1
+			}
+		case "58":
+			// Underline-color specs are not modeled here, but their
+			// sub-parameters MUST be consumed so they are never misread as
+			// standalone attribute codes below (e.g. a "0" red channel would
+			// otherwise look like an SGR 0 reset and clear curBg/curFg).
+			if n := extendedColorLen(codes, i); n > 0 {
+				i += n - 1
 			}
 		}
 	}
+}
+
+// extendedColorLen reports the token count of an extended color spec starting
+// at codes[i] — "38"/"48"/"58" followed by "2;r;g;b" (5 tokens) or "5;n"
+// (3 tokens) — or 0 if malformed/truncated.
+func extendedColorLen(codes []string, i int) int {
+	if i+1 >= len(codes) {
+		return 0
+	}
+	switch codes[i+1] {
+	case "2":
+		if i+4 < len(codes) {
+			return 5
+		}
+	case "5":
+		if i+2 < len(codes) {
+			return 3
+		}
+	}
+	return 0
 }
 
 func (e *TermEmulator) eraseDisplay(params string) {
@@ -248,6 +288,7 @@ func (e *TermEmulator) eraseDisplay(params string) {
 			for c := range e.screen[r] {
 				e.screen[r][c] = ""
 				e.screenBg[r][c] = ""
+				e.screenFg[r][c] = ""
 			}
 		}
 		if params == "3" {
@@ -257,11 +298,13 @@ func (e *TermEmulator) eraseDisplay(params string) {
 		for c := e.col; c < e.w; c++ {
 			e.screen[e.row][c] = ""
 			e.screenBg[e.row][c] = ""
+			e.screenFg[e.row][c] = ""
 		}
 		for r := e.row + 1; r < e.h; r++ {
 			for c := range e.screen[r] {
 				e.screen[r][c] = ""
 				e.screenBg[r][c] = ""
+				e.screenFg[r][c] = ""
 			}
 		}
 	}
@@ -274,6 +317,7 @@ func (e *TermEmulator) eraseLine(params string) {
 	for c := range e.screen[e.row] {
 		e.screen[e.row][c] = ""
 		e.screenBg[e.row][c] = ""
+		e.screenFg[e.row][c] = ""
 	}
 	e.pendingWrap = false
 }
@@ -299,6 +343,30 @@ func (e *TermEmulator) VisibleBg(row int) []string {
 	out := make([]string, e.w)
 	copy(out, e.screenBg[row])
 	return out
+}
+
+// VisibleFg returns the per-cell foreground SGR params of a screen row
+// ("" = default foreground), for asserting text-color continuity (the
+// grey-vs-white class of streaming regressions).
+func (e *TermEmulator) VisibleFg(row int) []string {
+	if row < 0 || row >= e.h {
+		return nil
+	}
+	out := make([]string, e.w)
+	copy(out, e.screenFg[row])
+	return out
+}
+
+// RowFg returns the dominant non-empty foreground of a screen row, or "" when
+// every cell uses the default foreground.
+func (e *TermEmulator) RowFg(row int) string {
+	cells := e.VisibleFg(row)
+	for _, fg := range cells {
+		if fg != "" {
+			return fg
+		}
+	}
+	return ""
 }
 
 func (e *TermEmulator) Scrollback() []string { return e.scrollback }

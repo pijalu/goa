@@ -48,13 +48,14 @@ const (
 	// only the requested attribute. These are required when styling fragments
 	// inside background-colored blocks (e.g. tool execution output) so the
 	// outer background is not killed by an inner Reset.
-	FgReset            = CSI + "39m" // default foreground color
-	BgReset            = CSI + "49m" // default background color
-	BoldReset          = CSI + "22m" // normal intensity (resets bold and faint)
-	FaintReset         = CSI + "22m" // same as BoldReset
-	ItalicReset        = CSI + "23m"
-	UnderlineReset     = CSI + "24m"
-	StrikethroughReset = CSI + "29m"
+	FgReset             = CSI + "39m" // default foreground color
+	BgReset             = CSI + "49m" // default background color
+	UnderlineColorReset = CSI + "59m" // default underline color (ISO 8613-6)
+	BoldReset           = CSI + "22m" // normal intensity (resets bold and faint)
+	FaintReset          = CSI + "22m" // same as BoldReset
+	ItalicReset         = CSI + "23m"
+	UnderlineReset      = CSI + "24m"
+	StrikethroughReset  = CSI + "29m"
 )
 
 // MoveUp returns the escape sequence to move the cursor up n lines.
@@ -114,6 +115,26 @@ func Hyperlink(url, text string) string {
 func Bg(hex string) string {
 	r, g, b := HexToRGB(hex)
 	return BgRGB(r, g, b)
+}
+
+// UnderlineColorRGB returns an ISO 8613-6 true-color underline-color sequence
+// (SGR 58). Like ratatui's cell underline_color, it only sets the color used
+// to draw underlines; it does NOT enable underlining — pair it with SGR 4
+// (ansi.Underline) for that.
+//
+// Legacy Windows conhost does not implement SGR 58: the sequence is silently
+// ignored and underlines degrade to the terminal default underline color,
+// while plain SGR 4 underlining remains fully available (see
+// docs/research/ratatui-tui-enhancements.md §4.3).
+func UnderlineColorRGB(r, g, b uint8) string {
+	return fmt.Sprintf(CSI+"58;2;%d;%d;%dm", r, g, b)
+}
+
+// UnderlineColor returns the ISO 8613-6 underline-color (SGR 58) sequence for
+// a hex color. See UnderlineColorRGB for semantics and conhost degradation.
+func UnderlineColor(hex string) string {
+	r, g, b := HexToRGB(hex)
+	return UnderlineColorRGB(r, g, b)
 }
 
 // RenderWithCursor returns text with the character at cursorRunePos displayed

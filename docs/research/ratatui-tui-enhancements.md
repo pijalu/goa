@@ -1,9 +1,68 @@
 # Ratatui → Goa TUI Enhancement Research
 
-> **Status**: Research complete — ready for implementation planning  
+> **Status**: Research complete — re-audited against goa HEAD `70e7f1f`; **§0 below is the authoritative plan**
 > **Source**: ratatui v0.30.3 (commit `c7098699`, `internal::quick_test`)  
 > **Date**: 2026-07-27  
 > **goa HEAD**: `2550ebb`
+
+---
+
+## 0. Re-Audit Against Current Code — AUTHORITATIVE PLAN (HEAD `70e7f1f`)
+
+> **This section supersedes §7.** The research above was written against goa `2550ebb`.
+> Since then the TUI was rearchitected: some items already landed, others moved.
+> All anchors below were verified against HEAD `70e7f1f`.
+
+### 0.1 What changed since the research baseline
+
+| Research-doc concept | Where it lives NOW (verified) |
+|----------------------|-------------------------------|
+| Canvas rows / `compose()` monolith | Protocol-free `Scene{Layers, Nodes, Cursor}` built by `TUI.buildScene` (`tui/tui_scene.go`); the Compositor exclusively owns terminal-protocol output (`tui/compositor_frame.go`, `tui/compositor_scroll.go`, `tui/compositor_rowdiff.go`) |
+| `Style` struct + `Style.WriteTo` 4-part SGR (`tui/ansi.go`) | Removed. Now `Theme`/`Styled`/`ColorToken` (`tui/styles.go`); ANSI utilities (`FgRGB`, `Strip`, `Wrap`, …) live in `internal/ansi/`. `Styled.Render` bakes `Prefix() + text + "\x1b[0m"` per styled piece |
+| Row diffing | EXISTS at row granularity: `unchangedRowTranscript` / `unchangedRowChrome` (`tui/compositor_rowdiff.go`). Changed rows are still emitted FULL-WIDTH (`\x1b[{row};1H\x1b[2K` + whole line) — see `repaintTranscriptRows`/`repaintChromeRows` (`tui/compositor_scroll.go:39-89`) |
+| Widget trait / Layer interface (§3.2) | **DONE**: stacked base layers + positioned overlay layers (`buildBaseLayers`, `OverlayOptions`, `overlayStartRow`, `clampOverlayHeight` in `tui/tui_geometry.go`) |
+| Test infrastructure (§2.4) | Superseded by `Filmstrip` (`tui/filmstrip.go`): per-step `Snapshot{Frame, Diff}`, `StatusTrace`, `Render()`; heavily used in `internal/app/*_filmstrip_test.go`; plus `TermEmulator` VT-state assertions and golden files |
+| Hand-computed layout (§2.1) | The targeted summary/gap/textarea layout was removed; layout is component-tree driven (`renderChildren` → layer heights) |
+
+### 0.2 Item-by-item verdicts
+
+| Doc item | Verdict | Current anchor |
+|---|---|---|
+| 2.1 Layout constraint solver | **OBSOLETE** — the layout it targeted no longer exists; a generic solver has no consumer today | — |
+| 2.2 Row-column smart fill | **VALID (P0)** — only row-level skip exists; column-range dirty emission is missing | `tui/compositor_rowdiff.go`, `tui/compositor_scroll.go:39-89` |
+| 2.3 SGR modifier diffing | **RE-SCOPED (P1)** — emit-time SGR run coalescing / redundant-reset elision (the old `WriteTo` path is gone) | `tui/styles.go` (`Styled.Render`), Compositor emit path |
+| 2.4 Test assertion helpers | **DONE** — Filmstrip + TermEmulator + goldens; residual style-span checks fold into G1/G4 validation | `tui/filmstrip.go`, `tui/term_emulator.go` |
+| 2.5 Symbols extraction | **VALID (P2)** — box-drawing literals duplicated in ≥7 files: `background/panel.go`, `pty_view.go`, `chat_viewport_components.go`, `steering_chrome.go`, `orchestrator/browser.go`, `goal/panel.go`, `markdown_table.go` | new `internal/ansi/symbols.go` |
+| 2.6 Widget state pattern | **DONE** — components own state; `Render(width) []string`; per-entry cache in ChatViewport | `tui/chat_viewport.go` |
+| 2.7 Underline color (SGR 58) | **VALID (P3)** — no SGR 58 emit or parse anywhere yet | `tui/styles.go`, `internal/ansi/` |
+| 2.8 Inline overlay/dim | **DONE (mostly)** — overlays are first-class positioned layers | `tui/tui_scene.go`, `tui/tui_geometry.go` |
+| 3.1 Diff/render separation | **DONE** — protocol-free Scene vs protocol-only Compositor | `tui/tui_scene.go` |
+| 3.2 Layer interface | **DONE** | `tui/tui_scene.go` |
+| 3.3 Insets | **PARTIAL** — ad-hoc helpers only; revisit when a real consumer appears | — |
+| 4.5(1) Windows VT output enable | **VALID (P2)** — only `ENABLE_VIRTUAL_TERMINAL_INPUT` is set today | `tui/terminal_windows.go` |
+| 4.5(2) Sync degradation | **ALREADY GUARDED** (`CanSync`) | — |
+| 4.5(3) OSC 8 / OSC 52 | **DEFERRED** — feature work outside this plan | — |
+| 4.5(4) Resize via console events | **VALID (P2)** — still a 250ms poll | `tui/resize_windows.go` |
+| 4.5(5) Mouse | **N/A** — no mouse support planned | — |
+
+### 0.3 Goal plan (queue order)
+
+Every goal below MANDATES three validation legs:
+
+1. **Correctness tests** that would have caught the regression (table-driven; `t.TempDir()` where FS applies).
+2. **Measured result / performance gain** — a Go benchmark or in-test byte-count assertion with explicit numbers (e.g. "≥20% fewer emitted bytes"). A gain claim without a measurement fails review.
+3. **Visual-equality gate via Filmstrip** — representative scenarios (streaming turn, tab switch, selector overlay, chrome resize), captured through `Filmstrip`/`TermEmulator`, must be identical (golden or explicit comparison) before vs. after. Optimizations may change bytes, never pixels.
+
+| # | Pri | Goal | Scope (current anchors) | Validation |
+|---|-----|------|-------------------------|------------|
+| G1 | P0 | Column-range dirty-row emission | Extend `tui/compositor_rowdiff.go` with ANSI/grapheme-aware first..last differing column; partial-row CUP emission in `repaintTranscriptRows`/`repaintChromeRows`; safe fallback to full row | Unit tests incl. escape-spanning fallbacks; emitted-byte reduction benchmark (target ≥20% on partial-line churn); Filmstrip visual-equality suite unchanged |
+| G2 | P1 | Emit-time SGR coalescing | Elide duplicate consecutive SGR runs and needless `\x1b[0m`+identical-prefix pairs during row emit | Byte-reduction measurement on a styled transcript fixture; TermEmulator rendered-display identity; filmstrip goldens unchanged |
+| G3 | P2 | Box-drawing symbol extraction | New `internal/ansi/symbols.go` single source; rewrite the 7 call sites | grep proves no stray literals outside the symbols file; existing filmstrip/golden suites pass untouched (zero render change) |
+| G4 | P3 | Underline color (SGR 58) | `Styled.UnderlineColor` + emit; parse/Strip/Width neutrality; TermEmulator tolerance | Round-trip emit/parse tests; width-neutrality tests; filmstrip/TermEmulator render test |
+| G5 | P2 | Windows VT output enable | `enableWindowsVTOutput()` on stdout in `tui/terminal_windows.go`, silent degrade pre-1903 | `GOOS=windows go build ./...`; non-Windows untouched (build tags); vet+tests pass locally |
+| G6 | P2 | Windows resize via console events | Event-driven buffer-size watch replacing the 250ms ticker in `tui/resize_windows.go`; poll fallback retained | Synthetic input-record unit tests for the event filter; contract tests for `resizeEvents`; `GOOS=windows go build ./...` |
+
+G3/G4 precede G5/G6 because their validation runs fully on the dev platform; G5/G6 are Windows-gated (build-only verification locally). Filmstrip usage patterns for implementers: see `internal/app/agentctx_filmstrip_test.go`, `internal/app/ui_scenario_regression_test.go`.
 
 ---
 
@@ -321,7 +380,7 @@ goa's Windows support is minimal but functional:
 | File | Purpose | Details |
 |------|---------|---------|
 | `tui/terminal_windows.go:15-21` | Enable VT input | `ENABLE_VIRTUAL_TERMINAL_INPUT` on stdin — required for escape-sequence key parsing on Windows |
-| `tui/resize_windows.go:19-42` | Poll for resize | `consoleSize()` via `x/term.GetSize()` polls every 250ms (no SIGWINCH equivalent) |
+| `tui/resize_windows.go` | Event-driven resize | Waits on the console input handle (`WaitForSingleObject`), consumes `WINDOW_BUFFER_SIZE_RECORD` via `ReadConsoleInput` (peek-gated so stdin key records stay with the byte reader); falls back to the legacy 250ms `consoleSize()` poller when event mode is unavailable |
 | `tui/terminal_drain_windows.go:13-16` | Blocking input read | `drainInputNonBlocking` spawns goroutine for blocking read — Windows lacks POSIX non-blocking I/O on console handles |
 | `tui/terminal.go:622-632` | Raw mode | `term.MakeRaw(fd)` — uses `x/term` which internally calls Windows Console API `SetConsoleMode` |
 
@@ -338,7 +397,7 @@ Windows Terminal (the default terminal on Windows 11, installable on Windows 10)
 | **Italic/strikethrough** | Full | SGR 3/9 work correctly |
 | **Cursor shapes** | Full | DECSCUSR `\x1b[N q` supported |
 | **Hyperlinks** | Full | OSC 8 `\x1b]8;;url\x1b\\text\x1b]8;;\x1b\\` |
-| **Resize via IOCTL** | Full | WT sends `WINDOW_BUFFER_SIZE_RECORD` — still no SIGWINCH, but goa's polling works |
+| **Resize via IOCTL** | Full | WT sends `WINDOW_BUFFER_SIZE_RECORD`; goa consumes it via the G6 console-event watcher (poll fallback retained) |
 | **Bracketed paste** | Full | `\x1b[200~` / `\x1b[201~` |
 | **Kitty keyboard protocol** | Partial | Some modes work in recent WT builds |
 
@@ -380,7 +439,7 @@ The legacy console host (still the default on Windows Server 2019 and older) has
 
 3. **Windows Terminal OSC sequences**: Windows Terminal supports OSC 8 (hyperlinks), OSC 0 (title), and OSC 52 (clipboard). goa uses OSC 0 for title (`SetTitle` at `terminal.go:658-660`) and OSC 9 (notification). Could add OSC 52 clipboard support and OSC 8 hyperlink support for tool outputs.
 
-4. **Console event polling**: Instead of 250ms resize polling, Windows could use `WaitForSingleObject` on the console input handle and check for `WINDOW_BUFFER_SIZE_RECORD` events. This would give instant resize detection without polling overhead.
+4. **Console event polling** — DONE in G6: `tui/resize_windows.go` now uses `WaitForSingleObject` on the console input handle and consumes `WINDOW_BUFFER_SIZE_RECORD` events (`ReadConsoleInputW`, peek-gated to protect the stdin byte reader), with a 1s safety-net size check; the 250ms poller remains as automatic fallback when event mode is unavailable.
 
 5. **No DPAD/mouse support on legacy conhost**: goa's input layer doesn't use mouse events, but if added in the future, note that mouse tracking only works in Windows Terminal (via SGR mouse mode), not legacy conhost.
 
@@ -438,6 +497,8 @@ The legacy console host (still the default on Windows Server 2019 and older) has
 ---
 
 ## 7. Summary — Prioritized Enhancement Candidates
+
+> **SUPERSEDED by §0 (re-audit against HEAD `70e7f1f`).** Kept for research provenance.
 
 | Priority | Enhancement | ratatui Source | Impact | Effort |
 |----------|------------|----------------|--------|--------|

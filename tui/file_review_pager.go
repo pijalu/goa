@@ -164,7 +164,7 @@ func (p *FileReviewPager) renderRow(i, gutterW, contentW int, md *mdSourceState)
 	} else if commented {
 		// Green pipe replaces the leading space; no reset keeps the
 		// background running into the gutter and content below.
-		prefix = ansi.Bg(commentBgColor) + ansi.Fg("#3fb950") + "│" + ansi.FgReset + ansi.Bg(commentBgColor) + " "
+		prefix = ansi.Bg(commentBgColor) + ansi.Fg("#3fb950") + ansi.BoxVertical + ansi.FgReset + ansi.Bg(commentBgColor) + " "
 	}
 
 	gutter := fmt.Sprintf("%*d", gutterW, lineNum)

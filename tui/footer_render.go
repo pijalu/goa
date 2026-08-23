@@ -43,7 +43,7 @@ func (f *Footer) Render(width int) []string {
 	// Line 1: working directory (left) / [◈ active-goal marker] profile(minor) + mode badge (right)
 	workdir := f.formatWorkdirAdaptive(width)
 	modeBadge := ansi.Fg(f.modeColor()) + strings.ToUpper(f.data.Mode) + ansi.Reset + fg
-	right1 := fmt.Sprintf("%s │ %s", f.goalProfileLabel(fg), modeBadge)
+	right1 := fmt.Sprintf("%s %s %s", f.goalProfileLabel(fg), ansi.BoxVertical, modeBadge)
 	line1 := renderTwoCol(workdir, right1, width, styler)
 
 	// Line 2: conversation stats / activity / steering hint (left) / model +
@@ -131,13 +131,13 @@ func (f *Footer) buildLeftSide(fg string) string {
 	return left2
 }
 
-// appendWithSep appends s to base with a " │ " separator, or returns s when
+// appendWithSep appends s to base with a vertical-bar separator, or returns s when
 // base is empty.
 func appendWithSep(base, s string) string {
 	if base == "" {
 		return s
 	}
-	return base + " │ " + s
+	return base + " " + ansi.BoxVertical + " " + s
 }
 
 // formatWorkdirAdaptive returns the formatted working directory, optionally
@@ -618,7 +618,7 @@ func formatFooterLineAt(stats, model, provider, thinking, activity string, busy,
 // goalProfileLabel renders the line-1 right-side label: while a goal is
 // ACTIVE, a ◈ goal-count marker prefixes the profile label (one ◈ per goal
 // up to 3, then a numeric prefix — "◈", "◈◈◈", "25◈"), and one ⬩ per pending
-// todo follows it (up to 3, then +(n-3)) — "◈◈◈ coding-posture ⬩⬩⬩+2 │ YOLO".
+// todo follows it (up to 3, then +(n-3)) — ◈◈◈ coding-posture ⬩⬩⬩+2 │ YOLO.
 // The markers are the ONLY goal signal in the footer: objective, status and
 // todo detail live in the dedicated goal bubble chrome, so no goal detail is
 // duplicated here. The ◈ decoration marks an active goal ONLY: a

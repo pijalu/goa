@@ -529,7 +529,7 @@ func (s *Selector) renderTitle(c selectorColors, width int) string {
 }
 
 func (s *Selector) renderSeparator(color string, width int) string {
-	return ansi.Fg(color) + strings.Repeat("─", width) + ansi.Reset
+	return ansi.Fg(color) + strings.Repeat(ansi.BoxHorizontal, width) + ansi.Reset
 }
 
 func (s *Selector) renderSearchLine(c selectorColors) string {

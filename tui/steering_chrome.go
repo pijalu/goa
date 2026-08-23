@@ -15,7 +15,7 @@ package tui
 // transcript to be append-only. The remove/re-append shuffle invalidated the
 // shared render cache and reset the moved entry's lineOffset on every stream
 // chunk, desyncing the scrollback watermark so already-scrolled rows (the
-// bubble's "(alt+e to edit)" box and trailing "└───┘" borders) were
+// bubble's (alt+e to edit) box and trailing └───┘ borders) were
 // re-emitted — the duplicated/garbled frames seen when a slash command such as
 // /quota landed mid-stream ("/quota request during streaming corrupts
 // the TUI"). As chrome, the bubble never enters the transcript canvas: the

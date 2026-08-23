@@ -14,8 +14,8 @@ import (
 // updateOrchInputPrompt sets the input editor's title to reflect the current
 // steering target: "steer <role>" for a selected agent, "steer all" for the
 // broadcast target, and "" when no run is active. The label is rendered inside
-// the editor's bordered title ("┨ steer <role> ┠"), so it must not end with ":"
-// — the colon would collide with the closing "┠" bracket (see
+// the editor's bordered title (┨ steer <role> ┠), so it must not end with ":"
+// — the colon would collide with the closing ┠ bracket (see
 // Editor.SetTitle normalization). Must be called on the command loop (it
 // mutates the editor + reads the view).
 func (a *App) updateOrchInputPrompt() {

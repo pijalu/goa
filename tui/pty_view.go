@@ -106,11 +106,11 @@ func (pv *PTYView) Render(width int) []string {
 	dim := ansi.Fg(TheTheme.ColorHex("system_msg"))
 	title := fmt.Sprintf(" PTY Session: %s ", sessionID)
 	border := ansi.Fg(TheTheme.ColorHex("border_focused"))
-	sep := strings.Repeat("─", width-len(title)-2)
+	sep := strings.Repeat(ansi.BoxHorizontal, width-len(title)-2)
 
 	var lines []string
 	// Top border with title
-	lines = append(lines, padToWidth(border+"┌─"+title+sep+"─┐"+ansi.Reset, width))
+	lines = append(lines, padToWidth(border+ansi.BoxTopLeft+ansi.BoxHorizontal+title+sep+ansi.BoxHorizontal+ansi.BoxTopRight+ansi.Reset, width))
 
 	// PTY output
 	if len(output) > 0 {
@@ -121,16 +121,16 @@ func (pv *PTYView) Render(width int) []string {
 		}
 		for _, line := range output[start:] {
 			clean := strings.TrimRight(line, "\r\n")
-			lines = append(lines, padToWidth(dim+"│ "+clean+ansi.Reset, width))
+			lines = append(lines, padToWidth(dim+ansi.BoxVertical+" "+clean+ansi.Reset, width))
 		}
 	} else {
-		lines = append(lines, padToWidth(dim+"│ (waiting for output)"+ansi.Reset, width))
+		lines = append(lines, padToWidth(dim+ansi.BoxVertical+" (waiting for output)"+ansi.Reset, width))
 	}
 
 	// Bottom border with controls
 	status := "ctrl+c to close"
-	lines = append(lines, padToWidth(border+"├─ "+status+ansi.Reset, width))
-	lines = append(lines, padToWidth(border+"└"+strings.Repeat("─", width-2)+"┘"+ansi.Reset, width))
+	lines = append(lines, padToWidth(border+ansi.BoxJunctionRight+" "+status+ansi.Reset, width))
+	lines = append(lines, padToWidth(border+ansi.BoxBottomLeft+strings.Repeat(ansi.BoxHorizontal, width-2)+ansi.BoxBottomRight+ansi.Reset, width))
 
 	return lines
 }

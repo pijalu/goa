@@ -13,11 +13,19 @@ import (
 )
 
 // ColorToken defines a themed color with optional text attributes.
+//
+// UnderlineColor is an ISO 8613-6 (SGR 58) accent rendered *under* text:
+// it sets the color future underlines are drawn in (e.g. links styled with
+// SGR 4) without enabling underlining itself. Terminals without SGR 58
+// support — notably legacy Windows conhost — silently ignore the sequence,
+// degrading to their default underline color; plain SGR 4 underlining stays
+// fully available there (docs/research/ratatui-tui-enhancements.md §4.3).
 type ColorToken struct {
-	Hex    string `yaml:"hex"`
-	Bold   bool   `yaml:"bold,omitempty"`
-	Italic bool   `yaml:"italic,omitempty"`
-	Faint  bool   `yaml:"faint,omitempty"`
+	Hex            string `yaml:"hex"`
+	Bold           bool   `yaml:"bold,omitempty"`
+	Italic         bool   `yaml:"italic,omitempty"`
+	Faint          bool   `yaml:"faint,omitempty"`
+	UnderlineColor string `yaml:"underline_color,omitempty"`
 }
 
 // Theme holds all color tokens for the TUI.
@@ -57,17 +65,29 @@ func (t *Theme) Color(name string) color.Color {
 // Style returns a simple ANSI-styled string wrapper for the given token.
 func (t *Theme) Style(name string) Styled {
 	if token, ok := t.Colors[name]; ok {
-		return Styled{hex: token.Hex, bold: token.Bold, italic: token.Italic, faint: token.Faint}
+		return Styled{hex: token.Hex, bold: token.Bold, italic: token.Italic,
+			faint: token.Faint, underlineColor: token.UnderlineColor}
 	}
 	return Styled{hex: "#888888"}
 }
 
 // Styled wraps text with ANSI escape codes.
 type Styled struct {
-	hex    string
-	bold   bool
-	italic bool
-	faint  bool
+	hex            string
+	bold           bool
+	italic         bool
+	faint          bool
+	underlineColor string
+}
+
+// WithUnderlineColor returns a copy of s that also emits the ISO 8613-6
+// underline-color sequence (SGR 58). The sequence sets the color underlines
+// are drawn in; it does not enable underlining. On terminals without SGR 58
+// support (legacy conhost) the color silently degrades to the default
+// underline color while plain SGR 4 underlining remains available.
+func (s Styled) WithUnderlineColor(hex string) Styled {
+	s.underlineColor = hex
+	return s
 }
 
 // Render returns the text wrapped in ANSI escape codes.
@@ -88,6 +108,12 @@ func (s Styled) Prefix() string {
 	}
 	if s.faint {
 		out += "\x1b[2m"
+	}
+	// ISO 8613-6 underline color (SGR 58): emitted only when set so unset
+	// styles stay byte-identical to pre-SGR-58 output.
+	if s.underlineColor != "" {
+		ur, ug, ub := hexToRGB(s.underlineColor)
+		out += fmt.Sprintf("\x1b[58;2;%d;%d;%dm", ur, ug, ub)
 	}
 	return out
 }

@@ -28,7 +28,7 @@ func (g *gutteredComponent) Render(width int) []string {
 	if color == "" {
 		color = "#a371f7"
 	}
-	gutter := ansi.Fg(color) + "│" + ansi.Reset
+	gutter := ansi.Fg(color) + ansi.BoxVertical + ansi.Reset
 	result := make([]string, len(lines))
 	for i, line := range lines {
 		result[i] = gutter + " " + line
@@ -147,7 +147,7 @@ func (m *assistantMessage) renderFrame(width int) []string {
 		lines = append(lines, padToWidth(" "+line, width))
 	}
 
-	// Finish reason line (S9 spec: "── stop · N tok · Ns · think:N ─────")
+	// Finish reason line (S9 spec: ── stop · N tok · Ns · think:N ─────)
 	if m.finishReason != "" {
 		finishColor := ansi.Fg(TheTheme.ColorHex("finish_" + m.finishReason))
 		label := m.finishReason
@@ -161,9 +161,9 @@ func (m *assistantMessage) renderFrame(width int) []string {
 		}
 		rightText := strings.Join(rightParts, " · ")
 
-		// Format: "── stop · N tok · Ns " (left) + "──────────────────" (fill)
+		// Format: ── stop · N tok · Ns ␣ (left) + horizontal-bar fill
 		// Account for 1col left padding.
-		left := " " + fmt.Sprintf("── %s", label) // leading space = 1col left pad
+		left := " " + ansi.RepeatHorizontal(2) + " " + label // leading space = 1col left pad
 		if rightText != "" {
 			left += " · " + rightText
 		}
@@ -173,7 +173,7 @@ func (m *assistantMessage) renderFrame(width int) []string {
 		if fill < 1 {
 			fill = 1
 		}
-		line := finishColor + left + strings.Repeat("─", fill) + ansi.Reset
+		line := finishColor + left + strings.Repeat(ansi.BoxHorizontal, fill) + ansi.Reset
 		lines = append(lines, padToWidth(line, width))
 	}
 
@@ -286,8 +286,8 @@ func renderGoaPanel(text string, preformatted bool, width int) []string {
 	}
 
 	reset := ansi.Reset
-	top := bd + "\u256d" + strings.Repeat("\u2500", width-2) + "\u256e" + reset
-	bot := bd + "\u2570" + strings.Repeat("\u2500", width-2) + "\u256f" + reset
+	top := bd + ansi.BoxRoundedTopLeft + strings.Repeat(ansi.BoxHorizontal, width-2) + ansi.BoxRoundedTopRight + reset
+	bot := bd + ansi.BoxRoundedBottomLeft + strings.Repeat(ansi.BoxHorizontal, width-2) + ansi.BoxRoundedBottomRight + reset
 
 	// bodyCell is the visible width between the two side borders; it must equal
 	// width-2 so the right │ aligns with the top/bottom border corners.
@@ -295,7 +295,7 @@ func renderGoaPanel(text string, preformatted bool, width int) []string {
 	lines := []string{padToWidthStyled(top, width, "")}
 	for _, raw := range inner {
 		body := padToWidthStyled(" "+raw, bodyCell, "")
-		lines = append(lines, bd+"\u2502"+reset+body+bd+"\u2502"+reset)
+		lines = append(lines, bd+ansi.BoxVertical+reset+body+bd+ansi.BoxVertical+reset)
 	}
 	lines = append(lines, padToWidthStyled(bot, width, ""))
 	return lines
@@ -331,7 +331,7 @@ type CompanionSectionComponent struct {
 	collapsibleComponent
 	thinking *thinkingBlock
 	message  string // final message text to show in collapsed header
-	role string // streaming agent role ("companion", "coder", …) for color
+	role     string // streaming agent role ("companion", "coder", …) for color
 	// toolLines records sub-agent tool activity ("⚙ read" / "✓ 76 matches") so
 	// the user sees what the sub-agent actually does — previously tool calls
 	// were invisible and sections looked frozen (team UI bug RC-2).
@@ -761,18 +761,18 @@ func (m *steeringPending) Render(width int) []string {
 	// defense-in-depth for anything produced by goa itself.
 	merged := strings.Join(m.messages, "\n\n")
 	clean := ansi.Strip(ansi.Sanitize(merged))
-	innerWidth := max(width-4, 1) // "│ " + content + " │"
+	innerWidth := max(width-4, 1) // side border + space on each side of content
 	wrapped := wrapSteeringText(clean, innerWidth)
 	// box draws one bordered row with the terminal default background:
-	// "│ <content padded to innerWidth> │" — exactly width visible columns.
+	// vertical bar, padded content, vertical bar — exactly width visible columns.
 	box := func(content string) string {
-		return bd + "│" + fg + " " + padToWidth(content, innerWidth) + " " + bd + "│" + reset
+		return bd + ansi.BoxVertical + fg + " " + padToWidth(content, innerWidth) + " " + bd + ansi.BoxVertical + reset
 	}
 	hline := func(l, r string) string {
-		return bd + l + strings.Repeat("─", width-2) + r + reset
+		return bd + l + strings.Repeat(ansi.BoxHorizontal, width-2) + r + reset
 	}
 
-	lines := []string{hline("┌", "┐")}
+	lines := []string{hline(ansi.BoxTopLeft, ansi.BoxTopRight)}
 
 	// One-line preview: the first non-blank wrapped line. Leading blanks are
 	// skipped so a message starting with blank lines shows real content.
@@ -781,7 +781,7 @@ func (m *steeringPending) Render(width int) []string {
 	}
 
 	lines = append(lines, box(steeringFooter(len(m.messages), hiddenLines(wrapped))))
-	lines = append(lines, hline("└", "┘"))
+	lines = append(lines, hline(ansi.BoxBottomLeft, ansi.BoxBottomRight))
 	return lines
 }
 

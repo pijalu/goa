@@ -72,7 +72,7 @@ func (b *AgentTabBar) Invalidate() {}
 // renderLine builds the visible tab strip: labels left-justified, the
 // [n/total] indicator right-justified.
 func (b *AgentTabBar) renderLine(width int) string {
-	sep := ansi.Faint + " │ " + ansi.Reset
+	sep := ansi.Faint + " " + ansi.BoxVertical + " " + ansi.Reset
 	left := strings.Join(b.tabLabels(), sep)
 	indicator := ansi.Faint + "[" + strconv.Itoa(b.reg.ActiveIndex()+1) + "/" + strconv.Itoa(b.reg.Len()) + "]" + ansi.Reset
 	pad := width - ansi.Width(left) - ansi.Width(indicator)

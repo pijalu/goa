@@ -13,12 +13,10 @@
 package app
 
 import (
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/pijalu/goa/multiagent"
-	"github.com/pijalu/goa/tui"
 )
 
 // t5Drain returns the event drain loop for the given orchestrator feed: every

@@ -109,7 +109,7 @@ func (r *MDStreamRenderer) renderTable(header []string, separator []string, rows
 	reset := ansi.Reset
 
 	result := []string{
-		tableBorder("┌", "┬", "┐", columnWidths, dim, reset),
+		tableBorder(ansi.BoxTopLeft, ansi.BoxJunctionDown, ansi.BoxTopRight, columnWidths, dim, reset),
 	}
 
 	headerLines := r.renderTableWrappedCells(header, columnWidths)
@@ -117,7 +117,7 @@ func (r *MDStreamRenderer) renderTable(header []string, separator []string, rows
 		result = append(result, renderTableDataLine(line, columnWidths, bold, dim, reset))
 	}
 
-	result = append(result, tableBorder("├", "┼", "┤", columnWidths, dim, reset))
+	result = append(result, tableBorder(ansi.BoxJunctionRight, ansi.BoxCross, ansi.BoxJunctionLeft, columnWidths, dim, reset))
 
 	for rowIdx, row := range rows {
 		rowLines := r.renderTableWrappedCells(row, columnWidths)
@@ -125,11 +125,11 @@ func (r *MDStreamRenderer) renderTable(header []string, separator []string, rows
 			result = append(result, renderTableDataLine(line, columnWidths, "", dim, reset))
 		}
 		if rowIdx < len(rows)-1 {
-			result = append(result, tableBorder("├", "┼", "┤", columnWidths, dim, reset))
+			result = append(result, tableBorder(ansi.BoxJunctionRight, ansi.BoxCross, ansi.BoxJunctionLeft, columnWidths, dim, reset))
 		}
 	}
 
-	result = append(result, tableBorder("└", "┴", "┘", columnWidths, dim, reset))
+	result = append(result, tableBorder(ansi.BoxBottomLeft, ansi.BoxJunctionUp, ansi.BoxBottomRight, columnWidths, dim, reset))
 	result = append(result, "")
 	return result
 }
@@ -138,7 +138,7 @@ func (r *MDStreamRenderer) renderTable(header []string, separator []string, rows
 func tableBorder(left, mid, right string, widths []int, dim, reset string) string {
 	parts := make([]string, len(widths))
 	for i, w := range widths {
-		parts[i] = "─" + strings.Repeat("─", w) + "─"
+		parts[i] = ansi.RepeatHorizontal(w + 2)
 	}
 	return dim + left + strings.Join(parts, mid) + right + reset
 }
@@ -154,7 +154,7 @@ func renderTableDataLine(cells []string, widths []int, bold, dim, reset string) 
 			parts[i] = pw
 		}
 	}
-	return dim + "│ " + strings.Join(parts, " │ ") + " │" + reset
+	return dim + ansi.BoxVertical + " " + strings.Join(parts, " "+ansi.BoxVertical+" ") + " " + ansi.BoxVertical + reset
 }
 
 // tableColCount returns the max column count across header and rows.

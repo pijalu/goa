@@ -50,7 +50,7 @@ func (r *MDStreamRenderer) Render(text string) []string {
 
 		switch {
 		case isThematicBreak(trimmed):
-			sep := strings.Repeat("─", r.width)
+			sep := strings.Repeat(ansi.BoxHorizontal, r.width)
 			result = append(result, ansi.Faint+sep+ansi.Reset)
 			i++
 

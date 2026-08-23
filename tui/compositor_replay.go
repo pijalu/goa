@@ -113,7 +113,7 @@ func (c *Compositor) replayChunk(canvas []string, from, to, globalFrom, width, h
 		buf.WriteString(truncateToWidth(canvas[i], width, ""))
 	}
 	buf.WriteString("\x1b[?2026l")
-	_, err := c.terminal.Write([]byte(buf.String()))
+	_, err := c.writeFrame(&buf)
 	return err
 }
 

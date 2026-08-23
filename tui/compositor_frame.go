@@ -280,7 +280,7 @@ func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, heigh
 	}
 	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)
 	buf.WriteString("\x1b[?2026l")
-	c.terminal.Write([]byte(buf.String()))
+	c.writeFrame(&buf)
 
 	c.vt = vt
 	c.cursorRow = max(0, len(canvas)-1)
@@ -341,7 +341,7 @@ func (c *Compositor) drawWindowResetScrollback(canvas []string, cursor *CursorPo
 	}
 	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)
 	buf.WriteString("\x1b[?2026l")
-	c.terminal.Write([]byte(buf.String()))
+	c.writeFrame(&buf)
 
 	c.scrollTop = vt // everything above the window is now in scrollback
 	c.vt = vt
@@ -390,7 +390,7 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 	c.repaintWindow(&buf, canvas, vt, width, height)
 	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)
 	buf.WriteString("\x1b[?2026l")
-	c.terminal.Write([]byte(buf.String()))
+	c.writeFrame(&buf)
 	c.lastScrollCount = 0
 
 	c.scrollTop = target

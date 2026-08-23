@@ -111,13 +111,13 @@ func (b *Browser) Render(width int) []string {
 }
 
 func (b *Browser) renderTopBorder(width, leftW int) string {
-	title := "─ Orchestrator Runs "
-	left := "┌" + strings.Repeat("─", leftW-2) + "┬"
+	title := ansi.BoxHorizontal + " Orchestrator Runs "
+	left := ansi.BoxTopLeft + strings.Repeat(ansi.BoxHorizontal, leftW-2) + ansi.BoxJunctionDown
 	fill := width - visibleLen(left) - visibleLen(title) - 1
 	if fill < 0 {
 		fill = 0
 	}
-	return left + strings.Repeat("─", fill) + title + "┐"
+	return left + strings.Repeat(ansi.BoxHorizontal, fill) + title + ansi.BoxTopRight
 }
 
 func (b *Browser) renderBodyHeight(width int) int {
@@ -132,18 +132,18 @@ func (b *Browser) renderBodyHeight(width int) int {
 func (b *Browser) renderMidBorder(height int) []string {
 	lines := make([]string, height)
 	for i := range lines {
-		lines[i] = "│"
+		lines[i] = ansi.BoxVertical
 	}
 	return lines
 }
 
 func (b *Browser) renderBottomBorder(width, leftW int) string {
-	left := "└" + strings.Repeat("─", leftW-2) + "┴"
+	left := ansi.BoxBottomLeft + strings.Repeat(ansi.BoxHorizontal, leftW-2) + ansi.BoxJunctionUp
 	fill := width - visibleLen(left) - 1
 	if fill < 0 {
 		fill = 0
 	}
-	return left + strings.Repeat("─", fill) + "┘"
+	return left + strings.Repeat(ansi.BoxHorizontal, fill) + ansi.BoxBottomRight
 }
 
 func (b *Browser) renderLeftPane(width, height int) []string {
@@ -157,9 +157,9 @@ func (b *Browser) renderLeftPane(width, height int) []string {
 	}
 	if len(b.runs) == 0 {
 		msg := "no runs"
-		lines = append(lines, "│ "+padOrTrunc(msg, inner))
+		lines = append(lines, ansi.BoxVertical+" "+padOrTrunc(msg, inner))
 		for i := 1; i < height; i++ {
-			lines = append(lines, "│ "+strings.Repeat(" ", inner))
+			lines = append(lines, ansi.BoxVertical+" "+strings.Repeat(" ", inner))
 		}
 		return lines
 	}
@@ -181,10 +181,10 @@ func (b *Browser) renderLeftPane(width, height int) []string {
 		}
 		status := string(statusLabel(r.Finished))
 		line := fmt.Sprintf("%s%s %s", prefix, label, status)
-		lines = append(lines, "│ "+padOrTrunc(line, inner))
+		lines = append(lines, ansi.BoxVertical+" "+padOrTrunc(line, inner))
 	}
 	for len(lines) < height {
-		lines = append(lines, "│ "+strings.Repeat(" ", inner))
+		lines = append(lines, ansi.BoxVertical+" "+strings.Repeat(" ", inner))
 	}
 	return lines
 }

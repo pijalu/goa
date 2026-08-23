@@ -84,7 +84,7 @@ func (b *Bubble) coloredSeparator(width int) string {
 	if color == "" {
 		color = "#888888"
 	}
-	return ansi.Fg(color) + strings.Repeat("─", width) + ansi.Reset
+	return ansi.Fg(color) + strings.Repeat(ansi.BoxHorizontal, width) + ansi.Reset
 }
 
 func (b *Bubble) collapsedText(width int) string {

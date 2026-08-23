@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -26,6 +25,11 @@ type wizardTestTerminal struct {
 	onInput func(string)
 	output  strings.Builder
 	writes  int
+	emu     *tui.TermEmulator // persistent model of what the screen shows
+}
+
+func newWizardTestTerminal(w, h int) *wizardTestTerminal {
+	return &wizardTestTerminal{w: w, h: h, emu: tui.NewTermEmulator(h, w)}
 }
 
 func (ft *wizardTestTerminal) Start(onInput func(string), _ func()) {
@@ -39,6 +43,7 @@ func (ft *wizardTestTerminal) Stop() {}
 func (ft *wizardTestTerminal) Write(p []byte) (int, error) {
 	ft.mu.Lock()
 	ft.output.Write(p)
+	ft.emu.Process(string(p))
 	ft.writes++
 	ft.mu.Unlock()
 	return len(p), nil
@@ -64,12 +69,20 @@ func (ft *wizardTestTerminal) reset() {
 	ft.mu.Unlock()
 }
 
-// strippedOutput returns the accumulated terminal output with ANSI escapes
-// removed, so assertions match on visible text only.
+// strippedOutput returns what the emulated terminal SCREEN currently shows
+// (ANSI-free), so assertions match user-visible text. The emulator persists
+// across reset(): differential rendering may carry visible content over from
+// frames emitted before a reset (e.g. column-range partial updates rewrite
+// only the changed cells), and the screen — not the raw byte window — is what
+// assertions must reason about.
 func (ft *wizardTestTerminal) strippedOutput() string {
 	ft.mu.Lock()
 	defer ft.mu.Unlock()
-	return ansi.Strip(ft.output.String())
+	rows := make([]string, 0, ft.h)
+	for r := 0; r < ft.h; r++ {
+		rows = append(rows, ft.emu.Visible(r))
+	}
+	return strings.Join(rows, "\n")
 }
 
 // send injects a decoded key via the captured onInput callback.
@@ -115,7 +128,7 @@ func newWizardTestLoader(t *testing.T) (*CascadeLoader, string) {
 // RequestRender a no-op) so no wizard text ever reached the terminal.
 func TestRunWizardWithTerminal_FirstFrameRenders(t *testing.T) {
 	loader, _ := newWizardTestLoader(t)
-	term := &wizardTestTerminal{w: 100, h: 30}
+	term := newWizardTestTerminal(100, 30)
 
 	done := make(chan *WizardResult, 1)
 	go func() {
@@ -145,7 +158,7 @@ func TestRunWizardWithTerminal_FirstFrameRenders(t *testing.T) {
 // mutation, not just the initial RenderNow.
 func TestRunWizardWithTerminal_RefreshOnEveryChange(t *testing.T) {
 	loader, _ := newWizardTestLoader(t)
-	term := &wizardTestTerminal{w: 100, h: 30}
+	term := newWizardTestTerminal(100, 30)
 
 	done := make(chan *WizardResult, 1)
 	go func() {
@@ -208,7 +221,7 @@ func TestRunWizardWithTerminal_RefreshOnEveryChange(t *testing.T) {
 // key changes the highlighted item and the terminal output reflects it.
 func TestRunWizardWithTerminal_NumberKeyRefreshes(t *testing.T) {
 	loader, _ := newWizardTestLoader(t)
-	term := &wizardTestTerminal{w: 100, h: 30}
+	term := newWizardTestTerminal(100, 30)
 
 	done := make(chan *WizardResult, 1)
 	go func() {
@@ -265,7 +278,7 @@ func TestRunWizardWithTerminal_NumberKeyRefreshes(t *testing.T) {
 // asserting the rendered output updates to show the typed text.
 func TestRunWizardWithTerminal_TextInputRefreshes(t *testing.T) {
 	loader, _ := newWizardTestLoader(t)
-	term := &wizardTestTerminal{w: 100, h: 30}
+	term := newWizardTestTerminal(100, 30)
 
 	done := make(chan *WizardResult, 1)
 	go func() {

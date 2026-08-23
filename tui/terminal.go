@@ -126,6 +126,11 @@ func (t *ProcessTerminal) Start(onInput func(string), onResize func()) {
 		// Enable Windows VT input (no-op on other platforms)
 		enableWindowsVTInput()
 
+		// Enable Windows VT output processing so the console interprets our
+		// ANSI/VT byte stream (no-op on other platforms; silently degrades on
+		// pre-1903 conhost where VT output is unavailable).
+		enableWindowsVTOutput()
+
 		// Disable auto-wrap (DECAWM) for the session. The compositor positions
 		// every row by absolute CUP and truncates content to the terminal width,
 		// so auto-wrap provides nothing — and it is actively harmful: a row

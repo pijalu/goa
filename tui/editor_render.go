@@ -44,29 +44,30 @@ func editorBorderColor(level string) string {
 	return ansi.Fg(color)
 }
 
-// renderScrollIndicator builds a scroll indicator line ("─── ↑ N more" or "─── ↓ N more").
+// renderScrollIndicator builds a scroll indicator line of the form ─── ↑ N more
+// or ─── ↓ N more.
 func renderScrollIndicator(direction rune, count, width int) string {
-	indicator := fmt.Sprintf("─── %c %d more ", direction, count)
+	indicator := ansi.RepeatHorizontal(3) + fmt.Sprintf(" %c %d more ", direction, count)
 	indent := width - visibleWidth(indicator)
 	if indent < 0 {
 		indent = 0
 	}
 	return ansi.Fg(TheTheme.ColorHex("system_msg")) + indicator +
-		strings.Repeat("─", indent) + ansi.Reset
+		strings.Repeat(ansi.BoxHorizontal, indent) + ansi.Reset
 }
 
 // renderTitledBorder renders an editor border line, optionally embedding a
-// title label as "───┨ title ┠───". When title is empty, a plain ruled line is
+// title label as ───┨ title ┠───. When title is empty, a plain ruled line is
 // returned. The brackets and title use the system_msg color while the rule
 // uses the thinking-level border color.
 func renderTitledBorder(title, thinkingLevel string, width int) string {
 	border := editorBorderColor(thinkingLevel)
 	reset := ansi.Reset
 	if strings.TrimSpace(title) == "" {
-		return border + strings.Repeat("─", width) + reset
+		return border + strings.Repeat(ansi.BoxHorizontal, width) + reset
 	}
 	labelColor := ansi.Fg(TheTheme.ColorHex("system_msg"))
-	center := labelColor + "┨ " + strings.TrimSpace(title) + " ┠" + reset
+	center := labelColor + ansi.BoxTitleLeft + " " + strings.TrimSpace(title) + " " + ansi.BoxTitleRight + reset
 	centerWidth := visibleWidth(center)
 	if centerWidth+6 >= width {
 		// Too narrow for decoration: just show the title.
@@ -80,7 +81,7 @@ func renderTitledBorder(title, thinkingLevel string, width int) string {
 	if right < 3 {
 		right = 3
 	}
-	return border + strings.Repeat("─", left) + reset + center + border + strings.Repeat("─", right) + reset
+	return border + strings.Repeat(ansi.BoxHorizontal, left) + reset + center + border + strings.Repeat(ansi.BoxHorizontal, right) + reset
 }
 
 // renderContentLine renders a single content line with an optional cursor
@@ -236,7 +237,7 @@ func (e *Editor) renderBottomBorder(layout editorLayout, width int) string {
 	if linesBelow := layout.totalVisualLines - layout.dispEnd; linesBelow > 0 {
 		return renderScrollIndicator('↓', linesBelow, width)
 	}
-	return editorBorderColor(e.thinkingLevel) + strings.Repeat("─", width) + ansi.Reset
+	return editorBorderColor(e.thinkingLevel) + strings.Repeat(ansi.BoxHorizontal, width) + ansi.Reset
 }
 
 // PopupLines implements PopupRenderer. It returns the autocomplete popup as
@@ -316,17 +317,17 @@ func (e *Editor) buildCompletionLines(items []Completion, selectedIdx, width int
 func categoryHeader(cat CompCategory) string {
 	switch cat {
 	case CatMostUsed:
-		return "── Most Used ──"
+		return ansi.RepeatHorizontal(2) + " Most Used " + ansi.RepeatHorizontal(2)
 	case CatCommand:
-		return "── Commands ──"
+		return ansi.RepeatHorizontal(2) + " Commands " + ansi.RepeatHorizontal(2)
 	case CatModifier:
-		return "── Modifiers ──"
+		return ansi.RepeatHorizontal(2) + " Modifiers " + ansi.RepeatHorizontal(2)
 	case CatHistory:
-		return "── History ──"
+		return ansi.RepeatHorizontal(2) + " History " + ansi.RepeatHorizontal(2)
 	case CatFiles:
-		return "── Files ──"
+		return ansi.RepeatHorizontal(2) + " Files " + ansi.RepeatHorizontal(2)
 	default:
-		return "──"
+		return ansi.RepeatHorizontal(2)
 	}
 }
 

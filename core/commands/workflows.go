@@ -123,7 +123,7 @@ func listWorkflows(ctx core.Context) error {
 		}
 
 		// Top border: ┌─ Title ──────────────────────┐
-		writeFmt(ctx, "┌%s%s┐\n", title, strings.Repeat("─", dashCount))
+		writeFmt(ctx, ansi.BoxTopLeft+"%s%s"+ansi.BoxTopRight+"\n", title, strings.Repeat(ansi.BoxHorizontal, dashCount))
 
 		// Description
 		desc := truncateTo(w.Description, boxWidth-4)
@@ -132,7 +132,7 @@ func listWorkflows(ctx core.Context) error {
 		if pad < 0 {
 			pad = 0
 		}
-		writeFmt(ctx, "│ %s%s │\n", desc, strings.Repeat(" ", pad))
+		writeFmt(ctx, ansi.BoxVertical+" %s%s "+ansi.BoxVertical+"\n", desc, strings.Repeat(" ", pad))
 
 		// Stages arrow format
 		stageNames := make([]string, len(w.Stages))
@@ -145,7 +145,7 @@ func listWorkflows(ctx core.Context) error {
 		if pad < 0 {
 			pad = 0
 		}
-		writeFmt(ctx, "│ %s%s │\n", stageStr, strings.Repeat(" ", pad))
+		writeFmt(ctx, ansi.BoxVertical+" %s%s "+ansi.BoxVertical+"\n", stageStr, strings.Repeat(" ", pad))
 
 		// Runnable ID
 		runStr := fmt.Sprintf("Run: /workflows:run:%s", w.ID)
@@ -154,10 +154,10 @@ func listWorkflows(ctx core.Context) error {
 		if pad < 0 {
 			pad = 0
 		}
-		writeFmt(ctx, "│ %s%s │\n", runStr, strings.Repeat(" ", pad))
+		writeFmt(ctx, ansi.BoxVertical+" %s%s "+ansi.BoxVertical+"\n", runStr, strings.Repeat(" ", pad))
 
 		// Bottom border
-		writeFmt(ctx, "└%s┘\n\n", strings.Repeat("─", boxWidth-2))
+		writeFmt(ctx, ansi.BoxBottomLeft+"%s"+ansi.BoxBottomRight+"\n\n", strings.Repeat(ansi.BoxHorizontal, boxWidth-2))
 	}
 	return nil
 }

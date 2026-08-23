@@ -442,19 +442,3 @@ func writeMemProfile(path string) error {
 	}
 	return nil
 }
-
-func rusageNow() *syscall.Rusage {
-	var r syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &r); err != nil {
-		return &syscall.Rusage{}
-	}
-	return &r
-}
-
-func rusageSeconds(r *syscall.Rusage) float64 {
-	if r == nil {
-		return 0
-	}
-	return float64(r.Utime.Sec) + float64(r.Utime.Usec)/1e6 +
-		float64(r.Stime.Sec) + float64(r.Stime.Usec)/1e6
-}

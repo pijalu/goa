@@ -484,7 +484,7 @@ func writeCacheRowCells(b *strings.Builder, cell func(i int) string, n int) {
 // writeCacheChartBaseline draws the ─ axis under the bars.
 func writeCacheChartBaseline(b *strings.Builder, n int) {
 	b.WriteString(cacheChartGutter)
-	writeCacheRowCells(b, func(int) string { return strings.Repeat("─", cacheChartCellW) }, n)
+	writeCacheRowCells(b, func(int) string { return ansi.RepeatHorizontal(cacheChartCellW) }, n)
 	b.WriteString("\n")
 }
 

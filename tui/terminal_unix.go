@@ -7,3 +7,7 @@
 package tui
 
 func enableWindowsVTInput() {}
+
+// enableWindowsVTOutput is a no-op outside Windows: Unix terminals process
+// VT output sequences natively.
+func enableWindowsVTOutput() {}

@@ -13,6 +13,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/tui"
 )
@@ -128,7 +129,7 @@ func showModelSelector(host core.UIHost, cfg *config.Config, saver config.Config
 	}
 	// "custom model" always sorts last (see modelItemLess).
 	items = append(items, tui.SelectorItem{
-		Value: "__custom__", Label: "── custom model ──", Description: "type any model name",
+		Value: "__custom__", Label: ansi.RepeatHorizontal(2) + " custom model " + ansi.RepeatHorizontal(2), Description: "type any model name",
 	})
 	sort.SliceStable(items, modelItemLess(items, activeModel))
 
@@ -270,7 +271,7 @@ func pickModelFromProvider(host core.UIHost, cfg *config.Config, saver config.Co
 			})
 		}
 		items = append(items, tui.SelectorItem{
-			Value: "__custom__", Label: "── custom model ──", Description: "type any model name",
+			Value: "__custom__", Label: ansi.RepeatHorizontal(2) + " custom model " + ansi.RepeatHorizontal(2), Description: "type any model name",
 		})
 		return items
 	}
@@ -452,7 +453,7 @@ func modelSelectorItems(allModels []providerModelEntry, active string) []tui.Sel
 			SearchLabel: modelSearchLabel(entry.Model.ID, entry.ProviderID, entry.Model.ID),
 		})
 	}
-	return append(items, tui.SelectorItem{Value: "__custom__", Label: "── custom model ──", Description: "type any model name"})
+	return append(items, tui.SelectorItem{Value: "__custom__", Label: ansi.RepeatHorizontal(2) + " custom model " + ansi.RepeatHorizontal(2), Description: "type any model name"})
 }
 
 func customModelSelectionHandler(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) func(string, bool) {

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // Rect is a logical rectangle in the virtual buffer (0-indexed).
@@ -105,13 +107,35 @@ type Compositor struct {
 	// tracing is disabled.
 	tracer   *renderTracer
 	curTrace *frameTrace
+
+	// sgr is the emit-time SGR run coalescer through which every frame
+	// buffer passes just before the terminal write (writeFrame). It tracks
+	// the attribute state the terminal holds across frames — mirroring the
+	// contiguous wire stream — so consecutive duplicate SGR runs and
+	// reset+re-open pairs between styled row pieces are elided without
+	// changing what the terminal renders. nil disables coalescing (test
+	// baseline for byte-count comparisons).
+	sgr *ansi.SGRCoalescer
 }
 
 // NewCompositor creates a Compositor bound to a Terminal. cursorVisible starts
 // false: TUI.Start hides the hardware cursor before the first frame, so the
 // first cursor-bearing frame must emit the show-cursor transition (\x1b[?25h).
 func NewCompositor(term Terminal) *Compositor {
-	return &Compositor{terminal: term, cursorVisible: false}
+	return &Compositor{terminal: term, cursorVisible: false, sgr: ansi.NewSGRCoalescer()}
+}
+
+// writeFrame filters the assembled frame buffer through the emit-time SGR
+// coalescer and commits it to the terminal. Every frame path funnels here so
+// the coalescer sees the same contiguous byte stream the terminal does and
+// its tracked state stays authoritative across frames. A nil coalescer (test
+// baseline) writes the buffer unfiltered.
+func (c *Compositor) writeFrame(buf *strings.Builder) (int, error) {
+	out := buf.String()
+	if c.sgr != nil {
+		out = c.sgr.Filter(out)
+	}
+	return c.terminal.Write([]byte(out))
 }
 
 // EnableRenderTrace turns on per-frame JSONL tracing to the given path.
@@ -315,6 +339,9 @@ func (c *Compositor) Restore() {
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026l")
 	buf.WriteString("\x1b[0m")
+	if c.sgr != nil {
+		c.sgr.Reset() // the shutdown reset re-synchronizes the tracked state
+	}
 	buf.WriteString("\x1b[r") // reset scroll region so the shell scrolls normally
 	c.regionBot = 0
 	bottom := c.vt + c.prevH

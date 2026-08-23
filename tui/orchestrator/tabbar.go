@@ -54,7 +54,7 @@ func (b *AgentTabBar) Invalidate() {}
 // render budget by delegating label styling to a helper.
 func (b *AgentTabBar) renderLine(width int) string {
 	v := b.view
-	sep := ansi.Faint + " │ " + ansi.Reset
+	sep := ansi.Faint + " " + ansi.BoxVertical + " " + ansi.Reset
 	parts := tabLabels(v)
 	left := ansi.Bold + v.Source() + ":" + ansi.BoldReset + " " + strings.Join(parts, sep)
 	indicator := ansi.Faint + "[" + v.TabIndex() + "]" + ansi.Reset

@@ -532,7 +532,7 @@ func (a *App) requestMainInput(prompt string, onSubmit func(string)) {
 // restore is expressed as an onCancel, not a separate field.
 //
 // The prompt is shown in exactly ONE place: the input editor's bordered title
-// ("┨ <prompt> ┠"), right where the user types. It is NOT also emitted as a
+// (┨ <prompt> ┠), right where the user types. It is NOT also emitted as a
 // chat system message or a separate pending-input line — those duplicated the
 // instruction up to three times (a boxed note, a plain line, and the title).
 // The editor is always rendered (even on orchestrator tabs), so the title

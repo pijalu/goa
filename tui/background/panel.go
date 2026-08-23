@@ -84,8 +84,8 @@ func (p *Panel) render(width int, tasks []Task) []string {
 	}
 
 	title := "Background (" + strconv.Itoa(running) + "/" + strconv.Itoa(len(tasks)) + ")"
-	top := "┌─ " + ansi.Bold + title + ansi.BoldReset + " "
-	top = padToWidth(top, width-1) + "┐"
+	top := ansi.BoxTopLeft + ansi.BoxHorizontal + " " + ansi.Bold + title + ansi.BoldReset + " "
+	top = padToWidth(top, width-1) + ansi.BoxTopRight
 	lines := []string{top}
 
 	maxShown := 3
@@ -97,10 +97,10 @@ func (p *Panel) render(width int, tasks []Task) []string {
 		lines = append(lines, p.renderTaskLine(width, t))
 	}
 	if len(tasks) > maxShown {
-		more := "│ … and " + strconv.Itoa(len(tasks)-maxShown) + " more"
+		more := ansi.BoxVertical + " … and " + strconv.Itoa(len(tasks)-maxShown) + " more"
 		lines = append(lines, padToWidth(more, width))
 	}
-	lines = append(lines, "└"+strings.Repeat("─", width-2)+"┘")
+	lines = append(lines, ansi.BoxBottomLeft+ansi.RepeatHorizontal(width-2)+ansi.BoxBottomRight)
 	return lines
 }
 
@@ -115,14 +115,14 @@ func (p *Panel) renderTaskLine(width int, t Task) string {
 	} else if status == "error" || status == "killed" {
 		status = ansi.Fg("#f85149") + status + ansi.Reset
 	}
-	line := fmt.Sprintf("│ %s %s", t.ID, t.Command)
+	line := fmt.Sprintf("%s %s %s", ansi.BoxVertical, t.ID, t.Command)
 	if pid != "" {
 		line += " (" + pid + ")"
 	}
 	if status != "" {
 		line += " — " + status
 	}
-	line = ansi.Truncate(line, width-1) + "│"
+	line = ansi.Truncate(line, width-1) + ansi.BoxVertical
 	return padToWidth(line, width)
 }
 

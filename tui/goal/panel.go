@@ -43,11 +43,11 @@ func (p *Panel) Invalidate() {}
 
 func (p *Panel) renderBox(width int) []string {
 	title := "Goal · " + string(p.snapshot.Status)
-	top := "┌─ " + ansi.Bold + p.statusColor(title) + ansi.BoldReset + " " + strings.Repeat("─", max(0, width-len("┌─ ")-len(title)-1))
+	top := ansi.BoxTopLeft + ansi.BoxHorizontal + " " + ansi.Bold + p.statusColor(title) + ansi.BoldReset + " " + strings.Repeat(ansi.BoxHorizontal, max(0, width-len(ansi.BoxTopLeft+ansi.BoxHorizontal+" ")-len(title)-1))
 	if len(top) > width {
 		top = top[:width]
 	}
-	bottom := "└" + strings.Repeat("─", width-2) + "┘"
+	bottom := ansi.BoxBottomLeft + strings.Repeat(ansi.BoxHorizontal, width-2) + ansi.BoxBottomRight
 
 	contentW := width - 4
 	lines := []string{top}
@@ -79,15 +79,15 @@ func (p *Panel) blockLine(text string, width int) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString("│ ")
+		b.WriteString(ansi.BoxVertical + " ")
 		b.WriteString(padToWidth(line, width))
-		b.WriteString(" │")
+		b.WriteString(" " + ansi.BoxVertical)
 	}
 	return b.String()
 }
 
 func (p *Panel) padLine(width int) string {
-	return "│ " + strings.Repeat(" ", width) + " │"
+	return ansi.BoxVertical + " " + strings.Repeat(" ", width) + " " + ansi.BoxVertical
 }
 
 func (p *Panel) stopLine() string {

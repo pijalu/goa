@@ -6,8 +6,12 @@
 
 // End-to-end test against a local LLM server (llama.cpp / OpenAI-compatible).
 // Requires a server running at http://localhost:1234.
-// Run: go test -count=1 -tags e2e -run TestE2E ./...
-package core
+// Run: go test -count=1 -tags e2e -run TestE2E ./core/...
+//
+// This file lives in the EXTERNAL test package (core_test) because it wires
+// command auto-registration (`_ core/commands`), which imports core itself;
+// an in-package test file would create an import cycle.
+package core_test
 
 import (
 	"context"
@@ -18,10 +22,12 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/config"
-	_ "github.com/pijalu/goa/core/commands" // auto-register commands
+	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/commands" // command implementations; RegisterAll wires them
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	_ "github.com/pijalu/goa/internal/agentic/provider/openai" // register openai-completions backend
+	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/tools"
 )
@@ -38,7 +44,7 @@ func skipIfNoLLM(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	modelsURL := strings.TrimSuffix(testEndpoint, "/chat/completions") + "/models"
-	req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
@@ -152,35 +158,51 @@ func TestE2E_ProviderManager_TestConnection(t *testing.T) {
 	t.Logf("Connection latency: %v, models available: %d", latency, modelCount)
 }
 
-// TestE2E_CommandRouter_ModelsCommand tests the /models command end-to-end.
-func TestE2E_CommandRouter_ModelsCommand(t *testing.T) {
+// TestE2E_CommandRouter_ModelCommand tests the /model command end-to-end:
+// the router resolves it and a model switch is applied through the live
+// ProviderManager (the old /models listing command was consolidated into
+// /model; see TestRouterParse_RemovedCommands).
+func TestE2E_CommandRouter_ModelCommand(t *testing.T) {
 	skipIfNoLLM(t)
 
 	cfg := makeTestConfig()
-	reg := GlobalRegistry()
-	docEng := NewDocEngine(reg)
-	router := NewCommandRouter(reg, docEng)
+	reg := core.NewCommandRegistry()
+	// Production registers commands explicitly at startup (RegisterAll); the
+	// global registry stays empty until then, so populate our own here.
+	if err := commands.RegisterAll(reg); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	docEng := core.NewDocEngine(reg)
+	router := core.NewCommandRouter(reg, docEng)
 	pm := provider.NewProviderManager(cfg)
 
-	ctx := Context{
+	ctx := core.Context{
 		Config:          cfg,
 		ProviderManager: pm,
 	}
 
-	// Parse and execute /models
-	result := router.Parse("/models")
+	// Parse /model:<id> — colon is the argument separator; the old
+	// space-separated /models listing was consolidated into /model.
+	result := router.Parse("/model:" + testModel)
 	if result == nil {
-		t.Fatal("Parse('/models') returned nil")
+		t.Fatal("Parse('/model') returned nil")
 	}
 	if result.Command == nil {
-		t.Fatal("ModelsCommand not found in registry")
+		t.Fatalf("ModelCommand not found in registry (cmd=%q args=%v)", result.CmdName, result.Args)
+	}
+	if result.Command.Name() != "model" {
+		t.Fatalf("resolved command = %q, want \"model\"", result.Command.Name())
 	}
 
-	output, err := router.Execute(ctx, result)
-	if err != nil {
-		t.Fatalf("Execute('/models') error: %v", err)
+	// Execute the switch against the real provider manager (nil saver = no
+	// persistence, this test only validates the live wiring).
+	if _, err := router.Execute(ctx, result); err != nil {
+		t.Fatalf("Execute('/model %s') error: %v", testModel, err)
 	}
-	t.Logf("/models output: %s", output)
+	if cfg.ActiveModel != testModel {
+		t.Errorf("ActiveModel after switch = %q, want %q", cfg.ActiveModel, testModel)
+	}
+	t.Logf("/model switch OK; active=%s@%s", cfg.ActiveProvider, cfg.ActiveModel)
 }
 
 // TestE2E_AgentSession_SimpleChat starts a full agent session against the local LLM.
@@ -188,8 +210,8 @@ func TestE2E_AgentSession_SimpleChat(t *testing.T) {
 	skipIfNoLLM(t)
 
 	cfg := makeTestConfig()
-	agentMgr, tuiEvents := startTestAgentSession(t, cfg, "You are a helpful assistant.")
-	go logEvents(t, tuiEvents)
+	agentMgr, agentEvents := startTestAgentSession(t, cfg, "You are a helpful assistant.")
+	go logEvents(t, agentEvents)
 
 	if err := agentMgr.SendUserInput("Reply with exactly: 'Hello from Goa e2e test'"); err != nil {
 		t.Fatalf("SendUserInput failed: %v", err)
@@ -201,8 +223,9 @@ func TestE2E_AgentSession_SimpleChat(t *testing.T) {
 }
 
 // startTestAgentSession resolves the active model, builds stream options, and
-// starts an AgentManager session for e2e tests.
-func startTestAgentSession(t *testing.T, cfg *config.Config, systemPrompt string) (*AgentManager, chan interface{}) {
+// starts an AgentManager session for e2e tests. Events flow through the same
+// production event bus the TUI consumes (bus.Agent).
+func startTestAgentSession(t *testing.T, cfg *config.Config, systemPrompt string) (*core.AgentManager, <-chan event.AgentEvent) {
 	t.Helper()
 	pm := provider.NewProviderManager(cfg)
 
@@ -211,49 +234,60 @@ func startTestAgentSession(t *testing.T, cfg *config.Config, systemPrompt string
 		t.Fatalf("ResolveActiveModel failed: %v", err)
 	}
 	streamOpts := pm.BuildStreamOptions()
+	// Surface wire-level activity in -v logs: proves whether a real HTTP
+	// round trip happened (root-causing synthetic/canned replies).
+	streamOpts.OnResponse = func(status int, headers map[string]string) {
+		t.Logf("LLM response status: %d", status)
+	}
 
-	sessionStore := NewSessionStore(os.TempDir())
-	loopDetector := NewLoopDetector(DefaultLoopDetectorConfig())
-	tuiEvents := make(chan interface{}, 100)
-	sessionState := NewSessionState(cfg.DefaultModeState())
-	agentMgr := NewAgentManager(cfg, sessionStore, loopDetector, sessionState, tuiEvents, "")
+	// Per-test store dir: sharing os.TempDir() leaks sessions across runs,
+	// so StartSession would restore a stale conversation instead of a fresh one.
+	sessionStore := core.NewSessionStore(t.TempDir())
+	loopDetector := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	bus := event.MakeBus(256, 16, 16, 16)
+	sessionState := core.NewSessionState(cfg.DefaultModeState())
+	agentMgr := core.NewAgentManager(cfg, sessionStore, loopDetector, sessionState, bus, "")
+	// Full turn trace under -v: root-cause evidence for synthetic replies.
+	agentMgr.SetLogger(agentic.NewLogger(agentic.Debug))
 
 	if _, err := agentMgr.StartSession(mdl, streamOpts, systemPrompt, nil, cfg); err != nil {
 		t.Fatalf("StartSession failed: %v", err)
 	}
 	t.Log("Agent session started successfully")
-	return agentMgr, tuiEvents
+	return agentMgr, bus.Agent
 }
 
-// logEvents streams assistant events to the test log.
-func logEvents(t *testing.T, events chan interface{}) {
+// logEvents streams assistant events to the test log until the turn ends.
+func logEvents(t *testing.T, events <-chan event.AgentEvent) {
 	t.Helper()
-	for msg := range events {
-		event, ok := msg.(agentic.OutputEvent)
-		if !ok {
-			continue
+	for ae := range events {
+		ev := ae.Event
+		if ev.Type == agentic.EventContent && ev.Text != "" {
+			t.Logf("AGENT: %s", ev.Text)
 		}
-		if event.Type == agentic.EventContent && event.Text != "" {
-			t.Logf("AGENT: %s", event.Text)
-		}
-		if event.Type == agentic.EventEnd {
-			t.Logf("AGENT FINISHED — tokens: %+v", event.Timings)
+		if ev.Type == agentic.EventEnd {
+			t.Logf("AGENT FINISHED — tokens: %+v", ev.Timings)
 			return
 		}
 	}
 }
 
-// TestE2E_ModelsServiceCall tests the Goa /models command output is meaningful
+// TestE2E_ModelServiceCall tests the /model command output is meaningful
 // when using a real provider manager with a live connection.
-func TestE2E_ModelsServiceCall(t *testing.T) {
+func TestE2E_ModelServiceCall(t *testing.T) {
 	skipIfNoLLM(t)
 
 	cfg := makeTestConfig()
 	pm := provider.NewProviderManager(cfg)
-	reg := GlobalRegistry()
-	docEng := NewDocEngine(reg)
-	router := NewCommandRouter(reg, docEng)
-	ctx := Context{
+	reg := core.NewCommandRegistry()
+	// Production registers commands explicitly at startup (RegisterAll); the
+	// global registry stays empty until then, so populate our own here.
+	if err := commands.RegisterAll(reg); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	docEng := core.NewDocEngine(reg)
+	router := core.NewCommandRouter(reg, docEng)
+	ctx := core.Context{
 		Config:          cfg,
 		ProviderManager: pm,
 	}
@@ -264,29 +298,22 @@ func TestE2E_ModelsServiceCall(t *testing.T) {
 		t.Fatalf("ProviderManager.ListModels failed: %v", err)
 	}
 
-	// Now execute the /models command through the router
-	result := router.Parse("/models")
-	output, err := router.Execute(ctx, result)
-	if err != nil {
-		t.Fatalf("Router.Execute('/models') error: %v", err)
+	// Now switch models through the router (/model:<id> is the consolidated
+	// form of the removed /models command).
+	result := router.Parse("/model:" + testModel)
+	if _, err := router.Execute(ctx, result); err != nil {
+		t.Fatalf("Router.Execute('/model') error: %v", err)
 	}
 
-	// The output should mention available models
-	t.Logf("/models output:\n%s", output)
-
-	if len(models) > 0 {
-		// Check that at least one model ID appears in the output
-		found := false
-		for _, m := range models {
-			if strings.Contains(output, m.ID) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Logf("Warning: none of the %d model IDs appear in the command output", len(models))
-		}
+	// The switch must have applied to both config and live manager.
+	if cfg.ActiveModel != testModel {
+		t.Errorf("config ActiveModel = %q, want %q", cfg.ActiveModel, testModel)
 	}
+	p, model := pm.Active()
+	if p == nil || model != testModel {
+		t.Errorf("manager active = %v@%q, want %q@%q", p, model, testProvider, testModel)
+	}
+	_ = models // listing already validated by TestE2E_ProviderManager_ListModels
 }
 
 // TestE2E_ModelSelectionAndChat validates the full flow:
@@ -303,12 +330,12 @@ func TestE2E_ModelSelectionAndChat(t *testing.T) {
 	systemPrompt := "You are a helpful assistant. Keep responses very brief."
 	userInput := "Reply with exactly: 'Selected model: " + testModel + " works'"
 
-	agentMgr, tuiEvents := startTestAgentSession(t, cfg, systemPrompt)
+	agentMgr, agentEvents := startTestAgentSession(t, cfg, systemPrompt)
 	if err := agentMgr.SendUserInput(userInput); err != nil {
 		t.Fatalf("SendUserInput failed: %v", err)
 	}
 
-	responseText := collectAssistantResponse(tuiEvents, 30*time.Second)
+	responseText := collectAssistantResponse(agentEvents, 30*time.Second)
 	logChatResponse(t, responseText)
 	assertRealResponse(t, responseText, systemPrompt, userInput, "Selected model: "+testModel+" works")
 }
@@ -343,25 +370,22 @@ func assertActiveModel(t *testing.T, pm *provider.ProviderManager, want string) 
 }
 
 // collectAssistantResponse drains assistant events until EventEnd or timeout.
-func collectAssistantResponse(events chan interface{}, timeout time.Duration) string {
+func collectAssistantResponse(events <-chan event.AgentEvent, timeout time.Duration) string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	var responseText string
 	for {
 		select {
-		case msg := <-events:
-			event, ok := msg.(agentic.OutputEvent)
-			if !ok {
-				continue
-			}
+		case ae := <-events:
+			ev := ae.Event
 			// Only count assistant-generated content. System and user
 			// messages are also emitted as EventContent but are not the
 			// LLM response.
-			if event.Type == agentic.EventContent && event.Text != "" && event.Role == agentic.Assistant {
-				responseText += event.Text
+			if ev.Type == agentic.EventContent && ev.Text != "" && ev.Role == agentic.Assistant {
+				responseText += ev.Text
 			}
-			if event.Type == agentic.EventEnd {
+			if ev.Type == agentic.EventEnd {
 				return responseText
 			}
 		case <-ctx.Done():
@@ -430,13 +454,13 @@ func TestE2E_SummarizeProject_WithToolCalls(t *testing.T) {
 	}
 
 	systemPrompt := "You are a terminal AI coding assistant. Use tools when needed, then answer concisely."
-	agentMgr, tuiEvents := startTestAgentSessionWithTools(t, cfg, systemPrompt)
+	agentMgr, agentEvents := startTestAgentSessionWithTools(t, cfg, systemPrompt)
 
 	if err := agentMgr.SendUserInput("read README.md and summarize it in one sentence"); err != nil {
 		t.Fatalf("SendUserInput failed: %v", err)
 	}
 
-	result := collectSummarizeEvents(tuiEvents, 180*time.Second)
+	result := collectSummarizeEvents(agentEvents, 180*time.Second)
 
 	if !result.sawThinking {
 		t.Error("expected at least one thinking delta to be streamed")
@@ -467,9 +491,9 @@ type summarizeResult struct {
 	toolCallKeys  []string
 }
 
-// collectSummarizeEvents drains the event channel for the summarize test and
+// collectSummarizeEvents drains the event stream for the summarize test and
 // returns a summary of what happened.
-func collectSummarizeEvents(events chan interface{}, timeout time.Duration) summarizeResult {
+func collectSummarizeEvents(events <-chan event.AgentEvent, timeout time.Duration) summarizeResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -477,12 +501,8 @@ func collectSummarizeEvents(events chan interface{}, timeout time.Duration) summ
 	seenToolCalls := make(map[string]int)
 	for {
 		select {
-		case msg := <-events:
-			event, ok := msg.(agentic.OutputEvent)
-			if !ok {
-				continue
-			}
-			if result.handleEvent(event, seenToolCalls) {
+		case ae := <-events:
+			if result.handleEvent(ae.Event, seenToolCalls) {
 				return *result
 			}
 		case <-ctx.Done():
@@ -493,19 +513,19 @@ func collectSummarizeEvents(events chan interface{}, timeout time.Duration) summ
 
 // handleEvent updates the summarizeResult from a single agent event. Returns
 // true when the turn has ended.
-func (r *summarizeResult) handleEvent(event agentic.OutputEvent, seenToolCalls map[string]int) bool {
-	switch event.Type {
+func (r *summarizeResult) handleEvent(ev agentic.OutputEvent, seenToolCalls map[string]int) bool {
+	switch ev.Type {
 	case agentic.EventContent:
-		if event.Role == agentic.Assistant {
-			if event.State == agentic.StateThinking {
+		if ev.Role == agentic.Assistant {
+			if ev.State == agentic.StateThinking {
 				r.sawThinking = true
-			} else if event.State == agentic.StateContent {
-				r.finalResponse += event.Text
+			} else if ev.State == agentic.StateContent {
+				r.finalResponse += ev.Text
 			}
 		}
 	case agentic.EventToolCall:
 		r.sawToolCall = true
-		key := event.ToolName + "|" + event.ToolInput
+		key := ev.ToolName + "|" + ev.ToolInput
 		seenToolCalls[key]++
 		if seenToolCalls[key] > 1 {
 			r.loopDetected = true
@@ -524,7 +544,7 @@ func (r *summarizeResult) handleEvent(event agentic.OutputEvent, seenToolCalls m
 
 // startTestAgentSessionWithTools is like startTestAgentSession but registers
 // the real read, bash, and search tools so the LLM can use them.
-func startTestAgentSessionWithTools(t *testing.T, cfg *config.Config, systemPrompt string) (*AgentManager, chan interface{}) {
+func startTestAgentSessionWithTools(t *testing.T, cfg *config.Config, systemPrompt string) (*core.AgentManager, <-chan event.AgentEvent) {
 	t.Helper()
 	pm := provider.NewProviderManager(cfg)
 
@@ -534,11 +554,13 @@ func startTestAgentSessionWithTools(t *testing.T, cfg *config.Config, systemProm
 	}
 	streamOpts := pm.BuildStreamOptions()
 
-	sessionStore := NewSessionStore(os.TempDir())
-	loopDetector := NewLoopDetector(DefaultLoopDetectorConfig())
-	tuiEvents := make(chan interface{}, 100)
-	sessionState := NewSessionState(cfg.DefaultModeState())
-	agentMgr := NewAgentManager(cfg, sessionStore, loopDetector, sessionState, tuiEvents, "")
+	// Per-test store dir: sharing os.TempDir() leaks sessions across runs,
+	// so StartSession would restore a stale conversation instead of a fresh one.
+	sessionStore := core.NewSessionStore(t.TempDir())
+	loopDetector := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	bus := event.MakeBus(256, 16, 16, 16)
+	sessionState := core.NewSessionState(cfg.DefaultModeState())
+	agentMgr := core.NewAgentManager(cfg, sessionStore, loopDetector, sessionState, bus, "")
 	agentMgr.SetLogger(agentic.NewLogger(agentic.Debug))
 
 	wtMgr := internal.NewWorktreeManager(os.TempDir(), internal.WorktreeMultiAgent)
@@ -555,5 +577,5 @@ func startTestAgentSessionWithTools(t *testing.T, cfg *config.Config, systemProm
 		t.Fatalf("StartSession failed: %v", err)
 	}
 	t.Log("Agent session with tools started successfully")
-	return agentMgr, tuiEvents
+	return agentMgr, bus.Agent
 }

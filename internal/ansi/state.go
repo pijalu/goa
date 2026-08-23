@@ -14,6 +14,7 @@ import (
 type AnsiState struct {
 	bold, dim, italic, underline, blink, inverse, hidden, strikethrough bool
 	fgColor, bgColor                                                    string // e.g. "38;5;196" or "48;2;255;0;0"
+	ulColor                                                             string // underline color, e.g. "58;2;10;20;30" (ISO 8613-6 SGR 58)
 	hyperlinkURL                                                        string
 }
 
@@ -43,12 +44,16 @@ func (a *AnsiState) handleSGRCodeAt(parts []string, i *int) {
 		fn(a)
 		return
 	}
-	// Color codes (38/48) need additional parameter consumption
+	// Color codes (38/48/58) need additional parameter consumption.
+	// 58 is the ISO 8613-6 underline color; it does not toggle underlining
+	// (plain SGR 4 remains responsible for that).
 	switch parts[*i] {
 	case "38":
 		a.fgColor = consumeColor(parts, i)
 	case "48":
 		a.bgColor = consumeColor(parts, i)
+	case "58":
+		a.ulColor = consumeColor(parts, i)
 	}
 }
 
@@ -73,6 +78,7 @@ var sgrHandlers = map[string]func(*AnsiState){
 	"29": func(a *AnsiState) { a.strikethrough = false },
 	"39": func(a *AnsiState) { a.fgColor = "" },
 	"49": func(a *AnsiState) { a.bgColor = "" },
+	"59": func(a *AnsiState) { a.ulColor = "" }, // default underline color
 }
 
 // processHyperlink handles OSC 8 hyperlink sequences.
@@ -103,6 +109,9 @@ func (a *AnsiState) GetActiveCodes() string {
 	}
 	if a.bgColor != "" {
 		parts = append(parts, a.bgColor)
+	}
+	if a.ulColor != "" {
+		parts = append(parts, a.ulColor)
 	}
 	if len(parts) == 0 {
 		return ""
@@ -166,6 +175,7 @@ func (a *AnsiState) reset() {
 	a.strikethrough = false
 	a.fgColor = ""
 	a.bgColor = ""
+	a.ulColor = ""
 	a.hyperlinkURL = ""
 }
 
@@ -194,4 +204,44 @@ func consumeColor(parts []string, idx *int) string {
 		}
 	}
 	return ""
+}
+
+// EqualSGR reports whether two states describe identical SGR attributes.
+// Hyperlink URL is excluded: OSC 8 state never participates in SGR elision
+// decisions because it does not affect character attributes.
+func (a *AnsiState) EqualSGR(b *AnsiState) bool {
+	return a.bold == b.bold && a.dim == b.dim && a.italic == b.italic &&
+		a.underline == b.underline && a.blink == b.blink && a.inverse == b.inverse &&
+		a.hidden == b.hidden && a.strikethrough == b.strikethrough &&
+		a.fgColor == b.fgColor && a.bgColor == b.bgColor && a.ulColor == b.ulColor
+}
+
+// isDefaultSGR reports whether no SGR attribute is set.
+func (a *AnsiState) isDefaultSGR() bool {
+	return !a.bold && !a.dim && !a.italic && !a.underline && !a.blink &&
+		!a.inverse && !a.hidden && !a.strikethrough &&
+		a.fgColor == "" && a.bgColor == "" && a.ulColor == ""
+}
+
+// sgrSequence returns one canonical SGR run restoring the state's attributes
+// from default: attributes in ascending code order, then fg, then bg, then
+// underline color.
+// Hyperlink state is not represented (see EqualSGR). A default state yields
+// Reset — the canonical way to reach no-attributes.
+func (a *AnsiState) sgrSequence() string {
+	var parts []string
+	a.appendActiveAttrs(&parts)
+	if a.fgColor != "" {
+		parts = append(parts, a.fgColor)
+	}
+	if a.bgColor != "" {
+		parts = append(parts, a.bgColor)
+	}
+	if a.ulColor != "" {
+		parts = append(parts, a.ulColor)
+	}
+	if len(parts) == 0 {
+		return Reset
+	}
+	return CSI + strings.Join(parts, ";") + "m"
 }

@@ -90,12 +90,12 @@ func (c *ClarifyCard) Render(width int) []string {
 		body = []string{""}
 	}
 
-	top := bd + "╭" + strings.Repeat("─", width-2) + "╮" + reset
-	bot := bd + "╰" + strings.Repeat("─", width-2) + "╯" + reset
+	top := bd + ansi.BoxRoundedTopLeft + strings.Repeat(ansi.BoxHorizontal, width-2) + ansi.BoxRoundedTopRight + reset
+	bot := bd + ansi.BoxRoundedBottomLeft + strings.Repeat(ansi.BoxHorizontal, width-2) + ansi.BoxRoundedBottomRight + reset
 	cellW := width - 2
 	lines := []string{padToWidthStyled(top, width, "")}
 	for _, raw := range body {
-		lines = append(lines, bd+"│"+reset+padToWidthStyled(" "+raw, cellW, "")+bd+"│"+reset)
+		lines = append(lines, bd+ansi.BoxVertical+reset+padToWidthStyled(" "+raw, cellW, "")+bd+ansi.BoxVertical+reset)
 	}
 	lines = append(lines, padToWidthStyled(bot, width, ""))
 	return lines

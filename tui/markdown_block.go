@@ -294,8 +294,8 @@ func (r *MDStreamRenderer) renderBlockquote(lines []string) []string {
 		color = ansi.Fg("#8b949e")
 	}
 
-	prefix := "│ "
-	indent := "│ "
+	prefix := ansi.BoxVertical + " "
+	indent := ansi.BoxVertical + " "
 	for _, line := range lines {
 		rendered := renderInline(line, r.theme)
 		wrapped := ansi.Wrap(rendered, r.width-ansi.Width(indent))

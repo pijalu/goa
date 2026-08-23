@@ -181,7 +181,7 @@ func (p *ReviewPager) linePrefix(i, width int) string {
 		return "> "
 	}
 	if hasComment {
-		return ansi.Bg("#1e4273") + ansi.Fg("#3fb950") + "│" + ansi.FgReset + ansi.Bg("#1e4273") + " "
+		return ansi.Bg("#1e4273") + ansi.Fg("#3fb950") + ansi.BoxVertical + ansi.FgReset + ansi.Bg("#1e4273") + " "
 	}
 	return "  "
 }
