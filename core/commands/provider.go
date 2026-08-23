@@ -268,7 +268,7 @@ func removeProviderConfig(cfg *config.Config, saver config.ConfigSaver, provider
 		if cfg.ActiveProvider == providerID {
 			cfg.ActiveProvider = ""
 		}
-		_ = saveHomeProvidersAndModels(cfg, saver)
+		_ = persistModelSwitch(cfg, saver)
 		return
 	}
 }
@@ -331,7 +331,7 @@ func doRemoveProvider(cfg *config.Config, saver config.ConfigSaver, host core.UI
 		if cfg.ActiveProvider == providerID {
 			cfg.ActiveProvider = ""
 		}
-		if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
+		if err := persistModelSwitch(cfg, saver); err != nil {
 			host.Flash("Failed to save: " + err.Error())
 			return
 		}

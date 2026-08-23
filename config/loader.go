@@ -50,6 +50,15 @@ type ConfigSaver interface {
 	// active_model in .goa/config.yaml without overwriting other project settings.
 	SaveProjectProvidersAndModels(cfg *Config) error
 
+	// SaveProjectActiveModel persists ONLY active_provider and active_model into
+	// .goa/config.yaml in the project directory, creating the file when missing.
+	// This is the per-project "last used model" pin (Bug6): project is the
+	// highest-precedence cascade layer, so each project keeps its own last-used
+	// pair while home retains the global fallback. Providers/models catalogs are
+	// deliberately untouched — the pin references them, it does not duplicate
+	// them.
+	SaveProjectActiveModel(cfg *Config) error
+
 	// SaveHomeField updates a single scalar field in ~/.goa/config.yaml without
 	// overwriting other settings. The path is a sequence of nested YAML keys.
 	SaveHomeField(path []string, value any) error
@@ -825,6 +834,28 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 
+	return nil
+}
+
+// SaveProjectActiveModel persists ONLY active_provider and active_model into
+// the project's .goa/config.yaml (created when missing). See the interface
+// doc: this is the per-project last-used-model pin. No-op when no project
+// directory is configured — a relative ".goa" in an arbitrary CWD must never
+// be created as a side effect.
+func (cl *CascadeLoader) SaveProjectActiveModel(cfg *Config) error {
+	if cl.projectDir == "" {
+		return nil
+	}
+	if cfg.ActiveProvider != "" {
+		if err := cl.SaveProjectField([]string{"active_provider"}, cfg.ActiveProvider); err != nil {
+			return err
+		}
+	}
+	if cfg.ActiveModel != "" {
+		if err := cl.SaveProjectField([]string{"active_model"}, cfg.ActiveModel); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

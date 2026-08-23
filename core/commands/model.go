@@ -319,7 +319,7 @@ func addAndShowModel(host core.UIHost, cfg *config.Config, saver config.ConfigSa
 		ProviderID: providerID,
 		Model:      modelName,
 	})
-	if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
+	if err := persistModelSwitch(cfg, saver); err != nil {
 		host.Flash("Failed to save: " + err.Error())
 	}
 	host.Flash("Model " + modelID + " added.")
@@ -387,7 +387,7 @@ func removeModelFromConfig(cfg *config.Config, id string, saver config.ConfigSav
 		if cfg.ActiveModel == id {
 			cfg.ActiveModel = ""
 		}
-		if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
+		if err := persistModelSwitch(cfg, saver); err != nil {
 			host.Flash("Failed to save: " + err.Error())
 			return
 		}
@@ -714,7 +714,7 @@ func applyCoupledSwitchPersisting(host core.UIHost, cfg *config.Config, saver co
 	cfg.ActiveModel = modelID
 	// 3. Persist (unless suppressed — see RC-5 above).
 	if persist {
-		if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
+		if err := persistModelSwitch(cfg, saver); err != nil {
 			return err
 		}
 	}

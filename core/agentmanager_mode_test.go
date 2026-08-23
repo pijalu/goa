@@ -542,6 +542,9 @@ func (f *recordingConfigSaver) SaveProjectProvidersAndModels(cfg *config.Config)
 	f.projectSaves++
 	return f.err
 }
+func (f *recordingConfigSaver) SaveProjectActiveModel(cfg *config.Config) error {
+	return f.err
+}
 func (f *recordingConfigSaver) SaveHomeField(path []string, value any) error    { return f.err }
 func (f *recordingConfigSaver) SaveProjectField(path []string, value any) error { return f.err }
 func (f *recordingConfigSaver) SaveProjectFieldValue(path []string, value any) error {

@@ -19,15 +19,28 @@ import (
 type fakeConfigSaver struct {
 	savedCfg *config.Config
 	saveErr  error
+	// projectActiveSaved + saveOrder support Bug6 assertions: the per-project
+	// active-model pin must be written BEFORE the home fallback.
+	projectActiveSaved *config.Config
+	saveOrder          []string
 }
 
 func (f *fakeConfigSaver) Save(cfg *config.Config) error {
 	f.savedCfg = cfg
+	f.saveOrder = append(f.saveOrder, "save")
 	return f.saveErr
 }
 func (f *fakeConfigSaver) SaveProjectConfig(cfg *config.Config) error             { return f.Save(cfg) }
 func (f *fakeConfigSaver) SaveHomeProvidersAndModels(cfg *config.Config) error    { return f.Save(cfg) }
 func (f *fakeConfigSaver) SaveProjectProvidersAndModels(cfg *config.Config) error { return f.Save(cfg) }
+
+// SaveProjectActiveModel records the per-project pin and its position in the
+// save order so tests can assert project-first persistence (Bug6).
+func (f *fakeConfigSaver) SaveProjectActiveModel(cfg *config.Config) error {
+	f.projectActiveSaved = cfg
+	f.saveOrder = append(f.saveOrder, "project_active")
+	return f.Save(cfg)
+}
 func (f *fakeConfigSaver) SaveHomeField(path []string, value any) error           { return nil }
 func (f *fakeConfigSaver) SaveProjectField(path []string, value any) error        { return nil }
 func (f *fakeConfigSaver) SaveProjectFieldValue(path []string, value any) error {

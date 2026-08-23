@@ -443,6 +443,9 @@ func runApp() bool {
 
 	loader := config.NewCascadeLoader(projectDir, cliFlags["config"], cliFlags)
 	cfg := LoadConfig(loader, projectDir)
+	// Bug6: when no config layer provides an active model, fall back to the
+	// most-used model from the persistent usage stats (project scope first).
+	applyUsageBasedDefaultModel(cfg, projectDir)
 	enableModelsDevCatalog()
 	subs := InitSubsystems(cfg, loader, projectDir, runtimeOpts)
 	switch {

@@ -24,27 +24,25 @@ func saveProjectConfig(cfg *config.Config, saver config.ConfigSaver) error {
 	return nil
 }
 
-// saveHomeProvidersAndModels persists provider/model configuration to the home
-// directory without overwriting other home-config settings. When
-// cfg.Execution.AutoSaveModel is true, it also updates the project config so
-// that model/provider changes survive a reload in the presence of project-level
-// overrides (e.g. models defined in .goa/config.yaml).
-func saveHomeProvidersAndModels(cfg *config.Config, saver config.ConfigSaver) error {
+// persistModelSwitch saves a provider/model switch across the writable
+// config layers. The PROJECT layer is written FIRST (Bug6): it is the
+// highest-precedence cascade layer, so each project keeps its own last-used
+// provider/model pair; the home layer is updated afterwards as the global
+// fallback for projects that have no pin yet.
+//
+// The project pin is gated on execution.auto_save_model (default true): an
+// explicit opt-out keeps the legacy home-only behavior.
+func persistModelSwitch(cfg *config.Config, saver config.ConfigSaver) error {
 	if saver == nil {
 		return nil
+	}
+	if cfg.Execution.AutoSaveModel {
+		if err := saver.SaveProjectActiveModel(cfg); err != nil {
+			return fmt.Errorf("failed to save active model to project: %w", err)
+		}
 	}
 	if err := saver.SaveHomeProvidersAndModels(cfg); err != nil {
 		return fmt.Errorf("failed to save provider/model config: %w", err)
 	}
-
-	// When auto_save_model is true, also update the project config so that
-	// model/provider changes (including deletions) survive restarts even
-	// when the project config defines its own providers/models.
-	if cfg.Execution.AutoSaveModel {
-		if err := saver.SaveProjectProvidersAndModels(cfg); err != nil {
-			return fmt.Errorf("failed to save provider/model config to project: %w", err)
-		}
-	}
-
 	return nil
 }

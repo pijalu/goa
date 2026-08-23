@@ -60,6 +60,30 @@ func newPickerTestContext(t *testing.T, cfg *config.Config) (*core.Context, *rec
 	return ctx, pm
 }
 
+// newPickerTestContextWithProject is newPickerTestContext with an explicit
+// project directory wired into the cascade saver (per-project pin tests).
+func newPickerTestContextWithProject(t *testing.T, cfg *config.Config, projectDir string) (*core.Context, *recordingProviderManager) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows compat
+	base := newModeTestContext()
+	ctx := &base
+	ctx.Config = cfg
+	pm := &recordingProviderManager{}
+	pm.model = "llama3"
+	ctx.ProviderManager = pm
+	am := newTestAgentManager()
+	am.SetActiveAgentForTest(agentic.NewAgent(agentic.Config{
+		Model: agenticprovider.Model{ID: "llama3"},
+	}))
+	ctx.AgentManager = am
+	am.SetStateStore(core.NewStateStore(t.TempDir()))
+	ctx.EventBus = event.MakeBus(10, 10, 10, 10)
+	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
+	return ctx, pm
+}
+
 // TestApplyModelSelectionForProvider_CarriesPickerProvider reproduces Bug1:
 // picking "stealth/ox-alpha" from the all-providers picker while
 // openai-codex is active used to keep the stale provider — the footer then
