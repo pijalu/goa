@@ -842,21 +842,30 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 // doc: this is the per-project last-used-model pin. No-op when no project
 // directory is configured — a relative ".goa" in an arbitrary CWD must never
 // be created as a side effect.
+//
+// An empty active value CLEARS the pin instead of being skipped: a pin whose
+// model was removed from the configuration must not be resurrected by the
+// next load (project is the highest-precedence layer, so a stale pin always
+// wins over home). Deleting the key drops the project back to the home pin
+// or the usage-based boot default.
 func (cl *CascadeLoader) SaveProjectActiveModel(cfg *Config) error {
 	if cl.projectDir == "" {
 		return nil
 	}
-	if cfg.ActiveProvider != "" {
-		if err := cl.SaveProjectField([]string{"active_provider"}, cfg.ActiveProvider); err != nil {
-			return err
-		}
+	if err := cl.pinProjectField("active_provider", cfg.ActiveProvider); err != nil {
+		return err
 	}
-	if cfg.ActiveModel != "" {
-		if err := cl.SaveProjectField([]string{"active_model"}, cfg.ActiveModel); err != nil {
-			return err
-		}
+	return cl.pinProjectField("active_model", cfg.ActiveModel)
+}
+
+// pinProjectField writes value into the project config under key, or removes
+// the key when value is empty (deleteYamlNode no-ops when the key is absent,
+// so clearing is idempotent).
+func (cl *CascadeLoader) pinProjectField(key, value string) error {
+	if value != "" {
+		return cl.SaveProjectField([]string{key}, value)
 	}
-	return nil
+	return cl.DeleteProjectField([]string{key})
 }
 
 // SaveHomeProvidersAndModels updates providers, models, active_provider, and

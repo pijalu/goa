@@ -152,3 +152,52 @@ func TestSaveProjectActiveModel_NoProjectDirIsNoop(t *testing.T) {
 		t.Fatal("relative .goa must not be created without a project dir")
 	}
 }
+
+// TestRemoveActiveModel_ClearsProjectPin is the stale-pin regression:
+// removing the ACTIVE model clears cfg.ActiveModel, and the per-project pin
+// must be cleared in the same persist. SaveProjectActiveModel used to skip
+// empty values, so the removed model stayed pinned in the highest-precedence
+// cascade layer and was resurrected on the next load — pointing the session
+// at a model that no longer existed in cfg.Models.
+func TestRemoveActiveModel_ClearsProjectPin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GOA_HOME", home) // CascadeLoader resolves home via internal.GoaHome
+	project := t.TempDir()
+
+	cfg := twoProviderConfig(t)
+	cfg.Execution.AutoSaveModel = true
+	cfg.ActiveProvider = "stealth"
+	cfg.ActiveModel = "ox-alpha" // ID-keyed pin (YAML-configured model flow)
+	ctx, _ := newPickerTestContextWithProject(t, cfg, project)
+
+	// Switch persists the pin into the project layer.
+	if err := persistModelSwitch(cfg, ctx.ConfigSaver); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(project, ".goa", "config.yaml"))
+	if err != nil || !strings.Contains(string(raw), "active_model: ox-alpha") {
+		t.Fatalf("pin not written (err=%v):\n%s", err, raw)
+	}
+
+	// Remove the active model — the exact removeModelFromConfig flow.
+	removeModelFromConfig(cfg, "ox-alpha", ctx.ConfigSaver, *ctx)
+
+	raw, err = os.ReadFile(filepath.Join(project, ".goa", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if strings.Contains(string(raw), "active_model") {
+		t.Fatalf("stale active_model pin survived removal:\n%s", raw)
+	}
+
+	// Reload must not resurrect the removed model from any layer.
+	reloaded, err := config.NewCascadeLoader(project, "", nil).Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.ActiveModel == "ox-alpha" {
+		t.Fatalf("removed model resurrected from pin: %q", reloaded.ActiveModel)
+	}
+}
