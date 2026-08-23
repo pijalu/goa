@@ -148,7 +148,7 @@ func (a *App) refreshFooterFromConfig() {
 		Profile:                string(subs.effectiveModeState().Major),
 		Mode:                   string(subs.effectiveModeState().Autonomy),
 		CompanionModel:         companionModelDisplay(subs),
-		Provider:               subs.cfg.ActiveProvider,
+		Provider:               sessionProviderID(subs),
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	}

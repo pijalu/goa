@@ -45,6 +45,7 @@ var updateAgentctxGolden = flag.Bool("update-agentctx-golden", false, "regenerat
 //   - the conversation transcript content (the ordered entries the
 //     ChatViewport renders: user/assistant/tool text), and
 //   - the status-spinner trace (the activity lifecycle across the turn).
+//
 // Both are byte-stable across runs and across -race; a raw frame-by-frame diff
 // is NOT, because frame-boundary placement of scroll-out lines and the
 // sub-10ms tool "Took" line vary with wall-clock timing — that jitter is

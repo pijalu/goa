@@ -26,7 +26,7 @@ func (a *App) setToolCallingFooter(label string) {
 		Activity:               "tool calling",
 		MainActivity:           "",
 		CompanionModel:         companionModelDisplay(subs),
-		Provider:               subs.cfg.ActiveProvider,
+		Provider:               sessionProviderID(subs),
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})

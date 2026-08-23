@@ -110,10 +110,10 @@ type subsystems struct {
 	// loop only (written by handleDelegationViewEvent); it drives active-tab
 	// steering eligibility, the input prompt label, and the footer stats.
 	delegationStatuses map[string]string
-	goalBubble        *goaltui.Bubble
-	steeringChrome    *tui.SteeringChrome
-	footer            *tui.Footer
-	tuiEngine         *tui.TUI
+	goalBubble         *goaltui.Bubble
+	steeringChrome     *tui.SteeringChrome
+	footer             *tui.Footer
+	tuiEngine          *tui.TUI
 	// replayRunner emits a switched-to agent's committed transcript rows into
 	// the real terminal scrollback on a tab switch (plan T3). Nil unless the
 	// features.multi_agent_scrollback_replay gate resolves ON; created against

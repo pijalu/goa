@@ -455,7 +455,6 @@ func TestFormatCacheMissPart(t *testing.T) {
 	}
 }
 
-
 // TestSessionStats_CacheMissJSONKeys pins the persisted session-summary keys
 // so downstream session exports keep a stable schema.
 func TestSessionStats_CacheMissJSONKeys(t *testing.T) {

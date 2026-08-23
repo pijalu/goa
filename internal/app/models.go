@@ -15,8 +15,29 @@ func modelDisplay(providerID, modelName string) string {
 	return "(" + providerID + ") " + modelName
 }
 
+// sessionProviderID returns the provider selected by the live provider manager.
+// Config.ActiveProvider is the startup/default value and can be stale after a
+// model or provider switch, so footer data must use this session value.
+func sessionProviderID(subs *subsystems) string {
+	if subs == nil {
+		return ""
+	}
+	if subs.providerMgr != nil {
+		if pc, _ := subs.providerMgr.Active(); pc != nil && pc.ID != "" {
+			return pc.ID
+		}
+	}
+	if subs.cfg != nil {
+		return subs.cfg.ActiveProvider
+	}
+	return ""
+}
+
 // activeModelName resolves the model config ID to the real API model name.
 func activeModelName(subs *subsystems) string {
+	if subs == nil || subs.cfg == nil {
+		return ""
+	}
 	modelName := subs.cfg.ActiveModel
 	if subs.providerMgr != nil {
 		if pc, _ := subs.providerMgr.Active(); pc != nil {
@@ -30,14 +51,7 @@ func activeModelName(subs *subsystems) string {
 
 // activeModelDisplay returns the full status bar model string with provider and real model name.
 func activeModelDisplay(subs *subsystems) string {
-	modelName := activeModelName(subs)
-	providerID := subs.cfg.ActiveProvider
-	if subs.providerMgr != nil {
-		if pc, _ := subs.providerMgr.Active(); pc != nil {
-			providerID = pc.ID
-		}
-	}
-	return modelDisplay(providerID, modelName)
+	return modelDisplay(sessionProviderID(subs), activeModelName(subs))
 }
 
 func mainThinkingLevel(subs *subsystems) string {
@@ -64,10 +78,6 @@ func teamFooterInfo(subs *subsystems) (name string, drifted bool) {
 }
 
 // companionModelDisplay returns the formatted companion model string.
-// The companion carries its OWN provider binding (MultiAgent.CompanionProvider),
-// not the active provider: resolving/prefixing against the active provider
-// rendered "(opencode-go) glm-5.2" for a zai-bound companion (Bug B).
-// Configs without a companion provider keep the legacy active-provider display.
 func companionModelDisplay(subs *subsystems) string {
 	modelID := subs.cfg.MultiAgent.CompanionModel
 	if modelID == "" {
@@ -75,7 +85,7 @@ func companionModelDisplay(subs *subsystems) string {
 	}
 	providerID := subs.cfg.MultiAgent.CompanionProvider
 	if providerID == "" {
-		providerID = subs.cfg.ActiveProvider
+		providerID = sessionProviderID(subs)
 	}
 	resolved := modelID
 	if subs.providerMgr != nil {

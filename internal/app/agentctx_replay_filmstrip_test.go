@@ -103,7 +103,6 @@ func scrollEmitCount(sc *uiScenario, marker string) int {
 	return count
 }
 
-
 // fillRows appends n distinctly-marked assistant rows to view via ApplySync and
 // returns the markers. Prefix keeps each agent's rows in a unique namespace.
 func fillRows(sc *uiScenario, view interface{ AddAssistantMessage(string) }, prefix string, n int) []string {

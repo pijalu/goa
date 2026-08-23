@@ -30,34 +30,3 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 
 
-
-## 5. Per-model compression override never triggers
-
-**Observed:** a custom per-model compression configuration does not trigger.
-Example: an override for a given model setting a 20% trigger with
-hard/summarize strategies (`models.<id>.context_compression.thresholds.
-trigger_percent: 20` + strategies, i.e. `ModelCompressionOverride`,
-config/config_compression_types.go) never compresses — usage climbs past 20%
-with no compression attempt on that model. Global compression settings fire,
-so the suspect path is the override plumbing: config merge
-(config/config_merge.go) → overlay application (core/compression_overlay.go)
-→ threshold resolution (core/agentmanager_lifecycle.go
-`resolveAgenticThresholds`) → SDK soft/hard mapping. Note the legacy
-`threshold_percent` alias interactions (`legacyTrigger`, cleared-alias logic
-in core/commands/config_cli.go) may shadow the tiered value.
-
-**Expected:** per-model compression overrides take effect for that model:
-when its context usage crosses the configured trigger (here 20%), compression
-runs using the overridden strategy (hard/summarize), same semantics as the
-global configuration.
-
-## 6. Status line shows configured default provider instead of session provider
-
-**Observed:** the provider displayed in the status line can differ from the provider currently used by the active session. It appears to fall back to the current configuration default rather than reflecting the provider selected for the running session.
-
-**Expected:** the status line must show the provider actually used by the active session, including after provider/model switches, and remain consistent with the request path.
-
-# TODO
-
-*(open items tracked under `# To fix` above; move each to docs/archive when
-tested and closed.)*

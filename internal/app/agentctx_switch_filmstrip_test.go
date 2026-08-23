@@ -331,4 +331,3 @@ func waitForCalls(t *testing.T, prov *mock.Provider, model string, n int) {
 		time.Sleep(time.Millisecond)
 	}
 }
-

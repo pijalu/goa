@@ -366,14 +366,13 @@ func taskSnapshotsFromManager(mgr *background.Manager) []bgpanel.Task {
 
 func (a *App) initialFooterData() tui.FooterData {
 	subs := a.subs
-	cfg := subs.cfg
 	mode := subs.effectiveModeState()
 	return tui.FooterData{
 		Workdir:                subs.projectDir,
 		Profile:                string(mode.Major),
 		Mode:                   string(mode.Autonomy),
 		Model:                  activeModelDisplay(subs),
-		Provider:               cfg.ActiveProvider,
+		Provider:               sessionProviderID(subs),
 		CompanionModel:         companionModelDisplay(subs),
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),

@@ -564,7 +564,7 @@ func (a *App) showSendingStatus(modelName string) {
 		Activity:               "send",
 		MainActivity:           "Sending request...",
 		CompanionModel:         companionModelDisplay(subs),
-		Provider:               subs.cfg.ActiveProvider,
+		Provider:               sessionProviderID(subs),
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})
@@ -584,7 +584,7 @@ func (a *App) handleSendError(err error) {
 		Profile:                string(subs.effectiveModeState().Major),
 		Mode:                   string(subs.effectiveModeState().Autonomy),
 		CompanionModel:         companionModelDisplay(subs),
-		Provider:               subs.cfg.ActiveProvider,
+		Provider:               sessionProviderID(subs),
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})

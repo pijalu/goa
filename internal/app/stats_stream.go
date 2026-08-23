@@ -358,7 +358,7 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 		Activity:               "",
 		MainActivity:           "",
 		CompanionModel:         companionModelDisplay(subs),
-		Provider:               subs.cfg.ActiveProvider,
+		Provider:               sessionProviderID(subs),
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})
@@ -483,7 +483,7 @@ func (a *App) handleStateChange(ev *agentic.OutputEvent) {
 		Activity:               activity,
 		MainActivity:           mainActivity,
 		CompanionModel:         companionModelDisplay(subs),
-		Provider:               subs.cfg.ActiveProvider,
+		Provider:               sessionProviderID(subs),
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})
@@ -586,7 +586,7 @@ func (a *App) setWaitingForReplyStatus(pp *agentic.PromptProgress) {
 			Activity:               "wait",
 			MainActivity:           label,
 			CompanionModel:         companionModelDisplay(subs),
-			Provider:               subs.cfg.ActiveProvider,
+			Provider:               sessionProviderID(subs),
 			ThinkingLevel:          mainThinkingLevel(subs),
 			CompanionThinkingLevel: companionThinkingLevel(subs),
 		})

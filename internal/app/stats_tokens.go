@@ -81,7 +81,7 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 		Mode:                   string(subs.effectiveModeState().Autonomy),
 		Stats:                  formatFooterStats(stats),
 		CompanionModel:         companionModelDisplay(subs),
-		Provider:               subs.cfg.ActiveProvider,
+		Provider:               sessionProviderID(subs),
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})
@@ -207,7 +207,7 @@ func (a *App) recordTurnUsageLocked() {
 	subs := a.subs
 	_ = st.Add(usage.Record{
 		Project:    subs.projectDir,
-		Provider:   subs.cfg.ActiveProvider,
+		Provider:   sessionProviderID(subs),
 		Model:      activeModelName(subs),
 		PromptN:    a.lastTurnPromptN,
 		PredictedN: a.lastTurnPredictedN,

@@ -40,6 +40,21 @@ func companionSubsystems(companionProvider string) *subsystems {
 // TestCompanionModelDisplay_UsesCompanionProvider is Bug B: the
 // status bar showed the ACTIVE provider ("(opencode-go) glm-5.2") instead of
 // the configured companion provider ("(zai) glm-5.2").
+func TestSessionProviderID_UsesLiveProvider(t *testing.T) {
+	cfg := &config.Config{ActiveProvider: "configured", Providers: []config.ProviderConfig{
+		{ID: "configured", Endpoint: "https://configured.example"},
+		{ID: "session", Endpoint: "https://session.example"},
+	}}
+	pm := provider.NewProviderManager(cfg)
+	subs := &subsystems{cfg: cfg, providerMgr: pm}
+	if err := pm.SetActive("session", ""); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+	if got := sessionProviderID(subs); got != "session" {
+		t.Fatalf("provider = %q, want session", got)
+	}
+}
+
 func TestCompanionModelDisplay_UsesCompanionProvider(t *testing.T) {
 	got := companionModelDisplay(companionSubsystems("zai"))
 	if !strings.Contains(got, "(zai)") {

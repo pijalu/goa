@@ -21,8 +21,8 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
-	_ "github.com/pijalu/goa/internal/agentic/provider/openai" // register the openai-completions backend
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	_ "github.com/pijalu/goa/internal/agentic/provider/openai" // register the openai-completions backend
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/tui/agentctx"
 )
@@ -76,8 +76,8 @@ func replayE2EConfig() *config.Config {
 func runLiveAgent(t *testing.T, mdl agenticprovider.Model, opts agenticprovider.StreamOptions, prompt string) []agentic.OutputEvent {
 	t.Helper()
 	agent := agentic.NewAgent(agentic.Config{
-		Model:        mdl,
-		SystemPrompt: "You are a terse test agent. Reply briefly.",
+		Model:         mdl,
+		SystemPrompt:  "You are a terse test agent. Reply briefly.",
 		StreamOptions: opts,
 	})
 	collector := &eventCollector{}
