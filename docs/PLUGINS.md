@@ -155,6 +155,37 @@ goa.registerCommand({
 
 The `run` function returns a string that Goa writes into the chat viewport.
 
+### `goa.registerCompletion(name, fn)`
+
+Provides **argument completions** for a command: while the user types
+`/<name>:<prefix>` in the input line, Goa calls `fn(prefix)` and offers the
+returned candidates in the picker. The API is feature-detected — the `goa`
+object only carries `registerCompletion` when the host supports it:
+
+```javascript
+if (typeof goa.registerCompletion === "function") {
+  goa.registerCompletion("hello", function(prefix) {
+    return [
+      { value: "loud",   description: "Shout the greeting" },
+      { value: "formal", description: "Use full titles" }
+    ];
+  });
+}
+```
+
+Contract (mirrors how built-in commands like `/plugin` complete):
+
+| Aspect | Rule |
+|--------|------|
+| `Value` | Bare segment, no leading colon and no command prefix — the engine prepends `"/<name>:"` |
+| `Description` | One-line text shown next to the candidate |
+| `prefix` argument | Everything typed after `/<name>:`: `""`, `"re"`, or a nested parent path plus colon (`"login:"`) |
+| Nested levels | Return children for known parents (`"login:"` → provider ids); unknown parents return `[]` |
+| Threading | `fn` runs under the plugin VM lock on the completer goroutine; it may read plugin state but must not block |
+
+A throwing or malformed completer degrades to "no candidates" — it never
+breaks typing.
+
 ### `goa.registerObserver(callback(eventName, payload))`
 
 Subscribes to events from Goa's event bus. The callback receives every event;
@@ -352,7 +383,7 @@ goa.registerObserver(function(event, payload) {
 | `session.start` | `{ timestamp }` | A new agent session started |
 | `session.end` | `{ timestamp, turns }` | An agent session ended |
 | `pipeline.stage` | `{ pipeline, stage, status }` | Pipeline stage changed |
-| `rate_limit_exceeded` | `{ provider, retryAfter }` | Provider rate limit hit (forwarded from the agent loop, plugins plan §6) |
+| `rate_limit_exceeded` | `{ provider, model, attempt, retry_after_ms, classified, will_retry }` | Provider rate limit hit (forwarded from the agent loop once per retry attempt, and once more with `will_retry: false` when giving up) |
 
 ---
 
@@ -657,13 +688,21 @@ current bundled plugin is **provider-quota** (in `plugins/bundled/provider-quota
 1. **Materialization** — On startup, each bundled plugin is copied from the
    embed FS into `~/.goa/plugins/bundled/<id>@<version>/`. The versioned
    directory name means an upgraded binary (with a bumped plugin version)
-   produces a new directory, leaving the old one intact.
-2. **Content validation** — The materialized copy is SHA-256 hashed and
+   materializes into a new directory.
+2. **Stale-version pruning** — After every materialization (including the
+   reuse fast path), the manager **deletes all other `<id>@*` directories**
+   of the same plugin id. Leftover old versions are not harmless: the loader
+   scans the whole bundled dir, and a stale copy's VM registers commands
+   first — first registration wins, so `/quota`-style commands would dispatch
+   to OLD code while the current version still ran in parallel. Pruning keeps
+   exactly one dir per bundled id; a loader-side duplicate-id guard skips
+   (with a loud log) any id discovered twice, whatever the cause.
+3. **Content validation** — The materialized copy is SHA-256 hashed and
    recorded in the lockfile. Every subsequent startup verifies the hash;
    tampered or stale copies are re-materialized from the trusted embed.
-3. **Automatic enablement** — Bundled plugins are enabled automatically
+4. **Automatic enablement** — Bundled plugins are enabled automatically
    (no trust prompt).
-4. **Disable via config:**
+5. **Disable via config:**
 
 ```yaml
 plugins:
@@ -748,11 +787,20 @@ source lives at `plugins/bundled/provider-quota/`.
 
 ### What it does
 
-- Tracks usage/quota for all configured LLM providers (Anthropic, OpenAI, Z.ai,
-  Kimi, MiniMax, OpenRouter, plus a local/inferred fallback).
+- Tracks usage/quota for all configured LLM providers (Anthropic, OpenAI,
+  Codex, Z.ai, Kimi, MiniMax, OpenRouter, OpenCode, plus a local/inferred
+  fallback).
 - Shows a compact, color-coded quota segment in the footer status bar.
 - Provides a `/quota` command with subcommands for detailed breakdowns, JSON
-  export, and OAuth management.
+  export, OAuth management, and **Codex rate-limit reset credits**
+  (`/quota:resets` lists them; `/quota:reset[:<credit-id>]` consumes one
+  behind a danger-styled `goa.ui.confirm` — the count and the credits table
+  also render inline in the global `/quota` breakdown). A one-time startup
+  notice reports available credits; hitting a rate limit on a Codex model
+  triggers a debounced hint (≥10 min between hints) after refreshing the
+  codex entry.
+- Registers argument completions for all `/quota` subcommands plus per-
+  provider refresh/login/logout levels (`goa.registerCompletion`).
 - Refreshes data on a background timer (every 60s) and on explicit request
   (`Ctrl+Shift+Q` or `/quota:refresh`).
 
@@ -849,11 +897,15 @@ The plugin uses a shared error vocabulary that the status segment understands:
 | Feature | Where used |
 |---------|------------|
 | `goa.registerCommand()` | `/quota` command with colon subcommands |
+| `goa.registerCompletion()` | Subcommand + provider completions for `/quota:` |
+| `goa.ui.confirm()` | Rate-limit reset consumption (danger-styled, Cancel default) |
+| `goa.registerObserver()` | `rate_limit_exceeded` → debounced reset hint |
+| `goa.output()` | Startup reset-credit notice, async quota renders, reset outcomes |
 | `goa.ui.addSegment()` | Status-bar quota display |
 | `goa.ui.refreshSegment()` | Signal segment repaints after refresh |
 | `goa.registerHotkey()` | `Ctrl+Shift+Q` force-refresh |
-| `goa.setInterval()` | 60-second background refresh scheduler |
-| `goa.http.fetch()` | Quota API calls per provider |
+| `goa.setInterval()` / `goa.setTimeout()` | Background refresh scheduler; off-command-path fetches |
+| `goa.http.fetch()` | Quota API calls per provider (usage, reset details, consume) |
 | `goa.storage` | OAuth token persistence |
 | `goa.sessionUsage()` | Local/inferred token counts |
 | `goa.segmentColor()` | Theme-aware per-window coloring |
