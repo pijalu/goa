@@ -453,9 +453,11 @@ func TestQuotaResets_DetailsTableTolerantMapping(t *testing.T) {
 	for _, want := range []string{
 		"Codex Rate-Limit Resets",
 		"1 available.",
-		"| bbbbbbbb… | Monthly reset |",
-		"| aaaaaaaa… | Weekly reset |",
-		"| cccccccc… | — |",
+		// Full ids render (user-reported gap: the 8-char truncation produced
+		// ids no /quota:reset invocation could ever reference).
+		"| bbbbbbbb-2222 | Monthly reset |",
+		"| aaaaaaaa-1111 | Weekly reset |",
+		"| cccccccc-3333 | — |",
 		"available (monthly)",
 		"redeemed (weekly)",
 		"unknown",
@@ -831,7 +833,7 @@ func TestQuotaReset_QuotaIncludesDetailsTable(t *testing.T) {
 	out := env.callCommand("quota", "")
 	for _, want := range []string{
 		"Codex Rate-Limit Resets",
-		"credit-a…",      // shortId rendering
+		"credit-ab-1234", // full id — must be typeable in /quota:reset
 		"Weekly reset",   // title
 		"available",      // status
 	} {
@@ -849,7 +851,7 @@ func TestQuotaReset_QuotaIncludesDetailsTable(t *testing.T) {
 	if !strings.Contains(out, "Codex rate-limit resets:") {
 		t.Fatalf("/quota without details must fall back to the how-to note:\n%s", out)
 	}
-	if strings.Contains(out, "credit-a…") {
+	if strings.Contains(out, "credit-ab-1234") {
 		t.Fatalf("/quota must not render a stale details table after a failed refresh:\n%s", out)
 	}
 }
@@ -913,6 +915,153 @@ func TestQuotaReset_Completion(t *testing.T) {
 	for _, v := range all {
 		if strings.HasPrefix(v, "/") || strings.HasPrefix(v, "quota") {
 			t.Errorf("completion value %q must be bare segment", v)
+		}
+	}
+}
+
+// --- id readability + resolution + completion ---------------------------------
+
+// resetDetailsResponder wires a canned details payload with three rows whose
+// expiry order differs from payload order: soonest-available must win every
+// ordered surface (table, completion) regardless of arrival order.
+func resetDetailsResponder(t *testing.T, e *quotaTestEnv) {
+	t.Helper()
+	e.respond("backend-api/wham/rate-limit-reset-credits", 200, `{
+		"available_count": 2,
+		"credits": [
+			{"id":"credit-late-9999","title":"Later reset","status":"available","expires_at":"2099-06-01T00:00:00Z"},
+			{"id":"credit-soon-1111","title":"Full reset","status":"available","expires_at":"2099-01-01T00:00:00Z"},
+			{"id":"credit-used-0000","title":"Spent","status":"redeemed","expires_at":"2099-03-01T00:00:00Z"}
+		]
+	}`)
+}
+
+// TestQuotaReset_PrefixResolution pins /quota:reset:<partial> id resolution:
+// an exact id wins, a UNIQUE prefix resolves, ambiguity is refused with the
+// candidate list, unknown prefixes are refused, and with no cached details an
+// explicit id passes through verbatim (the server validates it).
+func TestQuotaReset_PrefixResolution(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	wireCodexAuth(t, env)
+	resetDetailsResponder(t, env)
+	env.load(t)
+
+	// Unique prefix resolves to the full cached credit.
+	res := env.evalJSONObj(t, `resolveCreditId("credit-late")`)
+	if res["error"] != nil || res["credit"] == nil {
+		t.Fatalf("unique prefix must resolve, got %v", res)
+	}
+
+	// Exact id wins even when it is also a prefix of itself only.
+	res = env.evalJSONObj(t, `resolveCreditId("credit-late-9999")`)
+	if res["credit"] == nil {
+		t.Fatalf("exact id must resolve, got %v", res)
+	}
+
+	// Unknown prefix refuses with guidance.
+	out := env.callCommand("quota", "reset", "nope-nope")
+	if !strings.Contains(out, "No available reset credit matches") {
+		t.Fatalf("unknown prefix output = %q", out)
+	}
+
+	// No cached details → passthrough ({}), so explicit ids still reach the
+	// server for validation instead of being locally rejected.
+	env.evalJS(t, `delete _cache.codex.details`)
+	res = env.evalJSONObj(t, `resolveCreditId("whatever-id")`)
+	if len(res) != 0 {
+		t.Fatalf("missing details must pass through unresolved, got %v", res)
+	}
+
+	// Ambiguity: two credits sharing a prefix must refuse with both listed.
+	// Injected post-refresh (a real /quota:reset would overwrite the cache,
+	// so the resolution helper itself pins this branch — the command returns
+	// res.error verbatim, proven by the unknown-prefix case above).
+	env.evalJS(t, `_cache.codex.details = {availableCount: 2, credits: [
+		{id:"dup-aaaa-1", title:"One", status:"available", expiresAtMs: 4000000000000},
+		{id:"dup-aaaa-2", title:"Two", status:"available", expiresAtMs: 3000000000000}
+	]}`)
+	res = env.evalJSONObj(t, `resolveCreditId("dup-aaaa")`)
+	errMsg, _ := res["error"].(string)
+	if errMsg == "" {
+		t.Fatalf("ambiguous prefix must produce an error, got %v", res)
+	}
+	for _, want := range []string{"matches more than one", "dup-aaaa-1", "dup-aaaa-2"} {
+		if !strings.Contains(errMsg, want) {
+			t.Fatalf("ambiguous prefix error missing %q:\n%s", want, errMsg)
+		}
+	}
+}
+
+// TestQuotaResets_CompletionOffersCreditsByExpiry pins the reset-credit
+// completions: typing "/quota:r" surfaces `reset:<full-id>` candidates built
+// from the CACHED available credits ordered soonest-expiry-first (redeemed
+// ones never offered), bare "/quota:" stays free of them, and the nested
+// "reset:" level completes bare ids with the same order.
+func TestQuotaResets_CompletionOffersCreditsByExpiry(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	wireCodexAuth(t, env)
+	resetDetailsResponder(t, env)
+	env.load(t)
+
+	fn := func() func(prefix string) []Completion {
+		env.mu.Lock()
+		defer env.mu.Unlock()
+		return env.completions["quota"]
+	}()
+	if fn == nil {
+		t.Fatal("plugin did not register completions for quota")
+	}
+	values := func(comps []Completion) []string {
+		out := []string{}
+		for _, c := range comps {
+			out = append(out, c.Value)
+		}
+		return out
+	}
+	indexOf := func(list []string, want string) int {
+		for i, v := range list {
+			if v == want {
+				return i
+			}
+		}
+		return -1
+	}
+
+	// "/quota:r" → static r-subs + reset:<id> candidates, soonest expiry first,
+	// redeemed credits never offered.
+	r := values(fn("r"))
+	if indexOf(r, "reset:credit-soon-1111") == -1 || indexOf(r, "reset:credit-late-9999") == -1 {
+		t.Fatalf("'r' completion must offer reset:<available-id>, got %v", r)
+	}
+	if indexOf(r, "credit-used-0000") != -1 || indexOf(r, "reset:credit-used-0000") != -1 {
+		t.Fatalf("'r' completion must not offer non-available credits, got %v", r)
+	}
+	if indexOf(r, "reset:credit-soon-1111") > indexOf(r, "reset:credit-late-9999") {
+		t.Fatalf("soonest-expiry credit must sort first, got %v", r)
+	}
+
+	// Bare "/quota:" keeps the short static list — no dynamic ids.
+	for _, v := range values(fn("")) {
+		if strings.Contains(v, ":") {
+			t.Fatalf("bare completion must stay colon-free, got %q", v)
+		}
+	}
+
+	// Nested "reset:" level completes bare ids, soonest expiry first, filtered
+	// by whatever partial id was typed after the colon.
+	nested := values(fn("reset:"))
+	if len(nested) != 2 || nested[0] != "credit-soon-1111" || nested[1] != "credit-late-9999" {
+		t.Fatalf("reset: level = %v, want [credit-soon-1111 credit-late-9999]", nested)
+	}
+	filtered := values(fn("reset:credit-l"))
+	if len(filtered) != 1 || filtered[0] != "credit-late-9999" {
+		t.Fatalf("reset:credit-l level = %v, want [credit-late-9999]", filtered)
+	}
+
+	// Descriptions carry the title so candidates are tellable apart.
+	for _, c := range fn("reset:") {
+		if c.Description == "" {
+			t.Fatalf("reset credit completion %q lacks description", c.Value)
 		}
 	}
 }

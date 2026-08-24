@@ -789,10 +789,10 @@ function renderResetsTable(details) {
 		if (c.resetType && c.resetType !== "unknown") {
 			status += " (" + c.resetType + ")";
 		}
-		out.push("| " + shortId(c.id) + " | " + (c.title || "—") + " | " + expiryText(c.expiresAtMs) + " | " + status + " |");
+		out.push("| " + c.id + " | " + (c.title || "—") + " | " + expiryText(c.expiresAtMs) + " | " + status + " |");
 	}
 	out.push("");
-	out.push("Use one with `/quota:reset[:<credit-id>]`.");
+	out.push("Use one with `/quota:reset[:<credit-id>]` (a unique id prefix works too).");
 	return out.join("\n");
 }
 
@@ -827,7 +827,24 @@ function quotaResetCommand(creditId) {
 		return "Codex auth required — run /login:openai:oauth first.";
 	}
 	var count = entry && typeof entry.resetsCount === "number" ? entry.resetsCount : null;
-	var target = creditId ? "credit `" + shortId(creditId) + "`" : "your earliest available reset credit";
+	var targetCredit = null;
+	if (creditId) {
+		// Accept a unique id PREFIX as well as a full id — the resets table
+		// shows long ids, so typing them whole is friction. Resolution reads
+		// the cached details only; with nothing cached the id passes through
+		// verbatim and the server validates it.
+		var res = resolveCreditId(creditId);
+		if (res.error) {
+			return res.error;
+		}
+		if (res.credit) {
+			targetCredit = res.credit;
+			creditId = targetCredit.id;
+		}
+	}
+	var target = creditId
+		? "credit `" + creditId + "`" + (targetCredit && targetCredit.title ? " (" + targetCredit.title + ")" : "")
+		: "your earliest available reset credit";
 	var body = "This consumes one Codex rate-limit reset credit to reset your usage limits now.\n\nTarget: " + target;
 	if (count != null) {
 		body += "\nRemaining after: " + Math.max(0, count - 1);
@@ -952,10 +969,81 @@ function setCachedResetsCount(n) {
 	}
 }
 
-// shortId truncates a credit id for table/confirm rendering.
-function shortId(id) {
-	var s = String(id || "");
-	return s.length > 8 ? s.slice(0, 8) + "…" : s;
+// --- Reset-credit helpers (resolution + completion) -------------------------
+
+// availableCredits returns the cached codex detail rows still spendable,
+// soonest expiry first (missing expiry last). Cache-only by design: both
+// prefix resolution and completions run on the input path and must never
+// trigger provider HTTP — a stale/empty cache degrades gracefully instead.
+function availableCredits() {
+	var entry = _cache.codex;
+	if (!entry || entry.error || !entry.details || !Array.isArray(entry.details.credits)) {
+		return [];
+	}
+	var out = [];
+	for (var i = 0; i < entry.details.credits.length; i++) {
+		var c = entry.details.credits[i] || {};
+		if (c.status === "available" && c.id) {
+			out.push(c);
+		}
+	}
+	out.sort(function(a, b) {
+		var ea = a.expiresAtMs == null ? Infinity : a.expiresAtMs;
+		var eb = b.expiresAtMs == null ? Infinity : b.expiresAtMs;
+		return ea - eb;
+	});
+	return out;
+}
+
+// resolveCreditId maps a typed /quota:reset argument onto one cached credit:
+// an exact id wins; otherwise a UNIQUE available-credit prefix match resolves.
+// Returns {credit} on success, {error} with a user-facing message on
+// ambiguity/no-match, or {} (passthrough) when no details are cached so an
+// explicit full id still reaches the server for validation.
+function resolveCreditId(partial) {
+	var credits = availableCredits();
+	if (credits.length === 0) {
+		return {};
+	}
+	for (var i = 0; i < credits.length; i++) {
+		if (credits[i].id === partial) {
+			return { credit: credits[i] };
+		}
+	}
+	var matches = [];
+	for (var j = 0; j < credits.length; j++) {
+		if (credits[j].id.indexOf(partial) === 0) {
+			matches.push(credits[j]);
+		}
+	}
+	if (matches.length === 1) {
+		return { credit: matches[0] };
+	}
+	if (matches.length === 0) {
+		return { error: "No available reset credit matches `" + partial + "` — run /quota:resets to list them." };
+	}
+	var lines = ["`" + partial + "` matches more than one available credit — be more specific:"];
+	for (var k = 0; k < matches.length; k++) {
+		lines.push("- `" + matches[k].id + "`" + (matches[k].title ? " (" + matches[k].title + ")" : ""));
+	}
+	return { error: lines.join("\n") };
+}
+
+// resetCreditEntries builds completion candidates from the cached available
+// credits, soonest-expiry first, so the soonest credit is the default pick.
+function resetCreditEntries() {
+	var out = [];
+	var credits = availableCredits();
+	for (var i = 0; i < credits.length; i++) {
+		var c = credits[i];
+		var desc = c.title || "reset credit";
+		var t = format.durationUntil(c.expiresAtMs);
+		if (t !== "") {
+			desc += " · expires in " + t;
+		}
+		out.push({ value: c.id, description: desc });
+	}
+	return out;
 }
 
 // expiryText renders an ms-epoch expiry as relative time; missing values
@@ -1156,7 +1244,7 @@ function providerEntries(purpose) {
 }
 
 // quotaComplete provides /quota argument completions. prefix is everything
-// after "/quota:" — "", "re", "login:o", "reset:" — mirroring the engine's
+// after "/quota:" — "", "re", "login:o", "reset:abc" — mirroring the engine's
 // nested-level convention (a parent path plus colon re-queries its children).
 function quotaComplete(prefix) {
 	var p = String(prefix == null ? "" : prefix);
@@ -1167,9 +1255,25 @@ function quotaComplete(prefix) {
 		if (sub === "login" || sub === "logout") {
 			return completeMatches(providerEntries(sub), rest);
 		}
-		return []; // reset:<id> is dynamic credit state — nothing static to offer
+		if (sub === "reset") {
+			// /quota:reset:<partial> → available credit ids, soonest expiry
+			// first, so the default pick is the credit about to expire.
+			return completeMatches(resetCreditEntries(), rest);
+		}
+		return [];
 	}
-	return completeMatches(QUOTA_SUBS.concat(providerEntries("")), p);
+	var items = QUOTA_SUBS.concat(providerEntries(""));
+	if (p !== "") {
+		// Credit ids join the top level ONLY once something is typed
+		// ("/quota:r"): the candidates carry full `reset:<id>` values, so the
+		// prefix filter naturally scopes them to the r-family — bare "/quota:"
+		// keeps its short static list. Soonest-expiry first.
+		var credits = resetCreditEntries();
+		for (var i = 0; i < credits.length; i++) {
+			items.push({ value: "reset:" + credits[i].value, description: credits[i].description });
+		}
+	}
+	return completeMatches(items, p);
 }
 
 if (typeof goa.registerCompletion === "function") {
@@ -1185,7 +1289,7 @@ goa.registerCommand({
 		"  /quota:json            Machine-readable JSON output\n" +
 		"  /quota:auth-status     Show per-provider auth state\n" +
 		"  /quota:resets          List Codex rate-limit reset credit details\n" +
-		"  /quota:reset[:<id>]    Consume one Codex rate-limit reset credit (asks for confirmation)\n" +
+		"  /quota:reset[:<id>]    Consume one Codex rate-limit reset credit (unique id prefix ok)\n" +
 		"  /quota:login:<id>      OAuth login (plugin-owned providers only)\n" +
 		"  /quota:logout:<id>     Clear plugin-owned OAuth tokens\n" +
 		"  /quota:<id>            Force-refresh one provider",
