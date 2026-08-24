@@ -186,3 +186,60 @@ func TestOpenAICompletionsErrorFrameContextOverflow(t *testing.T) {
 	assert.True(t, provErr.IsContextOverflow)
 	assert.True(t, provErr.IsRetryable)
 }
+
+// Regression (2026-08-24 export): OpenRouter's upstream provider died
+// mid-generation and the router masked it as a clean completion — HTTP 200,
+// finish_reason="stop", zero content, with only native_finish_reason=
+// "network_error" revealing the failure. The parser honored the flattened
+// finish_reason: the turn ended cleanly with no message and no retry, and
+// the session went silent right after a tool call. An error-marked
+// native_finish_reason must surface as a retryable stream error (502:
+// gateway answered 200 while its upstream hop failed).
+func TestOpenAICompletionsNativeFinishNetworkErrorIsRetryable(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICompletions)
+	require.NotNil(t, p)
+
+	// Byte-exact final chunk from the captured export (http.jsonl tail).
+	chunk := `{"id":"gen-1787584664-eWWONm1t8n4HvjoelZt8n","object":"chat.completion.chunk","created":1787584664,"model":"stealth/ox-alpha","provider":"Stealth","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"network_error"}]}`
+
+	stream := schema.NewAssistantMessageEventStream(8)
+	go p.ParseResponse(sseBody("data: "+chunk, "data: [DONE]"), stream)
+
+	err := stream.Err()
+	require.Error(t, err, "masked network error must not end the stream cleanly")
+	assert.Contains(t, err.Error(), "native_finish_reason")
+
+	var provErr *hooks.ProviderError
+	require.ErrorAs(t, err, &provErr, "must be classified, not a bare error")
+	assert.Equal(t, 502, provErr.StatusCode())
+	assert.True(t, provErr.IsRetryable, "upstream network failure is transient — must be retried")
+	assert.False(t, provErr.IsRateLimit)
+	assert.False(t, provErr.IsContextOverflow)
+
+	// The masked stop must NOT produce a finalized empty assistant message.
+	assert.Nil(t, stream.Result(), "no result may be synthesized from a failed stream")
+}
+
+// A normal OpenRouter chunk carrying a non-error native_finish_reason must
+// keep flowing exactly as before — the check only fires on error-marked
+// values.
+func TestOpenAICompletionsNativeFinishNormalReasonsUnaffected(t *testing.T) {
+	cases := []struct {
+		name         string
+		native       string
+		finishReason string
+	}{
+		{"stop passthrough", "stop", "stop"},
+		{"provider-specific tool_calls", "tool_calls", "tool_calls"},
+		{"length passthrough", "length", "length"},
+		{"unknown provider reason", "eos", "stop"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			chunk := `{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"` + c.finishReason + `","native_finish_reason":"` + c.native + `"}]}`
+			msgs, err := parseOpenAIChunk(chunk)
+			require.NoError(t, err)
+			require.NotEmpty(t, msgs, "chunk must still parse to messages")
+		})
+	}
+}
