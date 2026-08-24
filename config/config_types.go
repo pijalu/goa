@@ -123,6 +123,13 @@ type ExecutionConfig struct {
 	// loop detected) after which the stream-loop strike counter resets to
 	// zero (0 = default 10).
 	StreamLoopResetAfter int `yaml:"stream_loop_reset_after,omitempty"`
+	// RunawayLoopMaxRepeats is the number of consecutive identical assistant
+	// responses without progress tolerated before the runaway-loop guardrail
+	// stops the session (0 = default 2). Earlier repeats inject a recovery
+	// hint and surface a visible warning; reaching the limit latches the
+	// session stop. Raise it to give a stalled model more chances to change
+	// approach; lower it (minimum 1) to stop at the first repeat.
+	RunawayLoopMaxRepeats int `yaml:"runaway_loop_max_repeats,omitempty"`
 }
 
 // RetryBackoffConfig configures the exponential-backoff schedule for a

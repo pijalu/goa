@@ -331,3 +331,51 @@ func TestApplyConfigSet_LoopThresholdsSyncRuntime(t *testing.T) {
 		t.Errorf("call 6: got %v, want LoopInterrupt after live threshold update", lvl)
 	}
 }
+
+// TestApplyConfigSet_RunawayLoopMaxRepeats verifies /config set
+// execution.runaway_loop_max_repeats updates the persisted value the
+// runaway-loop guardrail reads per agent build, and that an invalid value
+// fails whole-config validation without mutating the live config.
+func TestApplyConfigSet_RunawayLoopMaxRepeats(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.ConfigSaver = &fakeConfigSaver{}
+
+	if err := applyConfigSet(ctx, "execution.runaway_loop_max_repeats", "4"); err != nil {
+		t.Fatalf("applyConfigSet: %v", err)
+	}
+	if got := ctx.Config.Execution.RunawayLoopMaxRepeats; got != 4 {
+		t.Errorf("config value = %d, want 4", got)
+	}
+
+	if err := applyConfigSet(ctx, "execution.runaway_loop_max_repeats", "-1"); err != nil {
+		t.Fatalf("applyConfigSet invalid value: %v", err)
+	}
+	if got := ctx.Config.Execution.RunawayLoopMaxRepeats; got != 4 {
+		t.Errorf("config mutated by invalid set = %d, want 4 (unchanged)", got)
+	}
+}
+
+// TestConfigMenu_LoopThresholdsIncludeRunawayRow verifies the thresholds
+// submenu exposes the runaway-loop repeat limit showing the effective default.
+func TestConfigMenu_LoopThresholdsIncludeRunawayRow(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("loop_detection", true)
+	sr.onSel("thresholds", true)
+
+	var found bool
+	for _, opt := range sr.options {
+		if opt.Value == "runaway_repeats" {
+			found = true
+			if opt.Description != "2 (default)" {
+				t.Errorf("runaway_repeats description = %q, want %q", opt.Description, "2 (default)")
+			}
+		}
+	}
+	if !found {
+		t.Error("thresholds menu missing runaway_repeats row")
+	}
+}

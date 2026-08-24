@@ -713,6 +713,12 @@ type Config struct {
 	// loop detected) after which the strike counter resets to zero
 	// (execution.stream_loop_reset_after). Zero means the default of 10.
 	StreamLoopResetAfter int
+	// RunawayLoopMaxRepeats is the number of consecutive identical assistant
+	// responses without progress tolerated before the runaway-loop guardrail
+	// stops the session (execution.runaway_loop_max_repeats). Earlier repeats
+	// inject a recovery hint and surface a visible warning. Zero means the
+	// default of 2.
+	RunawayLoopMaxRepeats int
 
 	// Logger is an optional leveled logger for debugging. If nil, logging is disabled.
 	Logger *Logger

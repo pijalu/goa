@@ -262,6 +262,10 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		StreamLoopMinPeriod:  am.streamLoopMinPeriod,
 		StreamLoopMaxStrikes: cfg.Execution.StreamLoopMaxStrikes,
 		StreamLoopResetAfter: cfg.Execution.StreamLoopResetAfter,
+		// Cross-turn runaway-loop guardrail threshold (assistant-repeat
+		// detector); read per agent build so /config changes apply to new
+		// turns without a restart.
+		RunawayLoopMaxRepeats: cfg.Execution.RunawayLoopMaxRepeats,
 		// The thinking-stall watchdog shares the temp + persist override
 		// machinery with the loop detectors, under its own "stall" kind.
 		ThinkingStallDisabled: func() bool {

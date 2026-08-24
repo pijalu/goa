@@ -15,6 +15,21 @@ import (
 
 const loopStopCooldown = 10 * time.Minute
 
+// defaultRunawayLoopMaxRepeats is the number of consecutive identical
+// assistant responses without progress tolerated before the runaway-loop
+// guardrail stops the session (execution.runaway_loop_max_repeats). Two
+// repeats — three identical responses in total — rules out coincidence while
+// still giving the model one warned chance to change approach.
+const defaultRunawayLoopMaxRepeats = 2
+
+// effectiveRunawayLoopMaxRepeats resolves the repeat limit, defaulting to 2.
+func (a *Agent) effectiveRunawayLoopMaxRepeats() int {
+	if a.cfg.RunawayLoopMaxRepeats > 0 {
+		return a.cfg.RunawayLoopMaxRepeats
+	}
+	return defaultRunawayLoopMaxRepeats
+}
+
 // checkLoopStopped enforces the runaway-loop latch at turn start. The latch
 // auto-expires after loopStopCooldown so no session stays bricked forever.
 func (a *Agent) checkLoopStopped() error {
@@ -57,10 +72,12 @@ func (a *Agent) clearLoopStopLocked() {
 
 // checkProgressLoop detects runaway conversations where the assistant repeats
 // the same meaningful message across consecutive turns without progress.
-// On the first repeat it injects a warning hint AND surfaces a visible TUI
-// warning naming the repeated response; on the second repeat it stops the
-// session with an error carrying the same evidence (runaway-loop
-// visibility: the user must be able to judge whether the loop was real).
+// On each repeat below the configured limit it injects a warning hint AND
+// surfaces a visible TUI warning naming the repeated response; when the
+// repeat count reaches execution.runaway_loop_max_repeats (default 2) it
+// stops the session with an error carrying the same evidence
+// (runaway-loop visibility: the user must be able to judge whether the loop
+// was real).
 //
 // A turn is NOT a repeat when its tool calls produced non-error results:
 // executed tools are observable progress even when assistant text/thinking
@@ -71,13 +88,14 @@ func (a *Agent) clearLoopStopLocked() {
 // error, retry, pause), comparing the stale message against itself would
 // score a false strike with zero actual repetition.
 func (a *Agent) checkProgressLoop() error {
+	maxRepeats := a.effectiveRunawayLoopMaxRepeats()
 	warnSample, err := a.scanProgressLoop()
 	if warnSample != "" {
 		// Emitted after scanProgressLoop released a.mu (emitEvent locks it).
 		a.emitEvent(OutputEvent{
 			Type: EventContent,
 			Role: System,
-			Text: fmt.Sprintf("Runaway-loop warning: the assistant repeated the same response as the previous turn%s; if it repeats again the session stops.", loopEvidenceSuffix(warnSample)),
+			Text: fmt.Sprintf("Runaway-loop warning: the assistant repeated the same response as the previous turn%s; the session stops after %d consecutive repeats.", loopEvidenceSuffix(warnSample), maxRepeats),
 			Metadata: map[string]string{
 				"category": "system-notification",
 			},
@@ -87,9 +105,9 @@ func (a *Agent) checkProgressLoop() error {
 }
 
 // scanProgressLoop evaluates the repeat counters under a.mu. It returns the
-// repeated-response sample when the first strike applies (the caller emits
-// the visible warning — emitEvent takes a.mu, so it must run unlocked), or
-// the terminal guardrail error when the latch trips.
+// repeated-response sample whenever a non-terminal strike applies (the caller
+// emits the visible warning — emitEvent takes a.mu, so it must run unlocked),
+// or the terminal guardrail error when the latch trips.
 func (a *Agent) scanProgressLoop() (warnSample string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -122,10 +140,14 @@ func (a *Agent) scanProgressLoop() (warnSample string, err error) {
 	}
 
 	a.assistantRepeatCount++
-	a.cfg.Logger.Log(Warn, "Loop guardrail: assistant message repeated %d time(s)", a.assistantRepeatCount)
+	// Repeats below the configured limit are soft: the model is nudged with
+	// an in-history recovery hint and the caller surfaces a visible warning.
+	// Reaching the limit latches the session stop.
+	maxRepeats := a.effectiveRunawayLoopMaxRepeats()
+	a.cfg.Logger.Log(Warn, "Loop guardrail: assistant message repeated %d time(s) (limit %d)", a.assistantRepeatCount, maxRepeats)
 
 	sample := progressLoopSample(msg)
-	if a.assistantRepeatCount == 1 {
+	if a.assistantRepeatCount < maxRepeats {
 		hint := "[goa-system] Your last response was identical to the previous one. Progress has stalled. Change your approach: use a tool, produce different output, or stop and explain the blocker. Repeating the same text will end the session."
 		a.history = append(a.history, Message{Type: Content, Role: System, Content: hint})
 		return sample, nil

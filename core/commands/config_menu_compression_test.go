@@ -410,6 +410,7 @@ func TestConfigMenu_LoopThresholdsShowEffectiveValues(t *testing.T) {
 		"stream_min_period":           "50 (default)",
 		"stream_strikes":              "3 (default)",
 		"stream_reset_after":          "10 (default)",
+		"runaway_repeats":             "2 (default)",
 	}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d threshold options, got %d", len(want), len(sr.options))
