@@ -51,6 +51,20 @@ type ToolHandler func(name, description string, execute func(map[string]any) (in
 // CommandHandler is called when a JS plugin registers a command via goa.registerCommand.
 type CommandHandler func(name string, aliases []string, shortHelp, longHelp string, run func([]string) (string, error)) error
 
+// Completion is one argument-completion candidate a plugin offers for its
+// command: Value is the segment inserted after "/<cmd>:" (WITHOUT the command
+// prefix — the TUI engine prepends it), Description is shown in the picker.
+type Completion struct {
+	Value       string
+	Description string
+}
+
+// CompletionHandler is called when JS calls goa.registerCompletion(name, fn).
+// fn(prefix) receives the raw arg prefix — everything the user typed after
+// "/<cmd>:" (e.g. "", "re", "login:op") — and returns candidates. Nested
+// levels re-invoke fn with the parent path plus colon ("login:").
+type CompletionHandler func(name string, fn func(prefix string) []Completion) error
+
 // ObserverHandler receives a callback that will be called for every event.
 // The callback receives (eventName string, payload interface{}).
 type ObserverHandler func(callback func(string, interface{}))
@@ -74,7 +88,11 @@ type PluginContext struct {
 	Logger            LoggerAPI
 	RegisterTool      ToolHandler                             // called when JS calls goa.registerTool
 	RegisterCommand   CommandHandler                          // called when JS calls goa.registerCommand
-	RegisterObserver  ObserverHandler                         // called when JS calls goa.registerObserver
+	// RegisterCompletion is called when JS calls goa.registerCompletion(name,
+	// fn) to provide argument completions for a command. Nil disables the API
+	// (older hosts / minimal harnesses); plugins must degrade gracefully.
+	RegisterCompletion CompletionHandler
+	RegisterObserver   ObserverHandler                         // called when JS calls goa.registerObserver
 	RegisterLifecycle func(hook HookType, h LifecycleHandler) // called when JS calls goa.registerLifecycle
 	CallTool          CallToolHandler                         // called when JS calls goa.callTool
 	// RegisterHook is called when JS calls goa.registerHook. Nil disables the
@@ -196,6 +214,9 @@ func (b *JSBridge) setupGlobals() {
 
 	goaObj.Set("registerTool", b.wrapRegisterTool())
 	goaObj.Set("registerCommand", b.wrapRegisterCommand())
+	if b.ctx.RegisterCompletion != nil {
+		goaObj.Set("registerCompletion", b.wrapRegisterCompletion())
+	}
 	goaObj.Set("registerObserver", b.wrapRegisterObserver())
 	goaObj.Set("registerLifecycle", b.wrapRegisterLifecycle())
 	goaObj.Set("callTool", b.wrapCallTool())
@@ -281,6 +302,72 @@ func (b *JSBridge) wrapRegisterCommand() func(goja.FunctionCall) goja.Value {
 		}
 		return b.vm.ToValue("command registered: " + name)
 	}
+}
+
+// wrapRegisterCompletion returns a JS-callable function that implements
+// goa.registerCompletion(name, fn): fn(prefix) supplies argument completions
+// for the named command. The JS function is invoked on the completer's
+// goroutine under the VM lock (buildCompletionWrapper owns locking), so it may
+// read plugin state (_fetchers, _cache) freely.
+func (b *JSBridge) wrapRegisterCompletion() func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if b.ctx.RegisterCompletion == nil {
+			return b.vm.ToValue("error: CompletionHandler not configured")
+		}
+		name := call.Argument(0).String()
+		fnVal := call.Argument(1).Export()
+		wrapper, err := b.buildCompletionWrapper(fnVal)
+		if err != nil {
+			return b.vm.ToValue("error: " + err.Error())
+		}
+		if err := b.ctx.RegisterCompletion(name, wrapper); err != nil {
+			return b.vm.ToValue("error: " + err.Error())
+		}
+		return b.vm.ToValue("completions registered: " + name)
+	}
+}
+
+// buildCompletionWrapper converts a JS prefix→completions function into a Go
+// callable. Runs the JS frame under the global VM lock (the TUI completer
+// calls this off the command path); malformed return shapes degrade to an
+// empty candidate list rather than erroring the keystroke.
+func (b *JSBridge) buildCompletionWrapper(fn interface{}) (func(prefix string) []Completion, error) {
+	jsFn, ok := fn.(func(goja.FunctionCall) goja.Value)
+	if !ok {
+		return nil, fmt.Errorf("complete must be a function")
+	}
+	return func(prefix string) []Completion {
+		leave := enterVM()
+		defer leave()
+		unlock := lockVM()
+		defer unlock()
+
+		out := []Completion{}
+		func() {
+			defer func() { _ = recover() }() // a throwing completer must not break typing
+			call := goja.FunctionCall{}
+			call.Arguments = append(call.Arguments, b.vm.ToValue(prefix))
+			res := jsFn(call)
+			arr, ok := res.Export().([]interface{})
+			if !ok {
+				return
+			}
+			for _, item := range arr {
+				m, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				c := Completion{
+					Value:       fmt.Sprint(m["value"]),
+					Description: fmt.Sprint(m["description"]),
+				}
+				if c.Value != "" && c.Value != "<nil>" {
+					out = append(out, c)
+				}
+			}
+		}()
+		return out
+	}, nil
 }
 
 // extractAliases parses the "aliases" field from a JS command object.
@@ -558,6 +645,9 @@ type PluginLoader struct {
 	dirs    []string
 	enabled []string // plugin IDs; ["*"] = all
 	bridges []*JSBridge
+	// loaded tracks plugin ids already instantiated in this LoadAll pass so
+	// the same id found in a second scanned directory never loads twice.
+	loaded map[string]bool
 }
 
 // NewPluginLoader creates a plugin loader.
@@ -565,6 +655,7 @@ func NewPluginLoader(dirs, enabled []string) *PluginLoader {
 	return &PluginLoader{
 		dirs:    dirs,
 		enabled: enabled,
+		loaded:  map[string]bool{},
 	}
 }
 
@@ -619,6 +710,19 @@ func (pl *PluginLoader) loadPlugin(dir, name string, ctx PluginContext, allEnabl
 	if !allEnabled && !isEnabled(def.ID, pl.enabled) {
 		return nil // not enabled
 	}
+
+	// One VM per plugin id: a duplicate id means the same plugin exists in
+	// more than one scanned directory (e.g. a stale materialized version dir
+	// that survived an upgrade). Loading both would double every side effect
+	// (outputs, segments, observers) and the first-registered command wins —
+	// possibly the STALE copy. Skip with a loud log; MaterializeBundled's
+	// version pruning makes this unreachable for bundled plugins in practice.
+	if pl.loaded[def.ID] {
+		log.Printf("Warning: duplicate plugin id %s at %s — already loaded from another directory, skipping stale copy\n",
+			def.ID, filepath.Join(dir, name))
+		return nil
+	}
+	pl.loaded[def.ID] = true
 
 	bridge := NewJSBridge(*def, ctx)
 	entryPath := filepath.Join(dir, name, def.Entry)

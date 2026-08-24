@@ -541,15 +541,37 @@ function renderFull(force) {
 	for (var i = 0; i < rows.length; i++) {
 		out.push(rows[i]);
 	}
-	// Discoverability: with reset credits on the account, tell the user how
-	// to act on them right where the count renders (user-reported gap: the
-	// row alone doesn't say a reset is performable from the TUI).
+	// Reset-credit surfacing: with cached DETAILS the breakdown renders the
+	// full credits table inline (user-reported gap: details used to live only
+	// behind /quota:resets); without them the count-only how-to note is the
+	// fallback. Both name the command that consumes a credit.
 	var note = resetUsageNote();
 	if (note !== "") {
 		out.push("");
 		out.push(note);
 	}
+	var detailsSection = codexDetailsSection();
+	if (detailsSection !== "") {
+		out.push("");
+		out.push(detailsSection);
+	}
 	return out.join("\n");
+}
+
+// codexDetailsSection renders the cached reset-credit details as an inline
+// /quota section. Empty unless the codex snapshot carries a successful
+// details payload with at least one credit row — otherwise the count-only
+// note above covers the state.
+function codexDetailsSection() {
+	var entry = _cache.codex;
+	if (!entry || entry.error || !entry.details) {
+		return "";
+	}
+	var d = entry.details;
+	if (!Array.isArray(d.credits) || d.credits.length === 0) {
+		return "";
+	}
+	return renderResetsTable(d);
 }
 
 // renderSessionTable renders the per-session token table from
@@ -675,6 +697,8 @@ function renderJSON() {
 			plan: e.plan || null,
 			error: e.error || null,
 			limits: e.limits || [],
+			resetsCount: typeof e.resetsCount === "number" ? e.resetsCount : null,
+			resets: e.details || null,
 			fetchedAt: e._fetchedAt || 0
 		};
 	}
@@ -1081,6 +1105,76 @@ function resetUsageNote() {
 }
 
 // --- Registration ---------------------------------------------------------
+
+// --- Command completions (goa.registerCompletion) ----------------------------
+
+// QUOTA_SUBS lists the static /quota subcommands offered by the completer.
+// Values carry no leading colon: the TUI engine prepends "/quota:".
+var QUOTA_SUBS = [
+	{ value: "refresh", description: "Force-refresh all provider quotas" },
+	{ value: "json", description: "Machine-readable JSON output" },
+	{ value: "auth-status", description: "Show per-provider auth state" },
+	{ value: "resets", description: "List Codex rate-limit reset credits" },
+	{ value: "reset", description: "Consume one Codex rate-limit reset credit" }
+];
+
+// completeMatches filters candidate completions by prefix ("" keeps all).
+function completeMatches(items, prefix) {
+	if (!prefix) {
+		return items;
+	}
+	var out = [];
+	for (var i = 0; i < items.length; i++) {
+		if (items[i].value.indexOf(prefix) === 0) {
+			out.push(items[i]);
+		}
+	}
+	return out;
+}
+
+// providerEntries builds one completion per quota-capable provider id
+// (local fallback excluded). purpose labels the entry for the level it
+// serves: "" → refresh, "login"/"logout" → OAuth action.
+function providerEntries(purpose) {
+	var out = [];
+	for (var id in _fetchers) {
+		if (id === _fallbackId || !_fetchers[id].quotaEndpoint) {
+			continue;
+		}
+		var label = _fetchers[id].name || id;
+		var desc;
+		if (purpose === "login") {
+			desc = "OAuth login for " + label;
+		} else if (purpose === "logout") {
+			desc = "Clear " + label + " OAuth tokens";
+		} else {
+			desc = "Force-refresh " + label + " quota";
+		}
+		out.push({ value: id, description: desc });
+	}
+	return out;
+}
+
+// quotaComplete provides /quota argument completions. prefix is everything
+// after "/quota:" — "", "re", "login:o", "reset:" — mirroring the engine's
+// nested-level convention (a parent path plus colon re-queries its children).
+function quotaComplete(prefix) {
+	var p = String(prefix == null ? "" : prefix);
+	var idx = p.indexOf(":");
+	if (idx >= 0) {
+		var sub = p.slice(0, idx);
+		var rest = p.slice(idx + 1);
+		if (sub === "login" || sub === "logout") {
+			return completeMatches(providerEntries(sub), rest);
+		}
+		return []; // reset:<id> is dynamic credit state — nothing static to offer
+	}
+	return completeMatches(QUOTA_SUBS.concat(providerEntries("")), p);
+}
+
+if (typeof goa.registerCompletion === "function") {
+	goa.registerCompletion("quota", quotaComplete);
+}
 
 goa.registerCommand({
 	name: "quota",

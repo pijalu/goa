@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -61,6 +63,7 @@ func (m *Manager) MaterializeBundled(src BundledSource) (string, error) {
 			m.mu.Lock()
 			m.enableBundledLocked(src, target)
 			m.mu.Unlock()
+			m.pruneBundledVersions(src.ID, target)
 			return target, nil
 		}
 		// Content drift (stale or tampered copy): fall through and
@@ -99,7 +102,37 @@ func (m *Manager) MaterializeBundled(src BundledSource) (string, error) {
 	if err := m.lock.Save(); err != nil {
 		return "", fmt.Errorf("save lockfile: %w", err)
 	}
+	m.pruneBundledVersions(src.ID, target)
 	return target, nil
+}
+
+// pruneBundledVersions removes stale materialized versions of one bundled
+// plugin id, keeping keepDir. Version dirs accumulate across upgrades
+// (<id>@<old>), and loadEnabledPlugins scans the WHOLE bundled dir when
+// loading: a leftover older copy loads too — its VM registers /quota first
+// (first-registration-wins) while the current version's VM still runs side
+// effects, so commands dispatch to stale code (2026-08-24: /quota:resets hit
+// the pre-M4 @1.1.0 dispatcher and answered "Unknown subcommand"). Pruning
+// runs on every materialization — including the reuse fast path — so the
+// bundled dir self-heals to exactly one dir per id at every startup.
+func (m *Manager) pruneBundledVersions(id, keepDir string) {
+	bundledRoot := filepath.Join(m.root, "bundled")
+	entries, err := os.ReadDir(bundledRoot)
+	if err != nil {
+		return // nothing to prune or unreadable root: non-fatal
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), id+"@") {
+			continue
+		}
+		full := filepath.Join(bundledRoot, e.Name())
+		if full == keepDir {
+			continue
+		}
+		if err := os.RemoveAll(full); err != nil {
+			log.Printf("Warning: could not prune stale bundled plugin %s: %v\n", full, err)
+		}
+	}
 }
 
 // bundledContentIntact reports whether the on-disk materialized copy still

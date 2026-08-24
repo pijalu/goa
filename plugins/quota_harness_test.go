@@ -37,6 +37,9 @@ type quotaTestEnv struct {
 	// oauthTokens maps provider id → Goa-managed token returned by
 	// goa.auth.oauthToken (nil/absent ⇒ auth unavailable, as before).
 	oauthTokens map[string]map[string]any
+	// completions stores JS completers registered via goa.registerCompletion,
+	// keyed by command name (drives the completion tests like the app does).
+	completions map[string]func(prefix string) []Completion
 }
 
 type quotaResponder struct {
@@ -59,6 +62,7 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 		storage:     st,
 		scheduler:   NewScheduler(),
 		oauthTokens: map[string]map[string]any{},
+		completions: map[string]func(prefix string) []Completion{},
 		config: map[string]any{
 			"providers":      map[string]any{},
 			"activeProvider": "anthropic",
@@ -151,6 +155,14 @@ func (e *quotaTestEnv) context() PluginContext {
 		Logger:     LoggerAPI{noop, noop, noop, noop},
 		RegisterCommand: func(name string, aliases []string, shortHelp, longHelp string, run func([]string) (string, error)) error {
 			e.commands[name] = run
+			return nil
+		},
+		// RegisterCompletion captures JS completers by command name so tests
+		// can drive goa.registerCompletion the same way the app stores them.
+		RegisterCompletion: func(name string, fn func(prefix string) []Completion) error {
+			e.mu.Lock()
+			e.completions[name] = fn
+			e.mu.Unlock()
 			return nil
 		},
 		// RegisterObserver mirrors production: the bus stores the wrapped

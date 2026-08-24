@@ -52,7 +52,7 @@ function fetch() {
 	if (!token) {
 		return { error: "auth_required", plan: null, limits: [] };
 	}
-	return hq.getJSON(USAGE_URL, codexHeaders(token), function(body) {
+	var out = hq.getJSON(USAGE_URL, codexHeaders(token), function(body) {
 		// Merge the fresh snapshot into the retained one, then derive the
 		// display lines from the merged result so preserved plan/credits still
 		// render. On a transport/HTTP error getJSON returns an error object
@@ -69,6 +69,18 @@ function fetch() {
 		}
 		return merged;
 	});
+	if (out && !out.error) {
+		// Ride the reset-credit DETAILS along with every successful usage
+		// refresh so the global /quota breakdown can render them inline
+		// without a second blocking fetch on the command path. Errors degrade
+		// silently here: /quota falls back to the count-only note and
+		// /quota:resets re-fetches explicitly with its own error surface.
+		var details = resetCredits();
+		if (details && !details.error) {
+			out.details = details;
+		}
+	}
+	return out;
 }
 
 // mapUsage maps a raw /wham/usage body into a structured quota snapshot:

@@ -816,3 +816,103 @@ func TestQuotaReset_QuotaShowsResetHowTo(t *testing.T) {
 		t.Fatalf("/quota must not show the how-to note without credits, got:\n%s", out)
 	}
 }
+
+// TestQuotaReset_QuotaIncludesDetailsTable pins issue 1 of 2026-08-24: the
+// reset-credit DETAILS belong in the global /quota breakdown, not only behind
+// /quota:resets. When the details endpoint answers during refresh, /quota
+// renders the credits table inline (ids, titles, expiry, status).
+func TestQuotaReset_QuotaIncludesDetailsTable(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	wireCodexAuth(t, env)
+	env.respond("rate-limit-reset-credits", 200,
+		`{"available_count":1,"credits":[{"id":"credit-ab-1234","title":"Weekly reset","status":"available","reset_type":"weekly","expires_at":"2099-01-01T00:00:00Z"}]}`)
+	env.load(t)
+
+	out := env.callCommand("quota", "")
+	for _, want := range []string{
+		"Codex Rate-Limit Resets",
+		"credit-a…",      // shortId rendering
+		"Weekly reset",   // title
+		"available",      // status
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("/quota missing details table entry %q:\n%s", want, out)
+		}
+	}
+
+	// Degradation: with the details endpoint now failing (404 replaces the
+	// responder — same substr), /quota still renders via the count-only note.
+	env.respond("rate-limit-reset-credits", 404, `{}`)
+	env.evalJS(t, `delete _cache.codex`)
+	env.warmCache(t)
+	out = env.callCommand("quota", "")
+	if !strings.Contains(out, "Codex rate-limit resets:") {
+		t.Fatalf("/quota without details must fall back to the how-to note:\n%s", out)
+	}
+	if strings.Contains(out, "credit-a…") {
+		t.Fatalf("/quota must not render a stale details table after a failed refresh:\n%s", out)
+	}
+}
+
+// TestQuotaReset_Completion pins the /quota subcommand completer: static subs
+// prefix-match, provider ids appear at top level and under :login:/ :logout:,
+// and unknown nested scopes return nothing.
+func TestQuotaReset_Completion(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	wireCodexAuth(t, env)
+	env.load(t)
+
+	fn := func() func(prefix string) []Completion {
+		env.mu.Lock()
+		defer env.mu.Unlock()
+		return env.completions["quota"]
+	}()
+	if fn == nil {
+		t.Fatal("plugin did not register completions for quota")
+	}
+
+	values := func(comps []Completion) []string {
+		out := []string{}
+		for _, c := range comps {
+			out = append(out, c.Value)
+		}
+		return out
+	}
+	has := func(list []string, want string) bool {
+		for _, v := range list {
+			if v == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	all := values(fn(""))
+	for _, sub := range []string{"refresh", "json", "auth-status", "resets", "reset"} {
+		if !has(all, sub) {
+			t.Errorf("bare completion missing %q: %v", sub, all)
+		}
+	}
+	filtered := values(fn("re"))
+	for _, want := range []string{"refresh", "resets", "reset"} {
+		if !has(filtered, want) {
+			t.Errorf("'re' completion missing %q: %v", want, filtered)
+		}
+	}
+	if has(filtered, "json") {
+		t.Errorf("'re' completion must not include 'json': %v", filtered)
+	}
+	logins := values(fn("login:"))
+	if !has(logins, "codex") || !has(logins, "kimi") {
+		t.Errorf("login: level must offer OAuth providers: %v", logins)
+	}
+	if got := values(fn("bogus:")); len(got) != 0 {
+		t.Errorf("unknown nested scope must return nothing, got %v", got)
+	}
+	// Values carry no command prefix — the engine prepends "/quota:".
+	for _, v := range all {
+		if strings.HasPrefix(v, "/") || strings.HasPrefix(v, "quota") {
+			t.Errorf("completion value %q must be bare segment", v)
+		}
+	}
+}

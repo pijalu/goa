@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 
 	"github.com/pijalu/goa/core"
@@ -47,6 +48,11 @@ type pluginRuntime struct {
 	// double-start (activatePluginUI runs both synchronously at startup and
 	// again on the command loop after the async plugin load).
 	confirmDrainActive atomic.Bool
+	// completions maps command name → JS-provided argument completer
+	// (goa.registerCompletion). Written during plugin load, read from the
+	// TUI completer goroutine on every keystroke — hence the RWMutex.
+	completionsMu sync.RWMutex
+	completions   map[string]func(prefix string) []plugins.Completion
 }
 
 // loadEnabledPlugins materializes bundled plugins, then loads all enabled
@@ -131,11 +137,12 @@ func newPluginRuntime(s *subsystems) *pluginRuntime {
 		hooks = plugins.NewHookRegistry(nil)
 	}
 	return &pluginRuntime{
-		ui:        plugins.NewUIBridge(),
-		hotkeys:   plugins.NewHotkeyBridge(),
-		bus:       plugins.NewEventBus(),
-		scheduler: sched,
-		hooks:     hooks,
+		ui:          plugins.NewUIBridge(),
+		hotkeys:     plugins.NewHotkeyBridge(),
+		bus:         plugins.NewEventBus(),
+		scheduler:   sched,
+		hooks:       hooks,
+		completions: map[string]func(prefix string) []plugins.Completion{},
 	}
 }
 
@@ -170,17 +177,18 @@ func (rt *pluginRuntime) contextFor(s *subsystems) plugins.PluginContext {
 	return plugins.PluginContext{
 		// Live config: goa.config() re-reads the current provider/model on
 		// every call so plugins (e.g. quota) see switches immediately.
-		Config:            pluginConfigFor(s),
-		ConfigFunc:        func() map[string]any { return pluginConfigFor(s) },
-		Logger:            pluginLogger(),
-		RegisterTool:      pluginRegisterTool(s),
-		RegisterCommand:   rt.pluginRegisterCommand(s),
-		RegisterObserver:  rt.pluginRegisterObserver(),
-		RegisterLifecycle: pluginRegisterLifecycle(s),
-		CallTool:          pluginCallTool(s),
-		RegisterHook:      rt.pluginRegisterHook(s),
-		EventBus:          rt.bus,
-		Extended:          rt.extendedContext(s),
+		Config:             pluginConfigFor(s),
+		ConfigFunc:         func() map[string]any { return pluginConfigFor(s) },
+		Logger:             pluginLogger(),
+		RegisterTool:       pluginRegisterTool(s),
+		RegisterCommand:    rt.pluginRegisterCommand(s),
+		RegisterCompletion: rt.pluginRegisterCompletion(),
+		RegisterObserver:   rt.pluginRegisterObserver(),
+		RegisterLifecycle:  pluginRegisterLifecycle(s),
+		CallTool:           pluginCallTool(s),
+		RegisterHook:       rt.pluginRegisterHook(s),
+		EventBus:           rt.bus,
+		Extended:           rt.extendedContext(s),
 	}
 }
 
@@ -366,6 +374,10 @@ func (rt *pluginRuntime) pluginRegisterCommand(s *subsystems) func(string, []str
 			shortHelp: shortHelp,
 			longHelp:  longHelp,
 			run:       run,
+			// Lazy lookup: the JS completer may register AFTER the command.
+			completions: func() func(prefix string) []plugins.Completion {
+				return rt.completionFor(name)
+			},
 		}
 		if err := s.registry.Register(cmd); err != nil {
 			return err
@@ -373,6 +385,32 @@ func (rt *pluginRuntime) pluginRegisterCommand(s *subsystems) func(string, []str
 		log.Printf("[plugin] registered command /%s\n", name)
 		return nil
 	}
+}
+
+// pluginRegisterCompletion wires goa.registerCompletion into the runtime's
+// completion map so pluginCommandWrapper.CompleteArgs can consult it lazily
+// (completions may register after the command itself).
+func (rt *pluginRuntime) pluginRegisterCompletion() plugins.CompletionHandler {
+	return func(name string, fn func(prefix string) []plugins.Completion) error {
+		if name == "" || fn == nil {
+			return fmt.Errorf("registerCompletion requires a command name and a function")
+		}
+		rt.completionsMu.Lock()
+		defer rt.completionsMu.Unlock()
+		if rt.completions == nil {
+			rt.completions = map[string]func(prefix string) []plugins.Completion{}
+		}
+		rt.completions[name] = fn
+		log.Printf("[plugin] registered completions for /%s\n", name)
+		return nil
+	}
+}
+
+// completionFor returns the JS-provided completer for a command name, if any.
+func (rt *pluginRuntime) completionFor(name string) func(prefix string) []plugins.Completion {
+	rt.completionsMu.RLock()
+	defer rt.completionsMu.RUnlock()
+	return rt.completions[name]
 }
 
 // pluginRegisterObserver subscribes JS observers to the plugin event bus.
@@ -542,6 +580,10 @@ type pluginCommandWrapper struct {
 	shortHelp string
 	longHelp  string
 	run       func([]string) (string, error)
+	// completions returns the JS-provided completer for this command, if it
+	// registered one via goa.registerCompletion. Nil-safe: nil ⇒ no arg
+	// completions (previous behavior for all plugin commands).
+	completions func() func(prefix string) []plugins.Completion
 }
 
 func (c *pluginCommandWrapper) Name() string      { return c.name }
@@ -559,7 +601,19 @@ func (c *pluginCommandWrapper) LongHelp() string {
 	return c.ShortHelp()
 }
 func (c *pluginCommandWrapper) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	return nil
+	if c.completions == nil {
+		return nil
+	}
+	fn := c.completions()
+	if fn == nil {
+		return nil
+	}
+	comps := fn(prefix)
+	out := make([]core.ArgCompletion, 0, len(comps))
+	for _, comp := range comps {
+		out = append(out, core.ArgCompletion{Value: comp.Value, Description: comp.Description})
+	}
+	return out
 }
 
 // Run executes the JS command, writing its output string into the router's
