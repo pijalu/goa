@@ -126,6 +126,11 @@ func NewSelector(title string, items []SelectorItem, currentValue string, result
 func sortSelectorItems(items []SelectorItem) []SelectorItem {
 	out := make([]SelectorItem, len(items))
 	copy(out, items)
+	for i := range out {
+		out[i].Label = sanitizeSelectorText(out[i].Label)
+		out[i].Description = sanitizeSelectorText(out[i].Description)
+		out[i].SearchLabel = sanitizeSelectorText(out[i].SearchLabel)
+	}
 	if preserveSelectorOrder(out) {
 		return out
 	}
@@ -133,6 +138,20 @@ func sortSelectorItems(items []SelectorItem) []SelectorItem {
 		return strings.ToLower(out[i].Label) < strings.ToLower(out[j].Label)
 	})
 	return out
+}
+
+// sanitizeSelectorText flattens dynamic item text onto one display line:
+// newlines, carriage returns, and tabs become spaces. A raw \n inside a
+// Label/Description would reach the row-oriented canvas and either split the
+// popup into shifted rows with blank gaps or be silently cut at the first
+// line feed by the width measurement — bugs.md: blank lines between command
+// list entries. Values are semantic IDs and are left untouched.
+func sanitizeSelectorText(s string) string {
+	if !strings.ContainsAny(s, "\n\r\t") {
+		return s // fast path: clean text
+	}
+	replacer := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
+	return replacer.Replace(s)
 }
 
 // preserveSelectorOrder reports whether the caller's order should be kept:
