@@ -55,8 +55,11 @@ func TestQuota_RateLimitObserver_RefreshesAndHints(t *testing.T) {
 	waitFor(t, "codex cache refreshed with resetsCount", func() bool {
 		return env.evalJSBool(t, `_cache.codex && _cache.codex.resetsCount === 2`)
 	})
+	// Wait on the HINT itself, not any output naming /quota:resets: the
+	// session-startup reset notice also mentions the command, so a generic
+	// substring wait can pass before the event was even processed.
 	waitFor(t, "rate-limit reset hint", func() bool {
-		return env.outputCount("/quota:resets") > 0
+		return env.outputCount("run /quota:resets for details or /quota:reset to use one") > 0
 	})
 
 	if got := env.outputCount("You have 2 rate-limit resets available"); got != 1 {
@@ -76,9 +79,13 @@ func TestQuota_RateLimitObserver_HintDebounce(t *testing.T) {
 	env.load(t)
 
 	cap := startCapture(t, env)
+	// Baseline AFTER load: the startup reset notice (fired during the primed
+	// refresh, credits are on the canned usage body) already mentioned
+	// /quota:resets once. Assertions below must count only hint outputs.
+	n0 := env.outputCount("/quota:resets")
 	env.emitPluginEvent("rate_limit_exceeded", rateLimitPayload("gpt-5-codex"))
 	waitFor(t, "first refresh + hint", func() bool {
-		return env.outputCount("/quota:resets") > 0
+		return env.outputCount("/quota:resets") > n0
 	})
 
 	// A second burst of failures inside the debounce window: each event still
@@ -89,8 +96,8 @@ func TestQuota_RateLimitObserver_HintDebounce(t *testing.T) {
 	})
 	time.Sleep(100 * time.Millisecond) // settle: let any (wrong) extra timer run
 
-	if got := env.outputCount("/quota:resets"); got != 1 {
-		t.Errorf("debounce failed: expected exactly 1 hint, got %d", got)
+	if got := env.outputCount("/quota:resets"); got != n0+1 {
+		t.Errorf("debounce failed: expected exactly 1 hint beyond baseline %d, got %d", n0, got)
 	}
 }
 
@@ -102,6 +109,9 @@ func TestQuota_RateLimitObserver_IgnoresNonCodexModels(t *testing.T) {
 	env.load(t)
 
 	cap := startCapture(t, env)
+	// Baseline AFTER load: the startup reset notice already fired (credits on
+	// the canned usage body); only hint outputs beyond it must be counted.
+	n0 := env.outputCount("/quota:resets")
 	env.emitPluginEvent("rate_limit_exceeded", rateLimitPayload("claude-sonnet-4-5"))
 	env.emitPluginEvent("rate_limit_exceeded", nil)
 	time.Sleep(100 * time.Millisecond) // settle: timers would have fired
@@ -109,7 +119,7 @@ func TestQuota_RateLimitObserver_IgnoresNonCodexModels(t *testing.T) {
 	if got := cap.getsTo("wham/usage"); got != 0 {
 		t.Errorf("non-codex model must not trigger a refresh, got %d GETs", got)
 	}
-	if got := env.outputCount("/quota:resets"); got != 0 {
-		t.Errorf("non-codex model must not produce a hint, got %d outputs", got)
+	if got := env.outputCount("/quota:resets"); got != n0 {
+		t.Errorf("non-codex model must not produce a hint, got %d new outputs (baseline %d)", got-n0, n0)
 	}
 }

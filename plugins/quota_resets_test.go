@@ -738,3 +738,81 @@ func TestGetJSON_LegacyErrorShapePreserved(t *testing.T) {
 		t.Fatalf("legacy shape must keep limits key: %v", got)
 	}
 }
+
+// --- startup notice + /quota discoverability ---------------------------------
+
+// noResetsUsageBody is a canned /wham/usage response WITHOUT
+// rate_limit_reset_credits — the no-credits control for the startup notice.
+const noResetsUsageBody = `{
+	"plan_type": "Pro",
+	"credits": {"balance": 750},
+	"rate_limit": {}
+}`
+
+// TestQuotaReset_StartupNoticeFiresOnceWithCredits pins the session-start
+// notification: after the load-time primed refresh lands a positive reset
+// count, exactly one chat output must inform the user the credits exist AND
+// how to spend them (both commands). Re-invoking the check must stay silent —
+// once per session, never spam.
+func TestQuotaReset_StartupNoticeFiresOnceWithCredits(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	wireCodexAuth(t, env)
+	env.load(t) // drainPrime waits for the prime callback incl. the notice
+
+	want := "You have 2 Codex rate-limit resets available"
+	if got := env.outputCount(want); got != 1 {
+		t.Fatalf("expected exactly 1 startup notice mentioning %q, got %d", want, got)
+	}
+	out := env.lastOutput()
+	for _, cmd := range []string{"/quota:resets", "/quota:reset"} {
+		if !strings.Contains(out, cmd) {
+			t.Fatalf("startup notice must tell the user how to act (missing %q):\n%s", cmd, out)
+		}
+	}
+
+	// Idempotent: a second invocation (e.g. a later scheduler tick path)
+	// must not repeat the notice.
+	env.evalJS(t, `maybeStartupResetNotice()`)
+	if got := env.outputCount(want); got != 1 {
+		t.Fatalf("startup notice repeated: expected still 1, got %d", got)
+	}
+}
+
+// TestQuotaReset_StartupNoticeSilentWithoutCredits pins the control: no reset
+// credits on the usage snapshot ⇒ no startup notice at all.
+func TestQuotaReset_StartupNoticeSilentWithoutCredits(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setOAuthToken("openai", codexTokenStub())
+	env.respond("wham/usage", 200, noResetsUsageBody)
+	env.load(t)
+
+	if got := env.outputCount("Codex rate-limit reset"); got != 0 {
+		t.Fatalf("no-credits account must not produce a startup notice, got %d", got)
+	}
+	// The flag still flips: the drain relies on it regardless of credits.
+	if !env.evalJSBool(t, `_startupPrimeDone === true`) {
+		t.Fatal("prime-done flag must set even without credits")
+	}
+}
+
+// TestQuotaReset_QuotaShowsResetHowTo pins bare-/quota discoverability: with
+// credits cached, the rendered breakdown must include the how-to note naming
+// both commands; with none cached, it must not appear.
+func TestQuotaReset_QuotaShowsResetHowTo(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	wireCodexAuth(t, env)
+	env.load(t)
+
+	out := env.callCommand("quota", "")
+	note := "Codex rate-limit resets:"
+	if !strings.Contains(out, note) || !strings.Contains(out, "/quota:reset") {
+		t.Fatalf("/quota must include the reset how-to note, got:\n%s", out)
+	}
+
+	// Control: drop the codex entry entirely — no credits ⇒ no note.
+	env.evalJS(t, `delete _cache.codex`)
+	out = env.callCommand("quota", "")
+	if strings.Contains(out, note) {
+		t.Fatalf("/quota must not show the how-to note without credits, got:\n%s", out)
+	}
+}

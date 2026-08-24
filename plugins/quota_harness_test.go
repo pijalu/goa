@@ -270,13 +270,14 @@ func (e *quotaTestEnv) load(t *testing.T) *JSBridge {
 	return bridge
 }
 
-// drainPrime waits until the plugin's load-time cache prime has completed
-// (cache non-empty under the VM lock) or the deadline passes.
+// drainPrime waits until the plugin's load-time cache prime has completed —
+// including the startup reset notice that runs AFTER the refresh inside the
+// same callback (flagged by _startupPrimeDone) — or the deadline passes.
 func (e *quotaTestEnv) drainPrime(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if e.evalJSBool(t, `Object.keys(_cache).length > 0`) {
+		if e.evalJSBool(t, `_startupPrimeDone === true && Object.keys(_cache).length > 0`) {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)

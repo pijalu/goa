@@ -541,6 +541,14 @@ function renderFull(force) {
 	for (var i = 0; i < rows.length; i++) {
 		out.push(rows[i]);
 	}
+	// Discoverability: with reset credits on the account, tell the user how
+	// to act on them right where the count renders (user-reported gap: the
+	// row alone doesn't say a reset is performable from the TUI).
+	var note = resetUsageNote();
+	if (note !== "") {
+		out.push("");
+		out.push(note);
+	}
 	return out.join("\n");
 }
 
@@ -1019,7 +1027,7 @@ function handleRateLimitEvent(payload) {
 		if (n != null && n > 0 && now - _lastRateLimitHintAt >= RATE_LIMIT_HINT_DEBOUNCE_MS) {
 			_lastRateLimitHintAt = now;
 			goa.output("You have " + n + " rate-limit reset" + (n === 1 ? "" : "s") +
-				" available. Run /quota:resets.");
+				" available — run /quota:resets for details or /quota:reset to use one.");
 		}
 	}, 0);
 }
@@ -1030,6 +1038,47 @@ goa.registerObserver(function(name, payload) {
 	}
 	handleRateLimitEvent(payload);
 });
+
+// --- Startup reset-credit notice ---------------------------------------------
+
+// The reverse case of the §6 rate-limit hint: reset credits sitting UNUSED at
+// session start with nothing telling the user they exist or how to spend them.
+// After the priming refresh, if the codex snapshot carries a positive count,
+// say so once — as chat output, not a modal: non-blocking, survives in
+// scrollback. Guarded by _startupResetNoticeShown (once per session) and by
+// resetsCount > 0 (only set on a successful usage fetch, never auth/error).
+var _startupResetNoticeShown = false;
+
+// _startupPrimeDone flips true as the LAST step of the load-time prime
+// callback. Tests drain on this rather than on cache population: the notice
+// emits after refreshAllDue fills the cache, so cache-non-empty alone would
+// race the notice.
+var _startupPrimeDone = false;
+
+function maybeStartupResetNotice() {
+	if (_startupResetNoticeShown) {
+		return;
+	}
+	var entry = _cache.codex;
+	if (!entry || entry.error || typeof entry.resetsCount !== "number" || entry.resetsCount <= 0) {
+		return;
+	}
+	_startupResetNoticeShown = true;
+	goa.output("ℹ You have " + entry.resetsCount + " Codex rate-limit reset" +
+		(entry.resetsCount === 1 ? "" : "s") + " available" +
+		" — `/quota:resets` lists them · `/quota:reset` uses one.");
+}
+
+// resetUsageNote is the bare-/quota discoverability line: the resets table row
+// reads as informational only unless the output says how to act on it.
+// Empty when codex has no positive cached count.
+function resetUsageNote() {
+	var entry = _cache.codex;
+	if (!entry || entry.error || typeof entry.resetsCount !== "number" || entry.resetsCount <= 0) {
+		return "";
+	}
+	return "_Codex rate-limit resets: `/quota:resets` lists them · `/quota:reset` uses one._";
+}
 
 // --- Registration ---------------------------------------------------------
 
@@ -1084,8 +1133,12 @@ goa.setInterval(function() {
 // goroutine, NOT synchronously at load: provider HTTP calls must never block
 // plugin startup (a slow/hanging endpoint would freeze the whole app boot
 // and delay the first /quota behind the load path — bugs.md "Quota command
-// unresponsive").
+// unresponsive"). Once the prime lands, surface the one-time startup notice
+// when reset credits are available, then flag completion for the tests'
+// deterministic drain.
 goa.setTimeout(function() {
 	refreshAllDue(false);
+	maybeStartupResetNotice();
+	_startupPrimeDone = true;
 	goa.ui.refreshSegment("quota");
 }, 0);
