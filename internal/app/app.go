@@ -368,10 +368,16 @@ func (a *App) pushPluginSegments(engine *tui.TUI) {
 
 // drainSegmentRefreshes re-renders segments whenever a plugin signals a
 // content change (carousel tick, quota refresh). Exits when the engine stops.
+// Mutations are applied on the command loop (like every other footer writer:
+// runFooterEventReader, agent/chat event readers) — a drain goroutine must
+// never mutate component state off-loop. Routing through apply fixes the
+// data race the quota plugin's setTimeout(0) refreshSegment exposed under
+// -race; plugins_quota_filmstrip_test.go runs the real Actor loops so the
+// regression stays covered under production serialization.
 func (a *App) drainSegmentRefreshes(engine *tui.TUI, rt *pluginRuntime) {
 	ch := rt.ui.RefreshRequests()
 	for range ch {
-		a.pushPluginSegments(engine)
+		a.apply(func() { a.pushPluginSegments(engine) })
 	}
 }
 
