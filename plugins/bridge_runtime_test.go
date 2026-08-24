@@ -52,7 +52,7 @@ func newExtendedContext(t *testing.T, dir string, httpB *HTTPBridge) PluginConte
 // global result value.
 func runJS(t *testing.T, ctx PluginContext, src string) *JSBridge {
 	t.Helper()
-	bridge := NewJSBridge(PluginDef{ID: "test", Entry: "plugin.js"}, ctx)
+	bridge := NewJSBridge(PluginDef{ID: "test", Entry: "plugin.js", Permissions: []string{"oauth-token"}}, ctx)
 	unlock := lockVM()
 	defer unlock()
 	if _, err := bridge.vm.RunString(src); err != nil {

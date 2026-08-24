@@ -44,6 +44,10 @@ goa_min_version: 0.1.0  # Optional — minimum Goa version
 skills_dir: skills      # Optional — relative path to skills loaded on enable
 permissions:            # Optional — declare what the plugin needs
   - provider-keys       #   "provider-keys" → expose API keys in goa.config()
+hooks:                  # Optional — agent hooks this plugin registers
+  - point: tool-call:pre
+    mode: intercept
+    description: Redact AWS keys from tool arguments
 ```
 
 | Field | Required | Description |
@@ -55,7 +59,8 @@ permissions:            # Optional — declare what the plugin needs
 | `entry` | No | Entry-point JS file; defaults to `plugin.js` |
 | `goa_min_version` | No | Minimum Goa version required (not yet enforced) |
 | `skills_dir` | No | Relative path to a directory of SKILL.md files loaded when enabled |
-| `permissions` | No | List of permission strings. Currently only `"provider-keys"` is defined; it unmasks API keys in `goa.config()` |
+| `permissions` | No | List of permission strings: `"provider-keys"` (unmasks API keys in `goa.config()`), `"oauth-token"` (OAuth token access via `goa.oauthToken()`), `"account-write"`, `"ui-confirm"`. Unknown permission names are rejected at load. |
+| `hooks` | No | Agent hook declarations — see [Agent Hooks](#agent-hooks). Each entry needs `point` + `mode`; `description` is recommended and shown on the approval card. Unknown points/modes or duplicate declarations are rejected at load. |
 
 ### Plugin storage
 
@@ -198,6 +203,79 @@ goa.registerLifecycle("shutdown", function(hook, payload) {
 });
 ```
 
+### `goa.registerHook({name, point, mode, handler})`
+
+Registers an **agent hook** — a synchronous callback at a defined point in the
+agent loop. Hooks are the most powerful plugin integration: `intercept` hooks
+can rewrite or block tool calls and messages before the agent acts on them.
+
+**Requirements (enforced):**
+
+1. The hook must be **declared in `plugin.yaml`** under `hooks:` with matching
+   `point` + `mode`. Undeclared registrations are rejected outright, regardless
+   of grants.
+2. The user must have **approved it at the install-time review card**. The
+   approval is stored in `~/.goa/plugins/grants.json` (`0600`) keyed by plugin,
+   version, and a fingerprint of the declared hook list.
+3. In headless runs (no TUI), external-plugin hooks are disabled entirely
+   unless `GOA_PLUGIN_HOOKS_APPROVED=1` is set — see [Headless
+   mode](#headless-mode).
+
+Rejected registrations surface as a warning on `goa.output` and in the log;
+the rest of the plugin keeps loading.
+
+| Point | Fires | Modes | Handler payload |
+|-------|-------|-------|-----------------|
+| `tool-call:pre` | Before each tool executes | `intercept`, `notify` | `{name, params}` |
+| `tool-call:post` | After each tool completes | `intercept`, `notify` | `{name, params, result}` |
+| `message:pre-send` | Before a user message reaches the LLM | `intercept`, `notify` | `{text}` |
+| `reply:pre` / `reply:delta` | Around assistant reply streaming | `intercept`, `notify` | `{...}` |
+| `llm:error` | On provider/stream errors | `notify` | `{error}` |
+
+An `intercept` handler returns `{action: "allow"}` (or `undefined`) to pass,
+or `{action: "deny", reason}`, or `{action: "modify", ...}` to rewrite the
+payload. A `notify` handler observes only; its return value is ignored.
+
+```javascript
+goa.registerHook({
+  name: "redact-aws-keys",
+  point: "tool-call:pre",
+  mode: "intercept",
+  handler: function(payload) {
+    const s = JSON.stringify(payload.params);
+    if (!s.includes("AKIA")) return undefined;
+    goa.logger().warn("redacted AWS key in tool args: " + payload.name);
+    return { action: "modify", params: JSON.parse(s.replace(/AKIA[A-Z0-9]{16}/g, "[REDACTED]")) };
+  }
+});
+```
+
+#### Hook grants & re-approval
+
+The grant records which `(point, mode)` pairs you approved. When a plugin
+update **changes its declared hook list** (adds/removes/toggles a hook) or
+**bumps its version**, the grant goes stale: every hook registration is
+rejected until you re-review. Goa shows the review card automatically after
+reload for stale plugins, and `/plugin:enable:<id>` re-runs the review any
+time. Rejecting leaves no grant, so all of that plugin's hooks stay off while
+its tools/commands keep working.
+
+Bundled plugins (shipped with Goa, e.g. provider-quota) are pre-approved and
+skip the review card.
+
+#### Headless mode
+
+Without a TUI there is no way to show the approval card, so external plugins'
+hooks fail closed: registrations are rejected with a loud log line. To run a
+delegated/headless session that still uses reviewed hooks, set:
+
+```
+GOA_PLUGIN_HOOKS_APPROVED=1
+```
+
+This lifts only the headless gate — manifest declaration checks and stored
+grants are still enforced.
+
 ### `goa.callTool(name, params)`
 
 Calls any registered tool from JavaScript. Returns the tool's output.
@@ -274,6 +352,7 @@ goa.registerObserver(function(event, payload) {
 | `session.start` | `{ timestamp }` | A new agent session started |
 | `session.end` | `{ timestamp, turns }` | An agent session ended |
 | `pipeline.stage` | `{ pipeline, stage, status }` | Pipeline stage changed |
+| `rate_limit_exceeded` | `{ provider, retryAfter }` | Provider rate limit hit (forwarded from the agent loop, plugins plan §6) |
 
 ---
 
@@ -446,8 +525,10 @@ spec was invalid. Without a visible TUI (headless runs) the call fails closed
 immediately with `{cancelled:true, error:"no-ui"}` — treat cancellation as
 "the user declined", never as consent. Confirm is display + choice only:
 option IDs are opaque strings handed back to the plugin; no capability is
-granted by answering, and M6 will additionally require external plugins to
-declare the `ui-confirm` permission. Calls from a command context are safe
+granted by answering, and external plugins must declare the `ui-confirm`
+permission in their manifest (validated at load) to call it — Goa's bundled
+provider-quota plugin declares it for its `/quota:reset` credit flow. Calls
+from a command context are safe
 (plugin commands execute off the UI thread); calling from code that runs on
 the TUI thread itself fails closed with an error instead of freezing the UI.
 

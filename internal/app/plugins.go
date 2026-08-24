@@ -39,6 +39,10 @@ type pluginRuntime struct {
 	// hooks is the boot-created shared registry (subsystems.pluginHooks);
 	// goa.registerHook calls land here and the agent-side sink reads it live.
 	hooks *plugins.HookRegistry
+	// enforcer validates hook registrations against manifests + grants.json
+	// (M6 §7). Installed into the registry's validator slot before any plugin
+	// script runs; consulted afterwards for re-approval prompts.
+	enforcer *plugins.HookEnforcer
 	// confirmDrainActive guards the confirm presenter goroutine against
 	// double-start (activatePluginUI runs both synchronously at startup and
 	// again on the command loop after the async plugin load).
@@ -74,6 +78,20 @@ func loadEnabledPlugins(s *subsystems) {
 	}
 	loader := plugins.NewPluginLoader(dirs, enabled)
 	rt := newPluginRuntime(s)
+
+	// M6 §7 step 4: grant-backed enforcement installs into the registry's
+	// validator slot BEFORE any plugin script runs. A fresh enforcer per load
+	// keeps manifest declarations and grants in sync at every startup/reload.
+	enforcer := plugins.NewHookEnforcer(plugins.NewGrantStore(s.pluginMgr.Root()), s.headless)
+	enforcer.ObserveDir(s.pluginMgr.Root(), false)
+	if bundledDir != "" {
+		enforcer.ObserveDir(bundledDir, true) // bundled plugins ship pre-approved
+	}
+	if rt.hooks != nil {
+		rt.hooks.SetAllow(enforcer.Allow)
+	}
+	rt.enforcer = enforcer
+
 	bridges, err := loader.LoadAll(rt.contextFor(s))
 	if err != nil {
 		log.Printf("Warning: failed to load plugins: %v\n", err)
@@ -160,7 +178,7 @@ func (rt *pluginRuntime) contextFor(s *subsystems) plugins.PluginContext {
 		RegisterObserver:  rt.pluginRegisterObserver(),
 		RegisterLifecycle: pluginRegisterLifecycle(s),
 		CallTool:          pluginCallTool(s),
-		RegisterHook:      rt.pluginRegisterHook(),
+		RegisterHook:      rt.pluginRegisterHook(s),
 		EventBus:          rt.bus,
 		Extended:          rt.extendedContext(s),
 	}
@@ -369,12 +387,16 @@ func (rt *pluginRuntime) pluginRegisterObserver() plugins.ObserverHandler {
 // The bridge stamps spec.PluginID from its own manifest, so the shared
 // PluginContext needs no per-plugin cloning. Registrations become visible to
 // agents immediately (the sink reads this live registry).
-func (rt *pluginRuntime) pluginRegisterHook() plugins.HookRegisterHandler {
+func (rt *pluginRuntime) pluginRegisterHook(s *subsystems) plugins.HookRegisterHandler {
 	return func(spec plugins.HookSpec, handler plugins.HookHandler) error {
 		if rt.hooks == nil {
 			return fmt.Errorf("hook registry not available")
 		}
 		if err := rt.hooks.Register(spec, handler); err != nil {
+			// M6 §7 step 4: refusals surface both in the log and on the
+			// goa.output channel so the user sees why a plugin lost a hook.
+			log.Printf("[plugin] rejected hook registration: %v\n", err)
+			emitPluginChat(s, fmt.Sprintf("⚠ Plugin hook rejected (%s@%s): %v", spec.Point, spec.Mode, err))
 			return err
 		}
 		log.Printf("[plugin] registered hook %s@%s (%s)\n", spec.Name, spec.Point, spec.Mode)
@@ -567,4 +589,66 @@ var _ core.AsyncCommand = (*pluginCommandWrapper)(nil)
 // callers (headless, tests) keep synchronous semantics.
 func (c *pluginCommandWrapper) AsyncHint(args []string) string {
 	return "Running /" + c.name + "…"
+}
+
+// promptPendingHookApprovals shows the install-time hook review card for any
+// loaded external plugin whose stored grant is stale or missing (M6 §7 steps
+// 2+5: version bump or changed hook fingerprint invalidates prior approvals).
+// Cards run serially on their own goroutine; card creation is ApplySync'd to
+// the command loop so TUI state stays single-owner.
+func (a *App) promptPendingHookApprovals(engine *tui.TUI) {
+	subs := a.subs
+	rt := subs.getPluginRT()
+	if rt == nil || rt.enforcer == nil || subs.pluginMgr == nil {
+		return
+	}
+	for _, id := range rt.enforcer.PendingApprovals() {
+		def := rt.enforcer.DeclaredFor(id)
+		if def == nil {
+			continue
+		}
+		review := plugins.BuildHookReview(def)
+		if review == nil {
+			continue
+		}
+		a.presentHookReview(engine, def, review)
+	}
+}
+
+// presentHookReview shows ONE multi-select review card and persists the
+// outcome into grants.json. It blocks until the user decides and must run
+// OFF the command loop (card creation is ApplySync'd; the decision wait
+// happens here so cards appear strictly serially).
+func (a *App) presentHookReview(engine *tui.TUI, def *plugins.PluginDef, review *plugins.HookReview) {
+	opts := make([]tui.ConfirmOption, 0, len(review.Rows)+2)
+	for _, r := range review.Rows {
+		opts = append(opts, tui.ConfirmOption{ID: r.ID, Label: r.Label, Toggle: true, DefaultOn: r.DefaultOn})
+	}
+	opts = append(opts,
+		tui.ConfirmOption{ID: "accept", Label: "Accept selected hooks", Style: "ok"},
+		tui.ConfirmOption{ID: "reject", Label: "Reject all", Style: "danger"},
+	)
+	var (
+		ch    <-chan tui.MultiConfirmResult
+		shown = make(chan struct{})
+	)
+	engine.ApplySync(func() {
+		ch, _ = engine.ShowConfirmMulti(review.Title, review.Body, opts, "", true)
+		close(shown)
+	})
+	<-shown
+	if ch == nil {
+		return // no overlay layer available (should not happen in TUI runs)
+	}
+	res := <-ch
+	store := plugins.NewGrantStore(a.subs.pluginMgr.Root())
+	if res.Cancelled || res.ActionID != "accept" {
+		emitPluginChat(a.subs, fmt.Sprintf("⚠ Plugin %s: no hooks granted (review declined).", def.ID))
+		return
+	}
+	if err := plugins.ApplyHookDecision(store, def, res.Selected); err != nil {
+		log.Printf("Warning: failed to save grant for %s: %v\n", def.ID, err)
+		return
+	}
+	emitPluginChat(a.subs, fmt.Sprintf("✔ Plugin %s: %d hook(s) approved.", def.ID, len(res.Selected)))
 }

@@ -367,7 +367,7 @@ func confirmJSEnv(t *testing.T) (*JSBridge, *UIBridge) {
 	t.Helper()
 	ui := NewUIBridge()
 	noop := func(string) {}
-	bridge := NewJSBridge(PluginDef{ID: "confirm-fixture", Entry: "plugin.js"}, PluginContext{
+	bridge := NewJSBridge(PluginDef{ID: "confirm-fixture", Entry: "plugin.js", Permissions: []string{"ui-confirm"}}, PluginContext{
 		Config: map[string]any{},
 		Logger: LoggerAPI{Info: noop, Warn: noop, Error: noop, Debug: noop},
 		Extended: &ExtendContext{

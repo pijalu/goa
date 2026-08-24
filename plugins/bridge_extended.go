@@ -69,6 +69,13 @@ func (b *JSBridge) setupOAuth(goaObj *goja.Object, tokenFn func(context.Context,
 	}
 	authObj := b.vm.NewObject()
 	authObj.Set("oauthToken", func(call goja.FunctionCall) goja.Value {
+		// M6 §7: token access is capability-gated by the "oauth-token"
+		// manifest permission; fails closed like goa.ui.confirm.
+		if !b.hasPermission("oauth-token") {
+			return b.vm.ToValue(map[string]any{
+				"error": "goa.auth.oauthToken requires the \"oauth-token\" permission in plugin.yaml",
+			})
+		}
 		provider := call.Argument(0).String()
 		var result map[string]any
 		var err error
@@ -433,6 +440,15 @@ func (b *JSBridge) setupConfirm(uiObj *goja.Object, ui *UIBridge) {
 			return b.vm.ToValue(map[string]any{
 				"cancelled": true,
 				"error":     "goa.ui.confirm cannot block the UI thread; call it from a timer or background context",
+			})
+		}
+		// M6 §7: goa.ui.confirm is capability-gated — external plugins must
+		// declare the "ui-confirm" permission in their manifest (validated at
+		// load). Fail closed with the dismissal-flavor error shape.
+		if !b.hasPermission("ui-confirm") {
+			return b.vm.ToValue(map[string]any{
+				"cancelled": true,
+				"error":     "goa.ui.confirm requires the \"ui-confirm\" permission in plugin.yaml",
 			})
 		}
 		req, verr := b.parseConfirmSpec(call.Argument(0))

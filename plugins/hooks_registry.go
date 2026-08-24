@@ -72,6 +72,15 @@ func NewHookRegistry(allow HookValidator) *HookRegistry {
 	}
 }
 
+// SetAllow installs or replaces the validator after construction (M6 wires
+// the grant-backed enforcer right before plugin scripts run on every
+// load/reload). Safe for concurrent use with Register.
+func (r *HookRegistry) SetAllow(v HookValidator) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.allow = v
+}
+
 // Register adds one hook entry. Validation order: shape (ids, mode, handler),
 // duplicate name per plugin (across ALL points — a plugin's hook names form
 // one namespace), then the injected allow validator. The entry is appended to

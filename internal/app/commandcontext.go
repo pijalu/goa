@@ -83,6 +83,18 @@ func wireInteractiveCallbacks(ctx *core.Context, subs *subsystems, app *App) {
 		}()
 	}
 	wireAsyncSelectCallback(ctx, subs, app)
+	// Multi-select confirm (M6 §7 step 3): same async contract as the
+	// selector — show on the command loop via ShowConfirmMulti's overlay,
+	// deliver on app.apply so callbacks re-enter command-loop state safely.
+	ctx.ConfirmMultiFunc = func(title, body string, options []tui.ConfirmOption, defaultID string, allowCancel bool, onDone func(tui.MultiConfirmResult)) {
+		ch, _ := subs.tuiEngine.ShowConfirmMulti(title, body, options, defaultID, allowCancel)
+		go func() {
+			res := <-ch
+			if onDone != nil {
+				app.apply(func() { onDone(res) })
+			}
+		}()
+	}
 	wireInputCallbacks(ctx, subs, app)
 	ctx.ClarifyFunc = func(card *tui.ClarifyCard) (string, bool) {
 		return app.clarify(card)

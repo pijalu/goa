@@ -18,6 +18,13 @@ type ConfirmOption struct {
 	// Style: "ok" | "danger" | "" (default). Semantic meaning resolved to
 	// theme colors at render time ("token_critical" / "tool_success").
 	Style string
+	// Toggle marks a checkbox row (multi-select cards only): space flips its
+	// checked state and Enter toggles it instead of delivering. Action rows
+	// (Toggle=false) deliver the whole selection when picked.
+	Toggle bool
+	// DefaultOn seeds the checkbox state in multi-select cards; ignored in
+	// single-select mode.
+	DefaultOn bool
 }
 
 // ConfirmCard is the interactive modal behind goa.ui.confirm (plugins plan
@@ -49,6 +56,12 @@ type ConfirmCard struct {
 	selected    int
 	allowCancel bool
 
+	// MultiSelect mode (M6 §7 step 3, plugin hook review): toggle rows carry
+	// checkboxes; Enter on an action row delivers the checked IDs alongside
+	// the action. checked maps option ID → state for Toggle rows.
+	MultiSelect bool
+	checked     map[string]bool
+
 	choose func(id string, cancelled bool) // exactly one delivery, then Done
 
 	done    func() // hides the overlay (wired to the OverlayHandle)
@@ -59,8 +72,26 @@ type ConfirmCard struct {
 // (optionID, false) for a real choice or ("", true) for dismissal. Unknown
 // defaultIDs select the first row.
 func NewConfirmCard(title, body string, options []ConfirmOption, defaultID string, allowCancel bool, choose func(id string, cancelled bool)) *ConfirmCard {
+	return newConfirmCard(title, body, options, defaultID, allowCancel, false, choose)
+}
+
+// NewMultiConfirmCard builds the multi-select variant (M6 §7 step 3):
+// identical navigation and delivery contract as NewConfirmCard, plus space/
+// Enter toggling of Toggle rows. Read SelectedIDs() from inside the choose
+// callback to collect what was checked when an action row fired.
+func NewMultiConfirmCard(title, body string, options []ConfirmOption, defaultID string, allowCancel bool, choose func(id string, cancelled bool)) *ConfirmCard {
+	return newConfirmCard(title, body, options, defaultID, allowCancel, true, choose)
+}
+
+func newConfirmCard(title, body string, options []ConfirmOption, defaultID string, allowCancel bool, multi bool, choose func(id string, cancelled bool)) *ConfirmCard {
 	rows := make([]ConfirmOption, len(options))
 	copy(rows, options)
+	checked := make(map[string]bool)
+	for _, r := range rows {
+		if r.Toggle && r.DefaultOn {
+			checked[r.ID] = true
+		}
+	}
 	cancelRow := -1
 	if allowCancel {
 		cancelRow = len(rows)
@@ -73,6 +104,8 @@ func NewConfirmCard(title, body string, options []ConfirmOption, defaultID strin
 		cancelRow:   cancelRow,
 		allowCancel: allowCancel,
 		selected:    confirmRowIndex(rows, defaultID),
+		MultiSelect: multi,
+		checked:     checked,
 		choose:      choose,
 	}
 	return c
@@ -118,6 +151,8 @@ func (c *ConfirmCard) HandleInput(data string) {
 		c.move(-1)
 	case matchesKey(data, KeyDown) || data == "j":
 		c.move(1)
+	case c.MultiSelect && data == " ":
+		c.toggleRow(c.selected)
 	case matchesKey(data, KeyEnter):
 		c.pick(c.selected)
 	case matchesKey(data, KeyEscape) || matchesKey(data, KeyCtrlC):
@@ -138,18 +173,46 @@ func (c *ConfirmCard) move(delta int) {
 	c.selected = ((c.selected+delta)%n + n) % n
 }
 
-// pick delivers the row under the cursor. The implicit Cancel row and the
-// explicit dismissal paths both report cancelled=true.
+// toggleRow flips the checkbox of the row under the cursor in multi-select
+// mode; action rows and the implicit Cancel row are unaffected.
+func (c *ConfirmCard) toggleRow(idx int) {
+	row := c.rows[idx]
+	if !row.Toggle || row.ID == "" {
+		return
+	}
+	c.checked[row.ID] = !c.checked[row.ID]
+}
+
+// pick delivers the row under the cursor. In multi-select mode Enter on a
+// Toggle row toggles its checkbox instead of delivering; action rows deliver
+// once with the current selection readable via SelectedIDs(). The implicit
+// Cancel row and the explicit dismissal paths both report cancelled=true.
 func (c *ConfirmCard) pick(idx int) {
 	if idx < 0 || idx >= len(c.rows) || c.choose == nil {
 		return
 	}
 	row := c.rows[idx]
+	if c.MultiSelect && row.Toggle {
+		c.toggleRow(idx)
+		return
+	}
 	cancelled := idx == c.cancelRow
 	if c.done != nil {
 		c.done()
 	}
 	c.choose(row.ID, cancelled)
+}
+
+// SelectedIDs returns the checked toggle-row IDs in display order. Callers
+// read it from inside the choose callback — after that the card is done.
+func (c *ConfirmCard) SelectedIDs() []string {
+	var ids []string
+	for _, r := range c.rows {
+		if r.Toggle && c.checked[r.ID] {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
 }
 
 // confirmColors collects theme-derived ANSI prefixes. All lookups tolerate
@@ -240,24 +303,36 @@ func (c *ConfirmCard) renderBody(inner int, col confirmColors) []string {
 // danger labels carry the critical color in BOTH states so the irreversible
 // choice reads at a glance.
 func (c *ConfirmCard) renderRow(i int, row ConfirmOption, col confirmColors, reset string) string {
+	label := row.Label
+	prefix := "  "
+	if i != c.selected {
+		prefix = ""
+	}
+	if c.MultiSelect && row.Toggle {
+		box := "[ ] "
+		if c.checked[row.ID] {
+			box = "[x] "
+		}
+		label = box + label
+	}
 	if i == c.selected {
 		cursor := ansi.Fg(col.ok) + "› " + reset
 		switch row.Style {
 		case "danger":
-			return cursor + col.danger + row.Label + reset
+			return cursor + col.danger + label + reset
 		case "ok":
-			return cursor + col.ok + row.Label + reset
+			return cursor + col.ok + label + reset
 		default:
-			return cursor + ansi.Fg(TheTheme.ColorHex("assistant_msg")) + row.Label + reset
+			return cursor + ansi.Fg(TheTheme.ColorHex("assistant_msg")) + label + reset
 		}
 	}
 	switch row.Style {
 	case "danger":
-		return "  " + col.danger + ansi.Faint + row.Label + reset
+		return prefix + col.danger + ansi.Faint + label + reset
 	case "ok":
-		return "  " + col.ok + ansi.Faint + row.Label + reset
+		return prefix + col.ok + ansi.Faint + label + reset
 	default:
-		return "  " + ansi.Fg(col.dim) + ansi.Faint + row.Label + reset
+		return prefix + ansi.Fg(col.dim) + ansi.Faint + label + reset
 	}
 }
 
@@ -265,6 +340,9 @@ func (c *ConfirmCard) renderRow(i int, row ConfirmOption, col confirmColors, res
 // cancellation is allowed.
 func (c *ConfirmCard) renderHint(col confirmColors, reset string) string {
 	hint := "↑↓ move · enter select"
+	if c.MultiSelect {
+		hint += " · space toggle"
+	}
 	if c.allowCancel {
 		hint += " · esc cancel"
 	}

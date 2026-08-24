@@ -396,6 +396,10 @@ func (a *App) startAsyncPluginLoad(engine *tui.TUI) {
 			// TUI mutations stay serialized with input/render handling.
 			if subs.getPluginRT() != nil {
 				engine.ApplySync(func() { a.activatePluginUI(engine) })
+				// M6 §7 step 2: re-prompt for stale/missing hook grants
+				// (version bump or changed fingerprint). Runs on its own
+				// goroutine so the pluginsLoaded gate never waits on UI.
+				go a.promptPendingHookApprovals(engine)
 			}
 		}()
 	})

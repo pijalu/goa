@@ -94,6 +94,7 @@ type subsystems struct {
 	pluginHooks *plugins.HookRegistry
 	pluginSched *plugins.Scheduler
 	noPlugins   bool // --no-plugins: skip plugin load entirely
+	headless    bool // no TUI session: external plugin hooks fail closed (§7 step 5)
 	// sessionUsageFn supplies cumulative token stats to plugins (goa.sessionUsage).
 	// Wired in New() once the App (which owns the counters) exists.
 	sessionUsageFn func() map[string]any

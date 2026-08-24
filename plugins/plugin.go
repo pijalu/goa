@@ -10,6 +10,7 @@ package plugins
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,16 +21,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// PluginHookDecl is one declared agent hook in a plugin manifest (plugins
+// plan §7 step 1). The declaration list is the approval contract: the user
+// reviews exactly these (point, mode) rows at install time, and M6's
+// enforcement layer rejects any goa.registerHook call not covered by both the
+// declaration and a stored grant.
+type PluginHookDecl struct {
+	Point       string `yaml:"point"` // wire id — see ValidHookPoints
+	Mode        string `yaml:"mode"`  // notify | intercept
+	Description string `yaml:"description,omitempty"` // shown on the review card
+}
+
 // PluginDef describes a plugin's manifest.
 type PluginDef struct {
-	ID            string   `yaml:"id"`
-	Name          string   `yaml:"name"`
-	Version       string   `yaml:"version"`
-	Entry         string   `yaml:"entry"`
-	Description   string   `yaml:"description"`
-	GoaMinVersion string   `yaml:"goa_min_version"`
-	SkillsDir     string   `yaml:"skills_dir,omitempty"`
-	Permissions   []string `yaml:"permissions,omitempty"`
+	ID            string           `yaml:"id"`
+	Name          string           `yaml:"name"`
+	Version       string           `yaml:"version"`
+	Entry         string           `yaml:"entry"`
+	Description   string           `yaml:"description"`
+	GoaMinVersion string           `yaml:"goa_min_version"`
+	SkillsDir     string           `yaml:"skills_dir,omitempty"`
+	Permissions   []string         `yaml:"permissions,omitempty"`
+	Hooks         []PluginHookDecl `yaml:"hooks,omitempty"`
 }
 
 // ToolHandler is called when a JS plugin registers a tool via goa.registerTool.
@@ -87,6 +100,18 @@ type JSBridge struct {
 	vm  *goja.Runtime
 	ctx PluginContext
 	def PluginDef
+}
+
+// hasPermission reports whether the bridge's manifest declares the named
+// permission (M6 §7 capability gating). Unknown permission names never reach
+// this check — validatePluginDef rejects them at discovery.
+func (b *JSBridge) hasPermission(perm string) bool {
+	for _, p := range b.def.Permissions {
+		if p == perm {
+			return true
+		}
+	}
+	return false
 }
 
 // vmMu serializes every JavaScript execution across all plugins. Goja
@@ -583,7 +608,12 @@ func (pl *PluginLoader) loadPlugin(dir, name string, ctx PluginContext, allEnabl
 
 	def, err := loadManifest(manifestPath)
 	if err != nil {
-		return nil // invalid manifest, skip
+		// Malformed manifests refuse the plugin but never abort the scan
+		// (consistent with the existing skip behavior); the reason is logged
+		// so config errors are diagnosable instead of silently vanishing
+		// (M6 §7 step 1).
+		log.Printf("Warning: refusing plugin %s: %v\n", filepath.Join(dir, name), err)
+		return nil
 	}
 
 	if !allEnabled && !isEnabled(def.ID, pl.enabled) {
@@ -600,7 +630,9 @@ func (pl *PluginLoader) loadPlugin(dir, name string, ctx PluginContext, allEnabl
 	return nil
 }
 
-// loadManifest reads and parses a plugin.yaml file.
+// loadManifest reads and parses a plugin.yaml file, enforcing the semantic
+// validation shared with ValidateManifest so malformed manifests refuse the
+// plugin everywhere manifests are honored.
 func loadManifest(path string) (*PluginDef, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -613,10 +645,51 @@ func loadManifest(path string) (*PluginDef, error) {
 	if def.ID == "" {
 		return nil, fmt.Errorf("plugin %s: missing id", path)
 	}
+	if err := validatePluginDef(&def); err != nil {
+		return nil, fmt.Errorf("plugin %s: %w", path, err)
+	}
 	if def.Entry == "" {
 		def.Entry = "plugin.js"
 	}
 	return &def, nil
+}
+
+// knownPermissions lists every permission name Goa understands in a plugin
+// manifest. Unknown names fail validation so typos surface as config errors
+// instead of silently granting nothing (or worse, being read as consent).
+var knownPermissions = map[string]bool{
+	"provider-keys": true,
+	"oauth-token":   true,
+	"ui-confirm":    true,
+	"account-write": true,
+}
+
+// validatePluginDef checks the semantic constraints of the M6 manifest
+// extensions: hook declarations must name known points and modes without
+// duplicates (the review card and grant store key on (mode, point)), and
+// permissions must be recognized names (§7 step 1).
+func validatePluginDef(def *PluginDef) error {
+	seen := make(map[string]bool, len(def.Hooks))
+	for i, h := range def.Hooks {
+		if !isValidHookPoint(h.Point) {
+			return fmt.Errorf("hook #%d: unknown point %q (valid points: %s)", i+1, h.Point, strings.Join(ValidHookPoints(), ", "))
+		}
+		mode := HookMode(h.Mode)
+		if mode != HookNotify && mode != HookIntercept {
+			return fmt.Errorf("hook #%d (%s): mode must be %q or %q, got %q", i+1, h.Point, HookNotify, HookIntercept, h.Mode)
+		}
+		key := string(mode) + "\x00" + h.Point
+		if seen[key] {
+			return fmt.Errorf("duplicate hook declaration %q at point %q", h.Mode, h.Point)
+		}
+		seen[key] = true
+	}
+	for _, p := range def.Permissions {
+		if !knownPermissions[p] {
+			return fmt.Errorf("unknown permission %q (valid permissions: oauth-token, provider-keys, ui-confirm, account-write)", p)
+		}
+	}
+	return nil
 }
 
 // isEnabled checks if a plugin ID is in the enabled list.
@@ -646,7 +719,8 @@ func LoadFrom(dir string, ctx PluginContext) (*JSBridge, error) {
 	return bridge, nil
 }
 
-// ValidateManifest checks that a plugin.yaml has all required fields.
+// ValidateManifest checks that a plugin.yaml has all required fields and
+// that its hooks/permissions declarations satisfy the M6 semantic contract.
 func ValidateManifest(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -661,6 +735,9 @@ func ValidateManifest(path string) error {
 	}
 	if def.Name == "" {
 		return fmt.Errorf("plugin manifest missing required field: name")
+	}
+	if err := validatePluginDef(&def); err != nil {
+		return fmt.Errorf("invalid plugin manifest: %w", err)
 	}
 	return nil
 }

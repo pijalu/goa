@@ -177,6 +177,14 @@ type Context struct {
 	// to fetching synchronously then SelectOption.
 	SelectOptionAsyncFunc func(title string, fetch func() []tui.SelectorItem, onSelected func(selected string, ok bool))
 
+	// ConfirmMultiFunc is an optional callback showing a multi-select confirm
+	// card (M6 §7 step 3, plugin hook review): Toggle options render as
+	// checkboxes; picking an action option delivers its ID plus the checked
+	// selection. Async-friendly like SelectOptionFunc: returns immediately,
+	// onDone runs later with ("", cancelled=true) when no UI is available so
+	// callers fail closed.
+	ConfirmMultiFunc func(title, body string, options []tui.ConfirmOption, defaultID string, allowCancel bool, onDone func(res tui.MultiConfirmResult))
+
 	// SetEditorTextFunc is an optional callback that replaces the main input
 	// editor's text. Used by /fork to prefill the selected user message for
 	// edit + resend (pi semantics). Optional; when nil, SetEditorText is a
@@ -507,6 +515,17 @@ func (c Context) SelectOptionAsync(title string, fetch func() []tui.SelectorItem
 	}
 	// Fallback: synchronous fetch, then a normal selector.
 	c.SelectOption(title, fetch(), "", onSelected)
+}
+
+// ConfirmMulti shows the multi-select confirm card when a host callback is
+// configured; without one (headless, tests) it fails closed by delivering a
+// single cancelled result — callers must treat that as rejection.
+func (c Context) ConfirmMulti(title, body string, options []tui.ConfirmOption, defaultID string, allowCancel bool, onDone func(res tui.MultiConfirmResult)) {
+	if c.ConfirmMultiFunc != nil {
+		c.ConfirmMultiFunc(title, body, options, defaultID, allowCancel, onDone)
+		return
+	}
+	onDone(tui.MultiConfirmResult{Cancelled: true})
 }
 
 // SetEditorText replaces the main input editor's text when a host callback is
