@@ -149,6 +149,11 @@ func (h *HeadlessApp) handleAgentEvent(ev *agentic.OutputEvent) {
 		h.recordCompact(ev)
 	case agentic.EventProgress:
 		// Progress/status messages are not rendered in headless mode.
+	case agentic.EventRateLimit:
+		// Plugins plan §6 step 3: forward classified stream failures to the
+		// plugin event bus (rate_limit_exceeded) — headless parity with the
+		// TUI path so bundled plugins behave identically in both modes.
+		EmitRateLimitToPlugins(h.subs, ev)
 	}
 }
 

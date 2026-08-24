@@ -66,6 +66,11 @@ const (
 	EventProgress EventType = "progress"
 	// EventContextStats carries context window usage statistics.
 	EventContextStats EventType = "context_stats"
+	// EventRateLimit signals a classified LLM stream failure (plan §6,
+	// Phase M5). Emitted only on failure paths — once per scheduled retry
+	// (WillRetry=true) and once when the episode gives up (WillRetry=false);
+	// clean turns never emit it. The payload rides in RateLimit.
+	EventRateLimit EventType = "rate_limit"
 )
 
 // TokenTimings holds performance metrics from the LLM inference.
@@ -109,6 +114,40 @@ type CompactionInfo struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// RateLimitInfo describes one classified LLM stream failure (plan §6, Phase
+// M5). It is attached to an EventRateLimit OutputEvent so downstream surfaces
+// (the plugin event bus → quota-plugin hint) can react without parsing error
+// text.
+//
+// Emission semantics: one event per SCHEDULED retry carries WillRetry=true
+// with Attempt set to the scheduled retry index and RetryAfterMS to the
+// actual backoff delay (server Retry-After honored when present). When the
+// episode gives up — non-retryable classification or exhausted budget — a
+// single terminal event with WillRetry=false is emitted; its Attempt is 0,
+// so consumers derive the attempt count by counting the preceding
+// WillRetry=true events. Clean turns never emit.
+type RateLimitInfo struct {
+	// Provider is the provider id the failing request targeted ("openai",
+	// "anthropic", "custom", ...).
+	Provider string `json:"provider,omitempty"`
+	// Model is the model ID that failed.
+	Model string `json:"model"`
+	// Attempt is the scheduled retry index for WillRetry=true events
+	// (0-based); 0 on terminal events.
+	Attempt int `json:"attempt"`
+	// RetryAfterMS is the scheduled backoff delay in milliseconds (0 when
+	// unknown or terminal). Server-supplied Retry-After values are honored
+	// here when the backoff computation used them.
+	RetryAfterMS int64 `json:"retry_after_ms,omitempty"`
+	// Classified is the canonical retry code (RATE_LIMIT, SERVER, TIMEOUT,
+	// TRANSPORT, EMPTY_RESPONSE) or UNKNOWN when the classifier has no
+	// recognized code for the error.
+	Classified string `json:"classified"`
+	// WillRetry reports whether another attempt was scheduled. False marks
+	// the terminal event of a failure episode.
+	WillRetry bool `json:"will_retry"`
+}
+
 // OutputEvent is the unified event type broadcast to all observers.
 // The Type field determines which other fields are populated.
 type OutputEvent struct {
@@ -137,6 +176,10 @@ type OutputEvent struct {
 	// EventCompactionEnd (CX4 provenance triple). It is nil for every other
 	// event type.
 	CompactionTx *CompactionTx `json:"compaction_tx,omitempty"`
+
+	// RateLimit carries the classified stream-failure record when Type is
+	// EventRateLimit (plan §6). It is nil for every other event type.
+	RateLimit *RateLimitInfo `json:"rate_limit,omitempty"`
 
 	// Metadata is a set of opaque key/value strings attached to the event.
 	// It is NOT sent to the LLM, but is propagated through the observer

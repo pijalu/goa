@@ -390,6 +390,32 @@ func (rt *pluginRuntime) EmitEvent(name string, payload interface{}) {
 	rt.bus.Emit(name, payload)
 }
 
+// EmitRateLimitToPlugins forwards an agentic EventRateLimit onto the plugin
+// event bus as "rate_limit_exceeded" (plugins plan §6 step 3). Wildcard
+// observers (goa.registerObserver) receive the payload documented in the plan:
+// provider, model, retry_after_ms, will_retry — plus attempt and classified
+// for consumers that want the full classification. It is a no-op for any other
+// event type, without a plugin runtime (plugins disabled), or without a
+// subsystems handle, so call sites can forward unconditionally.
+func EmitRateLimitToPlugins(s *subsystems, ev *agentic.OutputEvent) {
+	if s == nil || ev == nil || ev.Type != agentic.EventRateLimit || ev.RateLimit == nil {
+		return
+	}
+	rl := ev.RateLimit
+	rt := s.getPluginRT()
+	if rt == nil {
+		return
+	}
+	rt.EmitEvent("rate_limit_exceeded", map[string]interface{}{
+		"provider":       rl.Provider,
+		"model":          rl.Model,
+		"attempt":        rl.Attempt,
+		"retry_after_ms": rl.RetryAfterMS,
+		"classified":     rl.Classified,
+		"will_retry":     rl.WillRetry,
+	})
+}
+
 func pluginRegisterLifecycle(s *subsystems) func(plugins.HookType, plugins.LifecycleHandler) {
 	return func(hook plugins.HookType, h plugins.LifecycleHandler) {
 		if s.lifecycleRegistry == nil {

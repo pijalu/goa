@@ -30,6 +30,10 @@ type quotaTestEnv struct {
 	scheduler   *Scheduler
 	config      map[string]any
 	bridge      *JSBridge // set by load, used to inject test stubs
+	// observers holds every callback the plugin registered via
+	// goa.registerObserver; emitPluginEvent dispatches to them like the
+	// production EventBus does.
+	observers []func(string, interface{})
 	// oauthTokens maps provider id → Goa-managed token returned by
 	// goa.auth.oauthToken (nil/absent ⇒ auth unavailable, as before).
 	oauthTokens map[string]map[string]any
@@ -148,6 +152,13 @@ func (e *quotaTestEnv) context() PluginContext {
 		RegisterCommand: func(name string, aliases []string, shortHelp, longHelp string, run func([]string) (string, error)) error {
 			e.commands[name] = run
 			return nil
+		},
+		// RegisterObserver mirrors production: the bus stores the wrapped
+		// callback and later dispatches events to it (see emitPluginEvent).
+		RegisterObserver: func(cb func(string, interface{})) {
+			e.mu.Lock()
+			e.observers = append(e.observers, cb)
+			e.mu.Unlock()
 		},
 		Extended: &ExtendContext{
 			HTTP:      NewHTTPBridge(),
@@ -327,6 +338,31 @@ func (e *quotaTestEnv) lastOutput() string {
 		return ""
 	}
 	return e.outputs[len(e.outputs)-1]
+}
+
+// emitPluginEvent dispatches a bus event to every observer the plugin
+// registered via goa.registerObserver, mirroring EventBus.Emit (specific-name
+// handlers first is irrelevant here: plugins register wildcard observers).
+func (e *quotaTestEnv) emitPluginEvent(name string, payload interface{}) {
+	e.mu.Lock()
+	obs := append([]func(string, interface{}){}, e.observers...)
+	e.mu.Unlock()
+	for _, o := range obs {
+		o(name, payload)
+	}
+}
+
+// outputCount returns how many goa.output messages contain substr.
+func (e *quotaTestEnv) outputCount(substr string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n := 0
+	for _, m := range e.outputs {
+		if strings.Contains(m, substr) {
+			n++
+		}
+	}
+	return n
 }
 
 // lastBrowserURL returns the most recent URL passed to goa.openBrowser.

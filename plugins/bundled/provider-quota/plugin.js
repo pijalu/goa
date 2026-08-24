@@ -5,6 +5,8 @@
 //            :login:<p> :logout:<p>)
 //   a status-bar segment tracking the active provider's quota
 //   a hotkey (Ctrl+Shift+Q) to force-refresh quota data
+//   an observer that hints available Codex rate-limit resets when a
+//   Codex-ish model hits a classified rate limit (plugins plan §6; debounced)
 //
 // Architecture: JS owns polling + caching per the plan. Fetching happens in
 // the refresh scheduler and on explicit commands; the status segment render
@@ -978,6 +980,56 @@ function logoutProvider(id) {
 	goa.ui.refreshSegment("quota");
 	return "Logged out " + (_fetchers[id].name || id) + ".";
 }
+
+// --- Rate-limit hint (plugins plan §6) --------------------------------------
+
+// The host emits "rate_limit_exceeded" on every classified LLM stream failure
+// (once per scheduled retry, once terminal with will_retry=false). When the
+// failing model is Codex-ish we force-refresh the codex usage entry — its
+// snapshot carries resetsCount — and, at most once per debounce window, tell
+// the user how many reset credits are available.
+var _lastRateLimitHintAt = 0;
+var RATE_LIMIT_HINT_DEBOUNCE_MS = 10 * 60 * 1000;
+
+// isCodexishModel reports whether a model id looks like a Codex model
+// ("gpt-5-codex", "codex-mini-latest", ...). A conservative substring match
+// keeps the hint scoped to the provider whose reset credits this plugin can
+// actually manage.
+function isCodexishModel(model) {
+	return typeof model === "string" && model.toLowerCase().indexOf("codex") >= 0;
+}
+
+// handleRateLimitEvent reacts to one rate_limit_exceeded payload. The refresh
+// runs on a 0-delay timer goroutine: observer callbacks execute under the VM
+// lock on the host's event goroutine, and provider HTTP must never run there
+// (bugs.md "Quota command unresponsive" precedent).
+function handleRateLimitEvent(payload) {
+	if (!isCodexishModel(payload.model)) {
+		return;
+	}
+	goa.setTimeout(function() {
+		if (!_fetchers.codex) {
+			return;
+		}
+		refreshDue("codex", true);
+		goa.ui.refreshSegment("quota");
+		var entry = _cache.codex;
+		var n = entry && typeof entry.resetsCount === "number" ? entry.resetsCount : null;
+		var now = Date.now();
+		if (n != null && n > 0 && now - _lastRateLimitHintAt >= RATE_LIMIT_HINT_DEBOUNCE_MS) {
+			_lastRateLimitHintAt = now;
+			goa.output("You have " + n + " rate-limit reset" + (n === 1 ? "" : "s") +
+				" available. Run /quota:resets.");
+		}
+	}, 0);
+}
+
+goa.registerObserver(function(name, payload) {
+	if (name !== "rate_limit_exceeded" || !payload) {
+		return;
+	}
+	handleRateLimitEvent(payload);
+});
 
 // --- Registration ---------------------------------------------------------
 

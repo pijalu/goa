@@ -33,6 +33,10 @@ func (a *App) handleAgentOutputEvent(ev *agentic.OutputEvent) {
 		a.handleToolProgress(ev)
 	case agentic.EventProgress:
 		a.handleProgressEvent(ev)
+	case agentic.EventRateLimit:
+		// Plugins plan §6 step 3: forward classified stream failures to the
+		// plugin event bus (rate_limit_exceeded) for quota hints et al.
+		EmitRateLimitToPlugins(a.subs, ev)
 	default:
 		a.handleAgentStatsEvent(ev)
 	}

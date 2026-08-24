@@ -51,6 +51,9 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	// resolveStreamError), so the notification cannot double-fire.
 	a.notifyLLMError(streamErr, model, opts, retryable)
 	if !retryable {
+		// Terminal episode (plan §6): classified, non-retryable — no retry
+		// will be scheduled.
+		a.emitRateLimit(model, streamErr, 0, false, 0)
 		a.cfg.Logger.Log(Warn, "stream error not retryable; surfacing immediately: %v", streamErr)
 		a.emitEvent(OutputEvent{
 			Type:     EventContent,
@@ -89,6 +92,9 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	}
 
 	a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
+	// Terminal episode (plan §6): the retry budget is exhausted — no further
+	// attempt will be scheduled.
+	a.emitRateLimit(model, streamErr, 0, false, 0)
 	// Surface the final failure after retries are exhausted.
 	a.emitEvent(OutputEvent{
 		Type:     EventContent,
@@ -199,6 +205,26 @@ func (a *Agent) runRetryAttempt(ctx context.Context, model provider.Model, opts 
 	return false, false, false
 }
 
+// emitRateLimit broadcasts the plan §6 Phase-M5 classified stream-failure
+// record as an EventRateLimit observer event. It fires only on failure paths:
+// once per SCHEDULED retry (willRetry=true, attempt = 0-based retry index,
+// delay = the backoff about to be slept) and once when the episode gives up
+// (willRetry=false). Clean turns never reach this method, keeping the hot
+// success path free of extra events.
+func (a *Agent) emitRateLimit(model provider.Model, streamErr error, attempt int, willRetry bool, delay time.Duration) {
+	a.emitEvent(OutputEvent{
+		Type: EventRateLimit,
+		RateLimit: &RateLimitInfo{
+			Provider:     string(model.Provider),
+			Model:        model.ID,
+			Attempt:      attempt,
+			RetryAfterMS: delay.Milliseconds(),
+			Classified:   classifyLLMError(streamErr),
+			WillRetry:    willRetry,
+		},
+	})
+}
+
 // scheduleRetryAttempt emits the durable "retry scheduled" agent-log event
 // with the computed delay, surfaces the progress bubble, then waits for the
 // backoff delay (aborting on cancellation). After the wait it emits the
@@ -206,6 +232,10 @@ func (a *Agent) runRetryAttempt(ctx context.Context, model provider.Model, opts 
 func (a *Agent) scheduleRetryAttempt(ctx context.Context, originalErr error, model provider.Model, plan retryPlan, retry int) bool {
 	delay := retryBackoff(originalErr, retry, plan.policy)
 	a.emitRetryScheduledLog(originalErr, model, plan.policy, retry, plan.maxRetries, plan.always, delay)
+	// Plan §6 step 2: one rate_limit event per scheduled retry, carrying the
+	// exact backoff the agent is about to sleep (server Retry-After honored
+	// by retryBackoff when present).
+	a.emitRateLimit(model, originalErr, retry, true, delay)
 	a.emitEvent(OutputEvent{Type: EventProgress, Text: fmt.Sprintf("Reconnecting (attempt %d%s)...", retry+1, retryTotalSuffix(plan.always, plan.maxRetries))})
 	select {
 	case <-time.After(delay):
