@@ -34,11 +34,18 @@ func sessionProviderID(subs *subsystems) string {
 }
 
 // activeModelName resolves the model config ID to the real API model name.
+// The model ID comes from the LIVE config (providerMgr's current config, hot
+// reloads applied, session picks intact) — never the static boot cfg, which
+// goes stale the moment the config watcher swaps in a reloaded profile.
 func activeModelName(subs *subsystems) string {
-	if subs == nil || subs.cfg == nil {
+	if subs == nil {
 		return ""
 	}
-	modelName := subs.cfg.ActiveModel
+	cfg := subs.liveConfig()
+	if cfg == nil {
+		return ""
+	}
+	modelName := cfg.ActiveModel
 	if subs.providerMgr != nil {
 		if pc, _ := subs.providerMgr.Active(); pc != nil {
 			if resolved := subs.providerMgr.ResolveModelName(*pc, modelName); resolved != "" {

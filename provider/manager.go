@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,6 +46,44 @@ type ProviderManager struct {
 	client    *http.Client
 	Cache     *ModelCache
 	authStore *auth.Store
+
+	// selMu guards sessionSel, the SESSION-scoped provider/model selection
+	// made at runtime via /model, /provider or team switching.
+	//
+	// Without it, the active provider/model lived ONLY inside whichever
+	// config object was current — so a hot reload (config watcher) swapped
+	// in whatever active_provider/active_model were persisted on disk. With
+	// two goa instances sharing one cascade this leaked state ACROSS
+	// PROCESSES: instance A's /model switch saved to the shared yaml,
+	// instance B's watcher adopted it, and B's footer AND next requests
+	// silently switched to A's provider. The disk value is only the DEFAULT;
+	// once a session picks explicitly, its pick wins over every reload until
+	// the session ends.
+	selMu sync.Mutex
+	// sessionSel is the explicit runtime pick; empty fields mean "no explicit
+	// pick yet" and the config default applies.
+	sessionSel sessionSelection
+}
+
+// sessionSelection is a runtime provider/model pick made by THIS session
+// (/model, /provider, team switching). It outlives config hot reloads: see
+// ProviderManager.selMu for why it must never live solely in the config.
+type sessionSelection struct {
+	providerID string
+	modelID    string
+}
+
+// applySelectionLocked writes an explicit session pick onto cfg. Empty
+// selection fields are skipped: they mean "this session never picked that
+// half explicitly", so whatever the config carries (boot default or a disk
+// reload) stands. Caller must hold selMu.
+func applySelectionLocked(cfg *config.Config, sel sessionSelection) {
+	if sel.providerID != "" {
+		cfg.ActiveProvider = sel.providerID
+	}
+	if sel.modelID != "" {
+		cfg.ActiveModel = sel.modelID
+	}
 }
 
 // NewProviderManager creates a provider manager.
@@ -72,7 +111,19 @@ func (pm *ProviderManager) Config() *config.Config {
 // reload of the config cascade. The next request resolves the new provider
 // profile (endpoint, API key, models, effort); in-flight requests keep the
 // config they loaded.
+//
+// The session's explicit provider/model selection (see SetActive) is
+// re-applied to the incoming config BEFORE it is published: a reload must
+// refresh profiles (endpoints, keys, models) but never clobber what the
+// session picked at runtime — with multiple instances sharing one config
+// cascade, another process's persisted switch would otherwise bleed into
+// this one.
 func (pm *ProviderManager) SetConfig(cfg *config.Config) {
+	pm.selMu.Lock()
+	defer pm.selMu.Unlock()
+	if cfg != nil {
+		applySelectionLocked(cfg, pm.sessionSel)
+	}
 	pm.cfg.Store(cfg)
 }
 
@@ -109,17 +160,33 @@ func (pm *ProviderManager) Active() (*config.ProviderConfig, string) {
 }
 
 // SetActive updates the active provider and model.
+//
+// Two things happen, deliberately:
+//
+//  1. The pick is recorded as SESSION state (selMu/sessionSel). Every config
+//     published later via SetConfig gets the pick re-applied, so hot reloads
+//     can never overwrite it (multi-instance isolation).
+//  2. The current config object is updated in place, exactly as before:
+//     commands persist cfg through the ConfigSaver right after switching, so
+//     /model keeps persisting the user's choice as the STARTUP default for
+//     future sessions without this manager having to know about saving.
 func (pm *ProviderManager) SetActive(providerID, model string) error {
+	pm.selMu.Lock()
+	defer pm.selMu.Unlock()
 	cfg := pm.cfg.Load()
+	if cfg == nil {
+		return fmt.Errorf("provider manager has no config")
+	}
 	if providerID != "" {
 		if cfg.GetProviderByID(providerID) == nil {
 			return fmt.Errorf("provider %q not found", providerID)
 		}
-		cfg.ActiveProvider = providerID
 	}
-	if model != "" {
-		cfg.ActiveModel = model
-	}
+	// Validate BEFORE recording any state so a failed switch leaves both the
+	// session selection and the config untouched.
+	pm.sessionSel.providerID = providerID
+	pm.sessionSel.modelID = model
+	applySelectionLocked(cfg, pm.sessionSel)
 	return nil
 }
 
