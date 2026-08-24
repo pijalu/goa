@@ -5,6 +5,9 @@
 package agentic
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -59,6 +62,10 @@ func (a *Agent) clearLoopStopLocked() {
 // session with an error carrying the same evidence (runaway-loop
 // visibility: the user must be able to judge whether the loop was real).
 //
+// A turn is NOT a repeat when its tool calls produced non-error results:
+// executed tools are observable progress even when assistant text/thinking
+// are byte-identical (see turnHadSuccessfulToolResult).
+//
 // The strike only counts when this turn produced a NEW assistant message:
 // when the last assistant message predates turnStartHistoryLen (stream
 // error, retry, pause), comparing the stale message against itself would
@@ -102,6 +109,18 @@ func (a *Agent) scanProgressLoop() (warnSample string, err error) {
 		return "", nil
 	}
 
+	// Same fingerprint as the previous turn. Only a true stall may strike:
+	// a turn whose tool calls produced non-error results made observable
+	// progress — fresh data or world changes — so reset the counter instead
+	// of incrementing it. Goal-mode agents legitimately emit little or no
+	// prose while running different tools every turn; without this gate such
+	// turns score as repeats and three of them kill a healthy session.
+	if ok := a.turnHadSuccessfulToolResult(idx, msg); ok {
+		a.cfg.Logger.Log(Info, "Loop guardrail: repeated fingerprint but %d tool result(s) succeeded; counting as progress", len(msg.ToolCalls))
+		a.assistantRepeatCount = 0
+		return "", nil
+	}
+
 	a.assistantRepeatCount++
 	a.cfg.Logger.Log(Warn, "Loop guardrail: assistant message repeated %d time(s)", a.assistantRepeatCount)
 
@@ -131,17 +150,105 @@ func (a *Agent) lastAssistantMessageLocked() (int, Message) {
 }
 
 // isMeaningfulAssistantMessage reports whether a message should participate in
-// progress-loop detection. Any assistant turn — including an empty one with no
-// tool calls — can be a stall signal, because the model is supposed to produce
-// content, reasoning, or tool calls. Empty turns are treated as meaningful so
-// that repeated no-op turns are caught before the context explodes.
+// progress-loop detection. Every assistant turn participates — including
+// truly empty ones (no content, no thinking, no tool calls) — because the
+// model is supposed to produce one of those; only truly empty turns can ever
+// score as "(empty response)" repeats, since turns carrying tool calls are
+// either fingerprinted per tool or gated as progress by successful results.
 func (a *Agent) isMeaningfulAssistantMessage(msg Message) bool {
 	return msg.Role == Assistant
 }
 
-// hashAssistantMessage builds a simple fingerprint of an assistant message.
+// hashAssistantMessage builds a fingerprint of an assistant message for
+// repeat detection: text content, thinking, then one entry per tool call
+// with its name plus a stable digest of its arguments. Turns running
+// different tools — or the same tool with different arguments — therefore
+// never score as repeats of each other, unlike the old count-only scheme
+// where every tool turn collapsed to the same short hash.
 func (a *Agent) hashAssistantMessage(msg Message) string {
-	return fmt.Sprintf("%s\x00%s\x00%v", strings.TrimSpace(msg.Content), strings.TrimSpace(msg.Thinking), len(msg.ToolCalls))
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(msg.Content))
+	b.WriteByte(0)
+	b.WriteString(strings.TrimSpace(msg.Thinking))
+	b.WriteByte(0)
+	for _, tc := range msg.ToolCalls {
+		b.WriteString(tc.Name)
+		b.WriteByte(':')
+		b.WriteString(stableArgsDigest(tc.Arguments))
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+// stableArgsDigest returns a deterministic short digest of a tool-call
+// arguments payload. Semantically equal JSON objects — differing only in key
+// order or insignificant whitespace — produce equal digests; payloads that
+// are not valid JSON fall back to their trimmed raw text so distinct
+// arguments still hash distinctly.
+func stableArgsDigest(args string) string {
+	trimmed := strings.TrimSpace(args)
+	canonical := trimmed
+	switch {
+	case trimmed == "":
+		canonical = "{}" // absent and empty-object arguments are equivalent
+	default:
+		var parsed any
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+			// encoding/json marshals maps with sorted keys, normalizing order.
+			if norm, err := json.Marshal(parsed); err == nil {
+				canonical = string(norm)
+			}
+		}
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(sum[:8])
+}
+
+// turnHadSuccessfulToolResult reports whether the assistant turn at idx
+// carried at least one tool call whose result landed in history without an
+// execution error. Successful tool execution is observable progress, so such
+// turns must never accumulate runaway-loop strikes — this is what keeps
+// goal-mode sessions (terse prose, different tool every turn) alive.
+func (a *Agent) turnHadSuccessfulToolResult(idx int, msg Message) bool {
+	called := make(map[string]bool, len(msg.ToolCalls))
+	haveIDs := false
+	if len(msg.ToolCalls) == 0 {
+		return false // no tool calls at all: nothing can count as progress
+	}
+	for _, tc := range msg.ToolCalls {
+		if tc.ID == "" {
+			continue // degenerate call: results match positionally below
+		}
+		called[tc.ID] = true
+		haveIDs = true
+	}
+	for i := idx + 1; i < len(a.history); i++ {
+		m := a.history[i]
+		if m.Role != ToolRole {
+			break // this batch's results end at the next non-tool message
+		}
+		if haveIDs && !called[m.ToolCallID] {
+			continue // result belongs to a different batch
+		}
+		if !a.isToolErrorMessage(m) {
+			return true
+		}
+	}
+	return false
+}
+
+// isToolErrorMessage classifies a tool-result message as an execution error.
+// Live results carry the authoritative metaToolError marker set by
+// appendToolResults (always present, "true" or "false"); history rebuilt
+// from persisted sessions loses Metadata, so the conventional "Error:"
+// content prefix serves as a best-effort fallback there.
+func (a *Agent) isToolErrorMessage(m Message) bool {
+	if m.Metadata != nil {
+		if marked, ok := m.Metadata[metaToolError]; ok {
+			return marked == "true"
+		}
+	}
+	return strings.HasPrefix(m.Content, toolResultErrorPrefix)
 }
 
 // withToolResultAsUser returns a copy of model with ToolResultAsUser set on its

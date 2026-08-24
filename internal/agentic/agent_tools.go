@@ -134,6 +134,17 @@ func (a *Agent) appendToolResults(tcs []provider.ContentBlock, realResults []Too
 			Type: Content, Role: ToolRole, Content: content,
 			ToolName: tc.ToolName, ToolCallID: tc.ToolCallID,
 		}
+		// Mark execution outcome authoritatively (metaToolError): the
+		// runaway-loop guardrail counts successful tool results as progress
+		// and must not misclassify outputs that merely start with "Error:".
+		// The key is always present on live results so classification never
+		// needs text sniffing; persisted sessions drop Metadata and fall
+		// back to the conventional "Error:" prefix instead.
+		mark := "false"
+		if r := byID[tc.ToolCallID]; r.Err != nil {
+			mark = "true"
+		}
+		toolResult.Metadata = map[string]string{metaToolError: mark}
 		a.mu.Lock()
 		a.history = append(a.history, toolResult)
 		a.mu.Unlock()
@@ -215,6 +226,21 @@ func fileToolPath(input string) string {
 	return p.Path
 }
 
+// toolResultError rendering/classification constants. Failed executions are
+// rendered into the result content sent to the model with a stable "Error: "
+// prefix; live results additionally carry metaToolError so the runaway-loop
+// guardrail can classify results without sniffing text.
+const (
+	toolResultErrorFormat = "Error: %v"
+	toolResultErrorPrefix = "Error:"
+
+	// metaToolError marks a tool-result message whose underlying execution
+	// returned an error. It lives in Message.Metadata (never sent to the
+	// model, not persisted), so history rebuilt from a saved session loses
+	// it — classification falls back to toolResultErrorPrefix there.
+	metaToolError = "tool_error"
+)
+
 func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[string]ToolCallResult) string {
 	if msg := a.budgetToolCalls[tc.ToolCallID]; msg != "" {
 		return msg
@@ -224,7 +250,7 @@ func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[stri
 		a.stopBatchAfterThis = true
 	}
 	if r.Err != nil {
-		return fmt.Sprintf("Error: %v", r.Err)
+		return fmt.Sprintf(toolResultErrorFormat, r.Err)
 	}
 	output := r.Output
 	// Near-duplicate bash re-run (same upstream, only the filter changed, no

@@ -232,3 +232,327 @@ func TestClear_ResetsLoopGuardrail(t *testing.T) {
 		t.Fatal("Clear did not reset runaway-loop guardrail state")
 	}
 }
+
+// runGuardrailTurn simulates one completed assistant turn: appends the given
+// messages to history, marks them as new-since-turn-start, and runs the
+// detector exactly as Agent.Run does after processTurnWithStream.
+func runGuardrailTurn(t *testing.T, agent *Agent, msgs ...Message) error {
+	t.Helper()
+	agent.mu.Lock()
+	agent.turnStartHistoryLen = len(agent.history)
+	agent.history = append(agent.history, msgs...)
+	agent.mu.Unlock()
+	return agent.checkProgressLoop()
+}
+
+// toolResult builds one tool-result message for callID. Results whose
+// content starts with "Error:" carry the live metaToolError="true" marker,
+// mirroring appendToolResults; strip Metadata manually to simulate history
+// reloaded from a persisted session.
+func toolResult(callID, name, content string) Message {
+	res := Message{
+		Type: Content, Role: ToolRole, Content: content,
+		ToolName: name, ToolCallID: callID,
+	}
+	if strings.HasPrefix(content, "Error:") {
+		res.Metadata = map[string]string{metaToolError: "true"}
+	}
+	return res
+}
+
+// toolTurn builds an assistant turn that only issues tool calls — empty
+// content/thinking, like goal-mode turns — followed by one successful result
+// per call. Each entry is {callID, toolName, arguments}.
+func toolTurn(pairs ...[3]string) []Message {
+	msgs := make([]Message, 0, len(pairs)*2)
+	for _, p := range pairs {
+		id := p[0]
+		msgs = append(msgs,
+			Message{Type: Content, Role: Assistant,
+				ToolCalls: []ToolCallInfo{{ID: id, Type: "function", Name: p[1], Arguments: p[2]}}},
+			toolResult(id, p[1], "ok"),
+		)
+	}
+	return msgs
+}
+
+// singleCallTurn builds a one-call turn with an explicit result content.
+func singleCallTurn(callID, name, args, result string) []Message {
+	return []Message{
+		{Type: Content, Role: Assistant,
+			ToolCalls: []ToolCallInfo{{ID: callID, Type: "function", Name: name, Arguments: args}}},
+		toolResult(callID, name, result),
+	}
+}
+
+// TestHashAssistantMessage_ToolFingerprints verifies the fingerprint scheme:
+// different tools or arguments must produce different hashes (the old
+// count-only scheme collapsed every tool turn into the same hash), while
+// semantically equal JSON arguments — differing only in key order or
+// whitespace — must stay equal.
+func TestHashAssistantMessage_ToolFingerprints(t *testing.T) {
+	mk := func(content string, calls ...ToolCallInfo) Message {
+		return Message{Type: Content, Role: Assistant, Content: content, ToolCalls: calls}
+	}
+	call := func(name, args string) ToolCallInfo {
+		return ToolCallInfo{ID: "id-" + name + args, Type: "function", Name: name, Arguments: args}
+	}
+
+	tests := []struct {
+		name      string
+		a, b      Message
+		wantEqual bool
+	}{
+		{
+			name: "same text, different tool names differ",
+			a:    mk("go", call("read", `{"path":"a.go"}`)),
+			b:    mk("go", call("bash", `{"cmd":"ls"}`)),
+		},
+		{
+			name: "same tool, different args differ",
+			a:    mk("go", call("read", `{"path":"a.go"}`)),
+			b:    mk("go", call("read", `{"path":"b.go"}`)),
+		},
+		{
+			name:      "same tool, reordered JSON keys equal",
+			a:         mk("go", call("write", `{"path":"x.go","content":"hi"}`)),
+			b:         mk("go", call("write", `{"content":"hi","path":"x.go"}`)),
+			wantEqual: true,
+		},
+		{
+			name:      "same everything equal",
+			a:         mk("go", call("read", `{"path":"a.go"}`)),
+			b:         mk("go", call("read", `{"path":"a.go"}`)),
+			wantEqual: true,
+		},
+		{
+			name: "one vs two calls of same tool differ",
+			a:    mk("", call("bash", `{"cmd":"ls"}`)),
+			b:    mk("", call("bash", `{"cmd":"ls"}`), call("bash", `{"cmd":"pwd"}`)),
+		},
+		{
+			name:      "empty vs empty-object args equal",
+			a:         mk("", call("list", "")),
+			b:         mk("", call("list", `{}`)),
+			wantEqual: true,
+		},
+		{
+			name: "invalid-JSON args fall back to raw text",
+			a:    mk("", call("legacy", `path=a.go`)),
+			b:    mk("", call("legacy", `path=b.go`)),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := NewAgent(Config{SystemPrompt: "test"})
+			got := agent.hashAssistantMessage(tt.a) == agent.hashAssistantMessage(tt.b)
+			if got != tt.wantEqual {
+				t.Fatalf("hashes equal=%v, want equal=%v\n  a=%q\n  b=%q", got, tt.wantEqual,
+					agent.hashAssistantMessage(tt.a), agent.hashAssistantMessage(tt.b))
+			}
+		})
+	}
+}
+
+// TestCheckProgressLoop_EmptyToolTurnsWithDifferentToolsSurvive is the core
+// regression for the reported false positives: a healthy agent running tools
+// every turn with little or no prose must never accumulate strikes.
+func TestCheckProgressLoop_EmptyToolTurnsWithDifferentToolsSurvive(t *testing.T) {
+	agent := NewAgent(Config{SystemPrompt: "test"})
+	// Four consecutive goal-mode turns: each ran a DIFFERENT tool with an
+	// empty assistant response. The old count-only fingerprint latched on
+	// turn 3 here (see the recreation against pre-fix HEAD).
+	turns := [][]Message{
+		toolTurn([3]string{"c1", "read", `{"path":"a_test.go"}`}),
+		toolTurn([3]string{"c2", "bash", `{"cmd":"go test ./internal/agentic/"}`}),
+		toolTurn([3]string{"c3", "grep", `{"pattern":"fingerprint"}`}),
+		toolTurn([3]string{"c4", "edit", `{"path":"a.go"}`}),
+	}
+	for i, turn := range turns {
+		if err := runGuardrailTurn(t, agent, turn...); err != nil {
+			t.Fatalf("turn %d: unexpected guardrail error: %v", i+1, err)
+		}
+	}
+	assertNoStrikes(t, agent)
+}
+
+// TestCheckProgressLoop_IdenticalFingerprintWithSuccessfulResult verifies the
+// strike gate: same tool, same args, successful-but-different output each
+// time (e.g. polling a file that grows) — the fingerprint repeats but the
+// world changed, so every turn counts as progress.
+func TestCheckProgressLoop_IdenticalFingerprintWithSuccessfulResult(t *testing.T) {
+	agent := NewAgent(Config{SystemPrompt: "test"})
+	for i := 0; i < 4; i++ {
+		turn := singleCallTurn("poll", "read", `{"path":"counter.txt"}`,
+			fmt.Sprintf("count=%d", i+1))
+		if err := runGuardrailTurn(t, agent, turn...); err != nil {
+			t.Fatalf("turn %d: unexpected guardrail error: %v", i+1, err)
+		}
+	}
+	assertNoStrikes(t, agent)
+}
+
+// TestCheckProgressLoop_IdenticalProsePlusDifferentTools covers plan rule 1:
+// identical prose plus different tool calls per turn scores no strike.
+func TestCheckProgressLoop_IdenticalProsePlusDifferentTools(t *testing.T) {
+	agent := NewAgent(Config{SystemPrompt: "test"})
+	for i, name := range []string{"read", "bash", "grep"} {
+		turn := toolTurn([3]string{fmt.Sprintf("c%d", i), name, fmt.Sprintf(`{"step":%d}`, i)})
+		turn[0].Content = "Working on it." // identical prose every turn
+		if err := runGuardrailTurn(t, agent, turn...); err != nil {
+			t.Fatalf("turn %d (%s): unexpected guardrail error: %v", i+1, name, err)
+		}
+	}
+	assertNoStrikes(t, agent)
+}
+
+// TestCheckProgressLoop_SuccessResultWinsOverErrorPrefix verifies that the
+// live metaToolError="false" marker wins over text sniffing: a command whose
+// OUTPUT starts with "Error:" but exited fine is not a failure, so repeats
+// stay progress.
+func TestCheckProgressLoop_SuccessResultWinsOverErrorPrefix(t *testing.T) {
+	agent := NewAgent(Config{SystemPrompt: "test"})
+	for i := 0; i < 3; i++ {
+		turn := singleCallTurn("meta", "bash", `{"cmd":"./check"}`, "Error: none, all good")
+		turn[1].Metadata = map[string]string{metaToolError: "false"} // live success marker
+		if err := runGuardrailTurn(t, agent, turn...); err != nil {
+			t.Fatalf("turn %d: unexpected guardrail error: %v", i+1, err)
+		}
+	}
+	assertNoStrikes(t, agent)
+}
+
+// TestCheckProgressLoop_FailedToolTurnsStillStrike guards the gating
+// boundary: identical turns whose tool calls ALL fail are a real stall and
+// keep the existing warn-then-latch behavior.
+func TestCheckProgressLoop_FailedToolTurnsStillStrike(t *testing.T) {
+	agent := NewAgent(Config{SystemPrompt: "test"})
+	failing := func() []Message {
+		return singleCallTurn("f", "bash", `{"cmd":"make test"}`, "Error: exit 1")
+	}
+
+	// Turn 1 establishes the baseline fingerprint.
+	if err := runGuardrailTurn(t, agent, failing()...); err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+
+	// Turn 2: identical failing call => first strike, warning hint appended.
+	if err := runGuardrailTurn(t, agent, failing()...); err != nil {
+		t.Fatalf("turn 2 (first repeat) = %v, want warning only", err)
+	}
+	agent.mu.Lock()
+	count := agent.assistantRepeatCount
+	hinted := false
+	for _, m := range agent.history {
+		if m.Role == System && strings.Contains(m.Content, "[goa-system] Your last response was identical") {
+			hinted = true
+		}
+	}
+	agent.mu.Unlock()
+	if count != 1 || !hinted {
+		t.Fatalf("after first repeat: count=%d hinted=%v, want count=1 hinted=true", count, hinted)
+	}
+
+	// Turn 3: third identical failing response => latch.
+	err := runGuardrailTurn(t, agent, failing()...)
+	if err == nil || !strings.Contains(err.Error(), "runaway loop detected") {
+		t.Fatalf("turn 3 = %v, want runaway loop detected", err)
+	}
+	agent.mu.Lock()
+	latched := agent.loopStopped
+	agent.mu.Unlock()
+	if !latched {
+		t.Fatal("latch not set after repeated failing tool turns")
+	}
+}
+
+// TestCheckProgressLoop_LegacyPrefixFallbackStrikes covers reloaded history:
+// persisted sessions drop Metadata, so classification falls back to the
+// conventional "Error:" content prefix — identical failing turns still strike.
+func TestCheckProgressLoop_LegacyPrefixFallbackStrikes(t *testing.T) {
+	agent := NewAgent(Config{SystemPrompt: "test"})
+	legacy := func() []Message {
+		turn := singleCallTurn("f", "bash", `{"cmd":"make test"}`, "Error: exit 1")
+		turn[1].Metadata = nil // simulate history reloaded from a saved session
+		return turn
+	}
+	if err := runGuardrailTurn(t, agent, legacy()...); err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if err := runGuardrailTurn(t, agent, legacy()...); err != nil {
+		t.Fatalf("turn 2 (first repeat) = %v, want warning only", err)
+	}
+	err := runGuardrailTurn(t, agent, legacy()...)
+	if err == nil || !strings.Contains(err.Error(), "runaway loop detected") {
+		t.Fatalf("turn 3 = %v, want runaway loop detected", err)
+	}
+}
+
+// TestCheckProgressLoop_EmptyNoToolTurnsLatch verifies plan rule 3: strikes
+// for "(empty response)" apply only when Content+Thinking are empty AND the
+// turn carried zero tool calls — three such turns still latch.
+func TestCheckProgressLoop_EmptyNoToolTurnsLatch(t *testing.T) {
+	agent := NewAgent(Config{SystemPrompt: "test"})
+
+	empty := func() []Message {
+		return []Message{{Type: Content, Role: Assistant}}
+	}
+	if err := runGuardrailTurn(t, agent, empty()...); err != nil {
+		t.Fatalf("empty turn 1: %v", err)
+	}
+	if err := runGuardrailTurn(t, agent, empty()...); err != nil {
+		t.Fatalf("empty turn 2 (first repeat) = %v, want warning only", err)
+	}
+	err := runGuardrailTurn(t, agent, empty()...)
+	if err == nil || !strings.Contains(err.Error(), "runaway loop detected") {
+		t.Fatalf("empty turn 3 = %v, want runaway loop detected", err)
+	}
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	if !agent.loopStopped {
+		t.Fatal("latch not set after three truly-empty turns")
+	}
+}
+
+// TestCheckProgressLoop_ProseOnlyRepeatsWarnThenLatch covers plan rule 4 for
+// text-only repetition: unchanged behavior — first repeat warns with visible
+// hint, second latches.
+func TestCheckProgressLoop_ProseOnlyRepeatsWarnThenLatch(t *testing.T) {
+	agent := NewAgent(Config{SystemPrompt: "test"})
+	prose := func() []Message {
+		return []Message{{Type: Content, Role: Assistant, Content: "I will now do the thing."}}
+	}
+	if err := runGuardrailTurn(t, agent, prose()...); err != nil {
+		t.Fatalf("prose turn 1: %v", err)
+	}
+	if err := runGuardrailTurn(t, agent, prose()...); err != nil {
+		t.Fatalf("prose turn 2 (first repeat) = %v, want warning only", err)
+	}
+	agent.mu.Lock()
+	count := agent.assistantRepeatCount
+	agent.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("repeat count after warning = %d, want 1", count)
+	}
+	if err := runGuardrailTurn(t, agent, prose()...); err == nil || !strings.Contains(err.Error(), "runaway loop detected") {
+		t.Fatalf("prose turn 3 = %v, want runaway loop detected", err)
+	}
+}
+
+// assertNoStrikes fails when the guardrail recorded any strike or hint.
+func assertNoStrikes(t *testing.T, agent *Agent) {
+	t.Helper()
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	if agent.assistantRepeatCount != 0 {
+		t.Fatalf("assistantRepeatCount = %d, want 0 (no strikes expected)", agent.assistantRepeatCount)
+	}
+	if agent.loopStopped {
+		t.Fatal("loopStopped latch unexpectedly set")
+	}
+	for _, m := range agent.history {
+		if m.Role == System && strings.Contains(m.Content, "Your last response was identical") {
+			t.Fatal("stall hint injected although the turn made tool progress")
+		}
+	}
+}
