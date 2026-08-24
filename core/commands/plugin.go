@@ -171,7 +171,42 @@ func (c *PluginCommand) enable(ctx core.Context, id string) error {
 		return err
 	}
 	ctx.Writef("Enabled plugin %s.\n", id)
+	c.reviewHookGrants(ctx, id)
 	return nil
+}
+
+// reviewHookGrants runs the M6 §7 step 3 install-time acceptance flow: when
+// the freshly enabled plugin's manifest declares hooks or sensitive
+// permissions, ONE multi-select review card shows with conservative defaults
+// (intercept off, notify pre-checked). Only accepted hooks land in
+// grants.json; rejecting or dismissing leaves no grant, so enforcement will
+// refuse every hook registration until a re-review.
+func (c *PluginCommand) reviewHookGrants(ctx core.Context, id string) {
+	def, err := c.Manager.ManifestFor(id)
+	if err != nil || !plugins.RequiresReview(def) {
+		return // nothing to review — plain enable
+	}
+	review := plugins.BuildHookReview(def)
+	opts := make([]tui.ConfirmOption, 0, len(review.Rows)+2)
+	for _, r := range review.Rows {
+		opts = append(opts, tui.ConfirmOption{ID: r.ID, Label: r.Label, Toggle: true, DefaultOn: r.DefaultOn})
+	}
+	opts = append(opts,
+		tui.ConfirmOption{ID: "accept", Label: "Accept selected", Style: "ok"},
+		tui.ConfirmOption{ID: "reject", Label: "Reject all", Style: "danger"},
+	)
+	ctx.ConfirmMulti(review.Title, review.Body, opts, "accept", true, func(res tui.MultiConfirmResult) {
+		switch {
+		case res.Cancelled || res.ActionID == "reject":
+			ctx.WriteSystem("Plugin hooks rejected — none of "+id+"'s hooks will run (re-run /plugin:enable:"+id+" to review again).", false)
+		case res.ActionID == "accept":
+			if err := plugins.ApplyHookDecision(plugins.NewGrantStore(c.Manager.Root()), def, res.Selected); err != nil {
+				ctx.WriteSystem("Failed to save hook grants: "+err.Error(), false)
+				return
+			}
+			ctx.Writef("Hooks approved for %s (%d of %d). Reload or restart applies them.\n", id, len(res.Selected), len(def.Hooks))
+		}
+	})
 }
 
 func (c *PluginCommand) disable(ctx core.Context, id string) error {

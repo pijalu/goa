@@ -216,6 +216,54 @@ func TestDeepMergeStreamLoopMinPeriod(t *testing.T) {
 	}
 }
 
+// TestConfigValidateRunawayLoopMaxRepeats verifies execution.runaway_loop_max_repeats
+// accepts 0 (default 2), the minimum meaningful limit 1, and larger values,
+// rejecting negative values.
+func TestConfigValidateRunawayLoopMaxRepeats(t *testing.T) {
+	for _, tt := range []struct {
+		v       int
+		wantErr bool
+	}{
+		{0, false},  // default (2)
+		{1, false},  // strict: stop at the first repeat
+		{2, false},  // default value spelled out
+		{10, false}, // lenient
+		{-1, true},  // negative is never meaningful
+		{-10, true},
+	} {
+		cfg := &Config{Execution: ExecutionConfig{RunawayLoopMaxRepeats: tt.v}}
+		err := cfg.Validate()
+		if gotErr := err != nil; gotErr != tt.wantErr {
+			t.Errorf("Validate(runaway_loop_max_repeats=%d) err=%v, wantErr=%v", tt.v, err, tt.wantErr)
+		}
+	}
+}
+
+// TestDeepMergeRunawayLoopMaxRepeats verifies the overlay wins when non-zero
+// and the base is preserved otherwise.
+func TestDeepMergeRunawayLoopMaxRepeats(t *testing.T) {
+	base := &Config{Execution: ExecutionConfig{RunawayLoopMaxRepeats: 4}}
+	base.DeepMerge(&Config{Execution: ExecutionConfig{RunawayLoopMaxRepeats: 6}})
+	if base.Execution.RunawayLoopMaxRepeats != 6 {
+		t.Errorf("RunawayLoopMaxRepeats = %d, want 6", base.Execution.RunawayLoopMaxRepeats)
+	}
+	base.DeepMerge(&Config{})
+	if base.Execution.RunawayLoopMaxRepeats != 6 {
+		t.Errorf("RunawayLoopMaxRepeats after empty merge = %d, want 6 (preserved)", base.Execution.RunawayLoopMaxRepeats)
+	}
+}
+
+// TestRunawayLoopMaxRepeatsYAML verifies the YAML key round-trips.
+func TestRunawayLoopMaxRepeatsYAML(t *testing.T) {
+	var cfg Config
+	if err := yaml.Unmarshal([]byte("execution:\n  runaway_loop_max_repeats: 4\n"), &cfg); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if cfg.Execution.RunawayLoopMaxRepeats != 4 {
+		t.Errorf("Execution.RunawayLoopMaxRepeats = %d, want 4", cfg.Execution.RunawayLoopMaxRepeats)
+	}
+}
+
 // TestConfigValidateMode verifies mode validation.
 func TestConfigValidateMode(t *testing.T) {
 	tests := []struct {

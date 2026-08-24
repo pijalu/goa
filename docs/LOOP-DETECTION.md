@@ -63,6 +63,7 @@ execution:
   tool_call_limit_reset_window: 10
   max_consecutive_tool_rounds: 15
   stream_loop_max_repeats: 5
+  runaway_loop_max_repeats: 2
 ```
 
 If a warning appears sooner than expected, identify which detector produced it. In particular, `max_tool_calls` controls duplicate calls in a rolling window; it does not control consecutive tool-call rounds.

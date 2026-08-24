@@ -846,6 +846,12 @@ func parseOpenAIChunk(chunk string) ([]parserMessage, error) {
 	if !ok {
 		return nil, nil
 	}
+	// Masked upstream failure check must run before any delta/finish
+	// handling: an error-marked native_finish_reason invalidates the whole
+	// chunk regardless of what else it carries.
+	if nerr := detectNativeFinishError(choice); nerr != nil {
+		return nil, nerr
+	}
 	delta, ok := choice["delta"].(map[string]any)
 	if !ok {
 		if finishReason, ok := choice["finish_reason"]; ok {
@@ -902,6 +908,30 @@ func openAIErrorMessage(errObj any) (string, bool) {
 	}
 	msg, ok := m["message"].(string)
 	return msg, ok
+}
+
+// detectNativeFinishError surfaces upstream failures that OpenRouter-style
+// gateways mask as clean completions (regression 2026-08-24 export): the
+// router's upstream provider died mid-generation and the final SSE chunk
+// arrived as HTTP 200 with finish_reason="stop" but ZERO content — only
+// native_finish_reason="network_error" tells the truth. The parser honored
+// the flattened finish_reason, the turn ended cleanly with no message, no
+// error and no retry: the session just went silent ("frozen") right after a
+// tool call.
+//
+// Any error-marked native_finish_reason ("network_error", "error", …) is
+// classified as HTTP 502 Bad Gateway — semantically exact: the gateway at
+// the edge answered 200 while its upstream hop failed — so the existing
+// mid-stream retry machinery engages exactly as it does for llama.cpp 5xx
+// frames. Normal native reasons (stop/length/tool_calls/content_filter and
+// provider-specific pass-throughs) keep the historical flattening behavior.
+func detectNativeFinishError(choice map[string]any) error {
+	native, ok := choice["native_finish_reason"].(string)
+	if !ok || !strings.Contains(strings.ToLower(native), "error") {
+		return nil
+	}
+	err := fmt.Errorf("LLM error: upstream provider failed (native_finish_reason: %s)", native)
+	return hooks.NewStreamFrameError(err, http.StatusBadGateway, native)
 }
 
 func parseToolCalls(delta map[string]any) []parserMessage {

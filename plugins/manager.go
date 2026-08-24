@@ -265,6 +265,14 @@ func (m *Manager) loadManifestFor(id string) (*PluginDef, error) {
 	return loadManifest(filepath.Join(m.root, id, "plugin.yaml"))
 }
 
+// ManifestFor loads and validates the installed plugin's manifest (M6 §7
+// step 3): the /plugin:enable review card is built from it. Unknown or
+// malformed manifests surface as errors — a plugin whose manifest cannot be
+// read cannot be reviewed.
+func (m *Manager) ManifestFor(id string) (*PluginDef, error) {
+	return m.loadManifestFor(id)
+}
+
 // SetCloneFunc overrides the clone function. Exported for tests.
 func (m *Manager) SetCloneFunc(fn func(url, dir string) error) {
 	m.mu.Lock()

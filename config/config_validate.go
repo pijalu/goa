@@ -155,6 +155,7 @@ func (c *Config) validateLoopThresholds(ve *internal.ValidationError) {
 	c.validateLoopWarningOrder(ve)
 	c.validateToolRepeatThresholds(ve)
 	c.validateStreamLoopThresholds(ve)
+	c.validateRunawayLoopThreshold(ve)
 }
 
 // validateLoopWarningOrder checks warning < interrupt when both are set.
@@ -191,6 +192,16 @@ func (c *Config) validateStreamLoopThresholds(ve *internal.ValidationError) {
 	if c.Execution.StreamLoopMinPeriod != 0 && c.Execution.StreamLoopMinPeriod < 8 {
 		ve.Add(fmt.Sprintf("execution.stream_loop_min_period (%d) must be 0 (default 50) or >= 8",
 			c.Execution.StreamLoopMinPeriod))
+	}
+}
+
+// validateRunawayLoopThreshold checks the runaway-loop repeat limit: zero
+// means "use the default"; when set it must tolerate at least one repeat
+// (negative values are never meaningful).
+func (c *Config) validateRunawayLoopThreshold(ve *internal.ValidationError) {
+	if c.Execution.RunawayLoopMaxRepeats < 0 {
+		ve.Add(fmt.Sprintf("execution.runaway_loop_max_repeats (%d) must be 0 (default 2) or >= 1",
+			c.Execution.RunawayLoopMaxRepeats))
 	}
 }
 

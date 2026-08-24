@@ -151,6 +151,9 @@ func mergeExecutionLoopSettings(dst, src *ExecutionConfig) {
 	if src.StreamLoopResetAfter != 0 {
 		dst.StreamLoopResetAfter = src.StreamLoopResetAfter
 	}
+	if src.RunawayLoopMaxRepeats != 0 {
+		dst.RunawayLoopMaxRepeats = src.RunawayLoopMaxRepeats
+	}
 }
 
 // mergeExecution merges fields from src into dst.

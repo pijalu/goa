@@ -44,6 +44,10 @@ goa_min_version: 0.1.0  # Optional — minimum Goa version
 skills_dir: skills      # Optional — relative path to skills loaded on enable
 permissions:            # Optional — declare what the plugin needs
   - provider-keys       #   "provider-keys" → expose API keys in goa.config()
+hooks:                  # Optional — agent hooks this plugin registers
+  - point: tool-call:pre
+    mode: intercept
+    description: Redact AWS keys from tool arguments
 ```
 
 | Field | Required | Description |
@@ -55,7 +59,8 @@ permissions:            # Optional — declare what the plugin needs
 | `entry` | No | Entry-point JS file; defaults to `plugin.js` |
 | `goa_min_version` | No | Minimum Goa version required (not yet enforced) |
 | `skills_dir` | No | Relative path to a directory of SKILL.md files loaded when enabled |
-| `permissions` | No | List of permission strings. Currently only `"provider-keys"` is defined; it unmasks API keys in `goa.config()` |
+| `permissions` | No | List of permission strings: `"provider-keys"` (unmasks API keys in `goa.config()`), `"oauth-token"` (OAuth token access via `goa.oauthToken()`), `"account-write"`, `"ui-confirm"`. Unknown permission names are rejected at load. |
+| `hooks` | No | Agent hook declarations — see [Agent Hooks](#agent-hooks). Each entry needs `point` + `mode`; `description` is recommended and shown on the approval card. Unknown points/modes or duplicate declarations are rejected at load. |
 
 ### Plugin storage
 
@@ -150,6 +155,37 @@ goa.registerCommand({
 
 The `run` function returns a string that Goa writes into the chat viewport.
 
+### `goa.registerCompletion(name, fn)`
+
+Provides **argument completions** for a command: while the user types
+`/<name>:<prefix>` in the input line, Goa calls `fn(prefix)` and offers the
+returned candidates in the picker. The API is feature-detected — the `goa`
+object only carries `registerCompletion` when the host supports it:
+
+```javascript
+if (typeof goa.registerCompletion === "function") {
+  goa.registerCompletion("hello", function(prefix) {
+    return [
+      { value: "loud",   description: "Shout the greeting" },
+      { value: "formal", description: "Use full titles" }
+    ];
+  });
+}
+```
+
+Contract (mirrors how built-in commands like `/plugin` complete):
+
+| Aspect | Rule |
+|--------|------|
+| `Value` | Bare segment, no leading colon and no command prefix — the engine prepends `"/<name>:"` |
+| `Description` | One-line text shown next to the candidate |
+| `prefix` argument | Everything typed after `/<name>:`: `""`, `"re"`, or a nested parent path plus colon (`"login:"`) |
+| Nested levels | Return children for known parents (`"login:"` → provider ids); unknown parents return `[]` |
+| Threading | `fn` runs under the plugin VM lock on the completer goroutine; it may read plugin state but must not block |
+
+A throwing or malformed completer degrades to "no candidates" — it never
+breaks typing.
+
 ### `goa.registerObserver(callback(eventName, payload))`
 
 Subscribes to events from Goa's event bus. The callback receives every event;
@@ -197,6 +233,79 @@ goa.registerLifecycle("shutdown", function(hook, payload) {
   // Persist any runtime state before Goa exits
 });
 ```
+
+### `goa.registerHook({name, point, mode, handler})`
+
+Registers an **agent hook** — a synchronous callback at a defined point in the
+agent loop. Hooks are the most powerful plugin integration: `intercept` hooks
+can rewrite or block tool calls and messages before the agent acts on them.
+
+**Requirements (enforced):**
+
+1. The hook must be **declared in `plugin.yaml`** under `hooks:` with matching
+   `point` + `mode`. Undeclared registrations are rejected outright, regardless
+   of grants.
+2. The user must have **approved it at the install-time review card**. The
+   approval is stored in `~/.goa/plugins/grants.json` (`0600`) keyed by plugin,
+   version, and a fingerprint of the declared hook list.
+3. In headless runs (no TUI), external-plugin hooks are disabled entirely
+   unless `GOA_PLUGIN_HOOKS_APPROVED=1` is set — see [Headless
+   mode](#headless-mode).
+
+Rejected registrations surface as a warning on `goa.output` and in the log;
+the rest of the plugin keeps loading.
+
+| Point | Fires | Modes | Handler payload |
+|-------|-------|-------|-----------------|
+| `tool-call:pre` | Before each tool executes | `intercept`, `notify` | `{name, params}` |
+| `tool-call:post` | After each tool completes | `intercept`, `notify` | `{name, params, result}` |
+| `message:pre-send` | Before a user message reaches the LLM | `intercept`, `notify` | `{text}` |
+| `reply:pre` / `reply:delta` | Around assistant reply streaming | `intercept`, `notify` | `{...}` |
+| `llm:error` | On provider/stream errors | `notify` | `{error}` |
+
+An `intercept` handler returns `{action: "allow"}` (or `undefined`) to pass,
+or `{action: "deny", reason}`, or `{action: "modify", ...}` to rewrite the
+payload. A `notify` handler observes only; its return value is ignored.
+
+```javascript
+goa.registerHook({
+  name: "redact-aws-keys",
+  point: "tool-call:pre",
+  mode: "intercept",
+  handler: function(payload) {
+    const s = JSON.stringify(payload.params);
+    if (!s.includes("AKIA")) return undefined;
+    goa.logger().warn("redacted AWS key in tool args: " + payload.name);
+    return { action: "modify", params: JSON.parse(s.replace(/AKIA[A-Z0-9]{16}/g, "[REDACTED]")) };
+  }
+});
+```
+
+#### Hook grants & re-approval
+
+The grant records which `(point, mode)` pairs you approved. When a plugin
+update **changes its declared hook list** (adds/removes/toggles a hook) or
+**bumps its version**, the grant goes stale: every hook registration is
+rejected until you re-review. Goa shows the review card automatically after
+reload for stale plugins, and `/plugin:enable:<id>` re-runs the review any
+time. Rejecting leaves no grant, so all of that plugin's hooks stay off while
+its tools/commands keep working.
+
+Bundled plugins (shipped with Goa, e.g. provider-quota) are pre-approved and
+skip the review card.
+
+#### Headless mode
+
+Without a TUI there is no way to show the approval card, so external plugins'
+hooks fail closed: registrations are rejected with a loud log line. To run a
+delegated/headless session that still uses reviewed hooks, set:
+
+```
+GOA_PLUGIN_HOOKS_APPROVED=1
+```
+
+This lifts only the headless gate — manifest declaration checks and stored
+grants are still enforced.
 
 ### `goa.callTool(name, params)`
 
@@ -274,6 +383,7 @@ goa.registerObserver(function(event, payload) {
 | `session.start` | `{ timestamp }` | A new agent session started |
 | `session.end` | `{ timestamp, turns }` | An agent session ended |
 | `pipeline.stage` | `{ pipeline, stage, status }` | Pipeline stage changed |
+| `rate_limit_exceeded` | `{ provider, model, attempt, retry_after_ms, classified, will_retry }` | Provider rate limit hit (forwarded from the agent loop once per retry attempt, and once more with `will_retry: false` when giving up) |
 
 ---
 
@@ -406,9 +516,57 @@ segments.
 
 Adds a modal dialog.
 
+### `goa.ui.confirm({title, body, options, defaultId, allowCancel, timeoutMs})`
+
+Asks the user a multiple-choice question and **blocks until they answer**
+(plugins plan §4). The TUI shows a modal selection card — one at a time,
+FIFO-serialized; while it is up, other plugin timers/segments pause (they
+re-fire after the answer) because two JavaScript frames must never run on one
+runtime.
+
+```javascript
+const r = goa.ui.confirm({
+  title: "Use rate-limit reset?",
+  body: "This consumes one credit.",
+  options: [
+    { id: "yes", label: "Yes, use reset", style: "danger" },
+    { id: "no",  label: "Not now" },
+  ],
+  defaultId: "no",
+  allowCancel: true,
+  timeoutMs: 60000,
+});
+if (r.error)      { /* timeout / no UI / bad spec */ }
+else if (r.cancelled) { /* user dismissed */ }
+else              { goa.output("chose " + r.id); }
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `title` | `string` | Card heading |
+| `body` | `string` | Explanatory text (optional) |
+| `options` | `array` | ≥1 `{id, label, style}` rows; `style` = `ok` \| `danger` \| `default` |
+| `defaultId` | `string` | Initially highlighted option |
+| `allowCancel` | `boolean` | Adds an implicit Cancel row + Esc dismissal |
+| `timeoutMs` | `number` | Wait bound; 0/absent = capped at 5 minutes |
+
+Return shape: `{id}` on a real choice, `{cancelled:true}` on dismissal, or
+`{cancelled:true, error}` when the wait failed (`timeout`, `no-ui`) or the
+spec was invalid. Without a visible TUI (headless runs) the call fails closed
+immediately with `{cancelled:true, error:"no-ui"}` — treat cancellation as
+"the user declined", never as consent. Confirm is display + choice only:
+option IDs are opaque strings handed back to the plugin; no capability is
+granted by answering, and external plugins must declare the `ui-confirm`
+permission in their manifest (validated at load) to call it — Goa's bundled
+provider-quota plugin declares it for its `/quota:reset` credit flow. Calls
+from a command context are safe
+(plugin commands execute off the UI thread); calling from code that runs on
+the TUI thread itself fails closed with an error instead of freezing the UI.
+
 > **Note:** The UI bridge is namespaced under `goa.ui` — use
-> `goa.ui.addSegment(...)`, `goa.ui.addPane(...)`, `goa.ui.addModal(...)`, and
-> `goa.ui.refreshSegment(id)`. The bare `goa.addSegment`/`goa.addPane`/
+> `goa.ui.addSegment(...)`, `goa.ui.addPane(...)`, `goa.ui.addModal(...)`,
+> `goa.ui.refreshSegment(id)`, and `goa.ui.confirm(...)`. The bare
+> `goa.addSegment`/`goa.addPane`/
 > `goa.addModal` forms are deprecated aliases.
 
 ### `goa.registerHotkey({key, ctrl, alt, shift, description, handler})`
@@ -530,13 +688,21 @@ current bundled plugin is **provider-quota** (in `plugins/bundled/provider-quota
 1. **Materialization** — On startup, each bundled plugin is copied from the
    embed FS into `~/.goa/plugins/bundled/<id>@<version>/`. The versioned
    directory name means an upgraded binary (with a bumped plugin version)
-   produces a new directory, leaving the old one intact.
-2. **Content validation** — The materialized copy is SHA-256 hashed and
+   materializes into a new directory.
+2. **Stale-version pruning** — After every materialization (including the
+   reuse fast path), the manager **deletes all other `<id>@*` directories**
+   of the same plugin id. Leftover old versions are not harmless: the loader
+   scans the whole bundled dir, and a stale copy's VM registers commands
+   first — first registration wins, so `/quota`-style commands would dispatch
+   to OLD code while the current version still ran in parallel. Pruning keeps
+   exactly one dir per bundled id; a loader-side duplicate-id guard skips
+   (with a loud log) any id discovered twice, whatever the cause.
+3. **Content validation** — The materialized copy is SHA-256 hashed and
    recorded in the lockfile. Every subsequent startup verifies the hash;
    tampered or stale copies are re-materialized from the trusted embed.
-3. **Automatic enablement** — Bundled plugins are enabled automatically
+4. **Automatic enablement** — Bundled plugins are enabled automatically
    (no trust prompt).
-4. **Disable via config:**
+5. **Disable via config:**
 
 ```yaml
 plugins:
@@ -621,11 +787,20 @@ source lives at `plugins/bundled/provider-quota/`.
 
 ### What it does
 
-- Tracks usage/quota for all configured LLM providers (Anthropic, OpenAI, Z.ai,
-  Kimi, MiniMax, OpenRouter, plus a local/inferred fallback).
+- Tracks usage/quota for all configured LLM providers (Anthropic, OpenAI,
+  Codex, Z.ai, Kimi, MiniMax, OpenRouter, OpenCode, plus a local/inferred
+  fallback).
 - Shows a compact, color-coded quota segment in the footer status bar.
 - Provides a `/quota` command with subcommands for detailed breakdowns, JSON
-  export, and OAuth management.
+  export, OAuth management, and **Codex rate-limit reset credits**
+  (`/quota:resets` lists them; `/quota:reset[:<credit-id>]` consumes one
+  behind a danger-styled `goa.ui.confirm` — the count and the credits table
+  also render inline in the global `/quota` breakdown). A one-time startup
+  notice reports available credits; hitting a rate limit on a Codex model
+  triggers a debounced hint (≥10 min between hints) after refreshing the
+  codex entry.
+- Registers argument completions for all `/quota` subcommands plus per-
+  provider refresh/login/logout levels (`goa.registerCompletion`).
 - Refreshes data on a background timer (every 60s) and on explicit request
   (`Ctrl+Shift+Q` or `/quota:refresh`).
 
@@ -722,11 +897,15 @@ The plugin uses a shared error vocabulary that the status segment understands:
 | Feature | Where used |
 |---------|------------|
 | `goa.registerCommand()` | `/quota` command with colon subcommands |
+| `goa.registerCompletion()` | Subcommand + provider completions for `/quota:` |
+| `goa.ui.confirm()` | Rate-limit reset consumption (danger-styled, Cancel default) |
+| `goa.registerObserver()` | `rate_limit_exceeded` → debounced reset hint |
+| `goa.output()` | Startup reset-credit notice, async quota renders, reset outcomes |
 | `goa.ui.addSegment()` | Status-bar quota display |
 | `goa.ui.refreshSegment()` | Signal segment repaints after refresh |
 | `goa.registerHotkey()` | `Ctrl+Shift+Q` force-refresh |
-| `goa.setInterval()` | 60-second background refresh scheduler |
-| `goa.http.fetch()` | Quota API calls per provider |
+| `goa.setInterval()` / `goa.setTimeout()` | Background refresh scheduler; off-command-path fetches |
+| `goa.http.fetch()` | Quota API calls per provider (usage, reset details, consume) |
 | `goa.storage` | OAuth token persistence |
 | `goa.sessionUsage()` | Local/inferred token counts |
 | `goa.segmentColor()` | Theme-aware per-window coloring |

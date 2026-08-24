@@ -5,6 +5,7 @@
 package provider
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -920,5 +921,126 @@ func TestResolveActiveModel_ReasoningAndCompat(t *testing.T) {
 	}
 	if compat.ToolResultAsUser == nil || !*compat.ToolResultAsUser {
 		t.Errorf("Expected ToolResultAsUser=true")
+	}
+}
+
+// TestProviderManagerSessionSelectionSurvivesHotReload reproduces the
+// multi-instance provider bleed: instance A's /model switch persists
+// active_provider/active_model to the shared config cascade; instance B's
+// config watcher then hot-swaps a freshly loaded config via SetConfig.
+// The session's explicit pick must survive that swap — the disk value is a
+// startup default, not live session state (bug: B's footer AND next requests
+// silently followed A's provider).
+func TestProviderManagerSessionSelectionSurvivesHotReload(t *testing.T) {
+	boot := &config.Config{
+		ActiveProvider: "kimi-code",
+		ActiveModel:    "kimi-for-coding",
+		Providers: []config.ProviderConfig{
+			{ID: "kimi-code", Endpoint: "https://kimi.example.com"},
+			{ID: "openai", Endpoint: "https://api.openai.com/v1"},
+		},
+	}
+	pm := NewProviderManager(boot)
+
+	// Instance B (this process) switches provider/model at runtime.
+	if err := pm.SetActive("openai", "gpt-4o"); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+
+	// Meanwhile instance A persisted ITS switch; the watcher hands us a
+	// freshly loaded config whose Active* reflect A's choice on disk.
+	fromDisk := &config.Config{
+		ActiveProvider: "kimi-code",
+		ActiveModel:    "kimi-for-coding",
+		Providers: []config.ProviderConfig{
+			{ID: "kimi-code", Endpoint: "https://kimi.example.com"},
+			{ID: "openai", Endpoint: "https://api.openai.com/v1"},
+		},
+	}
+	pm.SetConfig(fromDisk)
+
+	pc, model := pm.Active()
+	if pc == nil || pc.ID != "openai" {
+		t.Fatalf("after reload Active() = %+v, want openai — session selection was clobbered by another instance's persisted switch", pc)
+	}
+	if model == "" || !strings.Contains(strings.ToLower(model), "gpt-4o") {
+		t.Errorf("resolved model after reload = %q, want gpt-4o", model)
+	}
+	if got := pm.Config().ActiveProvider; got != "openai" {
+		t.Errorf("Config().ActiveProvider = %q, want openai (requests would route to the other instance's provider)", got)
+	}
+}
+
+// TestProviderManagerReloadAdoptsDiskDefaultWithoutExplicitPick pins the P22
+// contract the other direction: a session that never switched keeps following
+// manual edits of active_provider in the config files (hot-apply semantics).
+func TestProviderManagerReloadAdoptsDiskDefaultWithoutExplicitPick(t *testing.T) {
+	pm := NewProviderManager(&config.Config{
+		ActiveProvider: "kimi-code",
+		ActiveModel:    "kimi-for-coding",
+		Providers:      []config.ProviderConfig{{ID: "kimi-code"}, {ID: "openai"}},
+	})
+
+	reloaded := &config.Config{
+		ActiveProvider: "openai",
+		ActiveModel:    "gpt-4o",
+		Providers:      []config.ProviderConfig{{ID: "kimi-code"}, {ID: "openai"}},
+	}
+	pm.SetConfig(reloaded)
+
+	pc, _ := pm.Active()
+	if pc == nil || pc.ID != "openai" {
+		t.Fatalf("without an explicit session pick, reload must adopt disk values; got %+v", pc)
+	}
+}
+
+// TestProviderManagerSetActivePartialPick verifies empty halves keep their
+// prior meaning: SetActive("", model) re-models without touching the provider,
+// and that partial pick still survives a hot reload.
+func TestProviderManagerSetActivePartialPick(t *testing.T) {
+	pm := NewProviderManager(&config.Config{
+		ActiveProvider: "kimi-code",
+		ActiveModel:    "kimi-for-coding",
+		Providers:      []config.ProviderConfig{{ID: "kimi-code"}, {ID: "openai"}},
+	})
+	if err := pm.SetActive("", "gpt-4o"); err != nil {
+		t.Fatalf("SetActive(\"\"): %v", err)
+	}
+
+	reloaded := &config.Config{
+		ActiveProvider: "openai", // other instance switched provider on disk
+		ActiveModel:    "claude-x",
+		Providers:      []config.ProviderConfig{{ID: "kimi-code"}, {ID: "openai"}},
+	}
+	pm.SetConfig(reloaded)
+
+	cfg := pm.Config()
+	if cfg.ActiveModel != "gpt-4o" {
+		t.Errorf("ActiveModel = %q, want gpt-4o (explicit model pick must survive reload)", cfg.ActiveModel)
+	}
+	if cfg.ActiveProvider != "openai" {
+		t.Errorf("ActiveProvider = %q, want openai (provider never picked explicitly → disk default stands)", cfg.ActiveProvider)
+	}
+}
+
+// TestProviderManagerSetActiveUnknownLeavesSelectionUntouched verifies a
+// failed switch mutates nothing (neither session selection nor config).
+func TestProviderManagerSetActiveUnknownLeavesSelectionUntouched(t *testing.T) {
+	pm := NewProviderManager(&config.Config{
+		ActiveProvider: "kimi-code",
+		ActiveModel:    "kimi-for-coding",
+		Providers:      []config.ProviderConfig{{ID: "kimi-code"}, {ID: "openai"}},
+	})
+	if err := pm.SetActive("openai", "gpt-4o"); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+	if err := pm.SetActive("nonexistent", ""); err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+
+	reloaded := &config.Config{ActiveProvider: "kimi-code", Providers: []config.ProviderConfig{{ID: "kimi-code"}, {ID: "openai"}}}
+	pm.SetConfig(reloaded)
+	if got := pm.Config().ActiveProvider; got != "openai" {
+		t.Errorf("ActiveProvider = %q, want openai (failed switch must not clear the earlier pick)", got)
 	}
 }

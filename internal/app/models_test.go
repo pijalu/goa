@@ -86,3 +86,59 @@ func TestCompanionModelDisplay_NoModel(t *testing.T) {
 		t.Errorf("expected empty display without companion model, got %q", got)
 	}
 }
+
+// TestApplyReloadedConfigKeepsSessionSelection is the multi-instance
+// regression at the watcher-consumer level: instance A persisted its /model
+// switch to the shared cascade, the config watcher hands instance B a freshly
+// loaded config via applyReloadedConfig — B's live config (next requests),
+// footer provider/model display and plugin-visible ActiveProvider must all
+// keep B's own session pick. A session that never switched keeps adopting
+// disk values (P22 hot-apply contract).
+func TestApplyReloadedConfigKeepsSessionSelection(t *testing.T) {
+	boot := func() *config.Config {
+		return &config.Config{
+			ActiveProvider: "opencode-go",
+			ActiveModel:    "ds",
+			Providers: []config.ProviderConfig{
+				{ID: "opencode-go", Endpoint: "https://example.com/go"},
+				{ID: "zai", Endpoint: "https://example.com/zai"},
+			},
+			Models: []config.ModelConfig{
+				{ID: "glm", ProviderID: "zai", Model: "glm-5.2"},
+				{ID: "ds", ProviderID: "opencode-go", Model: "deepseek-v4-flash"},
+			},
+		}
+	}
+	fromDisk := func(providerID, modelID string) *config.Config {
+		cfg := boot()
+		cfg.ActiveProvider = providerID
+		cfg.ActiveModel = modelID
+		return cfg
+	}
+
+	t.Run("session pick survives other instance's persisted switch", func(t *testing.T) {
+		subs := &subsystems{cfg: boot(), providerMgr: provider.NewProviderManager(boot())}
+		if err := subs.providerMgr.SetActive("zai", "glm"); err != nil {
+			t.Fatalf("SetActive: %v", err)
+		}
+
+		subs.applyReloadedConfig(fromDisk("opencode-go", "ds")) // what A wrote to disk
+
+		if got := subs.liveConfig().ActiveProvider; got != "zai" {
+			t.Errorf("liveConfig().ActiveProvider = %q, want zai (requests would route to the other instance's provider)", got)
+		}
+		if got := activeModelDisplay(subs); !strings.Contains(got, "zai") || !strings.Contains(got, "glm-5.2") {
+			t.Errorf("footer display = %q, want zai + resolved glm-5.2", got)
+		}
+	})
+
+	t.Run("no explicit pick adopts disk reload", func(t *testing.T) {
+		subs := &subsystems{cfg: boot(), providerMgr: provider.NewProviderManager(boot())}
+
+		subs.applyReloadedConfig(fromDisk("zai", "glm"))
+
+		if got := subs.liveConfig().ActiveProvider; got != "zai" {
+			t.Errorf("liveConfig().ActiveProvider = %q, want zai (P22: manual edits apply without restart)", got)
+		}
+	})
+}

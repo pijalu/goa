@@ -1,9 +1,12 @@
 // plugin.js — Provider Quota entry point.
 //
 // Tracks usage/quota for all configured providers. Registers:
-//   /quota  (+ :refresh :json :auth-status :login:<p> :logout:<p>)
+//   /quota  (+ :refresh :json :auth-status :resets :reset[:<id>]
+//            :login:<p> :logout:<p>)
 //   a status-bar segment tracking the active provider's quota
 //   a hotkey (Ctrl+Shift+Q) to force-refresh quota data
+//   an observer that hints available Codex rate-limit resets when a
+//   Codex-ish model hits a classified rate limit (plugins plan §6; debounced)
 //
 // Architecture: JS owns polling + caching per the plan. Fetching happens in
 // the refresh scheduler and on explicit commands; the status segment render
@@ -465,6 +468,10 @@ function quotaCommand(args) {
 			return renderJSON();
 		case "auth-status":
 			return renderAuthStatus();
+		case "resets":
+			return quotaResetsCommand();
+		case "reset":
+			return quotaResetCommand(arg);
 		case "login":
 			return loginProvider(arg);
 		case "logout":
@@ -534,7 +541,37 @@ function renderFull(force) {
 	for (var i = 0; i < rows.length; i++) {
 		out.push(rows[i]);
 	}
+	// Reset-credit surfacing: with cached DETAILS the breakdown renders the
+	// full credits table inline (user-reported gap: details used to live only
+	// behind /quota:resets); without them the count-only how-to note is the
+	// fallback. Both name the command that consumes a credit.
+	var note = resetUsageNote();
+	if (note !== "") {
+		out.push("");
+		out.push(note);
+	}
+	var detailsSection = codexDetailsSection();
+	if (detailsSection !== "") {
+		out.push("");
+		out.push(detailsSection);
+	}
 	return out.join("\n");
+}
+
+// codexDetailsSection renders the cached reset-credit details as an inline
+// /quota section. Empty unless the codex snapshot carries a successful
+// details payload with at least one credit row — otherwise the count-only
+// note above covers the state.
+function codexDetailsSection() {
+	var entry = _cache.codex;
+	if (!entry || entry.error || !entry.details) {
+		return "";
+	}
+	var d = entry.details;
+	if (!Array.isArray(d.credits) || d.credits.length === 0) {
+		return "";
+	}
+	return renderResetsTable(d);
 }
 
 // renderSessionTable renders the per-session token table from
@@ -660,6 +697,8 @@ function renderJSON() {
 			plan: e.plan || null,
 			error: e.error || null,
 			limits: e.limits || [],
+			resetsCount: typeof e.resetsCount === "number" ? e.resetsCount : null,
+			resets: e.details || null,
 			fetchedAt: e._fetchedAt || 0
 		};
 	}
@@ -692,6 +731,329 @@ function renderAuthStatus() {
 		out.push(rows[i]);
 	}
 	return out.join("\n");
+}
+
+// --- Codex rate-limit resets ------------------------------------------------
+
+// Simplification vs Codex (plan §5.6): Codex tracks in-flight redemptions by
+// u64 request ids and can address any pending one from the TUI. Goa has no
+// request-id scheme — a module-scope single-flight boolean serializes resets,
+// and the fetcher's retained redeem_request_id (UUID-v4) carries the actual
+// idempotency guarantee. Stale-picker/request-id races therefore cannot occur.
+var _resetInFlight = false;
+
+// codexResetFetcher returns the codex fetcher module when it supports resets.
+function codexResetFetcher() {
+	var f = _fetchers.codex;
+	if (!f || typeof f.resetCredits !== "function" || typeof f.consumeReset !== "function") {
+		return null;
+	}
+	return f;
+}
+
+// quotaResetsCommand implements /quota:resets: force-refresh codex usage,
+// then fetch the details endpoint. On a details error, degrade to count-only
+// (the count arrives via the usage snapshot's resetsCount).
+function quotaResetsCommand() {
+	var f = codexResetFetcher();
+	if (!f) {
+		return "Codex rate-limit resets are not supported by this plugin build.";
+	}
+	refreshDue("codex", true);
+	var details = f.resetCredits();
+	if (details && details.error) {
+		return renderResetsCountOnly(details.error);
+	}
+	return renderResetsTable(details);
+}
+
+// renderResetsTable renders the reset-credit details as markdown:
+// id-short | title | expiry | status rows plus the available count.
+function renderResetsTable(details) {
+	var d = details || {};
+	var credits = Array.isArray(d.credits) ? d.credits : [];
+	if (credits.length === 0) {
+		return "No Codex rate-limit reset credits on record.";
+	}
+	var count = typeof d.availableCount === "number" ? d.availableCount : countAvailableRows(credits);
+	var out = [];
+	out.push("## Codex Rate-Limit Resets");
+	out.push("");
+	out.push(count + " available.");
+	out.push("");
+	out.push("| ID | Title | Expires | Status |");
+	out.push("| --- | --- | --- | --- |");
+	for (var i = 0; i < credits.length; i++) {
+		var c = credits[i] || {};
+		var status = c.status || "unknown";
+		if (c.resetType && c.resetType !== "unknown") {
+			status += " (" + c.resetType + ")";
+		}
+		out.push("| " + c.id + " | " + (c.title || "—") + " | " + expiryText(c.expiresAtMs) + " | " + status + " |");
+	}
+	out.push("");
+	out.push("Use one with `/quota:reset[:<credit-id>]` (a unique id prefix works too).");
+	return out.join("\n");
+}
+
+// renderResetsCountOnly is the details-degradation path: the count from the
+// last usage fetch still tells the user what they have.
+function renderResetsCountOnly(err) {
+	var entry = _cache.codex;
+	var n = entry && typeof entry.resetsCount === "number" ? entry.resetsCount : null;
+	if (n == null) {
+		return "Codex rate-limit reset details unavailable (" + err + ") and no cached count — run /quota:refresh.";
+	}
+	return "Codex rate-limit reset details unavailable (" + err + ").\n\n" +
+		"You have **" + n + "** rate-limit reset" + (n === 1 ? "" : "s") + " available _(count only)_.";
+}
+
+// quotaResetCommand implements /quota:reset[:<credit-id>]: explain what will
+// happen, confirm via goa.ui.confirm (danger-styled Yes, default Cancel —
+// Codex parity), then POST off the command path on a 0-delay timer. A
+// no-UI/headless confirm resolves {cancelled:true} fail-closed and aborts
+// before any request is sent.
+function quotaResetCommand(creditId) {
+	if (_resetInFlight) {
+		return "A rate-limit reset is already in progress — wait for its result.";
+	}
+	var f = codexResetFetcher();
+	if (!f) {
+		return "Codex rate-limit resets are not supported by this plugin build.";
+	}
+	refreshDue("codex", true);
+	var entry = _cache.codex;
+	if (entry && entry.error === "auth_required") {
+		return "Codex auth required — run /login:openai:oauth first.";
+	}
+	var count = entry && typeof entry.resetsCount === "number" ? entry.resetsCount : null;
+	var targetCredit = null;
+	if (creditId) {
+		// Accept a unique id PREFIX as well as a full id — the resets table
+		// shows long ids, so typing them whole is friction. Resolution reads
+		// the cached details only; with nothing cached the id passes through
+		// verbatim and the server validates it.
+		var res = resolveCreditId(creditId);
+		if (res.error) {
+			return res.error;
+		}
+		if (res.credit) {
+			targetCredit = res.credit;
+			creditId = targetCredit.id;
+		}
+	}
+	var target = creditId
+		? "credit `" + creditId + "`" + (targetCredit && targetCredit.title ? " (" + targetCredit.title + ")" : "")
+		: "your earliest available reset credit";
+	var body = "This consumes one Codex rate-limit reset credit to reset your usage limits now.\n\nTarget: " + target;
+	if (count != null) {
+		body += "\nRemaining after: " + Math.max(0, count - 1);
+	}
+	var res = confirmReset("Use a rate-limit reset?", body);
+	if (!res || res.cancelled) {
+		return "Cancelled — no reset consumed.";
+	}
+	if (res.error) {
+		return "Cannot ask for confirmation (" + res.error + ") — no reset consumed.";
+	}
+	// Single-flight: one pending redemption at a time (see _resetInFlight
+	// note above). Cleared when the flow reaches any terminal message.
+	_resetInFlight = true;
+	scheduleConsumeReset(creditId);
+	return "Resetting your usage…";
+}
+
+// confirmReset wraps goa.ui.confirm with Codex-parity defaults: the
+// destructive option is danger-styled; Cancel is the highlighted default.
+function confirmReset(title, body) {
+	if (typeof goa.ui.confirm !== "function") {
+		return { cancelled: true, error: "no-ui" };
+	}
+	return goa.ui.confirm({
+		title: title,
+		body: body,
+		options: [
+			{ id: "yes", label: "Yes, use reset", style: "danger" },
+			{ id: "cancel", label: "Cancel" }
+		],
+		defaultId: "cancel",
+		allowCancel: true
+	});
+}
+
+// scheduleConsumeReset runs the consume POST on a timer goroutine so the
+// command path never blocks on provider HTTP (bugs.md precedent).
+function scheduleConsumeReset(creditId) {
+	goa.setTimeout(function() { consumeResetOnce(creditId); }, 0);
+}
+
+// consumeResetOnce performs one consume attempt and reports the outcome.
+// reset/already_redeemed invalidate the cache and re-fetch so the success
+// message carries the refreshed remaining count; transport errors offer an
+// immediate retry that REUSES the retained redeem_request_id.
+function consumeResetOnce(creditId) {
+	var f = codexResetFetcher();
+	if (!f) {
+		_resetInFlight = false;
+		return;
+	}
+	var out = f.consumeReset(null, creditId);
+	switch (out && out.outcome) {
+		case "reset":
+		case "already_redeemed":
+			_resetInFlight = false;
+			delete _cache.codex;
+			var fresh = refreshDue("codex", true);
+			goa.ui.refreshSegment("quota");
+			goa.output(resetSuccessMessage(fresh));
+			return;
+		case "no_credit":
+			_resetInFlight = false;
+			setCachedResetsCount(0);
+			goa.ui.refreshSegment("quota");
+			goa.output("No rate-limit reset credits left on your account.");
+			return;
+		case "nothing_to_reset":
+			_resetInFlight = false;
+			goa.output("Nothing to reset — your usage limits do not need a reset right now.");
+			return;
+		default:
+			// Transport/unknown: offerResetRetry owns the flag — it stays
+			// true when a retry is scheduled, false once the flow ends.
+			offerResetRetry(out && out.error ? out.error : "unknown error", creditId);
+	}
+}
+
+// offerResetRetry asks whether to resend the SAME request after a failure;
+// declining consumes nothing. The fetcher keeps the idempotency key until a
+// terminal outcome either way (server dedupes double-redeems).
+function offerResetRetry(err, creditId) {
+	var res = confirmReset("Reset failed",
+		"The reset request failed (" + err + ").\n\nTry again with the same request?");
+	if (res && !res.cancelled && !res.error) {
+		goa.output("Retrying your rate-limit reset…");
+		scheduleConsumeReset(creditId); // stays in flight through the retry
+		return;
+	}
+	_resetInFlight = false;
+	goa.output("Reset not retried — no credit was consumed.");
+}
+
+// resetSuccessMessage builds the post-reset line with the refreshed remaining
+// count when the re-fetch landed one.
+function resetSuccessMessage(freshEntry) {
+	var base = "✔ Usage limit reset.";
+	if (freshEntry && typeof freshEntry.resetsCount === "number") {
+		base += " You have " + freshEntry.resetsCount +
+			" rate-limit reset" + (freshEntry.resetsCount === 1 ? "" : "s") + " remaining.";
+	}
+	return base;
+}
+
+// setCachedResetsCount pins the cached codex reset count (no_credit pins 0)
+// and keeps the display line consistent for later /quota renders.
+function setCachedResetsCount(n) {
+	var entry = _cache.codex;
+	if (!entry) {
+		return;
+	}
+	entry.resetsCount = n;
+	if (Array.isArray(entry.lines)) {
+		for (var i = 0; i < entry.lines.length; i++) {
+			if (entry.lines[i].label === "Rate Limit Resets") {
+				entry.lines[i].value = n + " available";
+				return;
+			}
+		}
+		entry.lines.push({ label: "Rate Limit Resets", value: n + " available" });
+	}
+}
+
+// --- Reset-credit helpers (resolution + completion) -------------------------
+
+// availableCredits returns the cached codex detail rows still spendable,
+// soonest expiry first (missing expiry last). Cache-only by design: both
+// prefix resolution and completions run on the input path and must never
+// trigger provider HTTP — a stale/empty cache degrades gracefully instead.
+function availableCredits() {
+	var entry = _cache.codex;
+	if (!entry || entry.error || !entry.details || !Array.isArray(entry.details.credits)) {
+		return [];
+	}
+	var out = [];
+	for (var i = 0; i < entry.details.credits.length; i++) {
+		var c = entry.details.credits[i] || {};
+		if (c.status === "available" && c.id) {
+			out.push(c);
+		}
+	}
+	out.sort(function(a, b) {
+		var ea = a.expiresAtMs == null ? Infinity : a.expiresAtMs;
+		var eb = b.expiresAtMs == null ? Infinity : b.expiresAtMs;
+		return ea - eb;
+	});
+	return out;
+}
+
+// resolveCreditId maps a typed /quota:reset argument onto one cached credit:
+// an exact id wins; otherwise a UNIQUE available-credit prefix match resolves.
+// Returns {credit} on success, {error} with a user-facing message on
+// ambiguity/no-match, or {} (passthrough) when no details are cached so an
+// explicit full id still reaches the server for validation.
+function resolveCreditId(partial) {
+	var credits = availableCredits();
+	if (credits.length === 0) {
+		return {};
+	}
+	for (var i = 0; i < credits.length; i++) {
+		if (credits[i].id === partial) {
+			return { credit: credits[i] };
+		}
+	}
+	var matches = [];
+	for (var j = 0; j < credits.length; j++) {
+		if (credits[j].id.indexOf(partial) === 0) {
+			matches.push(credits[j]);
+		}
+	}
+	if (matches.length === 1) {
+		return { credit: matches[0] };
+	}
+	if (matches.length === 0) {
+		return { error: "No available reset credit matches `" + partial + "` — run /quota:resets to list them." };
+	}
+	var lines = ["`" + partial + "` matches more than one available credit — be more specific:"];
+	for (var k = 0; k < matches.length; k++) {
+		lines.push("- `" + matches[k].id + "`" + (matches[k].title ? " (" + matches[k].title + ")" : ""));
+	}
+	return { error: lines.join("\n") };
+}
+
+// resetCreditEntries builds completion candidates from the cached available
+// credits, soonest-expiry first, so the soonest credit is the default pick.
+function resetCreditEntries() {
+	var out = [];
+	var credits = availableCredits();
+	for (var i = 0; i < credits.length; i++) {
+		var c = credits[i];
+		var desc = c.title || "reset credit";
+		var t = format.durationUntil(c.expiresAtMs);
+		if (t !== "") {
+			desc += " · expires in " + t;
+		}
+		out.push({ value: c.id, description: desc });
+	}
+	return out;
+}
+
+// expiryText renders an ms-epoch expiry as relative time; missing values
+// degrade to an em dash.
+function expiryText(ms) {
+	if (!ms) {
+		return "—";
+	}
+	var t = format.durationUntil(ms);
+	return t === "" ? "—" : t;
 }
 
 // loginProvider starts the OAuth device flow for a provider.
@@ -739,7 +1101,184 @@ function logoutProvider(id) {
 	return "Logged out " + (_fetchers[id].name || id) + ".";
 }
 
+// --- Rate-limit hint (plugins plan §6) --------------------------------------
+
+// The host emits "rate_limit_exceeded" on every classified LLM stream failure
+// (once per scheduled retry, once terminal with will_retry=false). When the
+// failing model is Codex-ish we force-refresh the codex usage entry — its
+// snapshot carries resetsCount — and, at most once per debounce window, tell
+// the user how many reset credits are available.
+var _lastRateLimitHintAt = 0;
+var RATE_LIMIT_HINT_DEBOUNCE_MS = 10 * 60 * 1000;
+
+// isCodexishModel reports whether a model id looks like a Codex model
+// ("gpt-5-codex", "codex-mini-latest", ...). A conservative substring match
+// keeps the hint scoped to the provider whose reset credits this plugin can
+// actually manage.
+function isCodexishModel(model) {
+	return typeof model === "string" && model.toLowerCase().indexOf("codex") >= 0;
+}
+
+// handleRateLimitEvent reacts to one rate_limit_exceeded payload. The refresh
+// runs on a 0-delay timer goroutine: observer callbacks execute under the VM
+// lock on the host's event goroutine, and provider HTTP must never run there
+// (bugs.md "Quota command unresponsive" precedent).
+function handleRateLimitEvent(payload) {
+	if (!isCodexishModel(payload.model)) {
+		return;
+	}
+	goa.setTimeout(function() {
+		if (!_fetchers.codex) {
+			return;
+		}
+		refreshDue("codex", true);
+		goa.ui.refreshSegment("quota");
+		var entry = _cache.codex;
+		var n = entry && typeof entry.resetsCount === "number" ? entry.resetsCount : null;
+		var now = Date.now();
+		if (n != null && n > 0 && now - _lastRateLimitHintAt >= RATE_LIMIT_HINT_DEBOUNCE_MS) {
+			_lastRateLimitHintAt = now;
+			goa.output("You have " + n + " rate-limit reset" + (n === 1 ? "" : "s") +
+				" available — run /quota:resets for details or /quota:reset to use one.");
+		}
+	}, 0);
+}
+
+goa.registerObserver(function(name, payload) {
+	if (name !== "rate_limit_exceeded" || !payload) {
+		return;
+	}
+	handleRateLimitEvent(payload);
+});
+
+// --- Startup reset-credit notice ---------------------------------------------
+
+// The reverse case of the §6 rate-limit hint: reset credits sitting UNUSED at
+// session start with nothing telling the user they exist or how to spend them.
+// After the priming refresh, if the codex snapshot carries a positive count,
+// say so once — as chat output, not a modal: non-blocking, survives in
+// scrollback. Guarded by _startupResetNoticeShown (once per session) and by
+// resetsCount > 0 (only set on a successful usage fetch, never auth/error).
+var _startupResetNoticeShown = false;
+
+// _startupPrimeDone flips true as the LAST step of the load-time prime
+// callback. Tests drain on this rather than on cache population: the notice
+// emits after refreshAllDue fills the cache, so cache-non-empty alone would
+// race the notice.
+var _startupPrimeDone = false;
+
+function maybeStartupResetNotice() {
+	if (_startupResetNoticeShown) {
+		return;
+	}
+	var entry = _cache.codex;
+	if (!entry || entry.error || typeof entry.resetsCount !== "number" || entry.resetsCount <= 0) {
+		return;
+	}
+	_startupResetNoticeShown = true;
+	goa.output("ℹ You have " + entry.resetsCount + " Codex rate-limit reset" +
+		(entry.resetsCount === 1 ? "" : "s") + " available" +
+		" — `/quota:resets` lists them · `/quota:reset` uses one.");
+}
+
+// resetUsageNote is the bare-/quota discoverability line: the resets table row
+// reads as informational only unless the output says how to act on it.
+// Empty when codex has no positive cached count.
+function resetUsageNote() {
+	var entry = _cache.codex;
+	if (!entry || entry.error || typeof entry.resetsCount !== "number" || entry.resetsCount <= 0) {
+		return "";
+	}
+	return "_Codex rate-limit resets: `/quota:resets` lists them · `/quota:reset` uses one._";
+}
+
 // --- Registration ---------------------------------------------------------
+
+// --- Command completions (goa.registerCompletion) ----------------------------
+
+// QUOTA_SUBS lists the static /quota subcommands offered by the completer.
+// Values carry no leading colon: the TUI engine prepends "/quota:".
+var QUOTA_SUBS = [
+	{ value: "refresh", description: "Force-refresh all provider quotas" },
+	{ value: "json", description: "Machine-readable JSON output" },
+	{ value: "auth-status", description: "Show per-provider auth state" },
+	{ value: "resets", description: "List Codex rate-limit reset credits" },
+	{ value: "reset", description: "Consume one Codex rate-limit reset credit" }
+];
+
+// completeMatches filters candidate completions by prefix ("" keeps all).
+function completeMatches(items, prefix) {
+	if (!prefix) {
+		return items;
+	}
+	var out = [];
+	for (var i = 0; i < items.length; i++) {
+		if (items[i].value.indexOf(prefix) === 0) {
+			out.push(items[i]);
+		}
+	}
+	return out;
+}
+
+// providerEntries builds one completion per quota-capable provider id
+// (local fallback excluded). purpose labels the entry for the level it
+// serves: "" → refresh, "login"/"logout" → OAuth action.
+function providerEntries(purpose) {
+	var out = [];
+	for (var id in _fetchers) {
+		if (id === _fallbackId || !_fetchers[id].quotaEndpoint) {
+			continue;
+		}
+		var label = _fetchers[id].name || id;
+		var desc;
+		if (purpose === "login") {
+			desc = "OAuth login for " + label;
+		} else if (purpose === "logout") {
+			desc = "Clear " + label + " OAuth tokens";
+		} else {
+			desc = "Force-refresh " + label + " quota";
+		}
+		out.push({ value: id, description: desc });
+	}
+	return out;
+}
+
+// quotaComplete provides /quota argument completions. prefix is everything
+// after "/quota:" — "", "re", "login:o", "reset:abc" — mirroring the engine's
+// nested-level convention (a parent path plus colon re-queries its children).
+function quotaComplete(prefix) {
+	var p = String(prefix == null ? "" : prefix);
+	var idx = p.indexOf(":");
+	if (idx >= 0) {
+		var sub = p.slice(0, idx);
+		var rest = p.slice(idx + 1);
+		if (sub === "login" || sub === "logout") {
+			return completeMatches(providerEntries(sub), rest);
+		}
+		if (sub === "reset") {
+			// /quota:reset:<partial> → available credit ids, soonest expiry
+			// first, so the default pick is the credit about to expire.
+			return completeMatches(resetCreditEntries(), rest);
+		}
+		return [];
+	}
+	var items = QUOTA_SUBS.concat(providerEntries(""));
+	if (p !== "") {
+		// Credit ids join the top level ONLY once something is typed
+		// ("/quota:r"): the candidates carry full `reset:<id>` values, so the
+		// prefix filter naturally scopes them to the r-family — bare "/quota:"
+		// keeps its short static list. Soonest-expiry first.
+		var credits = resetCreditEntries();
+		for (var i = 0; i < credits.length; i++) {
+			items.push({ value: "reset:" + credits[i].value, description: credits[i].description });
+		}
+	}
+	return completeMatches(items, p);
+}
+
+if (typeof goa.registerCompletion === "function") {
+	goa.registerCompletion("quota", quotaComplete);
+}
 
 goa.registerCommand({
 	name: "quota",
@@ -749,6 +1288,8 @@ goa.registerCommand({
 		"  /quota:refresh         Force-refresh all provider quotas\n" +
 		"  /quota:json            Machine-readable JSON output\n" +
 		"  /quota:auth-status     Show per-provider auth state\n" +
+		"  /quota:resets          List Codex rate-limit reset credit details\n" +
+		"  /quota:reset[:<id>]    Consume one Codex rate-limit reset credit (unique id prefix ok)\n" +
 		"  /quota:login:<id>      OAuth login (plugin-owned providers only)\n" +
 		"  /quota:logout:<id>     Clear plugin-owned OAuth tokens\n" +
 		"  /quota:<id>            Force-refresh one provider",
@@ -790,8 +1331,12 @@ goa.setInterval(function() {
 // goroutine, NOT synchronously at load: provider HTTP calls must never block
 // plugin startup (a slow/hanging endpoint would freeze the whole app boot
 // and delay the first /quota behind the load path — bugs.md "Quota command
-// unresponsive").
+// unresponsive"). Once the prime lands, surface the one-time startup notice
+// when reset credits are available, then flag completion for the tests'
+// deterministic drain.
 goa.setTimeout(function() {
 	refreshAllDue(false);
+	maybeStartupResetNotice();
+	_startupPrimeDone = true;
 	goa.ui.refreshSegment("quota");
 }, 0);

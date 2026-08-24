@@ -5,6 +5,8 @@
 package plugins
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +30,16 @@ type quotaTestEnv struct {
 	scheduler   *Scheduler
 	config      map[string]any
 	bridge      *JSBridge // set by load, used to inject test stubs
+	// observers holds every callback the plugin registered via
+	// goa.registerObserver; emitPluginEvent dispatches to them like the
+	// production EventBus does.
+	observers []func(string, interface{})
+	// oauthTokens maps provider id → Goa-managed token returned by
+	// goa.auth.oauthToken (nil/absent ⇒ auth unavailable, as before).
+	oauthTokens map[string]map[string]any
+	// completions stores JS completers registered via goa.registerCompletion,
+	// keyed by command name (drives the completion tests like the app does).
+	completions map[string]func(prefix string) []Completion
 }
 
 type quotaResponder struct {
@@ -44,16 +56,27 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 		t.Fatal(err)
 	}
 	return &quotaTestEnv{
-		commands:  map[string]func([]string) (string, error){},
-		segments:  NewUIBridge(),
-		hotkeys:   NewHotkeyBridge(),
-		storage:   st,
-		scheduler: NewScheduler(),
+		commands:    map[string]func([]string) (string, error){},
+		segments:    NewUIBridge(),
+		hotkeys:     NewHotkeyBridge(),
+		storage:     st,
+		scheduler:   NewScheduler(),
+		oauthTokens: map[string]map[string]any{},
+		completions: map[string]func(prefix string) []Completion{},
 		config: map[string]any{
 			"providers":      map[string]any{},
 			"activeProvider": "anthropic",
 		},
 	}
+}
+
+// setOAuthToken installs a Goa-managed OAuth token for provider id so the
+// goa_oauth fetchers (codex) pass codexToken()-style checks. Call BEFORE
+// load; the token fn reads live state so later mutations also apply.
+func (e *quotaTestEnv) setOAuthToken(provider string, tok map[string]any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.oauthTokens[provider] = tok
 }
 
 // setActiveProvider sets the active provider id in the mocked goa.config().
@@ -134,6 +157,21 @@ func (e *quotaTestEnv) context() PluginContext {
 			e.commands[name] = run
 			return nil
 		},
+		// RegisterCompletion captures JS completers by command name so tests
+		// can drive goa.registerCompletion the same way the app stores them.
+		RegisterCompletion: func(name string, fn func(prefix string) []Completion) error {
+			e.mu.Lock()
+			e.completions[name] = fn
+			e.mu.Unlock()
+			return nil
+		},
+		// RegisterObserver mirrors production: the bus stores the wrapped
+		// callback and later dispatches events to it (see emitPluginEvent).
+		RegisterObserver: func(cb func(string, interface{})) {
+			e.mu.Lock()
+			e.observers = append(e.observers, cb)
+			e.mu.Unlock()
+		},
 		Extended: &ExtendContext{
 			HTTP:      NewHTTPBridge(),
 			Storage:   e.storage,
@@ -157,6 +195,15 @@ func (e *quotaTestEnv) context() PluginContext {
 				return map[string]string{
 					"ok": "#3fb950", "warn": "#d29922", "critical": "#f85149", "pending": "#8b949e",
 				}[name]
+			},
+			OAuthToken: func(ctx context.Context, provider string) (map[string]any, error) {
+				e.mu.Lock()
+				tok, ok := e.oauthTokens[provider]
+				e.mu.Unlock()
+				if !ok || tok == nil {
+					return nil, fmt.Errorf("no test oauth token for %q", provider)
+				}
+				return tok, nil
 			},
 		},
 	}
@@ -235,13 +282,14 @@ func (e *quotaTestEnv) load(t *testing.T) *JSBridge {
 	return bridge
 }
 
-// drainPrime waits until the plugin's load-time cache prime has completed
-// (cache non-empty under the VM lock) or the deadline passes.
+// drainPrime waits until the plugin's load-time cache prime has completed —
+// including the startup reset notice that runs AFTER the refresh inside the
+// same callback (flagged by _startupPrimeDone) — or the deadline passes.
 func (e *quotaTestEnv) drainPrime(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if e.evalJSBool(t, `Object.keys(_cache).length > 0`) {
+		if e.evalJSBool(t, `_startupPrimeDone === true && Object.keys(_cache).length > 0`) {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -303,6 +351,31 @@ func (e *quotaTestEnv) lastOutput() string {
 		return ""
 	}
 	return e.outputs[len(e.outputs)-1]
+}
+
+// emitPluginEvent dispatches a bus event to every observer the plugin
+// registered via goa.registerObserver, mirroring EventBus.Emit (specific-name
+// handlers first is irrelevant here: plugins register wildcard observers).
+func (e *quotaTestEnv) emitPluginEvent(name string, payload interface{}) {
+	e.mu.Lock()
+	obs := append([]func(string, interface{}){}, e.observers...)
+	e.mu.Unlock()
+	for _, o := range obs {
+		o(name, payload)
+	}
+}
+
+// outputCount returns how many goa.output messages contain substr.
+func (e *quotaTestEnv) outputCount(substr string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n := 0
+	for _, m := range e.outputs {
+		if strings.Contains(m, substr) {
+			n++
+		}
+	}
+	return n
 }
 
 // lastBrowserURL returns the most recent URL passed to goa.openBrowser.

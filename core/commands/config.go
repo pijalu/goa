@@ -861,6 +861,7 @@ func (m *configMenu) settingLoopThresholds() {
 		{Value: "stream_min_period", Label: "Stream-loop min unit length (chars)", Description: thresholdLabel(cfg.Execution.StreamLoopMinPeriod, 50)},
 		{Value: "stream_strikes", Label: "Stream-loop stop strikes", Description: thresholdLabel(cfg.Execution.StreamLoopMaxStrikes, 3)},
 		{Value: "stream_reset_after", Label: "Stream-loop strike reset (clean msgs/tool calls)", Description: thresholdLabel(cfg.Execution.StreamLoopResetAfter, 10)},
+		{Value: "runaway_repeats", Label: "Runaway-loop stop repeats", Description: thresholdLabel(cfg.Execution.RunawayLoopMaxRepeats, 2)},
 	}
 	m.ctx.SelectOption("Loop threshold settings:", items, "", func(selected string, ok bool) {
 		if !ok {
@@ -919,6 +920,7 @@ func (m *configMenu) handleLoopThresholdSetting(selected string) {
 		"stream_min_period":           {key: "execution.stream_loop_min_period", prompt: "Stream-loop min repeated unit length in chars (>=8, 0 = default 50):", intVal: &cfg.Execution.StreamLoopMinPeriod},
 		"stream_strikes":              {key: "execution.stream_loop_max_strikes", prompt: "Stream-loop warnings before stop (>=1):", intVal: &cfg.Execution.StreamLoopMaxStrikes},
 		"stream_reset_after":          {key: "execution.stream_loop_reset_after", prompt: "Clean messages/tool calls to reset strikes (>=1):", intVal: &cfg.Execution.StreamLoopResetAfter},
+		"runaway_repeats":             {key: "execution.runaway_loop_max_repeats", prompt: "Runaway-loop repeats before stop (>=1, 0 = default 2):", intVal: &cfg.Execution.RunawayLoopMaxRepeats},
 	}
 	f, ok := fields[selected]
 	if !ok {

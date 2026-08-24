@@ -333,6 +333,13 @@ func (a *App) activatePluginUI(engine *tui.TUI) {
 	// Segments: push the initial render, then re-render on refresh requests.
 	a.pushPluginSegments(engine)
 	go a.drainSegmentRefreshes(engine, rt)
+	// Confirms (plan §4): attach the bridge consumer to the FIFO presenter
+	// loop. Idempotent-safe: activatePluginUI may run twice (sync + async
+	// load), and a second drain would double-present — guard by only
+	// starting when no drain is attached yet.
+	if rt.confirmDrainActive.CompareAndSwap(false, true) {
+		a.startConfirmDrain(engine, rt)
+	}
 }
 
 // pushPluginSegments evaluates every registered plugin segment on the plugin
@@ -361,10 +368,16 @@ func (a *App) pushPluginSegments(engine *tui.TUI) {
 
 // drainSegmentRefreshes re-renders segments whenever a plugin signals a
 // content change (carousel tick, quota refresh). Exits when the engine stops.
+// Mutations are applied on the command loop (like every other footer writer:
+// runFooterEventReader, agent/chat event readers) — a drain goroutine must
+// never mutate component state off-loop. Routing through apply fixes the
+// data race the quota plugin's setTimeout(0) refreshSegment exposed under
+// -race; plugins_quota_filmstrip_test.go runs the real Actor loops so the
+// regression stays covered under production serialization.
 func (a *App) drainSegmentRefreshes(engine *tui.TUI, rt *pluginRuntime) {
 	ch := rt.ui.RefreshRequests()
 	for range ch {
-		a.pushPluginSegments(engine)
+		a.apply(func() { a.pushPluginSegments(engine) })
 	}
 }
 
@@ -389,6 +402,10 @@ func (a *App) startAsyncPluginLoad(engine *tui.TUI) {
 			// TUI mutations stay serialized with input/render handling.
 			if subs.getPluginRT() != nil {
 				engine.ApplySync(func() { a.activatePluginUI(engine) })
+				// M6 §7 step 2: re-prompt for stale/missing hook grants
+				// (version bump or changed fingerprint). Runs on its own
+				// goroutine so the pluginsLoaded gate never waits on UI.
+				go a.promptPendingHookApprovals(engine)
 			}
 		}()
 	})

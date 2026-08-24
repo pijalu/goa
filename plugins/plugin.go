@@ -10,6 +10,7 @@ package plugins
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,16 +21,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// PluginHookDecl is one declared agent hook in a plugin manifest (plugins
+// plan §7 step 1). The declaration list is the approval contract: the user
+// reviews exactly these (point, mode) rows at install time, and M6's
+// enforcement layer rejects any goa.registerHook call not covered by both the
+// declaration and a stored grant.
+type PluginHookDecl struct {
+	Point       string `yaml:"point"` // wire id — see ValidHookPoints
+	Mode        string `yaml:"mode"`  // notify | intercept
+	Description string `yaml:"description,omitempty"` // shown on the review card
+}
+
 // PluginDef describes a plugin's manifest.
 type PluginDef struct {
-	ID            string   `yaml:"id"`
-	Name          string   `yaml:"name"`
-	Version       string   `yaml:"version"`
-	Entry         string   `yaml:"entry"`
-	Description   string   `yaml:"description"`
-	GoaMinVersion string   `yaml:"goa_min_version"`
-	SkillsDir     string   `yaml:"skills_dir,omitempty"`
-	Permissions   []string `yaml:"permissions,omitempty"`
+	ID            string           `yaml:"id"`
+	Name          string           `yaml:"name"`
+	Version       string           `yaml:"version"`
+	Entry         string           `yaml:"entry"`
+	Description   string           `yaml:"description"`
+	GoaMinVersion string           `yaml:"goa_min_version"`
+	SkillsDir     string           `yaml:"skills_dir,omitempty"`
+	Permissions   []string         `yaml:"permissions,omitempty"`
+	Hooks         []PluginHookDecl `yaml:"hooks,omitempty"`
 }
 
 // ToolHandler is called when a JS plugin registers a tool via goa.registerTool.
@@ -38,9 +51,28 @@ type ToolHandler func(name, description string, execute func(map[string]any) (in
 // CommandHandler is called when a JS plugin registers a command via goa.registerCommand.
 type CommandHandler func(name string, aliases []string, shortHelp, longHelp string, run func([]string) (string, error)) error
 
+// Completion is one argument-completion candidate a plugin offers for its
+// command: Value is the segment inserted after "/<cmd>:" (WITHOUT the command
+// prefix — the TUI engine prepends it), Description is shown in the picker.
+type Completion struct {
+	Value       string
+	Description string
+}
+
+// CompletionHandler is called when JS calls goa.registerCompletion(name, fn).
+// fn(prefix) receives the raw arg prefix — everything the user typed after
+// "/<cmd>:" (e.g. "", "re", "login:op") — and returns candidates. Nested
+// levels re-invoke fn with the parent path plus colon ("login:").
+type CompletionHandler func(name string, fn func(prefix string) []Completion) error
+
 // ObserverHandler receives a callback that will be called for every event.
 // The callback receives (eventName string, payload interface{}).
 type ObserverHandler func(callback func(string, interface{}))
+
+// HookRegisterHandler is invoked when a JS plugin calls goa.registerHook.
+// The spec's PluginID is stamped by the bridge from its own manifest, so the
+// shared PluginContext needs no per-plugin cloning.
+type HookRegisterHandler func(spec HookSpec, handler HookHandler) error
 
 // CallToolHandler is called when a JS plugin invokes goa.callTool(name, params).
 type CallToolHandler func(name string, params map[string]any) (interface{}, error)
@@ -56,10 +88,17 @@ type PluginContext struct {
 	Logger            LoggerAPI
 	RegisterTool      ToolHandler                             // called when JS calls goa.registerTool
 	RegisterCommand   CommandHandler                          // called when JS calls goa.registerCommand
-	RegisterObserver  ObserverHandler                         // called when JS calls goa.registerObserver
+	// RegisterCompletion is called when JS calls goa.registerCompletion(name,
+	// fn) to provide argument completions for a command. Nil disables the API
+	// (older hosts / minimal harnesses); plugins must degrade gracefully.
+	RegisterCompletion CompletionHandler
+	RegisterObserver   ObserverHandler                         // called when JS calls goa.registerObserver
 	RegisterLifecycle func(hook HookType, h LifecycleHandler) // called when JS calls goa.registerLifecycle
 	CallTool          CallToolHandler                         // called when JS calls goa.callTool
-	EventBus          *EventBus
+	// RegisterHook is called when JS calls goa.registerHook. Nil disables the
+	// API (plugins receive the standard "not configured" error string).
+	RegisterHook HookRegisterHandler
+	EventBus     *EventBus
 	// Extended carries optional bridges (http, storage, timers, ui, hotkeys,
 	// browser, output, sessionUsage). Nil disables those goa.* APIs.
 	Extended *ExtendContext
@@ -79,6 +118,18 @@ type JSBridge struct {
 	vm  *goja.Runtime
 	ctx PluginContext
 	def PluginDef
+}
+
+// hasPermission reports whether the bridge's manifest declares the named
+// permission (M6 §7 capability gating). Unknown permission names never reach
+// this check — validatePluginDef rejects them at discovery.
+func (b *JSBridge) hasPermission(perm string) bool {
+	for _, p := range b.def.Permissions {
+		if p == perm {
+			return true
+		}
+	}
+	return false
 }
 
 // vmMu serializes every JavaScript execution across all plugins. Goja
@@ -163,9 +214,13 @@ func (b *JSBridge) setupGlobals() {
 
 	goaObj.Set("registerTool", b.wrapRegisterTool())
 	goaObj.Set("registerCommand", b.wrapRegisterCommand())
+	if b.ctx.RegisterCompletion != nil {
+		goaObj.Set("registerCompletion", b.wrapRegisterCompletion())
+	}
 	goaObj.Set("registerObserver", b.wrapRegisterObserver())
 	goaObj.Set("registerLifecycle", b.wrapRegisterLifecycle())
 	goaObj.Set("callTool", b.wrapCallTool())
+	b.setupHooks(goaObj)
 
 	b.setupExtendedGlobals(goaObj)
 
@@ -247,6 +302,72 @@ func (b *JSBridge) wrapRegisterCommand() func(goja.FunctionCall) goja.Value {
 		}
 		return b.vm.ToValue("command registered: " + name)
 	}
+}
+
+// wrapRegisterCompletion returns a JS-callable function that implements
+// goa.registerCompletion(name, fn): fn(prefix) supplies argument completions
+// for the named command. The JS function is invoked on the completer's
+// goroutine under the VM lock (buildCompletionWrapper owns locking), so it may
+// read plugin state (_fetchers, _cache) freely.
+func (b *JSBridge) wrapRegisterCompletion() func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if b.ctx.RegisterCompletion == nil {
+			return b.vm.ToValue("error: CompletionHandler not configured")
+		}
+		name := call.Argument(0).String()
+		fnVal := call.Argument(1).Export()
+		wrapper, err := b.buildCompletionWrapper(fnVal)
+		if err != nil {
+			return b.vm.ToValue("error: " + err.Error())
+		}
+		if err := b.ctx.RegisterCompletion(name, wrapper); err != nil {
+			return b.vm.ToValue("error: " + err.Error())
+		}
+		return b.vm.ToValue("completions registered: " + name)
+	}
+}
+
+// buildCompletionWrapper converts a JS prefix→completions function into a Go
+// callable. Runs the JS frame under the global VM lock (the TUI completer
+// calls this off the command path); malformed return shapes degrade to an
+// empty candidate list rather than erroring the keystroke.
+func (b *JSBridge) buildCompletionWrapper(fn interface{}) (func(prefix string) []Completion, error) {
+	jsFn, ok := fn.(func(goja.FunctionCall) goja.Value)
+	if !ok {
+		return nil, fmt.Errorf("complete must be a function")
+	}
+	return func(prefix string) []Completion {
+		leave := enterVM()
+		defer leave()
+		unlock := lockVM()
+		defer unlock()
+
+		out := []Completion{}
+		func() {
+			defer func() { _ = recover() }() // a throwing completer must not break typing
+			call := goja.FunctionCall{}
+			call.Arguments = append(call.Arguments, b.vm.ToValue(prefix))
+			res := jsFn(call)
+			arr, ok := res.Export().([]interface{})
+			if !ok {
+				return
+			}
+			for _, item := range arr {
+				m, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				c := Completion{
+					Value:       fmt.Sprint(m["value"]),
+					Description: fmt.Sprint(m["description"]),
+				}
+				if c.Value != "" && c.Value != "<nil>" {
+					out = append(out, c)
+				}
+			}
+		}()
+		return out
+	}, nil
 }
 
 // extractAliases parses the "aliases" field from a JS command object.
@@ -524,6 +645,9 @@ type PluginLoader struct {
 	dirs    []string
 	enabled []string // plugin IDs; ["*"] = all
 	bridges []*JSBridge
+	// loaded tracks plugin ids already instantiated in this LoadAll pass so
+	// the same id found in a second scanned directory never loads twice.
+	loaded map[string]bool
 }
 
 // NewPluginLoader creates a plugin loader.
@@ -531,6 +655,7 @@ func NewPluginLoader(dirs, enabled []string) *PluginLoader {
 	return &PluginLoader{
 		dirs:    dirs,
 		enabled: enabled,
+		loaded:  map[string]bool{},
 	}
 }
 
@@ -574,12 +699,30 @@ func (pl *PluginLoader) loadPlugin(dir, name string, ctx PluginContext, allEnabl
 
 	def, err := loadManifest(manifestPath)
 	if err != nil {
-		return nil // invalid manifest, skip
+		// Malformed manifests refuse the plugin but never abort the scan
+		// (consistent with the existing skip behavior); the reason is logged
+		// so config errors are diagnosable instead of silently vanishing
+		// (M6 §7 step 1).
+		log.Printf("Warning: refusing plugin %s: %v\n", filepath.Join(dir, name), err)
+		return nil
 	}
 
 	if !allEnabled && !isEnabled(def.ID, pl.enabled) {
 		return nil // not enabled
 	}
+
+	// One VM per plugin id: a duplicate id means the same plugin exists in
+	// more than one scanned directory (e.g. a stale materialized version dir
+	// that survived an upgrade). Loading both would double every side effect
+	// (outputs, segments, observers) and the first-registered command wins —
+	// possibly the STALE copy. Skip with a loud log; MaterializeBundled's
+	// version pruning makes this unreachable for bundled plugins in practice.
+	if pl.loaded[def.ID] {
+		log.Printf("Warning: duplicate plugin id %s at %s — already loaded from another directory, skipping stale copy\n",
+			def.ID, filepath.Join(dir, name))
+		return nil
+	}
+	pl.loaded[def.ID] = true
 
 	bridge := NewJSBridge(*def, ctx)
 	entryPath := filepath.Join(dir, name, def.Entry)
@@ -591,7 +734,9 @@ func (pl *PluginLoader) loadPlugin(dir, name string, ctx PluginContext, allEnabl
 	return nil
 }
 
-// loadManifest reads and parses a plugin.yaml file.
+// loadManifest reads and parses a plugin.yaml file, enforcing the semantic
+// validation shared with ValidateManifest so malformed manifests refuse the
+// plugin everywhere manifests are honored.
 func loadManifest(path string) (*PluginDef, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -604,10 +749,51 @@ func loadManifest(path string) (*PluginDef, error) {
 	if def.ID == "" {
 		return nil, fmt.Errorf("plugin %s: missing id", path)
 	}
+	if err := validatePluginDef(&def); err != nil {
+		return nil, fmt.Errorf("plugin %s: %w", path, err)
+	}
 	if def.Entry == "" {
 		def.Entry = "plugin.js"
 	}
 	return &def, nil
+}
+
+// knownPermissions lists every permission name Goa understands in a plugin
+// manifest. Unknown names fail validation so typos surface as config errors
+// instead of silently granting nothing (or worse, being read as consent).
+var knownPermissions = map[string]bool{
+	"provider-keys": true,
+	"oauth-token":   true,
+	"ui-confirm":    true,
+	"account-write": true,
+}
+
+// validatePluginDef checks the semantic constraints of the M6 manifest
+// extensions: hook declarations must name known points and modes without
+// duplicates (the review card and grant store key on (mode, point)), and
+// permissions must be recognized names (§7 step 1).
+func validatePluginDef(def *PluginDef) error {
+	seen := make(map[string]bool, len(def.Hooks))
+	for i, h := range def.Hooks {
+		if !isValidHookPoint(h.Point) {
+			return fmt.Errorf("hook #%d: unknown point %q (valid points: %s)", i+1, h.Point, strings.Join(ValidHookPoints(), ", "))
+		}
+		mode := HookMode(h.Mode)
+		if mode != HookNotify && mode != HookIntercept {
+			return fmt.Errorf("hook #%d (%s): mode must be %q or %q, got %q", i+1, h.Point, HookNotify, HookIntercept, h.Mode)
+		}
+		key := string(mode) + "\x00" + h.Point
+		if seen[key] {
+			return fmt.Errorf("duplicate hook declaration %q at point %q", h.Mode, h.Point)
+		}
+		seen[key] = true
+	}
+	for _, p := range def.Permissions {
+		if !knownPermissions[p] {
+			return fmt.Errorf("unknown permission %q (valid permissions: oauth-token, provider-keys, ui-confirm, account-write)", p)
+		}
+	}
+	return nil
 }
 
 // isEnabled checks if a plugin ID is in the enabled list.
@@ -637,7 +823,8 @@ func LoadFrom(dir string, ctx PluginContext) (*JSBridge, error) {
 	return bridge, nil
 }
 
-// ValidateManifest checks that a plugin.yaml has all required fields.
+// ValidateManifest checks that a plugin.yaml has all required fields and
+// that its hooks/permissions declarations satisfy the M6 semantic contract.
 func ValidateManifest(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -652,6 +839,9 @@ func ValidateManifest(path string) error {
 	}
 	if def.Name == "" {
 		return fmt.Errorf("plugin manifest missing required field: name")
+	}
+	if err := validatePluginDef(&def); err != nil {
+		return fmt.Errorf("invalid plugin manifest: %w", err)
 	}
 	return nil
 }

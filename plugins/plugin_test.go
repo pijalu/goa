@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestValidateManifest_Valid(t *testing.T) {
@@ -389,3 +390,83 @@ func TestNewJSBridge_CallTool_NoHandler(t *testing.T) {
 		t.Errorf("expected error message, got %q", result.String())
 	}
 }
+
+// TestPluginLoader_DuplicateIDLoadsOnce pins the one-VM-per-id guard: when
+// the same plugin id is discovered in two scanned directories (e.g. a stale
+// materialized version dir), only ONE bridge may load — a second VM would
+// double every side effect and its command registrations would collide.
+func TestPluginLoader_DuplicateIDLoadsOnce(t *testing.T) {
+	root := t.TempDir()
+	dirA := filepath.Join(root, "a", "dup")
+	dirB := filepath.Join(root, "b", "dup")
+	for _, d := range []string{dirA, dirB} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		manifest := "id: dup\nname: Dup\nversion: 1.0.0\nentry: plugin.js\n"
+		if err := os.WriteFile(filepath.Join(d, "plugin.yaml"), []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Each copy emits an output on load — two VMs would produce TWO outputs.
+	js := "goa.output('loaded');\n"
+	for _, d := range []string{dirA, dirB} {
+		if err := os.WriteFile(filepath.Join(d, "plugin.js"), []byte(js), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	outputs := []string{}
+	plCtx := PluginContext{
+		Logger: LoggerAPI{},
+		Extended: &ExtendContext{
+			Output: func(m string) { outputs = append(outputs, m) },
+		},
+	}
+	pl := NewPluginLoader([]string{filepath.Join(root, "a"), filepath.Join(root, "b")}, []string{"dup"})
+	bridges, err := pl.LoadAll(plCtx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(bridges) != 1 {
+		t.Fatalf("expected exactly 1 bridge for duplicated id, got %d", len(bridges))
+	}
+	if len(outputs) != 1 {
+		t.Fatalf("duplicate VM ran side effects: %d load outputs, want 1", len(outputs))
+	}
+}
+
+// TestRegisterCompletion_GuardedWhenUnsupported verifies the JS-side guard:
+// with no CompletionHandler the goa object has no registerCompletion member,
+// so plugins can feature-detect with typeof instead of erroring at load.
+func TestRegisterCompletion_GuardedWhenUnsupported(t *testing.T) {
+	restore := setHTTPDo(func(b *HTTPBridge, req HTTPRequest) HTTPResponse {
+		return HTTPResponse{Status: 404, Body: "{}", Headers: map[string]string{}}
+	})
+	defer restore()
+
+	bridge, err := LoadFrom(quotaPluginDir, PluginContext{
+		Logger: LoggerAPI{},
+		Extended: &ExtendContext{
+			UI:        NewUIBridge(),
+			Hotkeys:   NewHotkeyBridge(),
+			Scheduler: NewScheduler(),
+			Output:    func(string) {},
+		},
+	})
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	unlock := lockVM()
+	defer unlock()
+	v, err := bridge.vm.RunString(`typeof goa.registerCompletion`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.String() != "undefined" {
+		t.Fatalf("registerCompletion should be absent without a handler, got %q", v.String())
+	}
+}
+
+// compile-time shape check for fstest usage parity with other tests in pkg
+var _ fstest.MapFS

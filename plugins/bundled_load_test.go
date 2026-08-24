@@ -79,6 +79,57 @@ func TestMaterializeBundled_Idempotent(t *testing.T) {
 	}
 }
 
+// TestMaterializeBundled_PrunesStaleVersions pins the upgrade cleanup: after
+// materializing a NEWER version of the same plugin id, older <id>@<ver> dirs
+// must be GONE. Stale copies are not cosmetic — the loader scans the whole
+// bundled dir, so a leftover old version loads too and its first-registered
+// /quota command wins over the current one (2026-08-24 /quota:resets bug).
+func TestMaterializeBundled_PrunesStaleVersions(t *testing.T) {
+	root := t.TempDir()
+	mgr, err := NewManager(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundledRoot := filepath.Join(root, "bundled")
+
+	old := BundledSource{ID: "provider-quota", Version: "1.0.0", Root: "bundled/provider-quota", ReadFile: bundledReadFile, ReadDir: bundledReadDir}
+	if _, err := mgr.MaterializeBundled(old); err != nil {
+		t.Fatalf("materialize old: %v", err)
+	}
+
+	new := old
+	new.Version = "2.0.0"
+	target, err := mgr.MaterializeBundled(new)
+	if err != nil {
+		t.Fatalf("materialize new: %v", err)
+	}
+
+	entries, err := os.ReadDir(bundledRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 1 || names[0] != "provider-quota@2.0.0" {
+		t.Fatalf("stale versions not pruned: bundled dir = %v (want only provider-quota@2.0.0)", names)
+	}
+	if target != filepath.Join(bundledRoot, "provider-quota@2.0.0") {
+		t.Fatalf("unexpected target %q", target)
+	}
+
+	// Pruning also runs on the reuse fast path (no drift): re-materializing
+	// the current version keeps the dir singleton.
+	if _, err := mgr.MaterializeBundled(new); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ = os.ReadDir(bundledRoot)
+	if len(entries) != 1 {
+		t.Fatalf("fast-path materialize broke pruning: %d dirs", len(entries))
+	}
+}
+
 // TestMaterializeBundled_RequiresIDAndVersion validates inputs.
 func TestMaterializeBundled_RequiresIDAndVersion(t *testing.T) {
 	mgr, _ := NewManager(t.TempDir(), nil)

@@ -95,12 +95,27 @@ func (s *Scheduler) start(cb func(), period time.Duration, oneshot bool) int {
 
 	go func() {
 		if oneshot {
+			// One-shots deregister from the map BEFORE firing: fired timers
+			// would otherwise accumulate until Stop — an unbounded leak for
+			// long-lived sessions whose plugins schedule zero-delay timers
+			// repeatedly. drop() only forgets the entry and leaves stop
+			// open; a user Clear racing between start and fire still wins
+			// because fireOnce observes the closed channel.
+			s.drop(id)
 			s.fireOnce(t, cb)
 			return
 		}
 		s.loop(t, cb)
 	}()
 	return id
+}
+
+// drop unregisters a timer id without signaling cancellation. Clear is the
+// cancel path (delete + close stop); drop only forgets the entry.
+func (s *Scheduler) drop(id int) {
+	s.mu.Lock()
+	delete(s.timers, id)
+	s.mu.Unlock()
 }
 
 // fireOnce waits for the period then invokes one callback, self-clearing.

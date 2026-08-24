@@ -778,6 +778,14 @@ func (t *TUI) HandleKeys() bool { return !t.stopped.Load() }
 // (via Stop). Goroutines should block on this instead of polling HandleKeys().
 func (t *TUI) Stopped() <-chan struct{} { return t.done }
 
+// OnCommandLoop reports whether the CALLER is running on the commandLoop
+// goroutine. Hosts inject this into plugin bridges as the "must never block"
+// detector: a blocking plugin call made from the loop would freeze input and
+// rendering — and any modal it waits on can only be served by that same loop.
+func (t *TUI) OnCommandLoop() bool {
+	return t.loopsRunning.Load() && t.loopGoroutine.Load() == goroutineID()
+}
+
 // ── Key handling ──
 // The TUI engine routes ALL input to the focused component. There are no global TUI-level scroll handlers for raw input events.
 // key interceptors (handleScrollKey) or mouse event handlers. Scrolling is

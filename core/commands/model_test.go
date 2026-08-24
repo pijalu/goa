@@ -195,7 +195,9 @@ type testProviderManager struct {
 }
 
 func (p *testProviderManager) Active() (*config.ProviderConfig, string) {
-	return &config.ProviderConfig{ID: "local", Name: "Local", Endpoint: "http://localhost:1234/v1", DefaultModel: "llama3"}, "llama3"
+	// ModelConfig (Config-level) replaces the deprecated DefaultModel field
+	// on ProviderConfig (SA1019); tests address models by ID directly.
+	return &config.ProviderConfig{ID: "local", Name: "Local", Endpoint: "http://localhost:1234/v1"}, "llama3"
 }
 
 func (p *testProviderManager) SetActive(providerID, model string) error { return nil }

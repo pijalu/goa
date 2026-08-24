@@ -28,5 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-
-
+(none — all reported items fixed, validated, and archived; see
+docs/archive/fix-runaway-loop-tool-progress-false-positive.2026-08-24.md and
+docs/archive/fix-selector-blank-lines-between-entries.2026-08-24.md)

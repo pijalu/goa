@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
+	"sync/atomic"
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal/agentic"
@@ -35,6 +37,22 @@ type pluginRuntime struct {
 	hotkeys   *plugins.HotkeyBridge
 	bus       *plugins.EventBus
 	scheduler *plugins.Scheduler
+	// hooks is the boot-created shared registry (subsystems.pluginHooks);
+	// goa.registerHook calls land here and the agent-side sink reads it live.
+	hooks *plugins.HookRegistry
+	// enforcer validates hook registrations against manifests + grants.json
+	// (M6 §7). Installed into the registry's validator slot before any plugin
+	// script runs; consulted afterwards for re-approval prompts.
+	enforcer *plugins.HookEnforcer
+	// confirmDrainActive guards the confirm presenter goroutine against
+	// double-start (activatePluginUI runs both synchronously at startup and
+	// again on the command loop after the async plugin load).
+	confirmDrainActive atomic.Bool
+	// completions maps command name → JS-provided argument completer
+	// (goa.registerCompletion). Written during plugin load, read from the
+	// TUI completer goroutine on every keystroke — hence the RWMutex.
+	completionsMu sync.RWMutex
+	completions   map[string]func(prefix string) []plugins.Completion
 }
 
 // loadEnabledPlugins materializes bundled plugins, then loads all enabled
@@ -66,6 +84,20 @@ func loadEnabledPlugins(s *subsystems) {
 	}
 	loader := plugins.NewPluginLoader(dirs, enabled)
 	rt := newPluginRuntime(s)
+
+	// M6 §7 step 4: grant-backed enforcement installs into the registry's
+	// validator slot BEFORE any plugin script runs. A fresh enforcer per load
+	// keeps manifest declarations and grants in sync at every startup/reload.
+	enforcer := plugins.NewHookEnforcer(plugins.NewGrantStore(s.pluginMgr.Root()), s.headless)
+	enforcer.ObserveDir(s.pluginMgr.Root(), false)
+	if bundledDir != "" {
+		enforcer.ObserveDir(bundledDir, true) // bundled plugins ship pre-approved
+	}
+	if rt.hooks != nil {
+		rt.hooks.SetAllow(enforcer.Allow)
+	}
+	rt.enforcer = enforcer
+
 	bridges, err := loader.LoadAll(rt.contextFor(s))
 	if err != nil {
 		log.Printf("Warning: failed to load plugins: %v\n", err)
@@ -91,13 +123,26 @@ func (s *subsystems) getPluginRT() *pluginRuntime {
 	return s.pluginRT
 }
 
-// newPluginRuntime builds the shared extended bridges for a plugin load.
+// newPluginRuntime builds the shared extended bridges for a plugin load. It
+// reuses the boot-created hook registry + scheduler (M2 §3.5) so the sink
+// already held by agents observes registrations from these plugins; fresh
+// instances are only created when boot wiring did not run (tests).
 func newPluginRuntime(s *subsystems) *pluginRuntime {
+	sched := s.pluginSched
+	if sched == nil {
+		sched = plugins.NewScheduler()
+	}
+	hooks := s.pluginHooks
+	if hooks == nil {
+		hooks = plugins.NewHookRegistry(nil)
+	}
 	return &pluginRuntime{
-		ui:        plugins.NewUIBridge(),
-		hotkeys:   plugins.NewHotkeyBridge(),
-		bus:       plugins.NewEventBus(),
-		scheduler: plugins.NewScheduler(),
+		ui:          plugins.NewUIBridge(),
+		hotkeys:     plugins.NewHotkeyBridge(),
+		bus:         plugins.NewEventBus(),
+		scheduler:   sched,
+		hooks:       hooks,
+		completions: map[string]func(prefix string) []plugins.Completion{},
 	}
 }
 
@@ -132,16 +177,18 @@ func (rt *pluginRuntime) contextFor(s *subsystems) plugins.PluginContext {
 	return plugins.PluginContext{
 		// Live config: goa.config() re-reads the current provider/model on
 		// every call so plugins (e.g. quota) see switches immediately.
-		Config:            pluginConfigFor(s),
-		ConfigFunc:        func() map[string]any { return pluginConfigFor(s) },
-		Logger:            pluginLogger(),
-		RegisterTool:      pluginRegisterTool(s),
-		RegisterCommand:   rt.pluginRegisterCommand(s),
-		RegisterObserver:  rt.pluginRegisterObserver(),
-		RegisterLifecycle: pluginRegisterLifecycle(s),
-		CallTool:          pluginCallTool(s),
-		EventBus:          rt.bus,
-		Extended:          rt.extendedContext(s),
+		Config:             pluginConfigFor(s),
+		ConfigFunc:         func() map[string]any { return pluginConfigFor(s) },
+		Logger:             pluginLogger(),
+		RegisterTool:       pluginRegisterTool(s),
+		RegisterCommand:    rt.pluginRegisterCommand(s),
+		RegisterCompletion: rt.pluginRegisterCompletion(),
+		RegisterObserver:   rt.pluginRegisterObserver(),
+		RegisterLifecycle:  pluginRegisterLifecycle(s),
+		CallTool:           pluginCallTool(s),
+		RegisterHook:       rt.pluginRegisterHook(s),
+		EventBus:           rt.bus,
+		Extended:           rt.extendedContext(s),
 	}
 }
 
@@ -327,6 +374,10 @@ func (rt *pluginRuntime) pluginRegisterCommand(s *subsystems) func(string, []str
 			shortHelp: shortHelp,
 			longHelp:  longHelp,
 			run:       run,
+			// Lazy lookup: the JS completer may register AFTER the command.
+			completions: func() func(prefix string) []plugins.Completion {
+				return rt.completionFor(name)
+			},
 		}
 		if err := s.registry.Register(cmd); err != nil {
 			return err
@@ -334,6 +385,32 @@ func (rt *pluginRuntime) pluginRegisterCommand(s *subsystems) func(string, []str
 		log.Printf("[plugin] registered command /%s\n", name)
 		return nil
 	}
+}
+
+// pluginRegisterCompletion wires goa.registerCompletion into the runtime's
+// completion map so pluginCommandWrapper.CompleteArgs can consult it lazily
+// (completions may register after the command itself).
+func (rt *pluginRuntime) pluginRegisterCompletion() plugins.CompletionHandler {
+	return func(name string, fn func(prefix string) []plugins.Completion) error {
+		if name == "" || fn == nil {
+			return fmt.Errorf("registerCompletion requires a command name and a function")
+		}
+		rt.completionsMu.Lock()
+		defer rt.completionsMu.Unlock()
+		if rt.completions == nil {
+			rt.completions = map[string]func(prefix string) []plugins.Completion{}
+		}
+		rt.completions[name] = fn
+		log.Printf("[plugin] registered completions for /%s\n", name)
+		return nil
+	}
+}
+
+// completionFor returns the JS-provided completer for a command name, if any.
+func (rt *pluginRuntime) completionFor(name string) func(prefix string) []plugins.Completion {
+	rt.completionsMu.RLock()
+	defer rt.completionsMu.RUnlock()
+	return rt.completions[name]
 }
 
 // pluginRegisterObserver subscribes JS observers to the plugin event bus.
@@ -344,12 +421,59 @@ func (rt *pluginRuntime) pluginRegisterObserver() plugins.ObserverHandler {
 	}
 }
 
+// pluginRegisterHook routes goa.registerHook calls into the shared registry.
+// The bridge stamps spec.PluginID from its own manifest, so the shared
+// PluginContext needs no per-plugin cloning. Registrations become visible to
+// agents immediately (the sink reads this live registry).
+func (rt *pluginRuntime) pluginRegisterHook(s *subsystems) plugins.HookRegisterHandler {
+	return func(spec plugins.HookSpec, handler plugins.HookHandler) error {
+		if rt.hooks == nil {
+			return fmt.Errorf("hook registry not available")
+		}
+		if err := rt.hooks.Register(spec, handler); err != nil {
+			// M6 §7 step 4: refusals surface both in the log and on the
+			// goa.output channel so the user sees why a plugin lost a hook.
+			log.Printf("[plugin] rejected hook registration: %v\n", err)
+			emitPluginChat(s, fmt.Sprintf("⚠ Plugin hook rejected (%s@%s): %v", spec.Point, spec.Mode, err))
+			return err
+		}
+		log.Printf("[plugin] registered hook %s@%s (%s)\n", spec.Name, spec.Point, spec.Mode)
+		return nil
+	}
+}
+
 // EmitEvent broadcasts an event to all plugin observers (wildcard bus).
 func (rt *pluginRuntime) EmitEvent(name string, payload interface{}) {
 	if rt == nil || rt.bus == nil {
 		return
 	}
 	rt.bus.Emit(name, payload)
+}
+
+// EmitRateLimitToPlugins forwards an agentic EventRateLimit onto the plugin
+// event bus as "rate_limit_exceeded" (plugins plan §6 step 3). Wildcard
+// observers (goa.registerObserver) receive the payload documented in the plan:
+// provider, model, retry_after_ms, will_retry — plus attempt and classified
+// for consumers that want the full classification. It is a no-op for any other
+// event type, without a plugin runtime (plugins disabled), or without a
+// subsystems handle, so call sites can forward unconditionally.
+func EmitRateLimitToPlugins(s *subsystems, ev *agentic.OutputEvent) {
+	if s == nil || ev == nil || ev.Type != agentic.EventRateLimit || ev.RateLimit == nil {
+		return
+	}
+	rl := ev.RateLimit
+	rt := s.getPluginRT()
+	if rt == nil {
+		return
+	}
+	rt.EmitEvent("rate_limit_exceeded", map[string]interface{}{
+		"provider":       rl.Provider,
+		"model":          rl.Model,
+		"attempt":        rl.Attempt,
+		"retry_after_ms": rl.RetryAfterMS,
+		"classified":     rl.Classified,
+		"will_retry":     rl.WillRetry,
+	})
 }
 
 func pluginRegisterLifecycle(s *subsystems) func(plugins.HookType, plugins.LifecycleHandler) {
@@ -456,6 +580,10 @@ type pluginCommandWrapper struct {
 	shortHelp string
 	longHelp  string
 	run       func([]string) (string, error)
+	// completions returns the JS-provided completer for this command, if it
+	// registered one via goa.registerCompletion. Nil-safe: nil ⇒ no arg
+	// completions (previous behavior for all plugin commands).
+	completions func() func(prefix string) []plugins.Completion
 }
 
 func (c *pluginCommandWrapper) Name() string      { return c.name }
@@ -473,7 +601,19 @@ func (c *pluginCommandWrapper) LongHelp() string {
 	return c.ShortHelp()
 }
 func (c *pluginCommandWrapper) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	return nil
+	if c.completions == nil {
+		return nil
+	}
+	fn := c.completions()
+	if fn == nil {
+		return nil
+	}
+	comps := fn(prefix)
+	out := make([]core.ArgCompletion, 0, len(comps))
+	for _, comp := range comps {
+		out = append(out, core.ArgCompletion{Value: comp.Value, Description: comp.Description})
+	}
+	return out
 }
 
 // Run executes the JS command, writing its output string into the router's
@@ -491,3 +631,78 @@ func (c *pluginCommandWrapper) Run(ctx core.Context, args []string) error {
 }
 
 var _ core.Command = (*pluginCommandWrapper)(nil)
+var _ core.AsyncCommand = (*pluginCommandWrapper)(nil)
+
+// AsyncCommand: plugin commands ALWAYS run off the TUI command loop with a
+// spinner label. Root-cause fix for goa.ui.confirm (plan §4): the JS command
+// blocks on the user's answer while the modal itself needs the command loop
+// free to render and route keys — a synchronous Execute on the loop would
+// deadlock until the 5-minute confirm cap. The same reasoning covers any
+// slow bridge call (goa.http.fetch) inside a command. Interactive submits
+// route through runAsyncCommand (steering stays live); direct router
+// callers (headless, tests) keep synchronous semantics.
+func (c *pluginCommandWrapper) AsyncHint(args []string) string {
+	return "Running /" + c.name + "…"
+}
+
+// promptPendingHookApprovals shows the install-time hook review card for any
+// loaded external plugin whose stored grant is stale or missing (M6 §7 steps
+// 2+5: version bump or changed hook fingerprint invalidates prior approvals).
+// Cards run serially on their own goroutine; card creation is ApplySync'd to
+// the command loop so TUI state stays single-owner.
+func (a *App) promptPendingHookApprovals(engine *tui.TUI) {
+	subs := a.subs
+	rt := subs.getPluginRT()
+	if rt == nil || rt.enforcer == nil || subs.pluginMgr == nil {
+		return
+	}
+	for _, id := range rt.enforcer.PendingApprovals() {
+		def := rt.enforcer.DeclaredFor(id)
+		if def == nil {
+			continue
+		}
+		review := plugins.BuildHookReview(def)
+		if review == nil {
+			continue
+		}
+		a.presentHookReview(engine, def, review)
+	}
+}
+
+// presentHookReview shows ONE multi-select review card and persists the
+// outcome into grants.json. It blocks until the user decides and must run
+// OFF the command loop (card creation is ApplySync'd; the decision wait
+// happens here so cards appear strictly serially).
+func (a *App) presentHookReview(engine *tui.TUI, def *plugins.PluginDef, review *plugins.HookReview) {
+	opts := make([]tui.ConfirmOption, 0, len(review.Rows)+2)
+	for _, r := range review.Rows {
+		opts = append(opts, tui.ConfirmOption{ID: r.ID, Label: r.Label, Toggle: true, DefaultOn: r.DefaultOn})
+	}
+	opts = append(opts,
+		tui.ConfirmOption{ID: "accept", Label: "Accept selected hooks", Style: "ok"},
+		tui.ConfirmOption{ID: "reject", Label: "Reject all", Style: "danger"},
+	)
+	var (
+		ch    <-chan tui.MultiConfirmResult
+		shown = make(chan struct{})
+	)
+	engine.ApplySync(func() {
+		ch, _ = engine.ShowConfirmMulti(review.Title, review.Body, opts, "", true)
+		close(shown)
+	})
+	<-shown
+	if ch == nil {
+		return // no overlay layer available (should not happen in TUI runs)
+	}
+	res := <-ch
+	store := plugins.NewGrantStore(a.subs.pluginMgr.Root())
+	if res.Cancelled || res.ActionID != "accept" {
+		emitPluginChat(a.subs, fmt.Sprintf("⚠ Plugin %s: no hooks granted (review declined).", def.ID))
+		return
+	}
+	if err := plugins.ApplyHookDecision(store, def, res.Selected); err != nil {
+		log.Printf("Warning: failed to save grant for %s: %v\n", def.ID, err)
+		return
+	}
+	emitPluginChat(a.subs, fmt.Sprintf("✔ Plugin %s: %d hook(s) approved.", def.ID, len(res.Selected)))
+}

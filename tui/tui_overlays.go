@@ -4,6 +4,69 @@
 
 package tui
 
+// ShowConfirm displays a plugin confirmation modal (goa.ui.confirm, plan §4).
+// The result channel delivers the chosen option ID, or "" when the user
+// dismissed the dialog (Esc / implicit Cancel row). The returned handle hides
+// the card programmatically — the presenter uses it when the job ends
+// out-of-band (bridge timeout / shutdown) so no ghost modal lingers. Per §9
+// Q3 this takes input focus like ShowSelector — see ConfirmCard's doc
+// comment for the decision record.
+func (t *TUI) ShowConfirm(title, body string, options []ConfirmOption, defaultID string, allowCancel bool) (<-chan string, *OverlayHandle) {
+	result := make(chan string, 1)
+	card := NewConfirmCard(title, body, options, defaultID, allowCancel, func(id string, cancelled bool) {
+		if cancelled {
+			id = ""
+		}
+		select {
+		case result <- id:
+		default:
+		}
+	})
+	handle := t.ShowOverlay(card, OverlayOptions{
+		CaptureInput: true,
+		Center:       true,
+	})
+	card.SetDone(func() { handle.Hide() })
+	return result, handle
+}
+
+// MultiConfirmResult is the outcome of ShowConfirmMulti.
+type MultiConfirmResult struct {
+	// ActionID is the picked action row's ID ("accept", "reject", …); ""
+	// when the user dismissed via Esc/Cancel.
+	ActionID string
+	// Selected holds the checked toggle-row IDs in display order at delivery
+	// time. Empty for dismissals.
+	Selected []string
+	// Cancelled reports dismissal (Esc / implicit Cancel row).
+	Cancelled bool
+}
+
+// ShowConfirmMulti displays the multi-select confirm modal (M6 §7 step 3,
+// plugin hook review): Toggle rows render as checkboxes toggled with space or
+// Enter; picking an action row delivers its ID plus the checked selection.
+// Same focus/queueing contract as ShowConfirm (§9 Q3).
+func (t *TUI) ShowConfirmMulti(title, body string, options []ConfirmOption, defaultID string, allowCancel bool) (<-chan MultiConfirmResult, *OverlayHandle) {
+	result := make(chan MultiConfirmResult, 1)
+	var card *ConfirmCard
+	card = NewMultiConfirmCard(title, body, options, defaultID, allowCancel, func(id string, cancelled bool) {
+		delivery := MultiConfirmResult{ActionID: id, Cancelled: cancelled}
+		if !cancelled {
+			delivery.Selected = card.SelectedIDs()
+		}
+		select {
+		case result <- delivery:
+		default:
+		}
+	})
+	handle := t.ShowOverlay(card, OverlayOptions{
+		CaptureInput: true,
+		Center:       true,
+	})
+	card.SetDone(func() { handle.Hide() })
+	return result, handle
+}
+
 func (t *TUI) ShowSelector(title string, items []SelectorItem, currentValue string) <-chan string {
 	_, result := t.showSelector(title, items, currentValue)
 	return result
