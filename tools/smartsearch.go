@@ -560,9 +560,9 @@ func (t *SmartSearchTool) formatStructured(results []bm25.SearchResult, matches 
 	for _, r := range results {
 		var ev strings.Builder
 		for _, line := range matches[r.Path] {
-			fmt.Fprintf(&ev, "%d: %s\\n", line.Num, ansi.Sanitize(line.Text))
+			fmt.Fprintf(&ev, "%d: %s\n", line.Num, ansi.Sanitize(line.Text))
 		}
-		evidence := strings.TrimSuffix(ev.String(), "\\n")
+		evidence := strings.TrimSuffix(ev.String(), "\n")
 		if evidence == "" {
 			evidence = ansi.Sanitize(r.Content)
 		}
