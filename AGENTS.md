@@ -28,7 +28,7 @@ Copyright (C) 2026 Pierre Poissinger
 
 ## Testing
 
-- **Unit tests**: < 100ms per test, < 5s per package. Use `go test -timeout 30s`.
+- **Unit tests**: < 100ms per test, < 5s per package. Always enforce a timeout when running tests (for example, `go test -timeout 30s`).
 - **Coverage targets**: internal ≥90%, config ≥85%, core ≥80%, tools ≥80%, tui ≥70%
 - **Test patterns**: table-driven for validation, `t.TempDir()` for filesystem, keep tests independent
 - **Gate**: `go vet ./...`, `go test -count=1 -race -cover ./...`, `gocognit -over 15`, `gocyclo -over 12` before committing
