@@ -27,30 +27,3 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
-
-### BUG: ReplayRunner.Submit can block forever (deadlock) under concurrent Submits
-
-**Observed:** `go test -count=1 -race ./...` times out after 10m in
-`tui/agentctx.TestReplayRunner_ConcurrentSubmitClose`: Submit goroutines stuck
-on chan send (replay.go Submit), runner goroutine stuck delivering result #5
-into the cap-4 `results` channel nobody drains during the storm, main test
-blocked on WaitGroup.
-
-**Root cause:** `Submit`'s drain-then-send over the cap-1 `reqCh` channel is
-not atomic (TOCTOU): concurrent Submits interleave between draining the slot
-and the blocking fallback send. When the loop goroutine cannot return to
-receive (its `run()` is blocked pushing into the full `results` buffer), every
-submitter blocks forever.
-
-**Expected:** `Submit` never blocks, keeps atomic latest-wins coalescing, and
-the runner stays closable regardless of results consumption.
-
-## Fix plan
-
-1. Replace the cap-1 request channel with a mutex-guarded `pending
-   *ReplayRequest` slot plus a cap-1 wake signal; Submit sets pending and
-   signals non-blockingly; loop drains latest-wins until empty.
-2. Test approach: the existing `TestReplayRunner_ConcurrentSubmitClose`
-   (4×25 concurrent Submits, no results consumer, then Cancel+Close) is the
-   regression — it deadlocked pre-fix.
-3. Validation: `-race -count=10` on that test, then the full gate battery.

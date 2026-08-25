@@ -73,10 +73,14 @@ type ReplayRunner struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	reqCh   chan ReplayRequest  // cap 1: a newer Submit replaces the pending one
-	results chan ReplayResult  // one message per executed run
+	// pending is the latest submitted request not yet picked up by the loop,
+	// guarded by mu (latest-wins coalescing). wake (cap 1) signals the loop
+	// that pending may be non-empty; a Submit never blocks on it.
+	pending *ReplayRequest
+	wake    chan struct{}
+	results chan ReplayResult // one message per executed run
 
-	mu      sync.Mutex // guards runCancel
+	mu        sync.Mutex // guards pending and runCancel
 	runCancel context.CancelFunc
 
 	wg sync.WaitGroup // the single run goroutine
@@ -95,7 +99,7 @@ func NewReplayRunner(comp *tui.Compositor, chunkRows int) *ReplayRunner {
 		chunkRows: chunkRows,
 		ctx:       ctx,
 		cancel:    cancel,
-		reqCh:     make(chan ReplayRequest, 1),
+		wake:      make(chan struct{}, 1),
 		results:   make(chan ReplayResult, 4),
 	}
 	r.wg.Add(1)
@@ -112,6 +116,11 @@ func (r *ReplayRunner) Results() <-chan ReplayResult { return r.results }
 // Submit schedules a replay, cancelling any in-flight run and replacing any
 // pending request (coalescing to the latest target). A request with an empty
 // range (From >= To) is dropped without disturbing an in-flight run.
+//
+// Submit never blocks: the pending slot is a mutex-guarded variable, so the
+// drain-then-send race of a cap-1 channel (two concurrent Submits could
+// interleave between draining the slot and blocking on the send) cannot wedge
+// the caller when the loop is busy or its result channel is full.
 func (r *ReplayRunner) Submit(req ReplayRequest) {
 	if req.From >= req.To {
 		return
@@ -120,16 +129,11 @@ func (r *ReplayRunner) Submit(req ReplayRequest) {
 	if r.runCancel != nil {
 		r.runCancel() // supersede the in-flight replay
 	}
+	r.pending = &req // atomic latest-wins replace
 	r.mu.Unlock()
 	select {
-	case r.reqCh <- req:
-	default:
-		// A request is already pending; replace it with the newer target.
-		select {
-		case <-r.reqCh:
-		default:
-		}
-		r.reqCh <- req
+	case r.wake <- struct{}{}:
+	default: // wake token already queued; the loop drains all pending work
 	}
 }
 
@@ -140,12 +144,8 @@ func (r *ReplayRunner) Cancel() {
 	if r.runCancel != nil {
 		r.runCancel()
 	}
+	r.pending = nil // drop any pending request: its transcript is gone
 	r.mu.Unlock()
-	// Drop any pending request: the transcript it referred to is gone.
-	select {
-	case <-r.reqCh:
-	default:
-	}
 }
 
 // Close cancels the runner and blocks until the goroutine exits.
@@ -167,10 +167,31 @@ func (r *ReplayRunner) loop() {
 		select {
 		case <-r.ctx.Done():
 			return
-		case req := <-r.reqCh:
-			r.run(req)
+		case <-r.wake:
+		}
+		// Drain everything submitted while we were running: each iteration
+		// pops the latest pending request, so a burst of Submits collapses to
+		// the newest target per drain pass.
+		for r.runPending() {
+			if r.ctx.Err() != nil {
+				return
+			}
 		}
 	}
+}
+
+// runPending pops the latest pending request, if any, and executes it. It
+// reports whether a request was executed (false = queue empty).
+func (r *ReplayRunner) runPending() bool {
+	r.mu.Lock()
+	req := r.pending
+	r.pending = nil
+	r.mu.Unlock()
+	if req == nil {
+		return false
+	}
+	r.run(*req)
+	return true
 }
 
 // run executes one replay request and reports the result. The request's
