@@ -95,14 +95,16 @@ func (s *Scheduler) start(cb func(), period time.Duration, oneshot bool) int {
 
 	go func() {
 		if oneshot {
-			// One-shots deregister from the map BEFORE firing: fired timers
-			// would otherwise accumulate until Stop — an unbounded leak for
-			// long-lived sessions whose plugins schedule zero-delay timers
-			// repeatedly. drop() only forgets the entry and leaves stop
-			// open; a user Clear racing between start and fire still wins
-			// because fireOnce observes the closed channel.
-			s.drop(id)
+			// One-shots stay REGISTERED until they reach a terminal state
+			// (callback ran, or stop closed): a fire attempt deferred by an
+			// active JS frame parks fireOnce in its back-off loop, and that
+			// pending retry must remain cancellable by Clear/Stop — the
+			// plugin-unload and test-cleanup path (bugs.md: a dropped
+			// before-fire one-shot outlived Scheduler.Stop as a zombie,
+			// later entering a VM frame under a live segment render).
+			// Deregister only AFTER fireOnce returns.
 			s.fireOnce(t, cb)
+			s.drop(id)
 			return
 		}
 		s.loop(t, cb)
@@ -118,10 +120,11 @@ func (s *Scheduler) drop(id int) {
 	s.mu.Unlock()
 }
 
-// fireOnce waits for the period then invokes one callback, self-clearing.
-// If the callback is deferred (a synchronous execution is active), it
-// re-fires after a short back-off so a one-shot prime (e.g. the quota
-// cache warm) is delayed, never dropped.
+// fireOnce waits for the period then invokes one callback. If the callback is
+// deferred (a synchronous execution is active), it re-fires after a short
+// back-off so a one-shot prime (e.g. the quota cache warm) is delayed, never
+// dropped. The timer stays registered for the whole wait so Clear/Stop can
+// cancel a pending retry; the caller (start) deregisters once this returns.
 func (s *Scheduler) fireOnce(t *pluginTimer, cb func()) {
 	delay := t.period
 	for {
