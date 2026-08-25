@@ -505,15 +505,17 @@ func grepFile(path string, re *regexp.Regexp, maxLines int, budget *int) []smart
 }
 
 type structuredResult struct {
-	ID        string  `json:"id"`
-	Path      string  `json:"path"`
-	Score     float64 `json:"score,omitempty"`
-	Language  string  `json:"language,omitempty"`
-	Kind      string  `json:"kind,omitempty"`
-	Symbol    string  `json:"symbol,omitempty"`
-	StartLine int     `json:"start_line"`
-	EndLine   int     `json:"end_line"`
-	Evidence  string  `json:"evidence,omitempty"`
+	ID         string  `json:"id"`
+	Path       string  `json:"path"`
+	Score      float64 `json:"score,omitempty"`
+	Language   string  `json:"language,omitempty"`
+	Kind       string  `json:"kind,omitempty"`
+	Symbol     string  `json:"symbol,omitempty"`
+	StartLine  int     `json:"start_line"`
+	EndLine    int     `json:"end_line"`
+	Evidence   string  `json:"evidence,omitempty"`
+	Coverage   float64 `json:"coverage,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
 }
 
 type fetchResponse struct {
@@ -566,7 +568,7 @@ func (t *SmartSearchTool) formatStructured(results []bm25.SearchResult, matches 
 		if evidence == "" {
 			evidence = ansi.Sanitize(r.Content)
 		}
-		out.Results = append(out.Results, structuredResult{ID: r.ID, Path: r.Path, Score: r.Score, Language: r.Language, Kind: r.Kind, Symbol: r.Symbol, StartLine: r.StartLine, EndLine: r.EndLine, Evidence: limitTokens(evidence, maxTokens)})
+		out.Results = append(out.Results, structuredResult{ID: r.ID, Path: r.Path, Score: r.Score, Coverage: r.Coverage, Confidence: r.Confidence, Language: r.Language, Kind: r.Kind, Symbol: r.Symbol, StartLine: r.StartLine, EndLine: r.EndLine, Evidence: limitTokens(evidence, maxTokens)})
 	}
 	return marshalStructured(out)
 }

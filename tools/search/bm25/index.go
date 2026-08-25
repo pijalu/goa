@@ -133,6 +133,7 @@ type Index struct {
 	// chunkOKAPI ranks semantic chunks independently from the legacy file index.
 	chunkOKAPI *Okapi
 	chunkTerms []map[string]int
+	fielded    *FieldedScorer
 	mu         sync.RWMutex
 }
 
@@ -152,22 +153,25 @@ func NewIndex(data IndexData) *Index {
 		for i := range docs {
 			idx.chunkTerms[i] = tokensToFreqs(docs[i])
 		}
+		idx.fielded = NewFieldedScorer(data.Documents, DefaultFieldedWeights())
 	}
 	return idx
 }
 
 // SearchResult is a single ranked document returned by Search.
 type SearchResult struct {
-	Path      string  `json:"path"`
-	Score     float64 `json:"score"`
-	Lines     int     `json:"lines"`
-	ID        string  `json:"id,omitempty"`
-	Language  string  `json:"language,omitempty"`
-	Kind      string  `json:"kind,omitempty"`
-	Symbol    string  `json:"symbol,omitempty"`
-	StartLine int     `json:"start_line,omitempty"`
-	EndLine   int     `json:"end_line,omitempty"`
-	Content   string  `json:"content,omitempty"`
+	Path       string  `json:"path"`
+	Score      float64 `json:"score"`
+	Lines      int     `json:"lines"`
+	ID         string  `json:"id,omitempty"`
+	Language   string  `json:"language,omitempty"`
+	Kind       string  `json:"kind,omitempty"`
+	Symbol     string  `json:"symbol,omitempty"`
+	StartLine  int     `json:"start_line,omitempty"`
+	EndLine    int     `json:"end_line,omitempty"`
+	Content    string  `json:"content,omitempty"`
+	Coverage   float64 `json:"coverage,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
 }
 
 // Search runs the legacy file-level search. Semantic callers should use SearchChunks.
@@ -188,14 +192,47 @@ func (idx *Index) SearchChunks(query string, maxResults int, minScore float64) [
 	if maxResults <= 0 {
 		maxResults = 20
 	}
-	ids, scores := idx.chunkOKAPI.TopN(idx.tokenizer.Tokenize(query), maxResults)
-	out := make([]SearchResult, 0, len(ids))
-	for i, id := range ids {
-		if i >= len(scores) || scores[i] < minScore || id < 0 || id >= len(idx.Data.Documents) {
+	// Retrieve a broad lexical candidate set, then rerank with field-aware BM25F.
+	limit := maxResults * 12
+	if limit < 100 {
+		limit = 100
+	}
+	ids, _ := idx.chunkOKAPI.TopN(expandQuery(idx.tokenizer.Tokenize(query)), limit)
+	type ranked struct {
+		id                          int
+		score, coverage, confidence float64
+	}
+	rankedDocs := make([]ranked, 0, len(ids))
+	for _, id := range ids {
+		if id < 0 || id >= len(idx.Data.Documents) {
 			continue
 		}
 		d := idx.Data.Documents[id]
-		out = append(out, SearchResult{Path: d.Path, Score: scores[i], Lines: d.EndLine - d.StartLine + 1, ID: d.ID, Language: d.Language, Kind: d.Kind, Symbol: d.Symbol, StartLine: d.StartLine, EndLine: d.EndLine, Content: d.Content})
+		score, coverage, confidence := 0.0, 0.0, 0.0
+		if idx.fielded != nil {
+			score, coverage, confidence = idx.fielded.Score(query, d, id)
+		} else {
+			score = 1
+		}
+		if score >= minScore {
+			rankedDocs = append(rankedDocs, ranked{id, score, coverage, confidence})
+		}
+	}
+	sort.SliceStable(rankedDocs, func(i, j int) bool { return rankedDocs[i].score > rankedDocs[j].score })
+	out := make([]SearchResult, 0, maxResults)
+	pathCount := make(map[string]int)
+	for _, r := range rankedDocs {
+		d := idx.Data.Documents[r.id]
+		// Keep a second chunk per file for useful local context, but prevent one
+		// generated or very large file from monopolising the result set.
+		if pathCount[d.Path] >= 2 {
+			continue
+		}
+		pathCount[d.Path]++
+		out = append(out, SearchResult{Path: d.Path, Score: r.score, Coverage: r.coverage, Confidence: r.confidence, Lines: d.EndLine - d.StartLine + 1, ID: d.ID, Language: d.Language, Kind: d.Kind, Symbol: d.Symbol, StartLine: d.StartLine, EndLine: d.EndLine, Content: d.Content})
+		if len(out) >= maxResults {
+			break
+		}
 	}
 	return out
 }
