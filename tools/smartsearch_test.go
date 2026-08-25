@@ -14,6 +14,40 @@ import (
 // TestSmartSearchTool_CorruptedIndexRebuilt verifies that the smartsearch tool
 // detects a corrupted index file, removes it, rebuilds from scratch, and reports
 // the rebuild in the result.
+func TestSmartSearchTool_FetchChunkAndRejectUnknownID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\nfunc greet() string { return \"hi\" }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &SmartSearchTool{ProjectDir: dir}
+	result, err := tool.Execute(`{"query":"greet function"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := "[id: "
+	start := strings.Index(result, marker)
+	if start < 0 {
+		t.Fatalf("missing chunk id: %s", result)
+	}
+	start += len(marker)
+	end := strings.Index(result[start:], ",")
+	if end < 0 {
+		t.Fatalf("malformed chunk metadata: %s", result)
+	}
+	id := result[start : start+end]
+	fetched, err := tool.Execute(`{"fetch_id":"` + id + `"}`)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !strings.Contains(fetched, "func greet") {
+		t.Fatalf("missing fetched source: %s", fetched)
+	}
+	if _, err := tool.Execute(`{"fetch_id":"not-a-real-id"}`); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("expected useful stale-result error, got %v", err)
+	}
+}
+
 func TestSmartSearchTool_CorruptedIndexRebuilt(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package main\nfunc main() {}\n"), 0644); err != nil {
@@ -21,7 +55,6 @@ func TestSmartSearchTool_CorruptedIndexRebuilt(t *testing.T) {
 	}
 
 	tool := &SmartSearchTool{ProjectDir: dir}
-
 	// First call builds the index.
 	res1, err := tool.Execute(`{"query": "main function"}`)
 	if err != nil {

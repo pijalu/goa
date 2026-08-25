@@ -130,57 +130,91 @@ type Index struct {
 	Data      IndexData
 	okapi     *Okapi
 	tokenizer *CodeTokenizer
-	mu        sync.RWMutex
+	// chunkOKAPI ranks semantic chunks independently from the legacy file index.
+	chunkOKAPI *Okapi
+	chunkTerms []map[string]int
+	mu         sync.RWMutex
 }
 
 // NewIndex builds an Index from IndexData, initialising the Okapi scorer.
 func NewIndex(data IndexData) *Index {
 	o := NewOkapi(DefaultOkapiConfig())
 	o.SetDocData(data.DocLengths, data.DocFreq, data.DocTerms)
-	return &Index{
-		Data:      data,
-		okapi:     o,
-		tokenizer: NewCodeTokenizer(),
+	idx := &Index{Data: data, okapi: o, tokenizer: NewCodeTokenizer()}
+	if len(data.Documents) > 0 {
+		docs := make([][]string, len(data.Documents))
+		for i, doc := range data.Documents {
+			docs[i] = idx.tokenizer.Tokenize(strings.Join([]string{doc.Symbol, doc.Signature, doc.Content}, " "))
+		}
+		idx.chunkOKAPI = NewOkapi(DefaultOkapiConfig())
+		idx.chunkOKAPI.Build(docs)
+		idx.chunkTerms = make([]map[string]int, len(docs))
+		for i := range docs {
+			idx.chunkTerms[i] = tokensToFreqs(docs[i])
+		}
 	}
+	return idx
 }
 
 // SearchResult is a single ranked document returned by Search.
 type SearchResult struct {
-	Path  string  `json:"path"`
-	Score float64 `json:"score"`
-	Lines int     `json:"lines"`
+	Path      string  `json:"path"`
+	Score     float64 `json:"score"`
+	Lines     int     `json:"lines"`
+	ID        string  `json:"id,omitempty"`
+	Language  string  `json:"language,omitempty"`
+	Kind      string  `json:"kind,omitempty"`
+	Symbol    string  `json:"symbol,omitempty"`
+	StartLine int     `json:"start_line,omitempty"`
+	EndLine   int     `json:"end_line,omitempty"`
+	Content   string  `json:"content,omitempty"`
 }
 
-// Search runs the given query against the index, returning up to maxResults
-// results that score above minScore. Results are ordered by descending score.
+// Search runs the legacy file-level search. Semantic callers should use SearchChunks.
 func (idx *Index) Search(query string, maxResults int, minScore float64) []SearchResult {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
+	return idx.searchFilesLocked(query, maxResults, minScore)
+}
 
+// SearchChunks returns ranked semantic chunks with bounded source context. It
+// falls back to the file-level index for indexes written before chunk metadata.
+func (idx *Index) SearchChunks(query string, maxResults int, minScore float64) []SearchResult {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	if idx.chunkOKAPI == nil || len(idx.Data.Documents) == 0 {
+		return idx.searchFilesLocked(query, maxResults, minScore)
+	}
+	if maxResults <= 0 {
+		maxResults = 20
+	}
+	ids, scores := idx.chunkOKAPI.TopN(idx.tokenizer.Tokenize(query), maxResults)
+	out := make([]SearchResult, 0, len(ids))
+	for i, id := range ids {
+		if i >= len(scores) || scores[i] < minScore || id < 0 || id >= len(idx.Data.Documents) {
+			continue
+		}
+		d := idx.Data.Documents[id]
+		out = append(out, SearchResult{Path: d.Path, Score: scores[i], Lines: d.EndLine - d.StartLine + 1, ID: d.ID, Language: d.Language, Kind: d.Kind, Symbol: d.Symbol, StartLine: d.StartLine, EndLine: d.EndLine, Content: d.Content})
+	}
+	return out
+}
+
+func (idx *Index) searchFilesLocked(query string, maxResults int, minScore float64) []SearchResult {
 	if idx.Data.TotalFiles == 0 {
 		return nil
 	}
-
 	qTokens := idx.tokenizer.Tokenize(query)
 	if len(qTokens) == 0 {
 		return nil
 	}
-
 	docIndices, scores := idx.okapi.TopN(qTokens, maxResults)
-	if len(docIndices) == 0 {
-		return nil
-	}
-
 	results := make([]SearchResult, 0, len(docIndices))
 	for i, docIdx := range docIndices {
 		if scores[i] < minScore {
 			continue
 		}
-		results = append(results, SearchResult{
-			Path:  idx.Data.Files[docIdx].Path,
-			Score: scores[i],
-			Lines: idx.Data.Files[docIdx].Lines,
-		})
+		results = append(results, SearchResult{Path: idx.Data.Files[docIdx].Path, Score: scores[i], Lines: idx.Data.Files[docIdx].Lines})
 	}
 	return results
 }
@@ -190,6 +224,18 @@ func (idx *Index) FileCount() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.Data.TotalFiles
+}
+
+// DocumentByID returns a copy of a semantic document, if present.
+func (idx *Index) DocumentByID(id string) (DocumentMeta, bool) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	for _, doc := range idx.Data.Documents {
+		if doc.ID == id {
+			return doc, true
+		}
+	}
+	return DocumentMeta{}, false
 }
 
 // IndexAge returns the duration since the index was built.

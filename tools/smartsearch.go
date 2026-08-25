@@ -74,6 +74,12 @@ func (t *SmartSearchTool) Schema() agentic.ToolSchema {
 					"type":        "integer",
 					"description": "max results (default: 20)",
 				},
+				"fetch_id": map[string]any{
+					"type":        "string",
+					"description": "fetch a bounded chunk by the id returned in search results",
+				},
+				"start_line": map[string]any{"type": "integer"},
+				"end_line":   map[string]any{"type": "integer"},
 				"min_score": map[string]any{
 					"type":        "number",
 					"description": "min score 0.0-1.0 (default: 0.0)",
@@ -91,6 +97,9 @@ type smartSearchParams struct {
 	RootPath   string  `json:"path"`
 	MaxResults int     `json:"max_results"`
 	MinScore   float64 `json:"min_score"`
+	FetchID    string  `json:"fetch_id"`
+	StartLine  int     `json:"start_line"`
+	EndLine    int     `json:"end_line"`
 }
 
 // ExecuteContext performs the search with cancellation support.
@@ -107,6 +116,10 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 			Detail:   "Could not determine project root directory",
 			HintText: "Set a path or run from within a project directory.",
 		}
+	}
+
+	if p.FetchID != "" {
+		return t.fetchChunk(rootPath, p)
 	}
 
 	maxResults := t.resolveMaxResults(p.MaxResults)
@@ -140,21 +153,48 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 	return t.formatResults(results, matches, p.Query, idx, rebuilt, idxDir), nil
 }
 
+// fetchChunk resolves an indexed chunk and re-reads the current file, rejecting
+// stale IDs rather than returning potentially unsafe edit context.
+func (t *SmartSearchTool) fetchChunk(rootPath string, p smartSearchParams) (string, error) {
+	idx, _, err := t.getOrBuildIndex(rootPath)
+	if err != nil {
+		return "", &internal.ToolError{Tool: "smartsearch", Type: "index_error", Detail: err.Error(), HintText: "Re-run smartsearch to rebuild the index."}
+	}
+	doc, ok := idx.DocumentByID(p.FetchID)
+	if !ok {
+		return "", &internal.ToolError{Tool: "smartsearch", Type: "invalid_result", Detail: "The requested search result is unknown or stale.", HintText: "Run smartsearch again and fetch a current result id."}
+	}
+	data, err := os.ReadFile(doc.Path)
+	if err != nil {
+		return "", &internal.ToolError{Tool: "smartsearch", Type: "fetch_error", Detail: fmt.Sprintf("Cannot read %s: %v", doc.Path, err), HintText: "Check that the file still exists."}
+	}
+	lines := strings.Split(string(data), "\n")
+	start, end := doc.StartLine, doc.EndLine
+	if p.StartLine > 0 {
+		start = p.StartLine
+	}
+	if p.EndLine > 0 {
+		end = p.EndLine
+	}
+	if start < 1 || end < start || start > len(lines) {
+		return "", &internal.ToolError{Tool: "smartsearch", Type: "invalid_range", Detail: "Requested line range is outside the current file.", HintText: "Use the line range returned by a fresh search result."}
+	}
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return fmt.Sprintf("smartsearch fetch %s:%d:%d (id %s)\n%s", doc.Path, start, end, doc.ID, strings.Join(lines[start-1:end], "\n")), nil
+}
+
 func (t *SmartSearchTool) parseParams(input string) (smartSearchParams, error) {
 	var p smartSearchParams
 	if err := json.Unmarshal([]byte(input), &p); err != nil {
-		return p, &internal.ToolError{
-			Tool: "smartsearch", Type: "invalid_input",
-			Detail:   fmt.Sprintf("Cannot parse parameters: %v", err),
-			HintText: "Ensure your input is valid JSON with query as a string.",
-		}
+		return p, &internal.ToolError{Tool: "smartsearch", Type: "invalid_input", Detail: fmt.Sprintf("Cannot parse parameters: %v", err), HintText: "Ensure your input is valid JSON with query as a string."}
+	}
+	if p.FetchID != "" {
+		return p, nil
 	}
 	if p.Query == "" {
-		return p, &internal.ToolError{
-			Tool: "smartsearch", Type: "missing_query",
-			Detail:   "Query is required",
-			HintText: "Provide a natural language query describing what code you are looking for.",
-		}
+		return p, &internal.ToolError{Tool: "smartsearch", Type: "missing_query", Detail: "Query is required", HintText: "Provide a natural language query describing what code you are looking for."}
 	}
 	return p, nil
 }
@@ -178,7 +218,7 @@ func (t *SmartSearchTool) searchAndFilter(idx *bm25.Index, query, glob string, m
 	if searchLimit < 100 {
 		searchLimit = 100
 	}
-	results := idx.Search(query, searchLimit, minScore)
+	results := idx.SearchChunks(query, searchLimit, minScore)
 	if glob != "" {
 		results = filterByGlob(results, glob)
 	}
@@ -454,7 +494,11 @@ func (t *SmartSearchTool) formatResults(results []bm25.SearchResult, matches map
 				relPath = p
 			}
 		}
-		fmt.Fprintf(&buf, "%d. [%.2f] %s  (%d lines)\n", i+1, r.Score, relPath, r.Lines)
+		fmt.Fprintf(&buf, "%d. [%.2f] %s  (%d lines)", i+1, r.Score, relPath, r.Lines)
+		if r.ID != "" {
+			fmt.Fprintf(&buf, " [id: %s, lines: %d-%d, language: %s]", r.ID, r.StartLine, r.EndLine, r.Language)
+		}
+		buf.WriteByte('\n')
 		for _, m := range matches[r.Path] {
 			content := ansi.Sanitize(strings.TrimSpace(m.Text))
 			if ansi.Width(content) > 140 {
