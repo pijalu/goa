@@ -232,10 +232,27 @@ func (r *MDStreamRenderer) renderHeading(level int, text string) []string {
 	return wrapped
 }
 
+// renderParagraph renders paragraph lines preserving the model's line breaks
+// (GFM "breaks: true" semantics, matching user messages and plain-text
+// rendering elsewhere in the TUI): every source line is inline-formatted and
+// wrapped independently, so a single "\n" always produces a visual break.
+//
+// This also makes streaming append-only: a paragraph that ends at the stream
+// edge renders its last line standalone; when more text arrives, earlier
+// lines keep their exact bytes instead of re-flowing into a space-joined
+// blob (which made visible line breaks vanish mid-stream).
+//
+// Trade-off: inline spans that cross a source line ("*emphasis\nspan*") no
+// longer merge — rare in model output and already broken mid-stream.
 func (r *MDStreamRenderer) renderParagraph(lines []string) []string {
-	text := strings.Join(lines, " ")
-	rendered := renderInline(text, r.theme)
-	return ansi.Wrap(rendered, r.width)
+	var result []string
+	for _, line := range lines {
+		// Trailing whitespace/CR is never meaningful inside a paragraph;
+		// TrimRight keeps wrapped output free of dangling spaces.
+		clean := strings.TrimRight(line, " \t\r")
+		result = append(result, ansi.Wrap(renderInline(clean, r.theme), r.width)...)
+	}
+	return result
 }
 
 func (r *MDStreamRenderer) renderFencedCode(lang string, lines []string) []string {
@@ -311,20 +328,12 @@ func (r *MDStreamRenderer) renderBlockquote(lines []string) []string {
 }
 
 func (r *MDStreamRenderer) renderUnorderedList(items [][]string) []string {
-	var result []string
 	marker := "• "
 	indent := "  "
+	var result []string
 	for _, item := range items {
-		text := extractListItemText(item, isUnorderedListItem)
-		rendered := renderInline(text, r.theme)
-		wrapped := ansi.Wrap(rendered, r.width-ansi.Width(indent))
-		for i, w := range wrapped {
-			if i == 0 {
-				result = append(result, marker+w)
-			} else {
-				result = append(result, indent+w)
-			}
-		}
+		result = append(result, r.renderListItem(marker, indent,
+			listItemSegments(item, isUnorderedListItem))...)
 	}
 	return result
 }
@@ -334,11 +343,40 @@ func (r *MDStreamRenderer) renderOrderedList(items [][]string) []string {
 	for idx, item := range items {
 		marker := fmt.Sprintf("%d. ", idx+1)
 		indent := strings.Repeat(" ", len(marker))
-		text := extractListItemText(item, isOrderedListItem)
-		rendered := renderInline(text, r.theme)
-		wrapped := ansi.Wrap(rendered, r.width-ansi.Width(indent))
-		for i, w := range wrapped {
-			if i == 0 {
+		result = append(result, r.renderListItem(marker, indent,
+			listItemSegments(item, isOrderedListItem))...)
+	}
+	return result
+}
+
+// listItemSegments splits a collected list item into its rendered segments:
+// the marker line's text first, then each continuation line. Segments render
+// as separate visual lines (GFM "breaks: true"), preserving the model's line
+// breaks instead of space-joining continuations into one re-flowed blob.
+func listItemSegments(item []string, isItem func(string) bool) []string {
+	if len(item) == 0 {
+		return nil
+	}
+	segments := make([]string, 0, len(item))
+	segments = append(segments, stripListMarker(item[0]))
+	for _, line := range item[1:] {
+		if isItem(line) {
+			continue // defensive: collectList never nests items in one bucket
+		}
+		segments = append(segments, strings.TrimSpace(line))
+	}
+	return segments
+}
+
+// renderListItem renders one list item: each segment starts a new visual line
+// (marker on the first), and long segments soft-wrap with hanging indent.
+func (r *MDStreamRenderer) renderListItem(marker, indent string, segments []string) []string {
+	var result []string
+	wrapWidth := r.width - ansi.Width(indent)
+	for i, seg := range segments {
+		rendered := ansi.Wrap(renderInline(seg, r.theme), wrapWidth)
+		for j, w := range rendered {
+			if i == 0 && j == 0 {
 				result = append(result, marker+w)
 			} else {
 				result = append(result, indent+w)
@@ -346,19 +384,6 @@ func (r *MDStreamRenderer) renderOrderedList(items [][]string) []string {
 		}
 	}
 	return result
-}
-
-func extractListItemText(item []string, isItem func(string) bool) string {
-	if len(item) == 0 {
-		return ""
-	}
-	text := stripListMarker(item[0])
-	for j := 1; j < len(item); j++ {
-		if !isItem(item[j]) {
-			text += " " + strings.TrimSpace(item[j])
-		}
-	}
-	return text
 }
 
 func stripListMarker(line string) string {

@@ -14,6 +14,11 @@ import (
 // It handles incomplete constructs at EOF by rendering them as plain text.
 // When more text arrives and completes the construct, it formats correctly
 // on the next render (since the entire stream block is redrawn).
+//
+// Line breaks use GFM "breaks: true" semantics: a single "\n" inside a
+// paragraph or list item renders as a hard break, preserving the newlines
+// sent by the model. As a side effect, streamed output is append-stable —
+// lines already rendered never re-flow when more text arrives.
 type MDStreamRenderer struct {
 	width int
 	theme *Theme
