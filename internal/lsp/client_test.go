@@ -229,11 +229,67 @@ func TestClient_Initialize_ObjectProviderCapabilities(t *testing.T) {
 	}
 }
 
+func TestClient_NavigationRequests(t *testing.T) {
+	serverIn, clientOut := io.Pipe()
+	clientIn, serverOut := io.Pipe()
+	client := NewClient(&fakeConn{Reader: clientIn, Writer: clientOut})
+	defer client.Close()
+	go client.ReadNotifications(context.Background())
+	go serveNavigationResponses(serverIn, serverOut)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	pos := TextDocumentPositionParams{TextDocument: TextDocumentIdentifier{URI: "file:///main.js"}, Position: Position{Line: 1, Character: 1}}
+	if got, err := client.Implementation(ctx, pos); err != nil || len(got) != 1 {
+		t.Fatalf("implementation: %v %#v", err, got)
+	}
+	if got, err := client.WorkspaceSymbol(ctx, WorkspaceSymbolParams{Query: "Thing"}); err != nil || len(got) != 1 || got[0].Name != "Thing" {
+		t.Fatalf("workspace symbol: %v %#v", err, got)
+	}
+	items, err := client.PrepareCallHierarchy(ctx, CallHierarchyPrepareParams{TextDocumentPositionParams: pos})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("prepare hierarchy: %v %#v", err, items)
+	}
+	if got, err := client.IncomingCalls(ctx, items[0]); err != nil || len(got) != 1 || got[0].From.Name != "caller" {
+		t.Fatalf("incoming calls: %v %#v", err, got)
+	}
+	if got, err := client.OutgoingCalls(ctx, items[0]); err != nil || len(got) != 1 || got[0].To.Name != "callee" {
+		t.Fatalf("outgoing calls: %v %#v", err, got)
+	}
+}
+
+func serveNavigationResponses(serverIn io.Reader, serverOut io.Writer) {
+	responses := map[string]string{
+		"textDocument/implementation":       `[{"uri":"file:///impl.js","range":{"start":{"line":1,"character":2},"end":{"line":1,"character":3}}}]`,
+		"workspace/symbol":                  `[{"name":"Thing","kind":12,"location":{"uri":"file:///thing.js","range":{"start":{"line":2,"character":0},"end":{"line":2,"character":5}}}}]`,
+		"textDocument/prepareCallHierarchy": `[{"name":"main","kind":12,"uri":"file:///main.js","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}},"selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}}}]`,
+		"callHierarchy/incomingCalls":       `[{"from":{"name":"caller","kind":12,"uri":"file:///caller.js","range":{"start":{"line":3,"character":0},"end":{"line":3,"character":4}},"selectionRange":{"start":{"line":3,"character":0},"end":{"line":3,"character":4}}},"fromRanges":[]}]`,
+		"callHierarchy/outgoingCalls":       `[{"to":{"name":"callee","kind":12,"uri":"file:///callee.js","range":{"start":{"line":4,"character":0},"end":{"line":4,"character":4}},"selectionRange":{"start":{"line":4,"character":0},"end":{"line":4,"character":4}}},"fromRanges":[]}]`,
+	}
+	reader := bufio.NewReader(serverIn)
+	for id := int64(1); id <= 5; id++ {
+		headers, err := textproto.NewReader(reader).ReadMIMEHeader()
+		if err != nil {
+			return
+		}
+		var n int
+		fmt.Sscanf(headers.Get("Content-Length"), "%d", &n)
+		body := make([]byte, n)
+		if _, err := io.ReadFull(reader, body); err != nil {
+			return
+		}
+		var req rpcMessage
+		if json.Unmarshal(body, &req) != nil {
+			return
+		}
+		resp := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":%s}`, id, responses[req.Method])
+		fmt.Fprintf(serverOut, "Content-Length: %d\r\n\r\n%s", len(resp), resp)
+	}
+}
+
 func TestClient_Initialized(t *testing.T) {
 	writer := &bytes.Buffer{}
 	client := NewClient(&fakeConn{Reader: &bytes.Buffer{}, Writer: writer})
 	defer client.Close()
-
 	if err := client.Initialized(InitializedParams{}); err != nil {
 		t.Fatalf("initialized failed: %v", err)
 	}
@@ -246,15 +302,7 @@ func TestClient_DidOpen(t *testing.T) {
 	writer := &bytes.Buffer{}
 	client := NewClient(&fakeConn{Reader: &bytes.Buffer{}, Writer: writer})
 	defer client.Close()
-
-	err := client.DidOpen(DidOpenTextDocumentParams{
-		TextDocument: TextDocumentItem{
-			URI:        "file:///tmp/main.go",
-			LanguageID: "go",
-			Version:    1,
-			Text:       "package main",
-		},
-	})
+	err := client.DidOpen(DidOpenTextDocumentParams{TextDocument: TextDocumentItem{URI: "file:///tmp/main.go", LanguageID: "go", Version: 1, Text: "package main"}})
 	if err != nil {
 		t.Fatalf("didOpen failed: %v", err)
 	}

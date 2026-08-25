@@ -29,22 +29,36 @@ func (s *SessionStore) ListSessionIDs() ([]string, error) {
 		return nil, err
 	}
 
-	ids := make([]string, 0, len(entries))
+	// Read directory metadata once. Calling Stat from the sort comparator causes
+	// O(n log n) filesystem calls and can also observe inconsistent timestamps.
+	type sessionEntry struct {
+		id   string
+		when time.Time
+	}
+	items := make([]sessionEntry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
 		}
-		ids = append(ids, strings.TrimSuffix(entry.Name(), ".jsonl"))
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		items = append(items, sessionEntry{
+			id: strings.TrimSuffix(entry.Name(), ".jsonl"), when: info.ModTime(),
+		})
 	}
 
-	sort.Slice(ids, func(i, j int) bool {
-		ti, _ := s.SessionModifiedTime(ids[i])
-		tj, _ := s.SessionModifiedTime(ids[j])
-		if !ti.Equal(tj) {
-			return ti.After(tj)
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].when.Equal(items[j].when) {
+			return items[i].when.After(items[j].when)
 		}
-		return ids[i] > ids[j]
+		return items[i].id > items[j].id
 	})
+	ids := make([]string, len(items))
+	for i := range items {
+		ids[i] = items[i].id
+	}
 	return ids, nil
 }
 

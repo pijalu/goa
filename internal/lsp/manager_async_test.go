@@ -121,7 +121,7 @@ func startedAsyncManager(t *testing.T, factory func(ctx context.Context, cfg Ser
 	t.Helper()
 	m := NewManager(t.TempDir(), WithServers(testSpecs))
 	m.serverFactory = factory
-	m.resolve = func(spec *ServerSpec, binDir string, installAllowed bool) ([]string, bool) {
+	m.resolve = func(spec *ServerSpec, workspace, binDir string, installAllowed bool) ([]string, bool) {
 		return spec.Command, len(spec.Command) > 0
 	}
 	if err := m.Start(context.Background()); err != nil {

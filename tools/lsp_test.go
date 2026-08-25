@@ -44,6 +44,22 @@ func TestLSPTool_Unavailable(t *testing.T) {
 	}
 }
 
+func TestLSPTool_JavaScriptAccepted(t *testing.T) {
+	dir := t.TempDir()
+	mgr := &fakeLSPQueryManager{started: true, defs: []lsp.Location{{URI: "file://" + dir + "/x.js"}}}
+	tool := &LSPTool{ProjectDir: dir, Manager: mgr}
+	if _, err := tool.Execute(`{"op":"definition","path":"x.js","line":0,"character":0}`); err != nil {
+		t.Fatalf("JavaScript should be supported: %v", err)
+	}
+}
+
+func TestLSPTool_JavaAccepted(t *testing.T) {
+	dir := t.TempDir()
+	tool := &LSPTool{ProjectDir: dir, Manager: &fakeLSPQueryManager{started: true}}
+	if _, err := tool.Execute(`{"op":"hover","path":"Main.java","line":0,"character":0}`); err != nil {
+		t.Fatalf("Java should be supported: %v", err)
+	}
+}
 func TestLSPTool_NonGoFileRejected(t *testing.T) {
 	tool := &LSPTool{ProjectDir: t.TempDir(), Manager: &fakeLSPQueryManager{started: true}}
 	_, err := tool.Execute(`{"op":"definition","path":"readme.md","line":1,"character":1}`)

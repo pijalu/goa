@@ -6,6 +6,8 @@ package lsp
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -90,6 +92,29 @@ func TestSpecForFile(t *testing.T) {
 		t.Errorf("notes.txt → %v, want nil", s)
 	}
 }
+func TestSpecForFile_BasenameAndCase(t *testing.T) {
+	specs := []ServerSpec{{ID: "docker", Filenames: []string{"Dockerfile", "Containerfile"}}}
+	for _, path := range []string{"Dockerfile", "dockerfile", "sub/Containerfile"} {
+		if got := specForFile(specs, path); got == nil || got.ID != "docker" {
+			t.Fatalf("%s not matched: %+v", path, got)
+		}
+	}
+}
+
+func TestSpecForFile_DenoBeatsTypeScript(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "deno.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "main.ts")
+	specs := []ServerSpec{
+		{ID: "typescript", Extensions: []string{".ts"}, Markers: []string{"package.json"}, ExcludeMarkers: []string{"deno.json"}},
+		{ID: "deno", Extensions: []string{".ts"}, Markers: []string{"deno.json"}},
+	}
+	if got := specForFile(specs, path); got == nil || got.ID != "deno" {
+		t.Fatalf("selected %v, want deno", got)
+	}
+}
 
 func TestFindRoot(t *testing.T) {
 	dir := t.TempDir()
@@ -100,14 +125,74 @@ func TestFindRoot(t *testing.T) {
 	}
 }
 
+// TestRegistryParity_OpenCodeIDs keeps the embedded registry aligned with the
+// 38-server OpenCode baseline. Executable availability is tested separately;
+// this assertion only covers declarative identity.
+func TestRegistryParity_OpenCodeIDs(t *testing.T) {
+	want := map[string]bool{
+		"deno": true, "typescript": true, "vue": true, "eslint": true,
+		"oxlint": true, "biome": true, "gopls": true, "ruby-lsp": true,
+		"ty": true, "pyright": true, "elixir-ls": true, "zls": true,
+		"csharp": true, "razor": true, "fsharp": true, "sourcekit-lsp": true,
+		"rust": true, "clangd": true, "svelte": true, "astro": true,
+		"jdtls": true, "kotlin-ls": true, "yaml-ls": true, "lua-ls": true,
+		"php intelephense": true, "prisma": true, "dart": true, "ocaml-lsp": true,
+		"bash": true, "terraform": true, "texlab": true, "dockerfile": true,
+		"gleam": true, "clojure-lsp": true, "nixd": true, "tinymist": true,
+		"haskell-language-server": true, "julials": true,
+	}
+	got := make(map[string]bool)
+	for _, spec := range Registry() {
+		got[spec.ID] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("registry has %d IDs, want %d", len(got), len(want))
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("OpenCode server %q missing from registry", id)
+		}
+	}
+}
+
+func TestRegistryParityEntries(t *testing.T) {
+	want := map[string][]string{
+		"eslint": {".js", ".ts", ".vue"}, "oxlint": {".js", ".svelte", ".astro"},
+		"razor": {".razor", ".cshtml"}, "dockerfile": {}, "sourcekit-lsp": {".swift", ".m", ".mm"},
+	}
+	for _, spec := range Registry() {
+		exts := map[string]bool{}
+		for _, ext := range spec.Extensions {
+			exts[ext] = true
+		}
+		if extensions, ok := want[spec.ID]; ok {
+			for _, ext := range extensions {
+				if !exts[ext] {
+					t.Errorf("%s missing extension %s", spec.ID, ext)
+				}
+			}
+			if spec.ID == "dockerfile" && len(spec.Filenames) == 0 {
+				t.Error("dockerfile missing filenames")
+			}
+			delete(want, spec.ID)
+		}
+	}
+	for id := range want {
+		t.Errorf("registry missing %s", id)
+	}
+}
+
 func TestLanguageIDFor(t *testing.T) {
 	cases := map[string]string{
-		"a.ts":  "typescript",
-		"a.tsx": "typescriptreact",
-		"a.js":  "javascript",
-		"a.jsx": "javascriptreact",
-		"a.c":   "c",
-		"a.cpp": "cpp",
+		"a.ts":    "typescript",
+		"a.tsx":   "typescriptreact",
+		"a.js":    "javascript",
+		"a.jsx":   "javascriptreact",
+		"a.c":     "c",
+		"a.cpp":   "cpp",
+		"a.swift": "swift",
+		"a.m":     "objective-c",
+		"a.mm":    "objective-cpp",
 	}
 	for path, want := range cases {
 		if got := LanguageIDFor(path); got != want {
@@ -135,6 +220,27 @@ func TestRegistryLoads(t *testing.T) {
 	}
 }
 
+func TestValidateRegistryRejectsMalformedEntries(t *testing.T) {
+	cases := []ServerSpec{
+		{ID: "", Command: []string{"x"}},
+		{ID: "x", Command: nil},
+		{ID: "x", Command: []string{"x"}, Extensions: []string{"go"}},
+		{ID: "x", Command: []string{"x"}, Install: &InstallSpec{Kind: "download", Binary: "x", URL: "http://example.test/x"}},
+	}
+	for _, spec := range cases {
+		if err := ValidateRegistry([]ServerSpec{spec}); err == nil {
+			t.Errorf("ValidateRegistry(%+v) accepted malformed entry", spec)
+		}
+	}
+}
+
+func TestValidateRegistryRejectsDuplicateIDs(t *testing.T) {
+	spec := ServerSpec{ID: "x", Command: []string{"x"}}
+	if err := ValidateRegistry([]ServerSpec{spec, spec}); err == nil {
+		t.Fatal("duplicate IDs accepted")
+	}
+}
+
 // withNpxLookPath stubs lookPath: npx present, everything else absent, so
 // resolveCommand takes the npx branch.
 func withNpxLookPath(t *testing.T) {
@@ -152,6 +258,47 @@ func withNpxLookPath(t *testing.T) {
 // TestResolveCommand_NpxForm asserts the npx argv uses --package with the
 // declared Binary (not the bare package guess that broke pyright, vue, astro,
 // prisma and dockerfile servers — Issue LSP).
+func TestResolveCommand_UsesWorkspaceLocalBinary(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, ".goa", "bin")
+	if err := os.MkdirAll(bin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(bin, "gopls")
+	if err := os.WriteFile(path, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	old := lookPath
+	lookPath = func(string) (string, error) { return "", errors.New("missing") }
+	t.Cleanup(func() { lookPath = old })
+	spec := &ServerSpec{Command: []string{"gopls", "-mode=stdio"}}
+	argv, ok := spec.resolveCommandWithWorkspace(root, filepath.Join(root, "cache"), false)
+	if !ok || argv[0] != path {
+		t.Fatalf("argv=%v ok=%v, want local %s", argv, ok, path)
+	}
+}
+
+func TestResolveCommand_UsesPlatformVariant(t *testing.T) {
+	old := lookPath
+	lookPath = func(name string) (string, error) { return "/bin/" + name, nil }
+	t.Cleanup(func() { lookPath = old })
+	spec := &ServerSpec{Command: []string{"default"}, Platforms: map[string]PlatformVariant{"default": {Command: []string{"variant"}}}}
+	argv, ok := spec.resolveCommandWithWorkspace(t.TempDir(), t.TempDir(), false)
+	if !ok || argv[0] != "/bin/variant" {
+		t.Fatalf("argv=%v ok=%v", argv, ok)
+	}
+}
+
+func TestResolutionHintIsActionable(t *testing.T) {
+	spec := &ServerSpec{Npx: &NpxSpec{Package: "pyright"}, Install: &InstallSpec{Kind: "go"}}
+	got := spec.resolutionHint(false)
+	for _, want := range []string{"PATH binary", "npx package pyright", "automatic go installation", "automatic installation disabled"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hint %q missing %q", got, want)
+		}
+	}
+}
+
 func TestResolveCommand_NpxForm(t *testing.T) {
 	withNpxLookPath(t)
 	spec := &ServerSpec{

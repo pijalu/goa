@@ -22,6 +22,7 @@
   markers: ["go.work", "go.mod", "go.sum"]
   command: ["gopls", "-mode=stdio"]
   language_id: go
+  prerequisites: ["go >= 1.23"]
   install:
     kind: go
     package: golang.org/x/tools/gopls@latest
@@ -30,6 +31,9 @@
 - id: typescript
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]
   markers: ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock", "package.json", "tsconfig.json", "jsconfig.json"]
+  exclude_markers: ["deno.json", "deno.jsonc"]
+  dynamic:
+    typescript_server: true
   command: ["typescript-language-server", "--stdio"]
   language_id: "" # per-extension (typescript / typescriptreact / javascript...)
   npx:
@@ -42,12 +46,17 @@
   markers: ["deno.json", "deno.jsonc"]
   command: ["deno", "lsp"]
   language_id: "" # per-extension
+  platforms:
+    windows:
+      command: ["deno.exe", "lsp"]
 
 - id: pyright
   extensions: [".py", ".pyi"]
   markers: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]
   command: ["pyright-langserver", "--stdio"]
   language_id: python
+  dynamic:
+    python_venv: project
   npx:
     package: pyright
     binary: pyright-langserver
@@ -64,6 +73,9 @@
   markers: ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradlew", ".project", ".classpath"]
   command: ["jdtls"]
   language_id: java
+  platforms:
+    windows:
+      command: ["jdtls.bat"]
   install:
     kind: download
     url: "https://www.eclipse.org/downloads/download.php?file=/jdtls/snapshots/jdt-language-server-latest.tar.gz"
@@ -110,18 +122,26 @@
   markers: [".slnx", ".sln", ".csproj", "global.json"]
   command: ["csharp-ls"]
   language_id: csharp
+  install:
+    kind: dotnet
+    package: csharp-ls
+    binary: csharp-ls
 
 - id: fsharp
   extensions: [".fs", ".fsi", ".fsx", ".fsscript"]
   markers: [".slnx", ".sln", ".fsproj", "global.json"]
   command: ["fsautocomplete", "--adaptive-lsp-server-enabled"]
   language_id: fsharp
+  install:
+    kind: dotnet
+    package: fsautocomplete
+    binary: fsautocomplete
 
 - id: sourcekit-lsp
-  extensions: [".swift"]
+  extensions: [".swift", ".m", ".mm"]
   markers: ["Package.swift"]
   command: ["sourcekit-lsp"]
-  language_id: swift
+  language_id: "" # per-extension (swift / objective-c / objective-cpp)
 
 - id: svelte
   extensions: [".svelte"]
@@ -153,6 +173,33 @@
     binary: astro-ls
     args: ["--stdio"]
 
+- id: eslint
+  extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"]
+  markers: ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]
+  command: ["vscode-eslint-language-server", "--stdio"]
+  language_id: ""
+  npx:
+    package: vscode-langservers-extracted
+    binary: vscode-eslint-language-server
+    args: ["--stdio"]
+
+- id: oxlint
+  extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".astro", ".svelte"]
+  markers: [".oxlintrc.json", "package.json", "package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]
+  command: ["oxc_language_server"]
+  language_id: ""
+
+- id: razor
+  extensions: [".razor", ".cshtml"]
+  markers: [".slnx", ".sln", ".csproj", "global.json"]
+  command: ["roslyn-language-server", "--stdio", "--autoLoadProjects"]
+  language_id: razor
+  install:
+    kind: dotnet
+    package: roslyn-language-server
+    binary: roslyn-language-server
+    args: ["--prerelease"]
+
 - id: biome
   extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".json", ".jsonc", ".vue", ".astro", ".svelte", ".css", ".graphql", ".gql", ".html"]
   markers: ["biome.json", "biome.jsonc"]
@@ -178,7 +225,7 @@
   command: ["lua-language-server"]
   language_id: lua
 
-- id: intelephense
+- id: php intelephense
   extensions: [".php"]
   markers: ["composer.json", "composer.lock", ".php-version"]
   command: ["intelephense", "--stdio"]
@@ -232,6 +279,7 @@
 
 - id: dockerfile
   extensions: [".dockerfile"]
+  filenames: ["Dockerfile", "Containerfile"]
   markers: []
   command: ["docker-langserver", "--stdio"]
   language_id: dockerfile

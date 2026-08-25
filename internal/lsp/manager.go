@@ -6,6 +6,7 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ type Manager struct {
 	serverFactory func(ctx context.Context, cfg ServerConfig) (*Server, error)
 	// resolve maps a spec to its launch argv; defaults to spec.resolveCommand.
 	// Swappable in tests to bypass binary lookup/install.
-	resolve func(spec *ServerSpec, binDir string, installAllowed bool) ([]string, bool)
+	resolve func(spec *ServerSpec, workspace, binDir string, installAllowed bool) ([]string, bool)
 	// lifecycleCtx governs spawned server processes, decoupled from any single
 	// query's context: a query ctx cancellation must not kill a long-lived
 	// server. Cancelled by Close.
@@ -69,11 +70,16 @@ type serverClient struct {
 	// (read/edit/write touchLSP) run in parallel scheduler goroutines, so
 	// several goroutines can notify the same client at once — the unguarded
 	// map caused "fatal error: concurrent map writes" (Issue 19).
-	mu       sync.Mutex
-	versions map[string]int // uri → latest didOpen/didChange version
+	mu           sync.Mutex
+	versions     map[string]int // uri → latest didOpen/didChange version
+	capabilities ServerCapabilities
+	// registrations records dynamic server capabilities (for example pull
+	// diagnostics) acknowledged through client/registerCapability.
+	registrations map[string]string
+	resultIDs     map[string]string // URI → pull-diagnostic result id
 }
 
-// Option configures a Manager.
+// Option configures
 type Option func(*Manager)
 
 // WithBinDir sets the directory installers place binaries into (default
@@ -100,8 +106,8 @@ func NewManager(rootDir string, opts ...Option) *Manager {
 		diags:         NewDiagnostics(),
 		spawning:      make(map[string]*spawnFlight),
 		serverFactory: Start,
-		resolve: func(spec *ServerSpec, binDir string, installAllowed bool) ([]string, bool) {
-			return spec.resolveCommand(binDir, installAllowed)
+		resolve: func(spec *ServerSpec, workspace, binDir string, installAllowed bool) ([]string, bool) {
+			return spec.resolveCommandWithWorkspace(workspace, binDir, installAllowed)
 		},
 	}
 	for _, o := range opts {
@@ -232,12 +238,15 @@ func (m *Manager) startSpawnLocked(spec *ServerSpec, key, root string) *spawnFli
 // spawnAsync runs the slow spawn off the caller's path, then publishes the
 // outcome (client registered, or key marked broken) and releases waiters.
 func (m *Manager) spawnAsync(spec *ServerSpec, root, key string, flight *spawnFlight) {
-	c := m.spawn(spec, root)
+	c, spawnErr := m.spawn(spec, root)
 	m.mu.Lock()
 	if c != nil {
 		m.clients[key] = c
 	} else {
-		m.broken[key] = fmt.Errorf("lsp: server %s unavailable", spec.ID)
+		if spawnErr == nil {
+			spawnErr = fmt.Errorf("lsp: server %s unavailable", spec.ID)
+		}
+		m.broken[key] = spawnErr
 	}
 	delete(m.spawning, key)
 	m.mu.Unlock()
@@ -247,46 +256,77 @@ func (m *Manager) spawnAsync(spec *ServerSpec, root, key string, flight *spawnFl
 // spawn resolves the server's command and starts it, returning nil when the
 // server cannot be launched. The process is tied to lifecycleCtx (long-lived);
 // only the resolve + initialize handshake is bounded by spawnHandshakeTimeout.
-func (m *Manager) spawn(spec *ServerSpec, root string) *serverClient {
+func (m *Manager) spawn(spec *ServerSpec, root string) (*serverClient, error) {
 	hsCtx, cancel := context.WithTimeout(m.lifecycleCtx, spawnHandshakeTimeout)
 	defer cancel()
 
-	argv, ok := m.resolve(spec, m.binDir, m.install)
+	argv, ok := m.resolve(spec, root, m.binDir, m.install)
 	if !ok || len(argv) == 0 {
-		return nil
+		return nil, fmt.Errorf("lsp: %s unavailable; tried %s. Install the declared toolchain or enable automatic installation", spec.ID, spec.resolutionHint(m.install))
 	}
 	server, err := m.serverFactory(m.lifecycleCtx, ServerConfig{
-		Command: argv[0],
-		Args:    argv[1:],
-		RootDir: root,
-		Env:     mergeEnv(spec.Env),
+		Command:        argv[0],
+		Args:           argv[1:],
+		RootDir:        root,
+		Env:            mergeEnv(spec.Env),
+		Initialization: initOptions(spec, root),
 	})
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("lsp: start %s: %w", spec.ID, err)
 	}
 	client := server.Client()
+	running := &serverClient{server: server, spec: spec, root: root, versions: make(map[string]int), registrations: make(map[string]string), resultIDs: make(map[string]string)}
 	client.OnNotification("textDocument/publishDiagnostics", m.diags.Handler())
+	client.OnNotification("workspace/diagnostic/refresh", func(_ json.RawMessage) {
+		// A refresh is intentionally acknowledged as a notification. The next
+		// bounded PullDiagnostics call obtains the fresh report; no request is
+		// made from this callback, avoiding re-entrant protocol deadlocks.
+	})
+
+	client.OnRequest("client/registerCapability", func(params json.RawMessage) any {
+		var p RegistrationParams
+		if json.Unmarshal(params, &p) == nil && running != nil {
+			running.mu.Lock()
+			for _, reg := range p.Registrations {
+				running.registrations[reg.ID] = reg.Method
+			}
+			running.mu.Unlock()
+		}
+		return nil
+	})
+	client.OnRequest("client/unregisterCapability", func(params json.RawMessage) any {
+		var p UnregistrationParams
+		if json.Unmarshal(params, &p) == nil && running != nil {
+			running.mu.Lock()
+			for _, reg := range p.Unregisterations {
+				delete(running.registrations, reg.ID)
+			}
+			running.mu.Unlock()
+		}
+		return nil
+	})
+	client.OnRequest("workspace/configuration", func(params json.RawMessage) any { return []any{} })
+	client.OnRequest("workspace/workspaceFolders", func(_ json.RawMessage) any { return []WorkspaceFolder{{URI: uriFor(root), Name: filepath.Base(root)}} })
+	client.OnRequest("window/workDoneProgress/create", func(_ json.RawMessage) any { return nil })
 	rootURI := uriFor(root)
-	if _, err := client.Initialize(hsCtx, InitializeParams{
+	initResult, err := client.Initialize(hsCtx, InitializeParams{
 		ProcessID:             0,
 		RootURI:               rootURI,
+		WorkspaceFolders:      []WorkspaceFolder{{URI: rootURI, Name: filepath.Base(root)}},
 		Capabilities:          clientCapabilities(),
 		InitializationOptions: initOptions(spec, root),
 		Trace:                 "off",
-	}); err != nil {
+	})
+	if err != nil {
 		_ = server.Close(m.lifecycleCtx)
-		return nil
+		return nil, fmt.Errorf("lsp: initialize %s: %w", spec.ID, err)
 	}
 	if err := client.Initialized(InitializedParams{}); err != nil {
 		_ = server.Close(m.lifecycleCtx)
-		return nil
+		return nil, fmt.Errorf("lsp: initialized %s: %w", spec.ID, err)
 	}
-	return &serverClient{
-		server:   server,
-		spec:     spec,
-		root:     root,
-		versions: make(map[string]int),
-	}
+	running.capabilities = initResult.Capabilities
+	return running, nil
 }
 
 // uriFor converts a path to a file:// URI. Symlinks are resolved (macOS
@@ -309,8 +349,17 @@ func uriFor(path string) string {
 // (Issue LSP: tsserver produced zero diagnostics).
 func clientCapabilities() map[string]any {
 	return map[string]any{
+		"workspace": map[string]any{
+			"workspaceFolders":       true,
+			"configuration":          true,
+			"didChangeConfiguration": map[string]any{"dynamicRegistration": true},
+			"diagnostics":            map[string]any{"refreshSupport": true},
+		},
+		"window": map[string]any{"workDoneProgress": true},
 		"textDocument": map[string]any{
-			"publishDiagnostics": map[string]any{},
+			"synchronization":    map[string]any{"dynamicRegistration": true, "willSave": false, "didSave": true},
+			"publishDiagnostics": map[string]any{"relatedInformation": true},
+			"diagnostic":         map[string]any{"dynamicRegistration": true, "relatedDocumentSupport": true},
 		},
 	}
 }
@@ -333,11 +382,19 @@ func mergeEnv(overrides map[string]string) []string {
 // overrides (user wins).
 func initOptions(spec *ServerSpec, root string) map[string]any {
 	var out map[string]any
-	// Builtin dynamic: point pyright at the project virtualenv interpreter so
-	// imports resolve (OpenCode does the same).
-	if spec.ID == "pyright" {
+	// Workspace-derived values are declared by each registry entry. This keeps
+	// server behavior data-driven and makes new providers extensible.
+	if spec.Dynamic != nil && spec.Dynamic.PythonVenv != "" {
 		if py := pythonVenv(root); py != "" {
 			out = map[string]any{"python": map[string]any{"pythonPath": py}}
+		}
+	}
+	if spec.Dynamic != nil && spec.Dynamic.TypeScriptServer {
+		if ts := typeScriptServer(root); ts != "" {
+			if out == nil {
+				out = map[string]any{}
+			}
+			out["tsserver"] = map[string]any{"path": ts}
 		}
 	}
 	for k, v := range spec.Initialization {
@@ -347,6 +404,17 @@ func initOptions(spec *ServerSpec, root string) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// typeScriptServer resolves the nearest workspace TypeScript installation.
+func typeScriptServer(root string) string {
+	for _, base := range []string{root, filepath.Dir(root)} {
+		candidate := filepath.Join(base, "node_modules", "typescript", "lib", "tsserver.js")
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // pythonVenv returns the interpreter path of the project virtualenv, checking
@@ -412,10 +480,8 @@ func (c *serverClient) didChangeLocked(uri string, version int, text string) err
 	version++
 	c.versions[uri] = version
 	return c.server.Client().DidChange(DidChangeTextDocumentParams{
-		TextDocument: VersionedTextDocumentIdentifier{URI: uri, Version: version},
-		ContentChanges: []TextDocumentContentChangeEvent{
-			{Text: text},
-		},
+		TextDocument:   VersionedTextDocumentIdentifier{URI: uri, Version: version},
+		ContentChanges: []TextDocumentContentChangeEvent{{Text: text}},
 	})
 }
 
@@ -437,7 +503,12 @@ func (m *Manager) OpenDocument(ctx context.Context, path, text string) error {
 	if c == nil {
 		return m.noClientError(path)
 	}
-	return c.notifyOpen(uriFor(path), c.spec.languageID(path), text)
+	uri := uriFor(path)
+	c.mu.Lock()
+	version := c.versions[uri] + 1
+	c.mu.Unlock()
+	m.diags.MarkPending(uri, version)
+	return c.notifyOpen(uri, c.spec.languageID(path), text)
 }
 
 // DidChange notifies the appropriate server of a content change, opening the
@@ -448,7 +519,12 @@ func (m *Manager) DidChange(ctx context.Context, path, text string) error {
 	if c == nil {
 		return m.noClientError(path)
 	}
-	return c.notifyChange(uriFor(path), c.spec.languageID(path), text)
+	uri := uriFor(path)
+	c.mu.Lock()
+	version := c.versions[uri] + 1
+	c.mu.Unlock()
+	m.diags.MarkPending(uri, version)
+	return c.notifyChange(uri, c.spec.languageID(path), text)
 }
 
 // noClientError describes why no client is available for path: unsupported
@@ -466,7 +542,10 @@ func (m *Manager) noClientError(path string) error {
 	case starting:
 		return fmt.Errorf("lsp manager: server for %s is still starting", path)
 	case broken:
-		return fmt.Errorf("lsp manager: server for %s failed to start", path)
+		m.mu.Lock()
+		err := m.broken[key]
+		m.mu.Unlock()
+		return fmt.Errorf("lsp manager: server for %s failed to start: %v", path, err)
 	default:
 		return fmt.Errorf("lsp manager: no server for %s", path)
 	}
@@ -478,6 +557,50 @@ func (m *Manager) DiagnosticsFor(ctx context.Context, path string) []Diagnostic 
 		return nil
 	}
 	return m.diags.Get(uriFor(path))
+}
+
+// WaitDiagnostics waits for an explicit publication at or after the document
+// version requested by the most recent open/change.
+func (m *Manager) WaitDiagnostics(ctx context.Context, path string) DiagnosticSnapshot {
+	if m == nil {
+		return DiagnosticSnapshot{}
+	}
+	uri := uriFor(path)
+	snap := m.diags.Snapshot(uri)
+	return m.diags.Wait(ctx, uri, snap.Pending)
+}
+
+// PullDiagnostics requests a fresh report from servers implementing the pull
+// diagnostic extension. Push-only servers simply return an unavailable error.
+func (m *Manager) PullDiagnostics(ctx context.Context, path string) (DiagnosticSnapshot, error) {
+	c := m.waitClientFor(ctx, path)
+	if c == nil {
+		return DiagnosticSnapshot{}, m.noClientError(path)
+	}
+	uri := uriFor(path)
+	c.mu.Lock()
+	version := c.versions[uri]
+	previousResultID := c.resultIDs[uri]
+	c.mu.Unlock()
+	report, err := c.server.Client().Diagnostic(ctx, DocumentDiagnosticParams{
+		TextDocument:     TextDocumentIdentifier{URI: uri},
+		PreviousResultID: previousResultID,
+	})
+	if err != nil {
+		return DiagnosticSnapshot{}, err
+	}
+	// An unchanged pull report refers to the previous result ID and must not
+	// erase the last known diagnostics. A full report, including an empty items
+	// list, is an explicit clean publication.
+	if report.Kind != "unchanged" {
+		m.diags.SetVersion(uri, version, report.Items)
+	}
+	c.mu.Lock()
+	if report.ResultID != "" {
+		c.resultIDs[uri] = report.ResultID
+	}
+	c.mu.Unlock()
+	return m.diags.Snapshot(uri), nil
 }
 
 // ServerIDFor returns the id of the language server that handles path
@@ -574,9 +697,130 @@ func (m *Manager) DocumentSymbols(ctx context.Context, path string) ([]DocumentS
 	if err != nil {
 		return nil, err
 	}
-	return c.server.Client().DocumentSymbol(ctx, DocumentSymbolParams{
-		TextDocument: TextDocumentIdentifier{URI: uriFor(path)},
-	})
+	return c.server.Client().DocumentSymbol(ctx, DocumentSymbolParams{TextDocument: TextDocumentIdentifier{URI: uriFor(path)}})
+}
+
+// PrepareRename validates that a symbol can be renamed and returns its range.
+func (m *Manager) PrepareRename(ctx context.Context, path string, line, character int) (*PrepareRenameResult, error) {
+	c, err := m.ensureOpen(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return c.server.Client().PrepareRename(ctx, TextDocumentPositionParams{TextDocument: TextDocumentIdentifier{URI: uriFor(path)}, Position: Position{Line: line, Character: character}})
+}
+
+// Rename requests a multi-file workspace edit from the language server.
+func (m *Manager) Rename(ctx context.Context, path string, line, character int, newName string) (*WorkspaceEdit, error) {
+	c, err := m.ensureOpen(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return c.server.Client().Rename(ctx, RenameParams{TextDocumentPositionParams: TextDocumentPositionParams{TextDocument: TextDocumentIdentifier{URI: uriFor(path)}, Position: Position{Line: line, Character: character}}, NewName: newName})
+}
+
+// Completion returns completion items at a position.
+func (m *Manager) Completion(ctx context.Context, path string, line, character int) ([]CompletionItem, error) {
+	c, err := m.ensureOpen(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return c.server.Client().Completion(ctx, CompletionParams{TextDocumentPositionParams: TextDocumentPositionParams{TextDocument: TextDocumentIdentifier{URI: uriFor(path)}, Position: Position{Line: line, Character: character}}})
+}
+
+// CodeAction requests actions for a range.
+func (m *Manager) CodeAction(ctx context.Context, path string, r Range) ([]CodeAction, error) {
+	c, err := m.ensureOpen(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return c.server.Client().CodeAction(ctx, CodeActionParams{TextDocument: TextDocumentIdentifier{URI: uriFor(path)}, Range: r})
+}
+
+// Formatting requests whole-document formatting edits.
+func (m *Manager) Formatting(ctx context.Context, path string, options FormattingOptions) ([]TextEdit, error) {
+	c, err := m.ensureOpen(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return c.server.Client().Formatting(ctx, TextDocumentIdentifier{URI: uriFor(path)}, options)
+}
+
+// SupportsPath reports whether an enabled registry server handles path.
+func (m *Manager) SupportsPath(path string) bool { _, _, _, ok := m.lookup(path); return ok }
+
+func (m *Manager) Implementation(ctx context.Context, path string, line, character int) ([]Location, error) {
+	c, err := m.ensureOpen(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return c.server.Client().Implementation(ctx, TextDocumentPositionParams{TextDocument: TextDocumentIdentifier{URI: uriFor(path)}, Position: Position{Line: line, Character: character}})
+}
+
+func (m *Manager) WorkspaceSymbols(ctx context.Context, path, query string) ([]WorkspaceSymbol, error) {
+	if _, err := m.ensureOpen(ctx, path); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	clients := make([]*serverClient, 0, len(m.clients))
+	for _, c := range m.clients {
+		clients = append(clients, c)
+	}
+	m.mu.Unlock()
+	var out []WorkspaceSymbol
+	seen := make(map[string]struct{})
+	for _, c := range clients {
+		items, err := c.server.Client().WorkspaceSymbol(ctx, WorkspaceSymbolParams{Query: query})
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			key := item.Name + "|" + item.Location.URI + "|" + fmt.Sprint(item.Location.Range.Start.Line, ":", item.Location.Range.Start.Character)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func (m *Manager) PrepareCallHierarchy(ctx context.Context, path string, line, character int) ([]CallHierarchyItem, error) {
+	c, err := m.ensureOpen(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return c.server.Client().PrepareCallHierarchy(ctx, CallHierarchyPrepareParams{TextDocumentPositionParams: TextDocumentPositionParams{TextDocument: TextDocumentIdentifier{URI: uriFor(path)}, Position: Position{Line: line, Character: character}}})
+}
+
+func (m *Manager) IncomingCalls(ctx context.Context, path string, line, character int) ([]CallHierarchyIncomingCall, error) {
+	items, err := m.PrepareCallHierarchy(ctx, path, line, character)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return []CallHierarchyIncomingCall{}, nil
+	}
+	c, err := m.ensureOpen(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return c.server.Client().IncomingCalls(ctx, items[0])
+}
+
+func (m *Manager) OutgoingCalls(ctx context.Context, path string, line, character int) ([]CallHierarchyOutgoingCall, error) {
+	items, err := m.PrepareCallHierarchy(ctx, path, line, character)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return []CallHierarchyOutgoingCall{}, nil
+	}
+	c, err := m.ensureOpen(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return c.server.Client().OutgoingCalls(ctx, items[0])
 }
 
 // Close shuts down every running language server and cancels the lifecycle
@@ -602,6 +846,70 @@ func (m *Manager) Close(ctx context.Context) error {
 		}
 	}
 	return firstErr
+}
+
+// ClientState describes the lifecycle of one server workspace client.
+type ClientState string
+
+const (
+	ClientStarting  ClientState = "starting"
+	ClientConnected ClientState = "connected"
+	ClientError     ClientState = "error"
+	ClientBroken    ClientState = "broken"
+)
+
+// ClientStatus is a structured, machine-readable server lifecycle snapshot.
+type ClientStatus struct {
+	ServerID string      `json:"serverId"`
+	Name     string      `json:"name"`
+	Root     string      `json:"root"`
+	State    ClientState `json:"state"`
+	Error    string      `json:"error,omitempty"`
+}
+
+// Statuses reports all configured client lifecycle entries.
+func (m *Manager) Statuses() []ClientStatus {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ClientStatus, 0, len(m.clients)+len(m.spawning)+len(m.broken))
+	for _, c := range m.clients {
+		out = append(out, ClientStatus{ServerID: c.spec.ID, Name: c.spec.ID, Root: c.root, State: ClientConnected})
+	}
+	for key := range m.spawning {
+		id, root := splitClientKey(key)
+		out = append(out, ClientStatus{ServerID: id, Name: id, Root: root, State: ClientStarting})
+	}
+	for key, err := range m.broken {
+		id, root := splitClientKey(key)
+		out = append(out, ClientStatus{ServerID: id, Name: id, Root: root, State: ClientBroken, Error: err.Error()})
+	}
+	return out
+}
+
+func splitClientKey(key string) (string, string) {
+	idx := strings.IndexByte(key, '|')
+	if idx < 0 {
+		return key, ""
+	}
+	return key[:idx], key[idx+1:]
+}
+
+// HasClients reports whether a running client is available for path.
+func (m *Manager) HasClients(path string) bool {
+	if m == nil {
+		return false
+	}
+	_, key, _, ok := m.lookup(path)
+	if !ok {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, exists := m.clients[key]
+	return exists
 }
 
 // Status reports which servers are running (and starting), for diagnostics/UI.

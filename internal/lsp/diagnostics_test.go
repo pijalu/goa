@@ -30,6 +30,41 @@ func TestDiagnostics_Handler(t *testing.T) {
 	}
 }
 
+func TestDiagnostics_VersionedPublicationAndCleanState(t *testing.T) {
+	d := NewDiagnostics()
+	d.MarkPending("file:///x.go", 2)
+	d.SetVersion("file:///x.go", 1, []Diagnostic{{Message: "stale"}})
+	if snap := d.Snapshot("file:///x.go"); snap.Published {
+		t.Fatal("older publication must not resolve pending state")
+	}
+	d.SetVersion("file:///x.go", 2, nil)
+	snap := d.Snapshot("file:///x.go")
+	if !snap.Published || snap.Version != 2 || len(snap.Diagnostics) != 0 {
+		t.Fatalf("expected explicit clean version, got %+v", snap)
+	}
+}
+
+func TestDiagnostics_OutOfOrderPublicationIgnored(t *testing.T) {
+	d := NewDiagnostics()
+	d.SetVersion("file:///x.go", 4, []Diagnostic{{Message: "new"}})
+	d.SetVersion("file:///x.go", 3, []Diagnostic{{Message: "old"}})
+	got := d.Get("file:///x.go")
+	if len(got) != 1 || got[0].Message != "new" {
+		t.Fatalf("stale publication replaced current: %+v", got)
+	}
+}
+
+func TestDiagnostics_UnversionedPublicationKeepsPendingVersion(t *testing.T) {
+	d := NewDiagnostics()
+	d.SetVersion("file:///x.go", 4, []Diagnostic{{Message: "old"}})
+	d.MarkPending("file:///x.go", 5)
+	d.SetVersion("file:///x.go", 0, nil)
+	snap := d.Snapshot("file:///x.go")
+	if !snap.Published || snap.Version != 5 || snap.Pending != 0 || len(snap.Diagnostics) != 0 {
+		t.Fatalf("unversioned clean publication lost lifecycle state: %+v", snap)
+	}
+}
+
 func TestDiagnostics_Clear(t *testing.T) {
 	d := NewDiagnostics()
 	d.Set("file:///tmp/main.go", []Diagnostic{{Message: "error", Severity: 1}})

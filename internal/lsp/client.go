@@ -31,7 +31,8 @@ type Client struct {
 	// pending maps request IDs to response channels.
 	pending map[int64]chan *rpcResponse
 	// notifyHandlers map method names to notification handlers.
-	notifyHandlers map[string]func(params json.RawMessage)
+	notifyHandlers  map[string]func(params json.RawMessage)
+	requestHandlers map[string]func(params json.RawMessage) any
 	// closed is set to true after Close is called.
 	closed atomic.Bool
 }
@@ -60,10 +61,11 @@ type rpcResponse struct {
 // is responsible for starting the read loop (ReadNotifications).
 func NewClient(conn net.Conn) *Client {
 	return &Client{
-		conn:           conn,
-		reader:         bufio.NewReader(conn),
-		pending:        make(map[int64]chan *rpcResponse),
-		notifyHandlers: make(map[string]func(params json.RawMessage)),
+		conn:            conn,
+		reader:          bufio.NewReader(conn),
+		pending:         make(map[int64]chan *rpcResponse),
+		notifyHandlers:  make(map[string]func(params json.RawMessage)),
+		requestHandlers: make(map[string]func(params json.RawMessage) any),
 	}
 }
 
@@ -72,6 +74,15 @@ func (c *Client) OnNotification(method string, handler func(params json.RawMessa
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.notifyHandlers[method] = handler
+}
+
+// OnRequest registers a handler for requests initiated by the language server.
+// Returning nil produces a JSON null result, suitable for optional client
+// features such as workspace/configuration when no settings are available.
+func (c *Client) OnRequest(method string, handler func(params json.RawMessage) any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requestHandlers[method] = handler
 }
 
 // request sends a JSON-RPC request and waits for the response.
@@ -166,6 +177,14 @@ func (c *Client) notify(method string, params any) error {
 	return c.writeMessage(body)
 }
 
+func (c *Client) writeResponse(id int64, result []byte) error {
+	body, err := json.Marshal(rpcMessage{JSONRPC: "2.0", ID: id, Result: result})
+	if err != nil {
+		return err
+	}
+	return c.writeMessage(body)
+}
+
 func (c *Client) writeMessage(body []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -237,6 +256,26 @@ func (c *Client) readMessage() (*rpcMessage, error) {
 }
 
 func (c *Client) dispatch(msg *rpcMessage) {
+	// Requests have a method; responses do not. Server request IDs may collide
+	// with client request IDs, so classify by method before consulting pending.
+	if msg.ID != 0 && msg.Method != "" {
+		c.mu.Lock()
+		handler := c.requestHandlers[msg.Method]
+		c.mu.Unlock()
+		// Optional server requests must always receive a response. Returning
+		// JSON null for an unsupported hook prevents servers (notably gopls,
+		// which may dynamically register watched files) from blocking all later
+		// requests while waiting for a client acknowledgement.
+		var value any
+		if handler != nil {
+			value = handler(msg.Params)
+		}
+		result, err := json.Marshal(value)
+		if err == nil {
+			_ = c.writeResponse(msg.ID, result)
+		}
+		return
+	}
 	if msg.ID != 0 {
 		c.mu.Lock()
 		ch, ok := c.pending[msg.ID]
@@ -287,6 +326,18 @@ func (c *Client) DidChange(params DidChangeTextDocumentParams) error {
 	return c.notify("textDocument/didChange", params)
 }
 
+// Diagnostic requests pull diagnostics when a server advertises the pull
+// protocol. A nil result is treated as an empty report by callers.
+func (c *Client) Diagnostic(ctx context.Context, params DocumentDiagnosticParams) (DocumentDiagnosticReport, error) {
+	var result DocumentDiagnosticReport
+	err := c.request(ctx, "textDocument/diagnostic", params, &result)
+	return result, err
+}
+
+func (c *Client) DiagnosticRefresh(ctx context.Context) error {
+	return c.request(ctx, "workspace/diagnostic/refresh", nil, nil)
+}
+
 // Shutdown sends the shutdown request.
 func (c *Client) Shutdown(ctx context.Context) error {
 	return c.request(ctx, "shutdown", nil, nil)
@@ -299,13 +350,41 @@ func (c *Client) Exit() error {
 
 // InitializeParams is the request payload for initialize.
 type InitializeParams struct {
-	ProcessID    int    `json:"processId"`
-	RootURI      string `json:"rootUri"`
-	Capabilities any    `json:"capabilities"`
+	ProcessID        int               `json:"processId"`
+	RootURI          string            `json:"rootUri"`
+	WorkspaceFolders []WorkspaceFolder `json:"workspaceFolders,omitempty"`
+	Capabilities     any               `json:"capabilities"`
 	// InitializationOptions are server-specific settings sent at initialize
 	// (e.g. pythonPath for pyright). Nil/empty is omitted.
 	InitializationOptions map[string]any `json:"initializationOptions,omitempty"`
 	Trace                 string         `json:"trace,omitempty"`
+}
+
+// WorkspaceFolder identifies a workspace root.
+type WorkspaceFolder struct {
+	URI  string `json:"uri"`
+	Name string `json:"name"`
+}
+
+// RegistrationParams and UnregistrationParams model dynamic client capability
+// negotiation. Registrations are retained by the manager for later feature use.
+type RegistrationParams struct {
+	Registrations []Registration `json:"registrations"`
+}
+
+type Registration struct {
+	ID              string `json:"id"`
+	Method          string `json:"method"`
+	RegisterOptions any    `json:"registerOptions,omitempty"`
+}
+
+type UnregistrationParams struct {
+	Unregisterations []Unregistration `json:"unregisterations"`
+}
+
+type Unregistration struct {
+	ID     string `json:"id"`
+	Method string `json:"method"`
 }
 
 // InitializeResult is the response payload for initialize.
@@ -325,11 +404,19 @@ type ServerInfo struct {
 // {"workDoneProgress":true}); a strict bool broke every pyright initialize
 // handshake (Issue LSP). The values are informational only.
 type ServerCapabilities struct {
-	TextDocumentSync        any `json:"textDocumentSync,omitempty"`
-	DefinitionProvider      any `json:"definitionProvider,omitempty"`
-	HoverProvider           any `json:"hoverProvider,omitempty"`
-	DocumentSymbolProvider  any `json:"documentSymbolProvider,omitempty"`
-	WorkspaceSymbolProvider any `json:"workspaceSymbolProvider,omitempty"`
+	TextDocumentSync           any `json:"textDocumentSync,omitempty"`
+	DefinitionProvider         any `json:"definitionProvider,omitempty"`
+	HoverProvider              any `json:"hoverProvider,omitempty"`
+	DocumentSymbolProvider     any `json:"documentSymbolProvider,omitempty"`
+	WorkspaceSymbolProvider    any `json:"workspaceSymbolProvider,omitempty"`
+	DiagnosticProvider         any `json:"diagnosticProvider,omitempty"`
+	ImplementationProvider     any `json:"implementationProvider,omitempty"`
+	ReferencesProvider         any `json:"referencesProvider,omitempty"`
+	CallHierarchyProvider      any `json:"callHierarchyProvider,omitempty"`
+	CompletionProvider         any `json:"completionProvider,omitempty"`
+	CodeActionProvider         any `json:"codeActionProvider,omitempty"`
+	RenameProvider             any `json:"renameProvider,omitempty"`
+	DocumentFormattingProvider any `json:"documentFormattingProvider,omitempty"`
 }
 
 // InitializedParams is the notification payload for initialized.
@@ -372,9 +459,96 @@ type TextDocumentPositionParams struct {
 	Position     Position               `json:"position"`
 }
 
+// WorkspaceSymbolParams queries symbols across the workspace.
+type WorkspaceSymbolParams struct {
+	Query string `json:"query"`
+}
+
+// CallHierarchyPrepareParams identifies the symbol whose call hierarchy is requested.
+type CallHierarchyPrepareParams struct{ TextDocumentPositionParams }
+
+// CallHierarchyItem is a symbol participating in a call hierarchy.
+type CallHierarchyItem struct {
+	Name           string `json:"name"`
+	Kind           int    `json:"kind"`
+	URI            string `json:"uri"`
+	Range          Range  `json:"range"`
+	SelectionRange Range  `json:"selectionRange"`
+	Detail         string `json:"detail,omitempty"`
+}
+
+type CallHierarchyIncomingCall struct {
+	From       CallHierarchyItem `json:"from"`
+	FromRanges []Range           `json:"fromRanges"`
+}
+
+type CallHierarchyOutgoingCall struct {
+	To         CallHierarchyItem `json:"to"`
+	FromRanges []Range           `json:"fromRanges"`
+}
+
+// WorkspaceSymbol is the flat symbol representation returned by workspaceSymbol.
+type WorkspaceSymbol struct {
+	Name          string   `json:"name"`
+	Kind          int      `json:"kind"`
+	Location      Location `json:"location"`
+	ContainerName string   `json:"containerName,omitempty"`
+}
+
 // TextDocumentIdentifier identifies a document by URI.
 type TextDocumentIdentifier struct {
 	URI string `json:"uri"`
+}
+
+// TextEdit replaces a range with new text.
+type TextEdit struct {
+	Range   Range  `json:"range"`
+	NewText string `json:"newText"`
+}
+type RenameParams struct {
+	TextDocumentPositionParams
+	NewName string `json:"newName"`
+}
+type PrepareRenameResult struct {
+	Range       Range  `json:"range"`
+	Placeholder string `json:"placeholder,omitempty"`
+}
+type FormattingOptions struct {
+	TabSize      int  `json:"tabSize"`
+	InsertSpaces bool `json:"insertSpaces"`
+}
+type CompletionParams struct{ TextDocumentPositionParams }
+type CodeActionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+	Context      CodeActionContext      `json:"context"`
+}
+type CodeActionContext struct {
+	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
+}
+type CodeAction struct {
+	Title string         `json:"title"`
+	Kind  string         `json:"kind,omitempty"`
+	Edit  *WorkspaceEdit `json:"edit,omitempty"`
+}
+
+// WorkspaceEdit describes edits grouped by URI or by versioned documents.
+// LSP permits either form; servers commonly use documentChanges for rename.
+type WorkspaceEdit struct {
+	Changes         map[string][]TextEdit `json:"changes,omitempty"`
+	DocumentChanges []TextDocumentEdit    `json:"documentChanges,omitempty"`
+}
+
+// TextDocumentEdit contains edits for one document in documentChanges.
+type TextDocumentEdit struct {
+	TextDocument VersionedTextDocumentIdentifier `json:"textDocument"`
+	Edits        []TextEdit                      `json:"edits"`
+}
+
+type CompletionItem struct {
+	Label      string `json:"label"`
+	Detail     string `json:"detail,omitempty"`
+	InsertText string `json:"insertText,omitempty"`
 }
 
 // Location is an LSP location: a URI plus a range.
@@ -418,6 +592,32 @@ type DocumentSymbol struct {
 
 // Definition sends textDocument/definition and returns the definition
 // locations of the symbol at the given position.
+func (c *Client) PrepareRename(ctx context.Context, params TextDocumentPositionParams) (*PrepareRenameResult, error) {
+	var result *PrepareRenameResult
+	err := c.request(ctx, "textDocument/prepareRename", params, &result)
+	return result, err
+}
+func (c *Client) Rename(ctx context.Context, params RenameParams) (*WorkspaceEdit, error) {
+	var result *WorkspaceEdit
+	err := c.request(ctx, "textDocument/rename", params, &result)
+	return result, err
+}
+func (c *Client) Completion(ctx context.Context, params CompletionParams) ([]CompletionItem, error) {
+	var result []CompletionItem
+	err := c.request(ctx, "textDocument/completion", params, &result)
+	return result, err
+}
+func (c *Client) CodeAction(ctx context.Context, params CodeActionParams) ([]CodeAction, error) {
+	var result []CodeAction
+	err := c.request(ctx, "textDocument/codeAction", params, &result)
+	return result, err
+}
+func (c *Client) Formatting(ctx context.Context, id TextDocumentIdentifier, options FormattingOptions) ([]TextEdit, error) {
+	var result []TextEdit
+	err := c.request(ctx, "textDocument/formatting", map[string]any{"textDocument": id, "options": options}, &result)
+	return result, err
+}
+
 func (c *Client) Definition(ctx context.Context, params TextDocumentPositionParams) ([]Location, error) {
 	var result []Location
 	err := c.request(ctx, "textDocument/definition", params, &result)
@@ -445,5 +645,35 @@ func (c *Client) Hover(ctx context.Context, params TextDocumentPositionParams) (
 func (c *Client) DocumentSymbol(ctx context.Context, params DocumentSymbolParams) ([]DocumentSymbol, error) {
 	var result []DocumentSymbol
 	err := c.request(ctx, "textDocument/documentSymbol", params, &result)
+	return result, err
+}
+
+func (c *Client) Implementation(ctx context.Context, params TextDocumentPositionParams) ([]Location, error) {
+	var result []Location
+	err := c.request(ctx, "textDocument/implementation", params, &result)
+	return result, err
+}
+
+func (c *Client) WorkspaceSymbol(ctx context.Context, params WorkspaceSymbolParams) ([]WorkspaceSymbol, error) {
+	var result []WorkspaceSymbol
+	err := c.request(ctx, "workspace/symbol", params, &result)
+	return result, err
+}
+
+func (c *Client) PrepareCallHierarchy(ctx context.Context, params CallHierarchyPrepareParams) ([]CallHierarchyItem, error) {
+	var result []CallHierarchyItem
+	err := c.request(ctx, "textDocument/prepareCallHierarchy", params, &result)
+	return result, err
+}
+
+func (c *Client) IncomingCalls(ctx context.Context, item CallHierarchyItem) ([]CallHierarchyIncomingCall, error) {
+	var result []CallHierarchyIncomingCall
+	err := c.request(ctx, "callHierarchy/incomingCalls", map[string]any{"item": item}, &result)
+	return result, err
+}
+
+func (c *Client) OutgoingCalls(ctx context.Context, item CallHierarchyItem) ([]CallHierarchyOutgoingCall, error) {
+	var result []CallHierarchyOutgoingCall
+	err := c.request(ctx, "callHierarchy/outgoingCalls", map[string]any{"item": item}, &result)
 	return result, err
 }

@@ -40,6 +40,12 @@ type LSPDocumentManager interface {
 	ServerIDFor(path string) string
 }
 
+// boundedDiagnosticWaiter is implemented by the production manager. Keeping
+// this optional preserves compatibility with lightweight tool fakes.
+type boundedDiagnosticWaiter interface {
+	WaitDiagnostics(context.Context, string) lsp.DiagnosticSnapshot
+}
+
 type WriteFileTool struct {
 	WorktreeMgr  *internal.WorktreeManager
 	ProjectDir   string
@@ -147,8 +153,16 @@ func (t *WriteFileTool) lspDiagnostics(ctx context.Context, resolvedPath, conten
 	} else {
 		_ = t.LSPManager.DidChange(ctx, resolvedPath, content)
 	}
-	// Diagnostics are published asynchronously; poll until they settle (L1).
-	diags := collectLSPDiagnostics(ctx, t.LSPManager, resolvedPath)
+	var diags []lsp.Diagnostic
+	if waiter, ok := t.LSPManager.(boundedDiagnosticWaiter); ok {
+		waitCtx, cancel := context.WithTimeout(ctx, lspPollTimeout)
+		snap := waiter.WaitDiagnostics(waitCtx, resolvedPath)
+		cancel()
+		diags = snap.Diagnostics
+	} else {
+		// Compatibility path for test/custom managers without lifecycle state.
+		diags = collectLSPDiagnostics(ctx, t.LSPManager, resolvedPath)
+	}
 	return formatLSPDiagnostics(resolvedPath, diags, t.LSPManager.ServerIDFor(resolvedPath))
 }
 

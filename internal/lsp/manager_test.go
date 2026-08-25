@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-//
 // Copyright (C) 2026 Pierre Poissinger
 
 package lsp
@@ -10,11 +8,30 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestInitOptions_TypeScriptWorkspace(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "node_modules", "typescript", "lib")
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	ts := filepath.Join(path, "tsserver.js")
+	if err := os.WriteFile(ts, []byte("// tsserver"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := initOptions(&ServerSpec{Dynamic: &DynamicSpec{TypeScriptServer: true}}, root)
+	server, ok := opts["tsserver"].(map[string]any)
+	if !ok || server["path"] != ts {
+		t.Fatalf("options=%#v, want tsserver path %q", opts, ts)
+	}
+}
 
 // fakeServerRecorder records the ServerConfig a spawned server was given.
 type fakeServerRecorder struct {
@@ -85,10 +102,18 @@ func (c *loopbackConn) Write(p []byte) (int, error) {
 		body = body[idx+4:]
 	}
 	var req struct {
-		ID int64 `json:"id"`
+		ID     int64  `json:"id"`
+		Method string `json:"method"`
 	}
 	if err := json.Unmarshal([]byte(body), &req); err == nil && req.ID != 0 {
-		resp := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{}}`, req.ID)
+		result := `{}`
+		switch req.Method {
+		case "textDocument/implementation", "workspace/symbol", "textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls", "callHierarchy/outgoingCalls":
+			result = `[]`
+		case "textDocument/diagnostic":
+			result = `{"kind":"full","resultId":"test-result","items":[]}`
+		}
+		resp := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":%s}`, req.ID, result)
 		c.pending <- []byte(resp)
 	}
 	return len(p), nil
@@ -108,7 +133,7 @@ func startedManager(t *testing.T, dir string, rec *fakeServerRecorder, sink *syn
 	t.Helper()
 	m := NewManager(dir, WithServers(specs))
 	m.serverFactory = rec.factory(sink)
-	m.resolve = func(spec *ServerSpec, binDir string, installAllowed bool) ([]string, bool) {
+	m.resolve = func(spec *ServerSpec, workspace, binDir string, installAllowed bool) ([]string, bool) {
 		return spec.Command, len(spec.Command) > 0
 	}
 	if err := m.Start(context.Background()); err != nil {
@@ -160,6 +185,53 @@ func TestManager_NotStarted(t *testing.T) {
 	mgr := NewManager(t.TempDir(), WithServers(testSpecs))
 	if err := mgr.OpenDocument(context.Background(), "main.go", "package main"); err == nil {
 		t.Error("expected error when not started")
+	}
+}
+
+func TestManager_SupportsPath(t *testing.T) {
+	mgr := startedManager(t, t.TempDir(), &fakeServerRecorder{}, &syncBuffer{}, testSpecs)
+	if !mgr.SupportsPath("main.go") || !mgr.SupportsPath("app.py") {
+		t.Fatal("expected Go and Python support")
+	}
+	if mgr.SupportsPath("notes.txt") {
+		t.Fatal("unexpected text-file support")
+	}
+}
+
+func TestManager_PullDiagnosticsPreservesCleanState(t *testing.T) {
+	dir := t.TempDir()
+	mgr := startedManager(t, dir, &fakeServerRecorder{}, &syncBuffer{}, testSpecs)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	snap, err := mgr.PullDiagnostics(ctx, "main.go")
+	if err != nil {
+		t.Fatalf("pull diagnostics: %v", err)
+	}
+	if !snap.Published || len(snap.Diagnostics) != 0 {
+		t.Fatalf("expected explicit clean report, got %+v", snap)
+	}
+}
+
+func TestManager_NavigationQueries(t *testing.T) {
+	dir := t.TempDir()
+	mgr := startedManager(t, dir, &fakeServerRecorder{}, &syncBuffer{}, testSpecs)
+	openSync(t, mgr, "main.go", "package main")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := mgr.Implementation(ctx, "main.go", 0, 0); err != nil {
+		t.Fatalf("implementation: %v", err)
+	}
+	if _, err := mgr.WorkspaceSymbols(ctx, "main.go", "main"); err != nil {
+		t.Fatalf("workspace symbols: %v", err)
+	}
+	if got, err := mgr.PrepareCallHierarchy(ctx, "main.go", 0, 0); err != nil || got == nil {
+		t.Fatalf("prepare hierarchy: %v %#v", err, got)
+	}
+	if got, err := mgr.IncomingCalls(ctx, "main.go", 0, 0); err != nil || got == nil {
+		t.Fatalf("incoming calls: %v %#v", err, got)
+	}
+	if got, err := mgr.OutgoingCalls(ctx, "main.go", 0, 0); err != nil || got == nil {
+		t.Fatalf("outgoing calls: %v %#v", err, got)
 	}
 }
 
@@ -235,7 +307,7 @@ func TestManager_UnavailableServerMarkedBroken(t *testing.T) {
 	rec := &fakeServerRecorder{}
 	mgr := NewManager(t.TempDir(), WithServers(specs))
 	mgr.serverFactory = rec.factory(&syncBuffer{})
-	mgr.resolve = func(spec *ServerSpec, binDir string, installAllowed bool) ([]string, bool) {
+	mgr.resolve = func(spec *ServerSpec, workspace, binDir string, installAllowed bool) ([]string, bool) {
 		return nil, false // simulate unresolvable server
 	}
 	if err := mgr.Start(context.Background()); err != nil {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -39,23 +40,49 @@ type NpxSpec struct {
 // InstallSpec describes how to fetch a server that npx cannot run (gopls via
 // `go install`, jdtls via download). Installation is opt-out via config.
 type InstallSpec struct {
-	Kind    string `yaml:"kind"` // "go" | "npm" | "download"
-	Package string `yaml:"package,omitempty"`
-	URL     string `yaml:"url,omitempty"`
-	Binary  string `yaml:"binary"`
+	Kind     string   `yaml:"kind"` // "go" | "npm" | "download"
+	Package  string   `yaml:"package,omitempty"`
+	URL      string   `yaml:"url,omitempty"`
+	Binary   string   `yaml:"binary"`
+	Checksum string   `yaml:"checksum,omitempty"` // optional SHA-256 digest of the archive
+	Args     []string `yaml:"args,omitempty"`     // installer-specific flags
+}
+
+// PlatformVariant overrides launch/install metadata for one GOOS/GOARCH pair.
+// The key in ServerSpec.Platforms is either a full "os/arch" pair or an OS
+// name. Full pairs take precedence, allowing architecture-specific downloads.
+type PlatformVariant struct {
+	Command []string     `yaml:"command,omitempty"`
+	Install *InstallSpec `yaml:"install,omitempty"`
+}
+
+// DynamicSpec describes workspace-derived initialization values.
+// Keys use a small declarative vocabulary; unknown keys are ignored safely.
+type DynamicSpec struct {
+	PythonVenv string `yaml:"python_venv,omitempty"`
+	// TypeScriptServer resolves the workspace-local TypeScript tsserver path.
+	TypeScriptServer bool `yaml:"typescript_server,omitempty"`
 }
 
 // ServerSpec declaratively describes a language server, loaded from the
 // embedded registry (servers.yaml). Modeled on OpenCode's LSP server registry
 // (packages/opencode/src/lsp/server.ts).
 type ServerSpec struct {
-	ID         string       `yaml:"id"`
-	Extensions []string     `yaml:"extensions"`
-	Markers    []string     `yaml:"markers"`
-	Command    []string     `yaml:"command"`
-	LanguageID string       `yaml:"language_id"`
-	Npx        *NpxSpec     `yaml:"npx,omitempty"`
-	Install    *InstallSpec `yaml:"install,omitempty"`
+	ID         string   `yaml:"id"`
+	Extensions []string `yaml:"extensions"`
+	// Filenames matches basenames case-insensitively (for extensionless files such as Dockerfile).
+	Filenames      []string                   `yaml:"filenames,omitempty"`
+	Markers        []string                   `yaml:"markers"`
+	ExcludeMarkers []string                   `yaml:"exclude_markers,omitempty"`
+	Command        []string                   `yaml:"command"`
+	LanguageID     string                     `yaml:"language_id"`
+	Npx            *NpxSpec                   `yaml:"npx,omitempty"`
+	Install        *InstallSpec               `yaml:"install,omitempty"`
+	Prerequisites  []string                   `yaml:"prerequisites,omitempty"`
+	Platforms      map[string]PlatformVariant `yaml:"platforms,omitempty"`
+	// Dynamic declares generic initialization values computed from workspace
+	// metadata. Keeping this in the registry avoids per-server code branches.
+	Dynamic *DynamicSpec `yaml:"dynamic,omitempty"`
 	// Env is merged over the process environment for the server process (from
 	// user config overrides; not part of the embedded registry).
 	Env map[string]string `yaml:"-"`
@@ -71,6 +98,9 @@ var registry []ServerSpec
 func init() {
 	if err := yaml.Unmarshal(embeddedServersYAML, &registry); err != nil {
 		panic(fmt.Sprintf("lsp: parse embedded servers.yaml: %v", err))
+	}
+	if err := ValidateRegistry(registry); err != nil {
+		panic(fmt.Sprintf("lsp: invalid embedded registry: %v", err))
 	}
 }
 
@@ -159,6 +189,79 @@ func customServers(overrides map[string]ServerOverride, seen map[string]bool) []
 	return out
 }
 
+func ValidateRegistry(specs []ServerSpec) error {
+	seen := make(map[string]bool, len(specs))
+	for i, s := range specs {
+		if err := validateServerSpec(i, s, seen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateServerSpec(index int, s ServerSpec, seen map[string]bool) error {
+	if strings.TrimSpace(s.ID) == "" {
+		return fmt.Errorf("entry %d: id is required", index)
+	}
+	if seen[s.ID] {
+		return fmt.Errorf("duplicate server id %q", s.ID)
+	}
+	seen[s.ID] = true
+	if len(s.Command) == 0 || strings.TrimSpace(s.Command[0]) == "" {
+		return fmt.Errorf("%s: command is required", s.ID)
+	}
+	if err := validateFilePatterns(s); err != nil {
+		return err
+	}
+	if err := validateInstallSpec(s.ID, s.Install); err != nil {
+		return err
+	}
+	for key, variant := range s.Platforms {
+		if strings.TrimSpace(key) == "" || (len(variant.Command) == 0 && variant.Install == nil) {
+			return fmt.Errorf("%s: invalid platform %q", s.ID, key)
+		}
+		if err := validateInstallSpec(s.ID+"/"+key, variant.Install); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateFilePatterns(s ServerSpec) error {
+	for _, ext := range s.Extensions {
+		if ext == "" || !strings.HasPrefix(ext, ".") {
+			return fmt.Errorf("%s: invalid extension %q", s.ID, ext)
+		}
+	}
+	for _, name := range s.Filenames {
+		if strings.TrimSpace(name) == "" || filepath.Base(name) != name {
+			return fmt.Errorf("%s: invalid filename %q", s.ID, name)
+		}
+	}
+	return nil
+}
+func validateInstallSpec(id string, in *InstallSpec) error {
+	if in == nil {
+		return nil
+	}
+	if strings.TrimSpace(in.Binary) == "" {
+		return fmt.Errorf("%s: installer binary is required", id)
+	}
+	switch in.Kind {
+	case "go", "npm", "dotnet":
+		if strings.TrimSpace(in.Package) == "" {
+			return fmt.Errorf("%s: installer package is required", id)
+		}
+	case "download":
+		if !strings.HasPrefix(strings.ToLower(in.URL), "https://") {
+			return fmt.Errorf("%s: download URL must use HTTPS", id)
+		}
+	default:
+		return fmt.Errorf("%s: unknown install kind %q", id, in.Kind)
+	}
+	return nil
+}
+
 // handlesExt reports whether the spec declares the given extension. An empty
 // Extensions list matches everything.
 func (s *ServerSpec) handlesExt(ext string) bool {
@@ -166,23 +269,58 @@ func (s *ServerSpec) handlesExt(ext string) bool {
 		return true
 	}
 	for _, e := range s.Extensions {
-		if e == ext {
+		if strings.EqualFold(e, ext) {
 			return true
 		}
 	}
 	return false
 }
 
-// specForFile returns the first spec in specs that handles the file's
-// extension. It returns nil when no spec handles the file.
+func (s *ServerSpec) handlesFile(path string) bool {
+	base := filepath.Base(path)
+	for _, name := range s.Filenames {
+		if strings.EqualFold(name, base) {
+			return true
+		}
+	}
+	return s.handlesExt(strings.ToLower(filepath.Ext(path)))
+}
+
+func (s *ServerSpec) excludedByMarker(file, dir string) bool {
+	cur := dir
+	if abs, err := filepath.Abs(file); err == nil {
+		cur = filepath.Dir(abs)
+	}
+	for {
+		for _, marker := range s.ExcludeMarkers {
+			if fileExists(filepath.Join(cur, marker)) {
+				return true
+			}
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur || cur == dir {
+			return false
+		}
+		cur = parent
+	}
+}
+
+// specForFile returns the best matching spec. A candidate with a project marker
+// outranks extension-only candidates, allowing Deno to beat TypeScript.
 func specForFile(specs []ServerSpec, path string) *ServerSpec {
-	ext := strings.ToLower(filepath.Ext(path))
+	var fallback *ServerSpec
 	for i := range specs {
-		if specs[i].handlesExt(ext) {
+		if !specs[i].handlesFile(path) || specs[i].excludedByMarker(path, filepath.Dir(path)) {
+			continue
+		}
+		if fallback == nil {
+			fallback = &specs[i]
+		}
+		if root := specs[i].FindRoot(path, filepath.Dir(path)); root != filepath.Dir(path) {
 			return &specs[i]
 		}
 	}
-	return nil
+	return fallback
 }
 
 // FindRoot walks upward from the file's directory looking for the nearest
@@ -230,6 +368,12 @@ func LanguageIDFor(path string) string {
 		return "javascript"
 	case ".jsx":
 		return "javascriptreact"
+	case ".swift":
+		return "swift"
+	case ".m":
+		return "objective-c"
+	case ".mm":
+		return "objective-cpp"
 	case ".c", ".h":
 		return "c"
 	case ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++":
@@ -259,24 +403,88 @@ var lookPath = exec.LookPath
 // binDir is the directory into which installers place binaries (e.g.
 // ~/.goa/bin); installAllowed gates the install step (lsp.disable_download).
 func (s *ServerSpec) resolveCommand(binDir string, installAllowed bool) (argv []string, ok bool) {
-	if len(s.Command) == 0 {
+	return s.resolveCommandWithWorkspace(filepath.Dir(binDir), binDir, installAllowed)
+}
+
+// resolveCommandWithWorkspace applies generic resolution to a registry entry.
+// Workspace-local .goa/bin and node_modules/.bin binaries win over downloads;
+// this keeps projects hermetic without requiring per-server conditionals.
+func (s *ServerSpec) resolveCommandWithWorkspace(workspace, binDir string, installAllowed bool) (argv []string, ok bool) {
+	variant := s.platformVariant()
+	command, installer := s.Command, s.Install
+	if variant != nil {
+		if len(variant.Command) > 0 {
+			command = variant.Command
+		}
+		if variant.Install != nil {
+			installer = variant.Install
+		}
+	}
+	if len(command) == 0 {
 		return nil, false
 	}
-	// 1. PATH binary.
-	if bin, err := lookPath(s.Command[0]); err == nil {
-		return append([]string{bin}, s.Command[1:]...), true
+	if bin := localBinary(workspace, binDir, command[0]); bin != "" {
+		return append([]string{bin}, command[1:]...), true
 	}
-	// 2. npx (Node servers): npx downloads the package on first run.
+	if bin, err := lookPath(command[0]); err == nil {
+		return append([]string{bin}, command[1:]...), true
+	}
 	if argv, ok := s.npxArgv(); ok {
 		return argv, true
 	}
-	// 3. Install (opt-out).
-	if installAllowed && s.Install != nil {
-		if bin, err := s.Install.run(binDir); err == nil && bin != "" {
-			return append([]string{bin}, s.Command[1:]...), true
+	if installAllowed && installer != nil {
+		if bin, err := installer.run(binDir); err == nil && bin != "" {
+			return append([]string{bin}, command[1:]...), true
 		}
 	}
 	return nil, false
+}
+
+func (s *ServerSpec) platformVariant() *PlatformVariant {
+	if len(s.Platforms) == 0 {
+		return nil
+	}
+	for _, key := range []string{runtime.GOOS + "/" + runtime.GOARCH, runtime.GOOS, "default"} {
+		if v, ok := s.Platforms[key]; ok {
+			return &v
+		}
+	}
+	return nil
+}
+
+// no launch strategy succeeds, without inspecting a server ID.
+func (s *ServerSpec) resolutionHint(installAllowed bool) string {
+	strategies := []string{"PATH binary"}
+	if s.Npx != nil {
+		strategies = append(strategies, "npx package "+s.Npx.Package)
+	}
+	if s.Install != nil {
+		strategies = append(strategies, "automatic "+s.Install.Kind+" installation")
+		if !installAllowed {
+			strategies = append(strategies, "automatic installation disabled")
+		}
+	}
+	return strings.Join(strategies, ", ")
+}
+
+func localBinary(workspace, binDir, command string) string {
+	if filepath.IsAbs(command) {
+		if fileExists(command) {
+			return command
+		}
+		return ""
+	}
+	for _, dir := range localBinaryDirs(workspace, binDir) {
+		candidate := filepath.Join(dir, binName(command))
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func localBinaryDirs(workspace, binDir string) []string {
+	return []string{filepath.Join(workspace, ".goa", "bin"), binDir, filepath.Join(workspace, "node_modules", ".bin")}
 }
 
 // npxArgv builds the npx fallback argv for Node-based servers. The --package
@@ -311,10 +519,12 @@ func (in *InstallSpec) run(binDir string) (string, error) {
 	switch in.Kind {
 	case "go":
 		return installGo(in.Package, in.Binary, binDir)
+	case "dotnet":
+		return installDotnet(in.Package, in.Binary, binDir, in.Args...)
 	case "npm":
 		return installNpm(in.Package, in.Binary, binDir)
 	case "download":
-		return installDownload(in.URL, in.Binary, binDir, in.Kind)
+		return installDownload(in.URL, in.Binary, binDir, in.Checksum)
 	default:
 		return "", fmt.Errorf("lsp: unknown install kind %q", in.Kind)
 	}

@@ -391,28 +391,17 @@ func (s *SessionStore) DeleteSession(name string) error {
 }
 
 func (s *SessionStore) LoadSession(name string) ([]agentic.OutputEvent, error) {
-	sessionDir := filepath.Join(s.dir, "sessions")
-	path := filepath.Join(sessionDir, name+".jsonl")
-
-	data, err := os.ReadFile(path)
+	// Stream the JSONL file instead of loading and splitting the entire file.
+	// This keeps memory bounded for sessions with large tool results and uses the
+	// same validated path handling as other session readers.
+	var events []agentic.OutputEvent
+	_, err := s.ScanSessionEvents(name, func(_ int, event agentic.OutputEvent) bool {
+		events = append(events, event)
+		return true
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	var events []agentic.OutputEvent
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var event agentic.OutputEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-		events = append(events, event)
-	}
-
 	return events, nil
 }
 
