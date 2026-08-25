@@ -318,13 +318,13 @@ func (cv *ChatViewport) Render(width int) []string {
 	// frame cache is valid, and no tool animation is pending, return it
 	// immediately without scanning all entries.
 	if cv.generation == cv.lastRenderGen && cv.renderCache.lines != nil && !cv.toolWidgetsDirty.Load() {
-		return cv.bottomAlign(cv.renderCache.lines)
+		return cv.frameSnapshot(cv.renderCache.lines)
 	}
 	cv.lastRenderGen = cv.generation
 	cv.rebuildFrame(width)
 	// rebuildFrame's tool-widget patch (updateEntryInCache) invalidates the
 	// frame cache (sets renderCache.lines = nil) when a running tool widget's
-	// rendered height changes. Returning bottomAlign(nil) here would render
+	// rendered height changes. Returning frameSnapshot(nil) here would render
 	// the whole transcript as blank lines for this one frame — collapsing
 	// TotalHeight() and pulling the off-screen header back onto the visible
 	// screen (the mascot flash during a running bash tool). Rebuild now so the
@@ -332,25 +332,27 @@ func (cv *ChatViewport) Render(width int) []string {
 	if cv.renderCache.lines == nil {
 		cv.fullRebuild(width)
 	}
-	return cv.bottomAlign(cv.renderCache.lines)
+	return cv.frameSnapshot(cv.renderCache.lines)
 }
 
-// bottomAlign prepends blank lines so the content sits at the bottom of the
-// allocated region. This keeps every component below the viewport (status,
-// input, footer) pinned at the same screen row regardless of whether the
-// conversation is empty or full, and makes growth scroll the oldest content
-// into scrollback instead of pushing the footer down. Content taller than the
-// budget is returned unchanged so the compositor's scrollback handles it.
-func (cv *ChatViewport) bottomAlign(lines []string) []string {
-	if cv.allocatedHeight <= 0 || len(lines) >= cv.allocatedHeight {
-		return lines
+// frameSnapshot returns an independent, bottom-aligned copy of lines.
+//
+// Every slice handed out of Render must be owned by the caller: scenes are
+// composed asynchronously on the render goroutine while the command loop keeps
+// mutating component state, so returning the live cache slice would let a later
+// fullRebuild/updateLastEntry append overwrite rows a concurrent compose is
+// still reading through Layer.Content (data race caught by -race in filmstrip
+// scenarios). Strings themselves are immutable; only the line slice needs
+// copying.
+func (cv *ChatViewport) frameSnapshot(lines []string) []string {
+	if cv.allocatedHeight > 0 && len(lines) < cv.allocatedHeight {
+		pad := cv.allocatedHeight - len(lines)
+		out := make([]string, pad, cv.allocatedHeight)
+		return append(out, lines...)
 	}
-	pad := cv.allocatedHeight - len(lines)
-	out := make([]string, 0, cv.allocatedHeight)
-	for i := 0; i < pad; i++ {
-		out = append(out, "")
-	}
-	return append(out, lines...)
+	out := make([]string, len(lines))
+	copy(out, lines)
+	return out
 }
 
 // rebuildFrame chooses between full and incremental rebuilds and applies any

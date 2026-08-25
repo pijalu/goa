@@ -13,7 +13,7 @@ import (
 // rebuildFrame's tool-widget patch path (patchRunningToolWidgets →
 // updateEntryInCache) invalidates the frame cache — sets renderCache.lines =
 // nil — when a running tool widget's rendered height changes mid-tick. Render
-// then used to call bottomAlign(renderCache.lines) on the nil cache, returning
+// then used to call frameSnapshot(renderCache.lines) on the nil cache, returning
 // a frame of blank lines for one frame. That transient empty frame collapsed
 // TotalHeight(), dropped the canvas below the scrollback watermark, and made
 // the compositor repaint the off-screen header/mascot onto the visible screen
