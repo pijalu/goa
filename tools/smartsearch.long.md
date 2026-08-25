@@ -4,7 +4,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 Copyright (C) 2026 Pierre Poissinger
 -->
 
-Search for relevant code files using BM25Okapi relevance ranking.
+Search for relevant code chunks using fielded BM25F ranking (path, symbol, signature, imports, and body). Results include query coverage and confidence signals.
 
 Unlike the regex-based search tool, smartsearch accepts natural language
 queries and returns files ranked by their topical relevance. It builds and
@@ -24,7 +24,10 @@ Parameters:
   max_tokens  integer — Bound returned evidence (approximately four characters/token)
   context_lines integer — Maximum evidence lines per result
   language    string — Filter by detected language
-  kind        string — Filter by semantic chunk kind
+
+kind        string — Filter by semantic chunk kind
+
+Ranking uses bounded query expansion for common multilingual/code synonyms, boosts exact identifiers, and limits repeated chunks from one path to preserve result diversity.
 
 Best for:
   - Finding code by what it does, not by an exact pattern
