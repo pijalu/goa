@@ -84,6 +84,11 @@ func (t *SmartSearchTool) Schema() agentic.ToolSchema {
 					"type":        "number",
 					"description": "min score 0.0-1.0 (default: 0.0)",
 				},
+				"output":        map[string]any{"type": "string", "enum": []string{"text", "json"}, "description": "result format (default: text; json is agent-friendly)"},
+				"max_tokens":    map[string]any{"type": "integer", "description": "approximate maximum tokens in returned context (default: 4000)"},
+				"context_lines": map[string]any{"type": "integer", "description": "maximum evidence lines per result (default: 3)"},
+				"language":      map[string]any{"type": "string", "description": "language filter, e.g. go or python"},
+				"kind":          map[string]any{"type": "string", "description": "semantic chunk kind filter, e.g. function or type"},
 			},
 			"required": []string{"query"},
 		},
@@ -92,14 +97,19 @@ func (t *SmartSearchTool) Schema() agentic.ToolSchema {
 
 // smartSearchParams holds the parsed input.
 type smartSearchParams struct {
-	Query      string  `json:"query"`
-	Glob       string  `json:"glob"`
-	RootPath   string  `json:"path"`
-	MaxResults int     `json:"max_results"`
-	MinScore   float64 `json:"min_score"`
-	FetchID    string  `json:"fetch_id"`
-	StartLine  int     `json:"start_line"`
-	EndLine    int     `json:"end_line"`
+	Query        string  `json:"query"`
+	Glob         string  `json:"glob"`
+	RootPath     string  `json:"path"`
+	MaxResults   int     `json:"max_results"`
+	MinScore     float64 `json:"min_score"`
+	FetchID      string  `json:"fetch_id"`
+	StartLine    int     `json:"start_line"`
+	EndLine      int     `json:"end_line"`
+	Output       string  `json:"output"`
+	MaxTokens    int     `json:"max_tokens"`
+	ContextLines int     `json:"context_lines"`
+	Language     string  `json:"language"`
+	Kind         string  `json:"kind"`
 }
 
 // ExecuteContext performs the search with cancellation support.
@@ -109,6 +119,9 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 		return "", err
 	}
 
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	rootPath := t.resolveRootPath(p.RootPath)
 	if rootPath == "" {
 		return "", &internal.ToolError{
@@ -138,7 +151,7 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 		return fmt.Sprintf("[smartsearch: %q] — No files indexed (project may be empty or contain only binary files)", p.Query), nil
 	}
 
-	results := t.searchAndFilter(idx, p.Query, p.Glob, maxResults, minScore)
+	results := t.searchAndFilter(idx, p.Query, p.Glob, p.Language, p.Kind, maxResults, minScore)
 	if len(results) == 0 {
 		if p.Glob != "" {
 			return fmt.Sprintf("[smartsearch: %q] — No relevant results matching %q (try removing the glob filter)", p.Query, p.Glob), nil
@@ -147,9 +160,16 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 	}
 
 	terms := extractQueryTerms(p.Query)
-	matches := buildMatchingLines(results, terms, maxResults)
+	lineLimit := p.ContextLines
+	if lineLimit <= 0 {
+		lineLimit = linesPerCandidate
+	}
+	matches := buildMatchingLinesBounded(results, terms, maxResults, lineLimit, p.MaxTokens)
 
 	idxDir := bm25.IndexDir(rootPath)
+	if p.Output == "json" {
+		return t.formatStructured(results, matches, p.Query, idx, rebuilt, p.MaxTokens)
+	}
 	return t.formatResults(results, matches, p.Query, idx, rebuilt, idxDir), nil
 }
 
@@ -182,7 +202,14 @@ func (t *SmartSearchTool) fetchChunk(rootPath string, p smartSearchParams) (stri
 	if end > len(lines) {
 		end = len(lines)
 	}
-	return fmt.Sprintf("smartsearch fetch %s:%d:%d (id %s)\n%s", doc.Path, start, end, doc.ID, strings.Join(lines[start-1:end], "\n")), nil
+	content := strings.Join(lines[start-1:end], "\n")
+	if p.MaxTokens > 0 {
+		content = limitTokens(content, p.MaxTokens)
+	}
+	if p.Output == "json" {
+		return marshalStructured(fetchResponse{Results: []structuredResult{{ID: doc.ID, Path: doc.Path, Language: doc.Language, Kind: doc.Kind, Symbol: doc.Symbol, StartLine: start, EndLine: end, Evidence: content}}})
+	}
+	return fmt.Sprintf("smartsearch fetch %s:%d:%d (id %s)\n%s", doc.Path, start, end, doc.ID, content), nil
 }
 
 func (t *SmartSearchTool) parseParams(input string) (smartSearchParams, error) {
@@ -213,7 +240,7 @@ func (t *SmartSearchTool) resolveMinScore(v float64) float64 {
 	return t.MinScore
 }
 
-func (t *SmartSearchTool) searchAndFilter(idx *bm25.Index, query, glob string, maxResults int, minScore float64) []bm25.SearchResult {
+func (t *SmartSearchTool) searchAndFilter(idx *bm25.Index, query, glob, language, kind string, maxResults int, minScore float64) []bm25.SearchResult {
 	searchLimit := maxResults * 10
 	if searchLimit < 100 {
 		searchLimit = 100
@@ -221,6 +248,15 @@ func (t *SmartSearchTool) searchAndFilter(idx *bm25.Index, query, glob string, m
 	results := idx.SearchChunks(query, searchLimit, minScore)
 	if glob != "" {
 		results = filterByGlob(results, glob)
+	}
+	if language != "" || kind != "" {
+		filtered := results[:0]
+		for _, r := range results {
+			if (language == "" || strings.EqualFold(r.Language, language)) && (kind == "" || strings.EqualFold(r.Kind, kind)) {
+				filtered = append(filtered, r)
+			}
+		}
+		results = filtered
 	}
 	if len(results) > maxResults {
 		results = results[:maxResults]
@@ -466,6 +502,81 @@ func grepFile(path string, re *regexp.Regexp, maxLines int, budget *int) []smart
 		num++
 	}
 	return matches
+}
+
+type structuredResult struct {
+	ID        string  `json:"id"`
+	Path      string  `json:"path"`
+	Score     float64 `json:"score,omitempty"`
+	Language  string  `json:"language,omitempty"`
+	Kind      string  `json:"kind,omitempty"`
+	Symbol    string  `json:"symbol,omitempty"`
+	StartLine int     `json:"start_line"`
+	EndLine   int     `json:"end_line"`
+	Evidence  string  `json:"evidence,omitempty"`
+}
+
+type fetchResponse struct {
+	Query   string             `json:"query,omitempty"`
+	Results []structuredResult `json:"results"`
+}
+
+func limitTokens(s string, max int) string {
+	if max <= 0 {
+		max = 4000
+	}
+	r := []rune(s)
+	if len(r) > max*4 {
+		r = r[:max*4]
+	}
+	return string(r)
+}
+
+func buildMatchingLinesBounded(results []bm25.SearchResult, terms []string, maxResults, lineLimit, maxTokens int) map[string][]smartLineMatch {
+	matches := buildMatchingLines(results, terms, maxResults)
+	used := 0
+	for path, lines := range matches {
+		if len(lines) > lineLimit {
+			lines = lines[:lineLimit]
+		}
+		for i := range lines {
+			if maxTokens > 0 && used+len([]rune(lines[i].Text))/4 > maxTokens {
+				lines = lines[:i]
+				break
+			}
+			used += len([]rune(lines[i].Text)) / 4
+		}
+		if len(lines) == 0 {
+			delete(matches, path)
+		} else {
+			matches[path] = lines
+		}
+	}
+	return matches
+}
+
+func (t *SmartSearchTool) formatStructured(results []bm25.SearchResult, matches map[string][]smartLineMatch, query string, idx *bm25.Index, rebuilt bool, maxTokens int) (string, error) {
+	out := fetchResponse{Query: query, Results: make([]structuredResult, 0, len(results))}
+	for _, r := range results {
+		var ev strings.Builder
+		for _, line := range matches[r.Path] {
+			fmt.Fprintf(&ev, "%d: %s\\n", line.Num, ansi.Sanitize(line.Text))
+		}
+		evidence := strings.TrimSuffix(ev.String(), "\\n")
+		if evidence == "" {
+			evidence = ansi.Sanitize(r.Content)
+		}
+		out.Results = append(out.Results, structuredResult{ID: r.ID, Path: r.Path, Score: r.Score, Language: r.Language, Kind: r.Kind, Symbol: r.Symbol, StartLine: r.StartLine, EndLine: r.EndLine, Evidence: limitTokens(evidence, maxTokens)})
+	}
+	return marshalStructured(out)
+}
+
+func marshalStructured(v any) (string, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("encode smartsearch results: %w", err)
+	}
+	return string(data), nil
 }
 
 // formatResults produces the output string for a set of ranked results.
