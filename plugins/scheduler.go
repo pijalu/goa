@@ -6,6 +6,7 @@ package plugins
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type Scheduler struct {
 type pluginTimer struct {
 	stop   chan struct{}
 	period time.Duration // 0 = one-shot (setTimeout)
+	cancel atomic.Bool
 }
 
 // NewScheduler creates a scheduler that dispatches callbacks via enqueue.
@@ -58,6 +60,7 @@ func (s *Scheduler) Clear(id int) {
 	s.mu.Lock()
 	t, ok := s.timers[id]
 	if ok {
+		t.cancel.Store(true)
 		delete(s.timers, id)
 	}
 	s.mu.Unlock()
@@ -73,6 +76,7 @@ func (s *Scheduler) Stop() {
 	s.timers = make(map[int]*pluginTimer)
 	s.mu.Unlock()
 	for _, t := range timers {
+		t.cancel.Store(true)
 		close(t.stop)
 	}
 }
@@ -134,8 +138,19 @@ func (s *Scheduler) fireOnce(t *pluginTimer, cb func()) {
 			timer.Stop()
 			return
 		case <-timer.C:
+			// Cancellation can race with the timer becoming ready. Check both
+			// after waking and immediately before dispatch so Clear/Stop wins
+			// over a pending one-shot rather than merely removing its registry
+			// entry.
+			if t.cancel.Load() {
+				return
+			}
 			deferred := false
-			invokeSafeWithReschedule(cb, func() { deferred = true })
+			invokeSafeWithReschedule(func() {
+				if !t.cancel.Load() {
+					cb()
+				}
+			}, func() { deferred = true })
 			if !deferred {
 				return
 			}
