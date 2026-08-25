@@ -645,7 +645,7 @@ func TestPluginHooks_ReplyDelta_ThinkingNotifyOnly(t *testing.T) {
 	sink := newRecordingSink(map[HookPoint]hookAction{
 		HookReplyDelta: {decision: HookModified, result: map[string]any{"delta": "[TAMPERED]"}},
 	})
-	p := registerTestProvider("thinking-events", []provider.AssistantMessageEvent{
+	p := registerTestProviderEveryRound("thinking-events", []provider.AssistantMessageEvent{
 		{Type: provider.EventThinkingDelta, Delta: "reasoning step"},
 		{Type: provider.EventThinkingDelta, Delta: " more reasoning"},
 	})

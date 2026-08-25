@@ -51,7 +51,7 @@ func TestAgent_RetryBudgetResetsAfterSuccess(t *testing.T) {
 		}},
 	}
 	// NOTE: the recovered text must end with terminal punctuation — after real
-	// tool work the premature-stop guard (shouldAutoContinue) treats an
+	// tool work the premature-stop guard (classifyPrematureStop) treats an
 	// unpunctuated answer as truncated and auto-continues the turn.
 	textEvents := []provider.AssistantMessageEvent{
 		{Type: provider.EventTextDelta, Delta: "Recovered."},

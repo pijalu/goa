@@ -1433,3 +1433,54 @@ the main menu (the "dead row" regression); on-error recovery strategy was not us
 
 **Validation:** `go vet ./...` clean; `go test -count=1 -race -cover ./...` green (81 pkgs ok, 0 FAIL);
 verify command exit 0; gocognit/gocyclo no new violations (all >15 findings pre-exist on HEAD).
+
+### BUG: Auto-continue — model stops after a thinking block or right after tool results
+
+**Status:** IMPLEMENTED — tested, validated, archived.
+
+**Observed:** when the model ended a round with finish_reason=stop after emitting only
+thinking tokens, or produced nothing at all immediately after receiving tool results,
+goa ended the turn (finalizeStreamTurn → "Send continue to resume" notice / silent end)
+and the user had to type "continue". These are unambiguous mid-task stops: a model never
+legitimately ends a turn with reasoning-only output nor right after tool results.
+
+**Root cause:** `shouldAutoContinue` (internal/agentic/agent_stream_heal.go) gated the
+premature-stop detection on `turnHadToolExecution` AND truncated-looking *text* content.
+Rounds with no visible answer text (thinking-only, or empty after tools) never satisfied
+it and fell through to finalizeStreamTurn.
+
+**Resolution:**
+- Replaced `shouldAutoContinue` with `classifyPrematureStop() prematureStopKind`
+  (prematureStopNone | prematureStopThinkingOnly | prematureStopAfterTools |
+  prematureStopTruncated). Classification rules:
+  - content empty + thinking non-empty → thinking-only stop → auto-continue regardless
+    of earlier tool work;
+  - content+thinking empty + turnHadToolExecution + !AllowEmptyResponse → bare stop
+    directly after tool results → auto-continue (AllowEmptyResponse opts out);
+  - answer text without tool work → legitimate end (unchanged terse-answer protection);
+  - answer text after tool work → looksTruncated / hasTrailingIntent as before.
+- completeStreamTurn now switches on the kind: increments autoContinueCount (cap
+  maxAutoContinuePerTurn=3 unchanged), logs a kind-specific warn, and injects a
+  kind-specific ephemeral `[goa-system]` steer note via steerNote() (visible system
+  notification; stripped from history at turn end).
+- Backstop preserved: once the budget is exhausted, classifyPrematureStop returns none,
+  finalizeStreamTurn runs and still sets lastTurnSilentStop + emits the non-transient
+  silent-stop notification, so core/goal_driver.go keeps pausing instead of burning
+  another turn into the same provider-side limit.
+- Test infra: testAPIProvider gained an `everyRound` mode (+ `calls` counter) that
+  replays the same events on every Stream call (no second-call text fallback), plus
+  registerTestProviderEveryRound helper.
+
+**Tests:** TestClassifyPrematureStop (12-case table over all kinds + budget gate +
+AllowEmptyResponse opt-out), TestAgent_ThinkingOnlyStopAutoContinues (thinking-only
+round → steer → re-stream answers; no silent-stop notice), 
+TestAgent_ThinkingOnlyStopCappedSurfacesNotice (never-answering model → exactly
+1+maxAutoContinuePerTurn calls, EventEnd + non-transient notification),
+TestAgent_SilentStopAfterToolResultsAutoContinues (tool round → empty round → steer →
+answer; 3 provider calls); TestPluginHooks_ReplyDelta_ThinkingNotifyOnly switched to the
+every-round provider so it keeps pinning "thinking deltas are notify-only" under the new
+multi-round flow; existing premature-stop tests unchanged and green.
+
+**Validation:** go vet ./... clean; staticcheck exit 0; gocognit -over 15 identical set
+of 14 pre-existing warnings as HEAD (none added); gocyclo -over 12 byte-identical to
+HEAD; go test -count=1 -race -cover ./... green (87 pkgs ok, 0 FAIL).

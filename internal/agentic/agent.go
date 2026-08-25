@@ -169,9 +169,12 @@ type Agent struct {
 	// lastTurnSilentStop records whether the most recently completed turn ended
 	// with a "silent stop": the model produced thinking/reasoning but no visible
 	// answer content and no tool calls (a reasoning-token or output limit on the
-	// provider side). Set in finalizeStreamTurn; read by the goal driver (via the
-	// LastTurnSilentStop method / SilentStopReporter interface) so it pauses the
-	// goal instead of auto-continuing into the same limit again.
+	// provider side). Set in finalizeStreamTurn, which for such rounds runs only
+	// after the in-turn premature-stop steers (classifyPrematureStop) failed to
+	// coax an answer out of the model within maxAutoContinuePerTurn attempts.
+	// Read by the goal driver (via the LastTurnSilentStop method /
+	// SilentStopReporter interface) so it pauses the goal instead of starting
+	// another turn into the same limit again.
 	lastTurnSilentStop bool
 
 	// turnStartHistoryLen records the length of the history at the start of

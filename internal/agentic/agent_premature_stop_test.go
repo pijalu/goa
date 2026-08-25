@@ -162,6 +162,124 @@ func TestAgent_PrematureStopCapped(t *testing.T) {
 	}
 }
 
+// silentAfterToolsProvider simulates a model that goes completely silent
+// right after receiving tool results: round 1 issues a real tool call, then
+// silentRounds rounds end cleanly with NO events at all, and only then does
+// the model finally answer.
+type silentAfterToolsProvider struct {
+	api          provider.Api
+	silentRounds int
+	calls        atomic.Int32
+}
+
+func (p *silentAfterToolsProvider) API() provider.Api { return p.api }
+
+func (p *silentAfterToolsProvider) Stream(_ provider.Model, _ provider.Context, _ provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	result := provider.NewAssistantMessageEventStream(64)
+	round := p.calls.Add(1)
+	go func() {
+		switch {
+		case round == 1:
+			// Real tool call so the turn has real tool execution.
+			result.Push(provider.AssistantMessageEvent{
+				Type:         provider.EventToolCallEnd,
+				ContentIndex: 0,
+				ToolCall: &provider.ContentBlock{
+					Type:          provider.ContentBlockToolCall,
+					ToolCallID:    "call_1",
+					ToolName:      "mock_tool",
+					ToolArguments: `{"arg":"value"}`,
+				},
+			})
+			result.End(&provider.AssistantMessage{
+				Content:    []provider.ContentBlock{{Type: provider.ContentBlockToolCall, ToolCallID: "call_1", ToolName: "mock_tool", ToolArguments: `{"arg":"value"}`}},
+				StopReason: provider.StopReasonToolCall,
+			})
+		case int(round) <= 1+p.silentRounds:
+			// Bare stop directly after the tool results: no text, no thinking,
+			// no tool calls — the model never stops here legitimately.
+			result.End(&provider.AssistantMessage{StopReason: provider.StopReasonEndTurn})
+		default:
+			result.Push(provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "Recovered after silent round."})
+			result.End(&provider.AssistantMessage{
+				Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "Recovered after silent round."}},
+				StopReason: provider.StopReasonEndTurn,
+			})
+		}
+	}()
+	return result, nil
+}
+
+func (p *silentAfterToolsProvider) StreamSimple(m provider.Model, c provider.Context, o provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return p.Stream(m, c, provider.BuildSimpleOptions(m, o))
+}
+
+func registerSilentAfterToolsProvider(silentRounds int) *silentAfterToolsProvider {
+	id := prematureStopCounter.Add(1)
+	p := &silentAfterToolsProvider{
+		api:          provider.Api(fmt.Sprintf("test-silent-after-tools-%d", id)),
+		silentRounds: silentRounds,
+	}
+	provider.RegisterApiProvider(p)
+	return p
+}
+
+// TestAgent_SilentStopAfterToolResultsAutoContinues verifies the second
+// premature-stop vector: a model that answers finish_reason=stop with NOTHING
+// right after receiving tool results (no reply text, no thinking, no further
+// calls) must not end the turn and strand the user at a "type continue"
+// prompt. goa injects a continuation steer and re-streams; when the model then
+// answers, the turn completes normally.
+func TestAgent_SilentStopAfterToolResultsAutoContinues(t *testing.T) {
+	p := registerSilentAfterToolsProvider(1) // one silent round, then recovery
+	agent := newAgentWithMockTool(p.API(), 10)
+	obs := runAgentCollectingEvents(t, agent, "fix the union bug")
+
+	assertEventObserved(t, obs.Events(), EventContent, Assistant, "Recovered after silent round.")
+	if got := p.calls.Load(); got != 3 {
+		t.Errorf("provider calls = %d, want 3 (tool round, silent round, recovered round)", got)
+	}
+}
+
+// TestClassifyPrematureStop is a table-driven unit test for the
+// premature-stop classifier covering all four kinds plus the budget gate.
+func TestClassifyPrematureStop(t *testing.T) {
+	cases := []struct {
+		name       string
+		content    string
+		thinking   string
+		hadTools   bool
+		allowEmpty bool
+		autoCont   int
+		want       prematureStopKind
+	}{
+		{"thinking-only without tools", "", "reasoning", false, false, 0, prematureStopThinkingOnly},
+		{"thinking-only after tools", "", "reasoning", true, false, 0, prematureStopThinkingOnly},
+		{"whitespace content + thinking", " \n\t", "reasoning", false, false, 0, prematureStopThinkingOnly},
+		{"empty round without tools", "", "", false, false, 0, prematureStopNone},
+		{"empty round after tools", "", "", true, false, 0, prematureStopAfterTools},
+		{"empty round after tools, allowEmpty", "", "", true, true, 0, prematureStopNone},
+		{"truncated fragment after tools", "Let me fix both call sites:", "", true, false, 0, prematureStopTruncated},
+		{"intent with period after tools", "Key findings so far. Let me check these.", "", true, false, 0, prematureStopTruncated},
+		{"complete answer after tools", "The fix is complete.", "", true, false, 0, prematureStopNone},
+		{"dangling colon without tools", "Let me check:", "", false, false, 0, prematureStopNone},
+		{"terse complete answer without tools", "The result was 42", "", false, false, 0, prematureStopNone},
+		{"budget exhausted thinking-only", "", "reasoning", false, false, maxAutoContinuePerTurn, prematureStopNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), AllowEmptyResponse: tc.allowEmpty})
+			a.contentBuf.WriteString(tc.content)
+			a.thinkingBuf.WriteString(tc.thinking)
+			a.turnHadToolExecution = tc.hadTools
+			a.autoContinueCount = tc.autoCont
+			if got := a.classifyPrematureStop(); got != tc.want {
+				t.Errorf("classifyPrematureStop() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestLooksTruncated is a table-driven unit test for the fragment detector.
 func TestLooksTruncated(t *testing.T) {
 	cases := []struct {

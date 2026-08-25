@@ -27,8 +27,3 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
-
-## Auto-continue
-When the model send a stop after a thinking block / after a tool results, the auto-continue logic should trigger and force the model to continue instead of showing a "type continue" message.
-
-these are obvious cases where the model should continue - model never stops after receiving a tool response nor with a thinking block.

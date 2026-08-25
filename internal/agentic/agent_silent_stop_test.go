@@ -13,15 +13,17 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// TestAgent_ThinkingOnlyTurnEmitsNotice is the regression test for the
-// "session stopped without any message" bug: a reasoning model that finishes
-// with finish_reason "stop" after emitting only thinking tokens (no answer
-// content, no tool calls) must NOT end the turn silently. The agent must
-// surface a non-transient system notification so the user understands why the
-// turn produced no reply.
-func TestAgent_ThinkingOnlyTurnEmitsNotice(t *testing.T) {
-	// Provider streams only thinking deltas, then ends cleanly with no
-	// content blocks — the k3 "stopped mid-reasoning" scenario.
+// TestAgent_ThinkingOnlyStopAutoContinues verifies the auto-continue path for
+// the classic silent-stop vector: a reasoning model that ends a round with
+// finish_reason=stop after emitting only thinking tokens must NOT end the turn
+// with a "type continue" message — goa injects a continuation steer and
+// re-streams. When the model then produces an answer (as real models usually
+// do once nudged), the turn completes with visible content and no silent-stop
+// notice.
+func TestAgent_ThinkingOnlyStopAutoContinues(t *testing.T) {
+	// Round 1 streams only thinking deltas, then ends cleanly with no content
+	// blocks — the k3 "stopped mid-reasoning" scenario. The provider's second
+	// call returns a normal text answer.
 	p := registerTestProvider("thinking-only", []provider.AssistantMessageEvent{
 		{Type: provider.EventThinkingStart, ContentIndex: 0},
 		{Type: provider.EventThinkingDelta, ContentIndex: 0, Delta: "Let me analyze the gocognit results. "},
@@ -40,11 +42,51 @@ func TestAgent_ThinkingOnlyTurnEmitsNotice(t *testing.T) {
 
 	runAgentToDone(t, agent, "Continue the gate")
 
+	if !obs.HasEventType(EventEnd) {
+		t.Error("expected EventEnd after the recovered answer")
+	}
+	// The re-streamed round answered; that reply must reach the user.
+	assertEventObserved(t, obs.Events(), EventContent, Assistant, "Done processing tool calls.")
+	for _, e := range obs.Events() {
+		if e.Type == EventContent && e.Role == System &&
+			strings.Contains(e.Text, "stopped after its reasoning step") {
+			t.Error("silent-stop notice must not fire when auto-continue recovered the answer")
+		}
+	}
+}
+
+// TestAgent_ThinkingOnlyStopCappedSurfacesNotice is the backstop for the
+// auto-continue path: when the model keeps stopping mid-reasoning despite the
+// continuation steers, the bounded retries exhaust and the turn still ends
+// cleanly with EventEnd plus the non-transient system notification — never
+// silence.
+func TestAgent_ThinkingOnlyStopCappedSurfacesNotice(t *testing.T) {
+	// Every round is thinking-only; the model never answers.
+	p := registerTestProviderEveryRound("thinking-forever", []provider.AssistantMessageEvent{
+		{Type: provider.EventThinkingStart, ContentIndex: 0},
+		{Type: provider.EventThinkingDelta, ContentIndex: 0, Delta: "Let me analyze..."},
+		{Type: provider.EventThinkingEnd, ContentIndex: 0},
+	})
+
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "You are helpful",
+		Logger:       NewLogger(Error),
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+
+	runAgentToDone(t, agent, "Continue the gate")
+
 	// The turn must still end (EventEnd) — it is not retried as an error.
 	if !obs.HasEventType(EventEnd) {
 		t.Error("expected EventEnd for a clean stop")
 	}
-
+	// Exactly one initial round plus maxAutoContinuePerTurn steered rounds.
+	if got := p.calls.Load(); got != int32(1+maxAutoContinuePerTurn) {
+		t.Errorf("provider calls = %d, want %d (initial round + capped auto-continues)", got, 1+maxAutoContinuePerTurn)
+	}
 	// A non-transient system notification must explain the silent stop.
 	found := false
 	for _, e := range obs.Events() {

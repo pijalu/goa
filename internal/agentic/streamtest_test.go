@@ -20,6 +20,12 @@ type testAPIProvider struct {
 	// simulating a provider that reports token usage (e.g. via stream_options).
 	usage     *provider.Usage
 	exhausted atomic.Bool
+	// everyRound disables the exhausted-swap text fallback: the predetermined
+	// events replay identically on EVERY Stream call. Needed by tests that
+	// exercise repeated rounds (premature-stop auto-continue exhaustion).
+	everyRound bool
+	// calls counts Stream invocations across rounds.
+	calls atomic.Int32
 }
 
 func (p *testAPIProvider) API() provider.Api {
@@ -28,10 +34,11 @@ func (p *testAPIProvider) API() provider.Api {
 
 func (p *testAPIProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
 	result := provider.NewAssistantMessageEventStream(64)
+	p.calls.Add(1)
 	// On re-stream (tool calls encountered), push a plain text response
 	// instead of the predetermined tool-call events, to avoid infinite
 	// tool-call loops in tests.
-	extraRound := p.exhausted.Swap(true)
+	extraRound := !p.everyRound && p.exhausted.Swap(true)
 	go func() {
 		if extraRound {
 			result.Push(provider.AssistantMessageEvent{
@@ -84,5 +91,14 @@ func registerTestProvider(name string, events []provider.AssistantMessageEvent) 
 		events: events,
 	}
 	provider.RegisterApiProvider(p)
+	return p
+}
+
+// registerTestProviderEveryRound registers a test API provider that replays
+// the SAME predetermined events on every Stream call — unlike
+// registerTestProvider, whose second call falls back to a plain text answer.
+func registerTestProviderEveryRound(name string, events []provider.AssistantMessageEvent) *testAPIProvider {
+	p := registerTestProvider(name, events)
+	p.everyRound = true
 	return p
 }

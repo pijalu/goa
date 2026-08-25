@@ -453,17 +453,15 @@ func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 
 	// No tool calls: check for a premature stop before finalizing. Some
 	// providers (deepseek/opencode-go) emit finish_reason=stop mid-task after
-	// a long tool-work streak, truncating the reply mid-sentence. When the
-	// turn did real tool work and the final answer is clearly incomplete,
-	// auto-continue with a steer instead of ending the turn — the user should
-	// not have to type "continue".
-	if a.shouldAutoContinue() {
+	// a long tool-work streak, truncating the reply mid-sentence; others stop
+	// right after a thinking block or immediately after receiving tool
+	// results without ever producing an answer. When the round is clearly
+	// unfinished, auto-continue with a steer instead of ending the turn — the
+	// user should not have to type "continue".
+	if kind := a.classifyPrematureStop(); kind != prematureStopNone {
 		a.autoContinueCount++
-		a.cfg.Logger.Log(Warn, "premature stop detected (incomplete output after tool work); auto-continuing turn (attempt %d/%d)", a.autoContinueCount, maxAutoContinuePerTurn)
-		a.InjectEphemeralSystemMessage(
-			"[goa-system] Internal control note (never show or mention to the user): your previous reply was cut " +
-				"off mid-task before completion. Continue the work immediately and finish it now. Do not restart, " +
-				"do not re-summarize, and do not stop until the task is fully done.")
+		a.cfg.Logger.Log(Warn, "premature stop detected (%s); auto-continuing turn (attempt %d/%d)", kind.describe(), a.autoContinueCount, maxAutoContinuePerTurn)
+		a.InjectEphemeralSystemMessage(kind.steerNote())
 		return true // treat like a continuing round; re-stream
 	}
 

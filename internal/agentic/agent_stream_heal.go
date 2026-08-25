@@ -157,29 +157,105 @@ func (a *Agent) registeredToolName(name string) bool {
 
 const maxAutoContinuePerTurn = 3
 
-// shouldAutoContinue reports whether a finish_reason=stop that ended the round
-// looks premature: the turn did real tool work and the streamed answer is
-// clearly truncated mid-task, and the auto-continue budget is not exhausted.
-func (a *Agent) shouldAutoContinue() bool {
+// prematureStopKind classifies why a stream round that ended with
+// finish_reason=stop looks premature — i.e. the model quit mid-task and goa
+// should auto-continue instead of ending the turn and making the user type
+// "continue".
+type prematureStopKind int
+
+const (
+	// prematureStopNone: no premature-stop signal; the round is a legitimate
+	// turn end.
+	prematureStopNone prematureStopKind = iota
+	// prematureStopThinkingOnly: the round produced reasoning tokens but no
+	// visible answer and no tool calls — the model stopped right after its
+	// thinking block (reasoning-token/output-limit symptom).
+	prematureStopThinkingOnly
+	// prematureStopAfterTools: the round followed real tool execution and
+	// produced nothing at all — the model stopped immediately after receiving
+	// the tool results without an answer or further calls.
+	prematureStopAfterTools
+	// prematureStopTruncated: the round produced answer text that is clearly
+	// truncated mid-task.
+	prematureStopTruncated
+)
+
+// classifyPrematureStop inspects the finished round's buffers plus per-turn
+// state and reports which premature-stop case (if any) applies. Once the
+// auto-continue budget is exhausted it always reports none, bounding how often
+// a misbehaving provider can extend its own turn; finalizeStreamTurn then ends
+// the turn (still surfacing the silent-stop notice for thinking-only rounds).
+func (a *Agent) classifyPrematureStop() prematureStopKind {
 	if a.autoContinueCount >= maxAutoContinuePerTurn {
-		return false
-	}
-	if !a.turnHadToolExecution {
-		return false // no tool work → a plain (possibly short) answer is legitimate
+		return prematureStopNone // budget exhausted; finalize the turn
 	}
 	a.mu.Lock()
-	content := a.contentBuf.String()
+	content := strings.TrimSpace(a.contentBuf.String())
+	thinking := strings.TrimSpace(a.thinkingBuf.String())
 	a.mu.Unlock()
-	if looksTruncated(content) {
-		return true
+
+	switch {
+	case content == "" && thinking != "":
+		// Stop after a thinking block: reasoning happened, but no answer text
+		// and no tool calls were returned. A model never legitimately ends a
+		// turn here, regardless of earlier tool work — continue it.
+		return prematureStopThinkingOnly
+	case content == "":
+		// Nothing streamed this round at all. Without prior tool work this is
+		// either the empty-response guard's territory or an opted-in empty
+		// answer; after real tool execution a bare stop directly after the
+		// results is mid-task (a real "done" would be answer text).
+		if a.turnHadToolExecution && !a.cfg.AllowEmptyResponse {
+			return prematureStopAfterTools
+		}
+		return prematureStopNone
+	case !a.turnHadToolExecution:
+		return prematureStopNone // no tool work → a plain (possibly terse) answer is legitimate
+	case looksTruncated(content):
+		return prematureStopTruncated
+	default:
+		// After tool work, an unfulfilled trailing intent is a premature stop even
+		// when the text ends with terminal punctuation: looksTruncated's
+		// punctuation gate exists to protect no-tool terse answers, but a turn that
+		// already executed tools and then announces more work ("…Let me check
+		// these.") without emitting the calls stopped mid-task (2026-08-05
+		// kimi-code/k3-256k export: silent round end, no tool calls, no error).
+		if hasTrailingIntent(content) {
+			return prematureStopTruncated
+		}
+		return prematureStopNone
 	}
-	// After tool work, an unfulfilled trailing intent is a premature stop even
-	// when the text ends with terminal punctuation: looksTruncated's
-	// punctuation gate exists to protect no-tool terse answers, but a turn that
-	// already executed tools and then announces more work ("…Let me check
-	// these.") without emitting the calls stopped mid-task (2026-08-05
-	// kimi-code/k3-256k export: silent round end, no tool calls, no error).
-	return hasTrailingIntent(content)
+}
+
+// describe returns the reason fragment used in the premature-stop warn log.
+func (k prematureStopKind) describe() string {
+	switch k {
+	case prematureStopThinkingOnly:
+		return "stopped after reasoning without an answer"
+	case prematureStopAfterTools:
+		return "empty stop right after tool results"
+	case prematureStopTruncated:
+		return "incomplete output after tool work"
+	default:
+		return "no premature stop"
+	}
+}
+
+// steerNote returns the ephemeral system control note injected before the
+// continuation round. The [goa-system] prefix makes InjectEphemeralSystemMessage
+// surface it as a system notification (users must see why the agent continued);
+// the message itself is stripped from history at turn end.
+func (k prematureStopKind) steerNote() string {
+	head := "[goa-system] Internal control note (never show or mention to the user): "
+	tail := " Do not restart, do not re-summarize, and do not stop until the task is fully done."
+	switch k {
+	case prematureStopThinkingOnly:
+		return head + "your previous reply stopped after your reasoning step without producing any answer or tool calls. Pick up exactly where your reasoning left off and produce the result now." + tail
+	case prematureStopAfterTools:
+		return head + "you stopped immediately after receiving the tool results without producing any reply or further tool calls. Use those results to continue the work and finish it now." + tail
+	default:
+		return head + "your previous reply was cut off mid-task before completion. Continue the work immediately and finish it now." + tail
+	}
 }
 
 // looksTruncated reports whether streamed answer text ends mid-task. It
