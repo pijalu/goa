@@ -535,6 +535,11 @@ func parseAnthropicEventStream(r io.Reader, handler func(eventType, data string)
 			event = strings.TrimPrefix(line, "event: ")
 			data.Reset()
 		} else if strings.HasPrefix(line, "data: ") {
+			// WHATWG SSE: consecutive data: lines of one event are joined
+			// with '\n' to form the event payload.
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
 			data.WriteString(strings.TrimPrefix(line, "data: "))
 		}
 	}

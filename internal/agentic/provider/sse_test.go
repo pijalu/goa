@@ -5,8 +5,10 @@
 package provider
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -109,7 +111,7 @@ func (e *errReader) Read(p []byte) (int, error) {
 	return 0, errors.New("connection reset by peer")
 }
 
-// TestParseSSEM idStreamError verifies that I/O errors mid-stream are surfaced.
+// TestParseSSEMidStreamError verifies that I/O errors mid-stream are surfaced.
 func TestParseSSEMidStreamError(t *testing.T) {
 	var got []string
 	err := ParseSSE(&errReader{}, func(payload string) {
@@ -123,5 +125,112 @@ func TestParseSSEMidStreamError(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "partial" {
 		t.Fatalf("expected partial payload before error, got %v", got)
+	}
+}
+
+// TestParseSSEConsecutiveDataLinesJoin verifies the WHATWG joining rule:
+// consecutive "data:" lines of one event are joined with '\n' and emitted as
+// a single payload (regression for payloads silently merging without '\n').
+func TestParseSSEConsecutiveDataLinesJoin(t *testing.T) {
+	input := "data: {\"delta\":\ndata: \"more text\"}\n\n"
+	var got []string
+	if err := ParseSSE(strings.NewReader(input), func(p string) { got = append(got, p) }); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"{\"delta\":\n\"more text\"}"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("joined payload: got %q, want %q", got, want)
+	}
+}
+
+// TestParseSSESplitJSONIsValidJSON ensures a JSON object split across
+// multiple data lines reaches callers as one decodable payload.
+func TestParseSSESplitJSONIsValidJSON(t *testing.T) {
+	input := "data: {\"id\":\"chatcmpl-1\",\ndata: \"choices\":[],\ndata: \"object\":\"chat.completion.chunk\"}\n\n"
+	var got []string
+	if err := ParseSSE(strings.NewReader(input), func(p string) { got = append(got, p) }); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected single joined payload, got %d: %q", len(got), got)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(got[0]), &decoded); err != nil {
+		t.Fatalf("joined payload is not valid JSON: %v (payload %q)", err, got[0])
+	}
+}
+
+// TestParseSSEBlankLineStillDispatches guards dispatch semantics: events
+// separated by blank lines stay separate payloads even after the buffering
+// change.
+func TestParseSSEBlankLineStillDispatches(t *testing.T) {
+	input := "data: one\n\ndata: two\n\ndata: three\ndata: joined\n\ndata: four"
+	var got []string
+	if err := ParseSSE(strings.NewReader(input), func(p string) { got = append(got, p) }); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"one", "two", "three\njoined", "four"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payloads: got %q, want %q", got, want)
+	}
+}
+
+// TestParseSSELenientNoBlankLines verifies providers that omit blank-line
+// separators between JSON-per-line events keep working: each non-consecutive
+// data line flushes as its own payload because it is followed by another
+// field or EOF, and only truly consecutive data lines merge.
+func TestParseSSELenientNoBlankLines(t *testing.T) {
+	input := "data: {\"chunk\":1}\ndata: {\"chunk\":2}\nevent: ping\ndata: {\"chunk\":3}"
+	var got []string
+	if err := ParseSSE(strings.NewReader(input), func(p string) { got = append(got, p) }); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// chunk1/chunk2 are consecutive data lines -> joined per spec; chunk3 is
+	// flushed by the following non-data line and again at EOF.
+	want := []string{"{\"chunk\":1}\n{\"chunk\":2}", "{\"chunk\":3}"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payloads: got %q, want %q", got, want)
+	}
+}
+
+// TestParseSSEDoneShortCircuitWithCallbacks verifies [DONE] still stops the
+// scan immediately, fires every done callback exactly once, and delivers any
+// buffered payload before terminating.
+func TestParseSSEDoneShortCircuitWithCallbacks(t *testing.T) {
+	input := "data: {\"a\":1}\ndata: {\"b\":2}\n\ndata: [DONE]\ndata: {\"after\":true}\n\n"
+	var got []string
+	doneCalls := 0
+	err := ParseSSE(strings.NewReader(input), func(p string) { got = append(got, p) },
+		func() { doneCalls++ }, func() { doneCalls++ })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The joined pair flushes on the blank line; nothing after [DONE] is read.
+	want := []string{"{\"a\":1}\n{\"b\":2}"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payloads: got %q, want %q", got, want)
+	}
+	if doneCalls != 2 {
+		t.Fatalf("done callbacks: got %d calls, want 2", doneCalls)
+	}
+}
+
+// TestParseSSEDoneFlushesBufferedPayload covers [DONE] arriving directly
+// after an unterminated (no blank line) data block: the buffered join is
+// delivered, then done callbacks fire.
+func TestParseSSEDoneFlushesBufferedPayload(t *testing.T) {
+	input := "data: {\"partial\":\ndata: true}\ndata: [DONE]\n"
+	var got []string
+	doneCalls := 0
+	if err := ParseSSE(strings.NewReader(input), func(p string) { got = append(got, p) },
+		func() { doneCalls++ }); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"{\"partial\":\ntrue}"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payloads: got %q, want %q", got, want)
+	}
+	if doneCalls != 1 {
+		t.Fatalf("done callback: got %d calls, want 1", doneCalls)
 	}
 }

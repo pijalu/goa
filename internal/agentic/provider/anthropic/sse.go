@@ -17,6 +17,16 @@ type anthropicSSEState struct {
 	data  strings.Builder
 }
 
+// appendData appends one "data:" line payload to the current event. Per
+// RFC 9110 / WHATWG server-sent events, consecutive data lines of the same
+// event are joined with '\n' to form the event payload.
+func (s *anthropicSSEState) appendData(value string) {
+	if s.data.Len() > 0 {
+		s.data.WriteByte('\n')
+	}
+	s.data.WriteString(value)
+}
+
 // anthropicSSEFlush dispatches the accumulated event+data to the handler.
 func (s *anthropicSSEState) flush(handler func(eventType, data string) error) error {
 	if s.event != "" && s.data.Len() > 0 {
@@ -58,7 +68,7 @@ func parseAnthropicEventStream(r io.Reader, handler func(eventType, data string)
 			flush()
 			st.event = strings.TrimPrefix(line, "event: ")
 		} else if strings.HasPrefix(line, "data: ") {
-			st.data.WriteString(strings.TrimPrefix(line, "data: "))
+			st.appendData(strings.TrimPrefix(line, "data: "))
 		}
 	}
 

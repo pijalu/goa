@@ -28,6 +28,7 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-(none — all reported items fixed, validated, and archived; see
-docs/archive/fix-runaway-loop-tool-progress-false-positive.2026-08-24.md and
-docs/archive/fix-selector-blank-lines-between-entries.2026-08-24.md)
+## Auto-continue
+When the model send a stop after a thinking block / after a tool results, the auto-continue logic should trigger and force the model to continue instead of showing a "type continue" message.
+
+these are obvious cases where the model should continue - model never stops after receiving a tool response nor with a thinking block.
