@@ -350,8 +350,11 @@ Usage: /model [name]
 Aliases: (none)
 
 Switch the active LLM model at runtime. Without arguments opens an
-interactive picker. If auto_save_model is enabled, the change persists
-to config. Use backspace/delete on a selected item in the picker to
+interactive picker. If auto_save_model is enabled (default), the change is
+pinned to the project's .goa/config.yaml — each project keeps its own model;
+~/.goa is updated only when the project config cannot be written, or when
+auto_save_model is disabled (legacy home-only persistence). Use
+backspace/delete on a selected item in the picker to
 remove the model (with confirmation).
   /model               → Open interactive model picker
   /model gpt-4o        → Switch to GPT-4o

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,8 +59,10 @@ func TestSaveProjectActiveModel_CreatesAndUpdates(t *testing.T) {
 }
 
 // TestPersistModelSwitch_ProjectFirstOrder drives the switch persistence
-// against a recording saver and asserts (a) both layers written, (b) the
-// project pin lands BEFORE the home fallback.
+// against a recording saver and asserts (a) a successful switch writes ONLY
+// the project pin (bugs.md: ~/.goa must not receive project-scoped model
+// changes), and (b) with auto_save_model false the legacy home-only fallback
+// applies without any project write.
 func TestPersistModelSwitch_ProjectFirstOrder(t *testing.T) {
 	saver := &fakeConfigSaver{}
 	cfg := twoProviderConfig(t)
@@ -73,9 +76,9 @@ func TestPersistModelSwitch_ProjectFirstOrder(t *testing.T) {
 	if saver.projectActiveSaved == nil {
 		t.Fatal("project pin was not saved")
 	}
-	if len(saver.saveOrder) < 2 ||
-		saver.saveOrder[0] != "project_active" {
-		t.Fatalf("save order = %v, want project_active first, then home", saver.saveOrder)
+	// Project-only: NO home layer write once the pin landed.
+	if len(saver.saveOrder) != 1 || saver.saveOrder[0] != "project_active" {
+		t.Fatalf("save order = %v, want exactly [project_active] (home untouched)", saver.saveOrder)
 	}
 
 	// Opt-out (auto_save_model false): no project pin, home fallback only.
@@ -86,6 +89,27 @@ func TestPersistModelSwitch_ProjectFirstOrder(t *testing.T) {
 	}
 	if saver2.projectActiveSaved != nil {
 		t.Fatal("opt-out must not write the project pin")
+	}
+	if len(saver2.saveOrder) != 1 || saver2.saveOrder[0] != "save" {
+		t.Fatalf("opt-out save order = %v, want exactly [save] (home only)", saver2.saveOrder)
+	}
+}
+
+// TestPersistModelSwitch_ProjectErrorFallsBackToHome pins the bugs.md
+// fallback contract: when the project layer cannot be changed (write error,
+// e.g. read-only tree) the switch is persisted to ~/.goa instead of being
+// lost — home is the safety net for unchangeable projects, nothing else.
+func TestPersistModelSwitch_ProjectErrorFallsBackToHome(t *testing.T) {
+	saver := &fakeConfigSaver{projectActiveErr: config.ErrNoProjectDir}
+	cfg := twoProviderConfig(t)
+	cfg.Execution.AutoSaveModel = true
+
+	if err := persistModelSwitch(cfg, saver); err != nil {
+		t.Fatalf("persistModelSwitch with failing project layer: %v", err)
+	}
+	if len(saver.saveOrder) != 2 ||
+		saver.saveOrder[0] != "project_active" || saver.saveOrder[1] != "save" {
+		t.Fatalf("save order = %v, want [project_active, save] (home fallback)", saver.saveOrder)
 	}
 }
 
@@ -116,13 +140,12 @@ func TestModelSwitch_PerProjectPinEndToEnd(t *testing.T) {
 	if !strings.Contains(string(rawA), "active_model: stealth/ox-alpha") {
 		t.Fatalf("project A pin wrong:\n%s", rawA)
 	}
-	// ...home carries the global fallback...
-	rawHome, err := os.ReadFile(filepath.Join(home, ".goa", "config.yaml"))
-	if err != nil {
-		t.Fatalf("home fallback missing: %v", err)
-	}
-	if !strings.Contains(string(rawHome), "active_model: stealth/ox-alpha") {
-		t.Fatalf("home fallback wrong:\n%s", rawHome)
+	// ...home stays untouched — the pin is project-scoped now (bugs.md):
+	// ~/.goa is written only when the project layer cannot be changed.
+	homePath := filepath.Join(home, ".goa", "config.yaml")
+	if rawHome, err := os.ReadFile(homePath); err == nil &&
+		strings.Contains(string(rawHome), "active_model") {
+		t.Fatalf("home must not receive the project-scoped switch:\n%s", rawHome)
 	}
 	// ...and reloading the cascade resolves to the project pin (which feeds
 	// the status bar via cfg.ActiveProvider/ActiveModel).
@@ -137,7 +160,8 @@ func TestModelSwitch_PerProjectPinEndToEnd(t *testing.T) {
 }
 
 // TestSaveProjectActiveModel_NoProjectDirIsNoop guards against creating a
-// relative .goa directory when no project dir is configured.
+// relative .goa directory when no project dir is configured, and pins the
+// ErrNoProjectDir sentinel callers rely on for home-layer fallback.
 func TestSaveProjectActiveModel_NoProjectDirIsNoop(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -145,11 +169,46 @@ func TestSaveProjectActiveModel_NoProjectDirIsNoop(t *testing.T) {
 	cwd, _ := os.Getwd()
 
 	cl := config.NewCascadeLoader("", "", nil)
-	if err := cl.SaveProjectActiveModel(&config.Config{ActiveProvider: "p", ActiveModel: "m"}); err != nil {
-		t.Fatalf("noop save: %v", err)
+	err := cl.SaveProjectActiveModel(&config.Config{ActiveProvider: "p", ActiveModel: "m"})
+	if !errors.Is(err, config.ErrNoProjectDir) {
+		t.Fatalf("no project dir = %v, want config.ErrNoProjectDir", err)
 	}
 	if _, err := os.Stat(filepath.Join(cwd, ".goa")); !os.IsNotExist(err) {
 		t.Fatal("relative .goa must not be created without a project dir")
+	}
+}
+
+// TestPersistModelSwitch_UnwritableProjectFallsBackToHome is the end-to-end
+// fallback proof for a project layer that EXISTS but cannot be written:
+// .goa is a regular file, so MkdirAll/save fails and the switch must land in
+// ~/.goa instead of being dropped.
+func TestPersistModelSwitch_UnwritableProjectFallsBackToHome(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GOA_HOME", home)
+
+	// Block the project layer AFTER loading (a blocked dir would fail Load):
+	// a regular file where the config dir belongs makes every project write
+	// fail with "not a directory".
+	loader := config.NewCascadeLoader(project, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".goa"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("block project dir: %v", err)
+	}
+	cfg.Execution.AutoSaveModel = true
+	cfg.ActiveModel = "new-model"
+
+	if err := persistModelSwitch(cfg, loader); err != nil {
+		t.Fatalf("persistModelSwitch: %v", err)
+	}
+	homePath := filepath.Join(home, ".goa", "config.yaml")
+	if !strings.Contains(readTestFile(t, homePath), "active_model: new-model") {
+		t.Fatalf("home fallback missing after unwritable project:\n%s", readTestFile(t, homePath))
 	}
 }
 

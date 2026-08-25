@@ -109,7 +109,7 @@ execution:
   activity_timeout: 30s              # No output → warning
   error_threshold: 0.5               # Error rate % → mode auto-downgrade
   worktree_mode: multi_agent         # always | multi_agent
-  auto_save_model: true              # Persist model changes
+  auto_save_model: true              # Persist model changes to project .goa (home only as fallback); false = legacy home-only
 
 # ── Context Compression ────────────────────────────────────────────
 context_compression:

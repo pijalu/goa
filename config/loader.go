@@ -5,6 +5,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,14 @@ import (
 	"github.com/pijalu/goa/internal"
 	"gopkg.in/yaml.v3"
 )
+
+// ErrNoProjectDir reports that no project directory is configured, so the
+// project config layer cannot be changed. Callers use it (via errors.Is) to
+// decide on a home-layer fallback instead of treating the save as failed —
+// a missing project is an expected state, not an error to surface
+// (bugs.md: model changes must fall back to ~/.goa only when the project
+// .goa cannot be changed).
+var ErrNoProjectDir = errors.New("no project directory configured")
 
 // Loader is the interface for configuration loading.
 type Loader interface {
@@ -57,6 +66,13 @@ type ConfigSaver interface {
 	// pair while home retains the global fallback. Providers/models catalogs are
 	// deliberately untouched — the pin references them, it does not duplicate
 	// them.
+	//
+	// Returns ErrNoProjectDir when no project directory is configured (the
+	// project layer cannot exist), and a wrapped error when the project file
+	// cannot be written. Implementations must never create a relative ".goa"
+	// in an arbitrary CWD as a side effect. Callers that need the switch to
+	// survive restart regardless of layer fall back to the home layer on any
+	// error from this method (see commands.persistModelSwitch).
 	SaveProjectActiveModel(cfg *Config) error
 
 	// SaveHomeField updates a single scalar field in ~/.goa/config.yaml without
@@ -839,9 +855,10 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 
 // SaveProjectActiveModel persists ONLY active_provider and active_model into
 // the project's .goa/config.yaml (created when missing). See the interface
-// doc: this is the per-project last-used-model pin. No-op when no project
-// directory is configured — a relative ".goa" in an arbitrary CWD must never
-// be created as a side effect.
+// doc: this is the per-project last-used-model pin. Returns ErrNoProjectDir
+// when no project directory is configured — a relative ".goa" in an arbitrary
+// CWD must never be created as a side effect, and callers use the sentinel to
+// fall back to the home layer (bugs.md: home only when project unchangeable).
 //
 // An empty active value CLEARS the pin instead of being skipped: a pin whose
 // model was removed from the configuration must not be resurrected by the
@@ -850,7 +867,7 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 // or the usage-based boot default.
 func (cl *CascadeLoader) SaveProjectActiveModel(cfg *Config) error {
 	if cl.projectDir == "" {
-		return nil
+		return ErrNoProjectDir
 	}
 	if err := cl.pinProjectField("active_provider", cfg.ActiveProvider); err != nil {
 		return err

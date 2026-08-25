@@ -20,9 +20,13 @@ type fakeConfigSaver struct {
 	savedCfg *config.Config
 	saveErr  error
 	// projectActiveSaved + saveOrder support Bug6 assertions: the per-project
-	// active-model pin must be written BEFORE the home fallback.
+	// active-model pin must be written BEFORE the home fallback, and a pin
+	// success must suppress the home write entirely (bugs.md model scope).
 	projectActiveSaved *config.Config
 	saveOrder          []string
+	// projectActiveErr injects a failing project layer so tests can drive the
+	// home fallback path of persistModelSwitch.
+	projectActiveErr error
 }
 
 func (f *fakeConfigSaver) Save(cfg *config.Config) error {
@@ -35,11 +39,14 @@ func (f *fakeConfigSaver) SaveHomeProvidersAndModels(cfg *config.Config) error  
 func (f *fakeConfigSaver) SaveProjectProvidersAndModels(cfg *config.Config) error { return f.Save(cfg) }
 
 // SaveProjectActiveModel records the per-project pin and its position in the
-// save order so tests can assert project-first persistence (Bug6).
+// save order so tests can assert project-first persistence (Bug6), and can
+// simulate an unchangeable project layer via projectActiveErr. Deliberately
+// does NOT delegate to Save: the home write is persistModelSwitch's fallback
+// decision, not part of the pin itself.
 func (f *fakeConfigSaver) SaveProjectActiveModel(cfg *config.Config) error {
 	f.projectActiveSaved = cfg
 	f.saveOrder = append(f.saveOrder, "project_active")
-	return f.Save(cfg)
+	return f.projectActiveErr
 }
 func (f *fakeConfigSaver) SaveHomeField(path []string, value any) error    { return nil }
 func (f *fakeConfigSaver) SaveProjectField(path []string, value any) error { return nil }

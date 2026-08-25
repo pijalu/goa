@@ -15,8 +15,9 @@ import (
 )
 
 // TestProviderSwitch_PersistsToHomeConfig verifies that switching providers
-// writes provider/model state to ~/.goa/config.yaml without touching the
-// project .goa/config.yaml.
+// under an explicit auto_save_model opt-out writes provider/model state to
+// ~/.goa/config.yaml without touching the project .goa/config.yaml (legacy
+// home-only persistence).
 func TestProviderSwitch_PersistsToHomeConfig(t *testing.T) {
 	homeDir := t.TempDir()
 	projectDir := t.TempDir()
@@ -32,7 +33,9 @@ providers:
   - id: openai
     endpoint: http://openai.example.com/v1
 `)
-	writeTestConfig(t, projectPath, `active_provider: project-provider
+	writeTestConfig(t, projectPath, `execution:
+    auto_save_model: false
+active_provider: project-provider
 providers:
   - id: project-provider
     endpoint: http://project.example.com/v1
@@ -65,9 +68,10 @@ providers:
 	}
 }
 
-// TestModelSwitch_PersistsToHomeConfig verifies that switching models writes
-// provider/model state to ~/.goa/config.yaml without touching the project
-// .goa/config.yaml.
+// TestModelSwitch_PersistsToHomeConfig verifies that switching models under
+// an explicit auto_save_model opt-out writes provider/model state to
+// ~/.goa/config.yaml without touching the project .goa/config.yaml (legacy
+// home-only persistence).
 func TestModelSwitch_PersistsToHomeConfig(t *testing.T) {
 	homeDir := t.TempDir()
 	projectDir := t.TempDir()
@@ -91,7 +95,9 @@ models:
     provider: anthropic
     model: claude-3-5-sonnet
 `)
-	writeTestConfig(t, projectPath, `active_model: project-model
+	writeTestConfig(t, projectPath, `execution:
+    auto_save_model: false
+active_model: project-model
 models:
   - id: project-model
     provider: openai

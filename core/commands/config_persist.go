@@ -24,25 +24,31 @@ func saveProjectConfig(cfg *config.Config, saver config.ConfigSaver) error {
 	return nil
 }
 
-// persistModelSwitch saves a provider/model switch across the writable
-// config layers. The PROJECT layer is written FIRST (Bug6): it is the
+// persistModelSwitch saves a provider/model switch. The PROJECT layer is the
+// PRIMARY store (Bug6 + bugs.md model-scope design): it is the
 // highest-precedence cascade layer, so each project keeps its own last-used
-// provider/model pair; the home layer is updated afterwards as the global
-// fallback for projects that have no pin yet.
+// provider/model pair, and a switch in one project no longer leaks into the
+// global default.
 //
-// The project pin is gated on execution.auto_save_model (default true): an
-// explicit opt-out keeps the legacy home-only behavior.
+// ~/.goa is written ONLY as a fallback:
+//   - execution.auto_save_model true (default) → project pin first; when the
+//     project layer cannot be changed (no project directory configured, or
+//     the write fails e.g. read-only tree) the home layer keeps the choice
+//     alive so it still survives restart;
+//   - execution.auto_save_model false (explicit opt-out) → legacy home-only
+//     persistence, the user declined project writes.
 func persistModelSwitch(cfg *config.Config, saver config.ConfigSaver) error {
 	if saver == nil {
 		return nil
 	}
 	if cfg.Execution.AutoSaveModel {
-		if err := saver.SaveProjectActiveModel(cfg); err != nil {
-			return fmt.Errorf("failed to save active model to project: %w", err)
+		if err := saver.SaveProjectActiveModel(cfg); err == nil {
+			// Per-project pin written: home stays untouched (bugs.md — a
+			// model change in one project must not become every other
+			// project's default).
+			return nil
 		}
+		// Project layer unchangeable → fall back to home below.
 	}
-	if err := saver.SaveHomeProvidersAndModels(cfg); err != nil {
-		return fmt.Errorf("failed to save provider/model config: %w", err)
-	}
-	return nil
+	return saver.SaveHomeProvidersAndModels(cfg)
 }

@@ -104,15 +104,18 @@ models:
 		t.Errorf("Project config should have active_model: gemma, got:\n%s", projectData)
 	}
 
-	// Verify the home config was also updated
+	// Home must stay untouched (bugs.md model-scope design): a model change
+	// in one project persists to the project pin ONLY; ~/.goa is written
+	// exclusively when the project layer cannot be changed.
 	homeData := readTestFile(t, homePath)
-	if !strings.Contains(homeData, "active_model: gemma") {
-		t.Errorf("Home config should have active_model: gemma, got:\n%s", homeData)
+	if strings.Contains(homeData, "active_model: gemma") {
+		t.Errorf("Home config must NOT receive the project-scoped model change, got:\n%s", homeData)
 	}
 }
 
-// TestModelChange_PersistsWithoutAutoSave verifies that model changes persist
-// even without auto_save_model when the project config doesn't override it.
+// TestModelChange_PersistsWithoutAutoSave verifies that an explicit
+// execution.auto_save_model: false opt-out keeps the LEGACY home-only
+// persistence: no per-project pin is written, ~/.goa carries the change.
 func TestModelChange_PersistsWithoutAutoSave(t *testing.T) {
 	homeDir := t.TempDir()
 	projectDir := t.TempDir()
@@ -121,9 +124,10 @@ func TestModelChange_PersistsWithoutAutoSave(t *testing.T) {
 	homePath := filepath.Join(homeDir, ".goa", "config.yaml")
 	projectPath := filepath.Join(projectDir, ".goa", "config.yaml")
 
-	// Project config without active_model and without auto_save_model
+	// Project config explicitly opts out of per-project model pinning.
 	writeTestConfig(t, projectPath, `execution:
     mode: yolo
+    auto_save_model: false
 `)
 	// Home config with initial model
 	writeTestConfig(t, homePath, `active_provider: deepseek
@@ -170,16 +174,16 @@ models:
 		t.Errorf("After restart without auto_save, ActiveModel = %q, want gemma", cfg2.ActiveModel)
 	}
 
-	// Home config should have been updated
+	// Home config should have been updated (legacy opt-out path)
 	homeData := readTestFile(t, homePath)
 	if !strings.Contains(homeData, "active_model: gemma") {
 		t.Errorf("Home config should have active_model: gemma, got:\n%s", homeData)
 	}
 
-	// Project config should NOT have active_model (it wasn't there before)
+	// Project must NOT carry the pin (auto_save_model: false opted out).
 	projectData := readTestFile(t, projectPath)
-	if strings.Contains(projectData, "active_model") && !strings.Contains(projectData, "active_model: gemma") {
-		// This is OK - project might have other fields
+	if strings.Contains(projectData, "active_model: gemma") {
+		t.Errorf("Opt-out must not write a project pin, got:\n%s", projectData)
 	}
 }
 
