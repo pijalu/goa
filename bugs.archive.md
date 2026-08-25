@@ -2,6 +2,80 @@
 
 Completed entries moved here from bugs.md per guideline 4.
 
+### BUG: flaky CI failure — TestQuota_CarouselPrefersAPIProvidersOverLocal renders an empty segment
+
+**Status:** IMPLEMENTED — tested, validated, archived.
+
+**Observed:** intermittent failure in the CI quality job (`go test -count=1 -race
+-cover -timeout 5m ./...`, ubuntu-latest), not reproduced locally:
+
+```
+--- FAIL: TestQuota_CarouselPrefersAPIProvidersOverLocal (0.07s)
+    quota_plugin_test.go:364: carousel should prefer anthropic over local: ""
+FAIL github.com/pijalu/goa/plugins 11.533s
+```
+
+**Root cause:** the plugin scheduler's timer lifecycle, not quota data. A
+`setTimeout` one-shot deregistered itself from the scheduler map BEFORE its
+first fire attempt; when that attempt was deferred by an active JS frame
+(`invokeSafeWithReschedule`, vmActive>0), `fireOnce` parked in a 50ms back-off
+loop that `Scheduler.Stop()`/`Clear()` could no longer reach (no map entry →
+stop channel never closed). The zombie goroutine — typically from an earlier
+test's cold-`/quota` async render (`scheduleAsyncQuotaRender`) — later entered
+a VM frame in the microsecond gap between this test's `quota refresh` and
+`renderSegment()`; `buildSegmentRender` skips renders while `vmBusy()` and
+returns "".
+
+**Resolution:**
+- plugins/scheduler.go: one-shots stay registered until a terminal state
+  (callback ran or stop closed); deregistration happens AFTER `fireOnce`
+  returns. Stop/Clear now cancel pending retries; completed timers still leave
+  the map immediately (bounded-lifetime invariant kept).
+- Regression tests (plugins/scheduler_test.go, red before fix):
+  `TestScheduler_StopCancelsDeferredOneShot`,
+  `TestScheduler_ClearCancelsPendingOneShot`,
+  `TestScheduler_OneShotRemovedAfterRun`.
+
+**Validation:** plugins package 5× green under `-race`; carousel test 50× under
+`-race`; full `go test -count=1 -race -cover ./...` green. Commit bfa0c0d.
+
+### ENHANCEMENT: model/provider switch persists to ~/.goa unconditionally — project .goa must be the primary (and normally only) store
+
+**Status:** IMPLEMENTED — tested, validated, archived.
+
+**Observed:** `persistModelSwitch` wrote the per-project pin gated on
+`execution.auto_save_model`, then ALWAYS rewrote `active_provider` +
+`active_model` into `~/.goa/config.yaml` — a switch in one project became the
+global default for every other project without an explicit pin.
+
+**Resolution:**
+- `config.ErrNoProjectDir` sentinel; `CascadeLoader.SaveProjectActiveModel`
+  returns it when no project dir is configured (was silent nil).
+- `persistModelSwitch` (core/commands/config_persist.go):
+  auto_save_model=true → project pin ONLY; on any project-layer failure
+  (ErrNoProjectDir, unwritable tree) fall back to home; auto_save_model=false
+  keeps legacy home-only.
+- Tests flipped to require home untouched (TestModelChange_PersistsAcrossRestart,
+  TestModelSwitch_PerProjectPinEndToEnd), explicit opt-out configs for
+  *PersistsToHomeConfig, new fallback tests
+  (TestPersistModelSwitch_ProjectErrorFallsBackToHome,
+  TestPersistModelSwitch_UnwritableProjectFallsBackToHome), ErrNoProjectDir
+  coverage (TestSaveProjectActiveModel_NoProjectDirIsNoop).
+- Docs: CONFIGURATION.md auto_save_model comment; COMMANDS.md /model section.
+
+**Known follow-ups (out of scope here):**
+- `/config set active_model` still writes the key to ~/.goa via the generic
+  /config-setter path.
+- `saveModelThinkingLevel` persists thinking levels via home
+  providers+models and carries active_provider/active_model along.
+- `mergeExecution` copies AutoSaveModel unconditionally, so any config file
+  omitting the key resets the embedded default true→false (tri-state bool
+  limitation shared with DisableToolBudget/AutoHealToolCalls).
+
+**Validation:** go vet clean; staticcheck clean; gocognit/gocyclo no new
+violations; full `go test -count=1 -race -cover -timeout 5m ./...` exit 0.
+Commit 2c04c72.
+
 ### ENHANCEMENT: stream-loop minimum repeat-unit length configurable (execution.stream_loop_min_period)
 
 **Status:** IMPLEMENTED — tested, validated, archived.
