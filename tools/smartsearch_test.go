@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,31 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/tuirender"
 )
+
+func TestSmartSearchTool_StructuredOutputAndFilters(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc greet() string { return \"hi\" }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("def greet():\n    return 'hi'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &SmartSearchTool{ProjectDir: dir}
+	result, err := tool.Execute(`{"query":"greet function", "output":"json", "language":"go", "max_tokens":20}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response fetchResponse
+	if err := json.Unmarshal([]byte(result), &response); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(response.Results) == 0 || response.Results[0].ID == "" || response.Results[0].Path != filepath.Join(dir, "main.go") {
+		t.Fatalf("unexpected structured result: %+v", response)
+	}
+	if len([]rune(response.Results[0].Evidence)) > 80 {
+		t.Fatalf("evidence exceeded token bound: %d", len([]rune(response.Results[0].Evidence)))
+	}
+}
 
 // TestSmartSearchTool_CorruptedIndexRebuilt verifies that the smartsearch tool
 // detects a corrupted index file, removes it, rebuilds from scratch, and reports
