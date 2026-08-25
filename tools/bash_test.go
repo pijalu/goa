@@ -537,6 +537,23 @@ func TestBashTool_Truncation_ConfigurableBytes(t *testing.T) {
 	}
 }
 
+func TestBashTool_CaptureLimit_AbortsAndReturnsClearError(t *testing.T) {
+	tool := &BashTool{MaxCaptureBytes: 1024}
+	_, err := tool.Execute(`{"command": "yes x | head -c 4096"}`)
+	if err == nil {
+		t.Fatal("expected output-too-large error")
+	}
+	if !strings.Contains(err.Error(), "output_too_large") || !strings.Contains(err.Error(), "1024") {
+		t.Fatalf("expected clear output limit error, got %v", err)
+	}
+}
+
+func TestBashTool_CaptureLimit_DefaultIsTenMiB(t *testing.T) {
+	if DefaultMaxCaptureBytes != 10*1024*1024 {
+		t.Fatalf("default capture limit = %d, want 10 MiB", DefaultMaxCaptureBytes)
+	}
+}
+
 func TestFirstCommandToken(t *testing.T) {
 	tests := []struct {
 		name string

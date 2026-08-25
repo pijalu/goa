@@ -416,6 +416,9 @@ func mergeBashConfig(dst, src *BashConfig) {
 	if src.MaxOutputBytes != 0 {
 		dst.MaxOutputBytes = src.MaxOutputBytes
 	}
+	if src.MaxCaptureBytes != 0 {
+		dst.MaxCaptureBytes = src.MaxCaptureBytes
+	}
 	if src.MaxComplexityScore != 0 {
 		dst.MaxComplexityScore = src.MaxComplexityScore
 	}

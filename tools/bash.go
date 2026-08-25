@@ -10,6 +10,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +70,10 @@ type BashTool struct {
 	// MaxOutputBytes caps the byte size of returned output.
 	// Zero defaults to DefaultMaxBytes.
 	MaxOutputBytes int
+	// MaxCaptureBytes bounds combined stdout/stderr while the command runs.
+	// Zero defaults to DefaultMaxCaptureBytes. Exceeding it terminates the
+	// command and returns a clear output-too-large error.
+	MaxCaptureBytes int
 
 	// CompressionResolver, when non-nil, is called at execution time to
 	// determine whether output compression is active. This enables
@@ -99,6 +104,8 @@ const (
 	DefaultBashTimeoutS = 60
 	// MaxBashTimeoutS is the maximum foreground timeout allowed.
 	MaxBashTimeoutS = 5 * 60
+	// DefaultMaxCaptureBytes limits captured command output to 10 MiB.
+	DefaultMaxCaptureBytes = 10 * 1024 * 1024
 )
 
 // LoopHints supplies tool-loop-controller metadata so the controller does not
@@ -233,7 +240,7 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 	// edit tool next time. Never block on this — bash is sometimes the only way.
 	fileEditHint := t.fileEditHint(p.Command)
 
-	output, duration, timedOut, err := t.runCommand(ctx, &p)
+	output, duration, timedOut, tooLarge, err := t.runCommand(ctx, &p)
 
 	// A cancelled turn takes precedence over the timeout/exit reporting so
 	// the agent stops promptly instead of emitting a timeout bubble.
@@ -245,13 +252,16 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 	}
 
 	out, fmtErr := t.formatOutput(&p, output, err, duration)
+	if tooLarge {
+		return "", outputTooLargeErr(t.captureLimit())
+	}
 	if fileEditHint != "" {
 		out = fileEditHint + out
 	}
 	return out, fmtErr
 }
 
-func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.Duration, bool, error) {
+func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.Duration, bool, bool, error) {
 	timeoutS := normalizeBashTimeout(p.Timeout)
 
 	cmd := newBashCommand(p.Command)
@@ -268,21 +278,22 @@ func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.
 	cmd.Env = buildCommandEnv(p.Env)
 
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	capture := newCaptureWriter(&stdout, &stderr, t.captureLimit(), func() { killBashProcessTree(cmd) })
+	cmd.Stdout = capture.stdoutWriter()
+	cmd.Stderr = capture.stderrWriter()
 
 	// If the host injected a progress emitter, stream stdout to it so the TUI
 	// shows live output for long-running commands instead of a frozen spinner.
 	progress := agentic.ProgressFromContext(ctx)
 	var pw *progressWriter
 	if progress != nil {
-		pw = newProgressWriter(&stdout, progress, bashProgressInterval)
+		pw = newProgressWriterWriter(capture.stdoutWriter(), &stdout, progress, bashProgressInterval)
 		cmd.Stdout = pw
 	}
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		return nil, 0, false, err
+		return nil, 0, false, false, err
 	}
 
 	done := make(chan error, 1)
@@ -294,7 +305,7 @@ func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.
 		pw.finalFlush()
 		output := stdout.Bytes()
 		output = append(output, stderr.Bytes()...)
-		return output, time.Since(start), false, runErr
+		return output, time.Since(start), false, capture.exceeded(), runErr
 	case <-ctx.Done():
 		// Turn cancellation: kill the whole process tree promptly so a stopped
 		// turn does not keep child processes alive until the bash timeout.
@@ -309,7 +320,18 @@ func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.
 	pw.finalFlush()
 	output := stdout.Bytes()
 	output = append(output, stderr.Bytes()...)
-	return output, time.Since(start), timedOut, nil
+	return output, time.Since(start), timedOut, capture.exceeded(), nil
+}
+
+func (t *BashTool) captureLimit() int {
+	if t.MaxCaptureBytes > 0 {
+		return t.MaxCaptureBytes
+	}
+	return DefaultMaxCaptureBytes
+}
+
+func outputTooLargeErr(limit int) *internal.ToolError {
+	return &internal.ToolError{Tool: "bash", Type: "output_too_large", Detail: fmt.Sprintf("Command output exceeded the %d-byte limit and was aborted", limit), HintText: "Reduce the command output, filter it, or increase max_capture_bytes."}
 }
 
 // normalizeBashTimeout applies defaults and caps.
@@ -338,18 +360,23 @@ const bashProgressInterval = 120 * time.Millisecond
 type progressWriter struct {
 	mu       sync.Mutex
 	buf      *bytes.Buffer
+	tee      io.Writer
 	emit     func(string)
 	interval time.Duration
 	last     time.Time
 }
 
 func newProgressWriter(buf *bytes.Buffer, emit func(string), interval time.Duration) *progressWriter {
-	return &progressWriter{buf: buf, emit: emit, interval: interval}
+	return newProgressWriterWriter(buf, buf, emit, interval)
+}
+
+func newProgressWriterWriter(tee io.Writer, buf *bytes.Buffer, emit func(string), interval time.Duration) *progressWriter {
+	return &progressWriter{buf: buf, tee: tee, emit: emit, interval: interval}
 }
 
 func (w *progressWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
-	n, err := w.buf.Write(p)
+	n, err := w.tee.Write(p)
 	due := w.emit != nil && time.Since(w.last) >= w.interval
 	var snap string
 	if due {

@@ -521,6 +521,7 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		ProjectDir:       projectDir,
 		Jail:             cfg.Tools.Bash.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
 		MaxOutputBytes:   cfg.Tools.Bash.MaxOutputBytes,
+		MaxCaptureBytes:  cfg.Tools.Bash.MaxCaptureBytes,
 		EnableComplexity: cfg.Tools.Bash.EnableComplexityAnalysis,
 		WarnFileEdits:    cfg.Tools.Bash.WarnFileEdits == nil || *cfg.Tools.Bash.WarnFileEdits,
 		// Resolve live so /config → tools.bash.warn_file_edits takes effect immediately.

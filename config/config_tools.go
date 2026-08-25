@@ -65,6 +65,9 @@ type BashConfig struct {
 	// MaxOutputBytes caps the byte size of command output returned to the
 	// agent. The tail of the output is kept. Zero defaults to 50KB.
 	MaxOutputBytes int `yaml:"max_output_bytes"`
+	// MaxCaptureBytes aborts commands whose combined stdout/stderr exceeds this
+	// limit. Zero defaults to 10 MiB.
+	MaxCaptureBytes int `yaml:"max_capture_bytes"`
 	// MaxComplexityScore caps the AST complexity score at which a shell command
 	// is considered too complex for reliable static analysis. Zero defaults to
 	// the analyzer's conservative threshold (50).
