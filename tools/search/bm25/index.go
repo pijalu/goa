@@ -192,49 +192,11 @@ func (idx *Index) SearchChunks(query string, maxResults int, minScore float64) [
 	if maxResults <= 0 {
 		maxResults = 20
 	}
-	// Retrieve a broad lexical candidate set, then rerank with field-aware BM25F.
 	limit := maxResults * 12
 	if limit < 100 {
 		limit = 100
 	}
-	ids, _ := idx.chunkOKAPI.TopN(expandQuery(idx.tokenizer.Tokenize(query)), limit)
-	type ranked struct {
-		id                          int
-		score, coverage, confidence float64
-	}
-	rankedDocs := make([]ranked, 0, len(ids))
-	for _, id := range ids {
-		if id < 0 || id >= len(idx.Data.Documents) {
-			continue
-		}
-		d := idx.Data.Documents[id]
-		score, coverage, confidence := 0.0, 0.0, 0.0
-		if idx.fielded != nil {
-			score, coverage, confidence = idx.fielded.Score(query, d, id)
-		} else {
-			score = 1
-		}
-		if score >= minScore {
-			rankedDocs = append(rankedDocs, ranked{id, score, coverage, confidence})
-		}
-	}
-	sort.SliceStable(rankedDocs, func(i, j int) bool { return rankedDocs[i].score > rankedDocs[j].score })
-	out := make([]SearchResult, 0, maxResults)
-	pathCount := make(map[string]int)
-	for _, r := range rankedDocs {
-		d := idx.Data.Documents[r.id]
-		// Keep a second chunk per file for useful local context, but prevent one
-		// generated or very large file from monopolising the result set.
-		if pathCount[d.Path] >= 2 {
-			continue
-		}
-		pathCount[d.Path]++
-		out = append(out, SearchResult{Path: d.Path, Score: r.score, Coverage: r.coverage, Confidence: r.confidence, Lines: d.EndLine - d.StartLine + 1, ID: d.ID, Language: d.Language, Kind: d.Kind, Symbol: d.Symbol, StartLine: d.StartLine, EndLine: d.EndLine, Content: d.Content})
-		if len(out) >= maxResults {
-			break
-		}
-	}
-	return out
+	return idx.resultChunks(idx.rankChunks(query, limit, minScore), maxResults)
 }
 
 func (idx *Index) searchFilesLocked(query string, maxResults int, minScore float64) []SearchResult {
