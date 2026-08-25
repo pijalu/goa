@@ -9,8 +9,6 @@ import (
 )
 
 // CodeRegion is a best-effort semantic region extracted from a source file.
-// An analyzer may return declarations, imports, or structural blocks; callers
-// must be prepared for partial results when source is malformed.
 type CodeRegion struct {
 	Kind      string
 	Name      string
@@ -20,15 +18,11 @@ type CodeRegion struct {
 	EndLine   int
 }
 
-// CodeAnalyzer extracts semantic regions for one or more languages.
 type CodeAnalyzer interface {
 	Languages() []string
 	Analyze(path string, source string) ([]CodeRegion, error)
 }
 
-// AnalyzerRegistry selects a language analyzer and always falls back to the
-// language-agnostic chunker. Parser failures therefore never remove a file
-// from retrieval.
 type AnalyzerRegistry struct {
 	byLanguage map[string]CodeAnalyzer
 	fallback   CodeAnalyzer
@@ -36,12 +30,9 @@ type AnalyzerRegistry struct {
 
 func NewAnalyzerRegistry() *AnalyzerRegistry {
 	r := &AnalyzerRegistry{byLanguage: make(map[string]CodeAnalyzer), fallback: lexicalAnalyzer{}}
-	// The lexical analyzer is deliberately shared: declaration syntax is similar
-	// enough across these languages and malformed code remains searchable.
 	r.Register(lexicalAnalyzer{})
 	return r
 }
-
 func (r *AnalyzerRegistry) Register(a CodeAnalyzer) {
 	if r == nil || a == nil {
 		return
@@ -50,15 +41,13 @@ func (r *AnalyzerRegistry) Register(a CodeAnalyzer) {
 		r.byLanguage[strings.ToLower(lang)] = a
 	}
 }
-
 func (r *AnalyzerRegistry) Analyzer(language string) CodeAnalyzer {
-	if r == nil {
-		return lexicalAnalyzer{}
+	if r != nil {
+		if a := r.byLanguage[strings.ToLower(language)]; a != nil {
+			return a
+		}
 	}
-	if a := r.byLanguage[strings.ToLower(language)]; a != nil {
-		return a
-	}
-	return r.fallback
+	return lexicalAnalyzer{}
 }
 
 // LanguageForPath returns a stable language label for common source formats.
@@ -66,12 +55,11 @@ func LanguageForPath(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	languages := map[string]string{
 		".go": "go", ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
-		".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
-		".py": "python", ".pyi": "python", ".rs": "rust", ".java": "java", ".c": "c", ".h": "c",
-		".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".cs": "csharp", ".rb": "ruby",
-		".php": "php", ".kt": "kotlin", ".swift": "swift", ".dart": "dart", ".scala": "scala",
-		".lua": "lua", ".sh": "shell", ".bash": "shell", ".zsh": "shell", ".sql": "sql",
-		".json": "json", ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".html": "html", ".css": "css",
+		".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript", ".py": "python", ".pyi": "python",
+		".rs": "rust", ".java": "java", ".c": "c", ".h": "c", ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp",
+		".cs": "csharp", ".rb": "ruby", ".php": "php", ".kt": "kotlin", ".swift": "swift", ".dart": "dart", ".scala": "scala",
+		".lua": "lua", ".sh": "shell", ".bash": "shell", ".zsh": "shell", ".sql": "sql", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+		".toml": "toml", ".html": "html", ".css": "css",
 	}
 	if lang := languages[ext]; lang != "" {
 		return lang
@@ -92,18 +80,27 @@ func (lexicalAnalyzer) Languages() []string {
 	return []string{"go", "javascript", "typescript", "python", "rust", "java", "c", "cpp", "csharp", "ruby", "php", "kotlin", "swift", "dart", "scala", "lua", "shell", "sql", "json", "yaml", "toml", "html", "css", "dockerfile", "makefile", "text"}
 }
 
-var declarationRE = regexp.MustCompile(`(?m)^\s*(?:(?:export|public|private|protected|async|static|func|fn|def|class|struct|type|interface|trait|impl|enum|namespace|module|object|record)\s+)?(?:func|fn|def|class|struct|interface|trait|impl|enum|type|namespace|module|object|record|function)\s+([A-Za-z_$][\w$]*)`)
-var importRE = regexp.MustCompile(`(?m)^\s*(?:import|from|using|include|require|use)\b[^\n]*`)
+// Patterns intentionally describe declarations common to many languages. The
+// balanced/indentation range calculation below makes them useful on malformed
+// files too, unlike a parser that rejects the whole file.
+var declarationRE = regexp.MustCompile(`(?m)^[ \t]*(?:(?:export|public|private|protected|internal|async|static|final|abstract|override|virtual|sealed|const|let|var)[ \t]+)*(?:(func|fn|def|function|class|struct|interface|trait|impl|enum|type|namespace|module|object|record|constructor)[ \t]+([A-Za-z_$][\w$]*)|(?:func|function)[ \t]*\([^\n]*\)[ \t]*([A-Za-z_$][\w$]*))`)
+var importRE = regexp.MustCompile(`(?m)^[ \t]*(?:import|from|using|include|require|require_relative|use|เปิด)\b[^\n]*`)
 
 func (lexicalAnalyzer) Analyze(path, source string) ([]CodeRegion, error) {
 	lines := strings.Split(source, "\n")
 	regions := make([]CodeRegion, 0)
 	for _, m := range declarationRE.FindAllStringSubmatchIndex(source, -1) {
-		name := source[m[2]:m[3]]
+		name := capture(source, m, 2)
+		if name == "" {
+			name = capture(source, m, 3)
+		}
+		kind := capture(source, m, 1)
+		if kind == "" {
+			kind = "function"
+		}
 		start := lineNumber(source, m[0])
-		end := regionEnd(lines, start)
-		sig := strings.TrimSpace(lines[start-1])
-		regions = append(regions, CodeRegion{Kind: "declaration", Name: name, Signature: sig, StartLine: start, EndLine: end})
+		end := declarationEnd(lines, start, lines[start-1])
+		regions = append(regions, CodeRegion{Kind: strings.ToLower(kind), Name: name, Signature: strings.TrimSpace(lines[start-1]), StartLine: start, EndLine: end})
 	}
 	for _, m := range importRE.FindAllStringIndex(source, -1) {
 		line := lineNumber(source, m[0])
@@ -111,21 +108,50 @@ func (lexicalAnalyzer) Analyze(path, source string) ([]CodeRegion, error) {
 	}
 	return regions, nil
 }
-
-func lineNumber(source string, offset int) int { return 1 + strings.Count(source[:offset], "\n") }
-func regionEnd(lines []string, start int) int {
-	if start < 1 {
-		return 1
+func capture(source string, m []int, group int) string {
+	i := 2 * group
+	if i+1 >= len(m) || m[i] < 0 {
+		return ""
 	}
-	end := start + 79
-	if end > len(lines) {
+	return source[m[i]:m[i+1]]
+}
+func lineNumber(source string, offset int) int { return 1 + strings.Count(source[:offset], "\n") }
+
+func declarationEnd(lines []string, start int, signature string) int {
+	if start < 1 || start > len(lines) {
+		return start
+	}
+	// Brace languages: count braces while ignoring the common one-line case.
+	depth := strings.Count(signature, "{") - strings.Count(signature, "}")
+	if depth > 0 {
+		for i := start; i < len(lines); i++ {
+			depth += strings.Count(lines[i], "{") - strings.Count(lines[i], "}")
+			if depth <= 0 {
+				return i + 1
+			}
+		}
 		return len(lines)
 	}
-	return end
+	// Python/YAML-like blocks end before the next non-blank line at the same or
+	// lesser indentation. This also gives sensible ranges for incomplete code.
+	indent := len(lines[start-1]) - len(strings.TrimLeft(lines[start-1], " \t"))
+	last := start
+	for i := start; i < len(lines); i++ {
+		line := lines[i]
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		n := len(line) - len(strings.TrimLeft(line, " \t"))
+		if n <= indent {
+			return last
+		}
+		last = i + 1
+	}
+	return len(lines)
 }
 
-// ChunkSource returns semantic regions plus bounded fallback windows. It is the
-// foundation used by later chunk indexes and is independently testable.
+// ChunkSource returns semantic regions and bounded windows when no declaration
+// can be extracted. Every returned range is clamped to the source.
 func ChunkSource(path, source string, analyzer CodeAnalyzer, window, overlap int) []DocumentMeta {
 	if window <= 0 {
 		window = 120
@@ -150,12 +176,15 @@ func ChunkSource(path, source string, analyzer CodeAnalyzer, window, overlap int
 		if end > len(lines) {
 			end = len(lines)
 		}
-		chunks = append(chunks, makeDocument(path, LanguageForPath(path), r.Kind, r.Name, r.Parent, r.Signature, r.StartLine, end, strings.Join(lines[r.StartLine-1:end], "\n")))
+		doc := makeDocument(path, LanguageForPath(path), r.Kind, r.Name, r.Parent, r.Signature, r.StartLine, end, strings.Join(lines[r.StartLine-1:end], "\n"))
+		doc.Imports = importsForSource(source)
+		chunks = append(chunks, doc)
 	}
 	if len(chunks) > 0 {
 		return chunks
 	}
-	for start := 1; start <= len(lines); start += window - overlap {
+	step := window - overlap
+	for start := 1; start <= len(lines); start += step {
 		end := start + window - 1
 		if end > len(lines) {
 			end = len(lines)
@@ -166,6 +195,10 @@ func ChunkSource(path, source string, analyzer CodeAnalyzer, window, overlap int
 		}
 	}
 	return chunks
+}
+func importsForSource(source string) string {
+	matches := importRE.FindAllString(source, -1)
+	return strings.Join(matches, " ")
 }
 
 func makeDocument(path, language, kind, symbol, parent, signature string, start, end int, content string) DocumentMeta {

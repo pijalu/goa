@@ -33,6 +33,32 @@ func TestChunkSourceExtractsDeclarationAndImports(t *testing.T) {
 	}
 }
 
+func TestChunkSourceBroadLanguagesAndAccurateRanges(t *testing.T) {
+	cases := []struct {
+		path, source, symbol, kind string
+		start, end                 int
+	}{
+		{"handler.py", "import os\n\ndef handle(x):\n    value = x + 1\n    return value\n\ndef next():\n    return 2\n", "handle", "def", 3, 5},
+		{"app.js", "import {x} from 'm'\n\nexport function run() {\n  return x\n}\n", "run", "function", 3, 5},
+		{"lib.rs", "fn compute() {\n  let x = 1;\n}\n", "compute", "fn", 1, 3},
+	}
+	for _, tc := range cases {
+		chunks := ChunkSource(tc.path, tc.source, lexicalAnalyzer{}, 20, 4)
+		var found bool
+		for _, c := range chunks {
+			if c.Symbol == tc.symbol {
+				found = true
+				if c.Kind != tc.kind || c.StartLine != tc.start || c.EndLine != tc.end {
+					t.Errorf("%s: got %+v", tc.path, c)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: symbol %q not found in %+v", tc.path, tc.symbol, chunks)
+		}
+	}
+}
+
 func TestChunkSourceFallbackWindows(t *testing.T) {
 	source := strings.Repeat("plain text\n", 5)
 	chunks := ChunkSource("notes.txt", source, lexicalAnalyzer{}, 2, 1)

@@ -104,6 +104,7 @@ type DocumentMeta struct {
 	Symbol    string `gob:"symbol"`
 	Parent    string `gob:"parent"`
 	Signature string `gob:"signature"`
+	Imports   string `gob:"imports"`
 	StartLine int    `gob:"start_line"`
 	EndLine   int    `gob:"end_line"`
 	Content   string `gob:"content"`
@@ -145,7 +146,7 @@ func NewIndex(data IndexData) *Index {
 	if len(data.Documents) > 0 {
 		docs := make([][]string, len(data.Documents))
 		for i, doc := range data.Documents {
-			docs[i] = idx.tokenizer.Tokenize(strings.Join([]string{doc.Symbol, doc.Signature, doc.Content}, " "))
+			docs[i] = idx.tokenizer.Tokenize(strings.Join([]string{doc.Symbol, doc.Signature, doc.Imports, doc.Content}, " "))
 		}
 		idx.chunkOKAPI = NewOkapi(DefaultOkapiConfig())
 		idx.chunkOKAPI.Build(docs)
