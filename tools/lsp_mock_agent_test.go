@@ -82,6 +82,7 @@ type mockDocumentManager struct {
 	diagnostics []lsp.Diagnostic
 	changes     int
 	actions     []lsp.CodeAction
+	renameEdit  *lsp.WorkspaceEdit
 }
 
 func (m *mockDocumentManager) CodeAction(context.Context, string, lsp.Range) ([]lsp.CodeAction, error) {
@@ -105,7 +106,7 @@ func (m *mockDocumentManager) PrepareRename(context.Context, string, int, int) (
 	return nil, nil
 }
 func (m *mockDocumentManager) Rename(context.Context, string, int, int, string) (*lsp.WorkspaceEdit, error) {
-	return nil, nil
+	return m.renameEdit, nil
 }
 func (m *mockDocumentManager) Completion(context.Context, string, int, int) ([]lsp.CompletionItem, error) {
 	return nil, nil
@@ -143,6 +144,54 @@ func TestMockAgent_UsesLSPRefactorTool(t *testing.T) {
 	}
 	if !strings.Contains(result, "Code actions (1)") || !strings.Contains(result, "Organize imports") {
 		t.Fatalf("unexpected refactor result: %q", result)
+	}
+}
+
+func TestMockAgent_AppliesLSPRenameRefactor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc oldName() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri := "file://" + resolvedPath
+	dir = root
+	edit := &lsp.WorkspaceEdit{Changes: map[string][]lsp.TextEdit{uri: {
+		{Range: lsp.Range{Start: lsp.Position{Line: 2, Character: 5}, End: lsp.Position{Line: 2, Character: 12}}, NewText: "newName"},
+	}}}
+	mgr := &mockDocumentManager{server: "gopls", renameEdit: edit}
+	lspTool := &LSPTool{ProjectDir: dir, Manager: mgr}
+	p := mock.New(t)
+	model := p.Model("rename-model")
+	args := fmt.Sprintf(`{"op":"rename","path":%q,"line":2,"character":6,"newName":"newName","apply":true}`, path)
+	p.Script(model.ID, mock.ToolCallTurn("lsp", "rename-1", args))
+	p.ReplyText(model.ID, "Rename applied.")
+	a := agentic.NewAgent(agentic.Config{Model: model, SystemPrompt: "Apply the requested rename using LSP.", Tools: []agentic.Tool{lspTool}})
+	var result string
+	a.AddObserver(agentic.OutputObserverFunc(func(ev agentic.OutputEvent) {
+		if ev.Type == agentic.EventToolResult {
+			result = ev.ToolResult
+		}
+	}))
+	if err := a.Run(context.Background(), "Rename oldName to newName and apply it."); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "func newName()") || strings.Contains(string(data), "oldName") {
+		t.Fatalf("rename was not applied: %q result=%q", data, result)
+	}
+	if !strings.Contains(result, "Workspace edit applied (1 files, 1 edits)") {
+		t.Fatalf("unexpected rename result: %q", result)
 	}
 }
 func (m *mockDocumentManager) DiagnosticsFor(context.Context, string) []lsp.Diagnostic {
