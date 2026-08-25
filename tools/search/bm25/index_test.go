@@ -116,3 +116,21 @@ func TestBuilder_LoadCorruptedIndexRebuiltFromScratch(t *testing.T) {
 		t.Errorf("expected 1 file after rebuild, got %d", loaded.FileCount())
 	}
 }
+
+func TestBuilder_LoadRejectsLegacySchema(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "package main\nfunc main() {}\n")
+	b := NewBuilder(dir, filepath.Join(dir, ".goa", "smartsearch"), nil)
+	idx, err := b.buildFull()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.Data.Version = 1
+	idx.Data.SchemaVersion = ""
+	if err := b.Save(idx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Load(); err == nil || !strings.Contains(err.Error(), "schema") {
+		t.Fatalf("expected schema rejection, got %v", err)
+	}
+}

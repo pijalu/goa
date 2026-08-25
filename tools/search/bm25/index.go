@@ -17,7 +17,10 @@ import (
 )
 
 // IndexVersion is bumped when the on-disk format changes.
-const IndexVersion = 1
+const IndexVersion = 2
+
+// IndexSchemaVersion identifies the document model used by persisted indexes.
+const IndexSchemaVersion = "chunked-code-v1"
 
 // IndexFile is the name of the serialised index inside the index directory.
 const IndexFile = "index.gob"
@@ -91,17 +94,34 @@ type FileMeta struct {
 	Lines   int       `gob:"lines"`
 }
 
+// DocumentMeta describes one retrievable chunk. File-level metadata remains
+// available for compatibility while chunks provide precise agent context.
+type DocumentMeta struct {
+	ID        string `gob:"id"`
+	Path      string `gob:"path"`
+	Language  string `gob:"language"`
+	Kind      string `gob:"kind"`
+	Symbol    string `gob:"symbol"`
+	Parent    string `gob:"parent"`
+	Signature string `gob:"signature"`
+	StartLine int    `gob:"start_line"`
+	EndLine   int    `gob:"end_line"`
+	Content   string `gob:"content"`
+}
+
 // IndexData is the complete serialisable state of a BM25 index, persisted as
 // a gob-encoded file under .goa/smartsearch/index.gob.
 type IndexData struct {
-	Version    int              `gob:"version"`
-	IndexTime  time.Time        `gob:"index_time"`
-	TotalFiles int              `gob:"total_files"`
-	Files      []FileMeta       `gob:"files"`
-	AvgDocLen  float64          `gob:"avg_doc_len"`
-	DocLengths []int            `gob:"doc_lengths"`
-	DocFreq    map[string]int   `gob:"doc_freq"`
-	DocTerms   []map[string]int `gob:"doc_terms"`
+	Version       int              `gob:"version"`
+	SchemaVersion string           `gob:"schema_version"`
+	IndexTime     time.Time        `gob:"index_time"`
+	TotalFiles    int              `gob:"total_files"`
+	Files         []FileMeta       `gob:"files"`
+	Documents     []DocumentMeta   `gob:"documents"`
+	AvgDocLen     float64          `gob:"avg_doc_len"`
+	DocLengths    []int            `gob:"doc_lengths"`
+	DocFreq       map[string]int   `gob:"doc_freq"`
+	DocTerms      []map[string]int `gob:"doc_terms"`
 }
 
 // Index wraps an IndexData with a code tokenizer and an Okapi scorer,
@@ -196,6 +216,7 @@ type Builder struct {
 	indexDir      string
 	excludes      []string
 	tokenizer     *CodeTokenizer
+	analyzers     *AnalyzerRegistry
 	workers       int
 	changeTracker *ChangeTracker // optional, notified when refresh completes
 }
@@ -209,6 +230,7 @@ func NewBuilder(projectDir, indexDir string, excludes []string) *Builder {
 		indexDir:   indexDir,
 		excludes:   excludes,
 		tokenizer:  NewCodeTokenizer(),
+		analyzers:  NewAnalyzerRegistry(),
 		workers:    defaultWorkers(),
 	}
 }
@@ -219,6 +241,10 @@ func NewBuilder(projectDir, indexDir string, excludes []string) *Builder {
 func (b *Builder) WithChangeTracker(ct *ChangeTracker) *Builder {
 	b.changeTracker = ct
 	return b
+}
+
+func (b *Builder) analyzerFor(path string) CodeAnalyzer {
+	return b.analyzers.Analyzer(LanguageForPath(path))
 }
 
 // Load attempts to deserialise and return the index from the index directory.
@@ -238,8 +264,8 @@ func (b *Builder) Load() (*Index, error) {
 	if err := gob.NewDecoder(f).Decode(&data); err != nil {
 		return nil, fmt.Errorf("decode index: %w", err)
 	}
-	if data.Version != IndexVersion {
-		return nil, fmt.Errorf("index version %d != current %d", data.Version, IndexVersion)
+	if data.Version != IndexVersion || data.SchemaVersion != IndexSchemaVersion {
+		return nil, fmt.Errorf("index schema %q version %d != current %q version %d", data.SchemaVersion, data.Version, IndexSchemaVersion, IndexVersion)
 	}
 	return NewIndex(data), nil
 }
@@ -409,10 +435,11 @@ type tokenizeJob struct {
 
 // tokenizeResult carries the output of tokenising one file.
 type tokenizeResult struct {
-	index  int
-	meta   FileMeta
-	tokens []string
-	err    error
+	index     int
+	meta      FileMeta
+	documents []DocumentMeta
+	tokens    []string
+	err       error
 }
 
 // buildFull performs a complete index build from scratch using parallel
@@ -423,7 +450,7 @@ func (b *Builder) buildFull() (*Index, error) {
 		return nil, fmt.Errorf("collect files: %w", err)
 	}
 	if len(files) == 0 {
-		return NewIndex(IndexData{Version: IndexVersion, IndexTime: time.Now()}), nil
+		return NewIndex(IndexData{Version: IndexVersion, SchemaVersion: IndexSchemaVersion, IndexTime: time.Now()}), nil
 	}
 
 	// Parallel tokenisation pipeline.
@@ -446,25 +473,23 @@ func (b *Builder) buildFull() (*Index, error) {
 	// Collect results in index order.
 	metas := make([]FileMeta, len(files))
 	allTokens := make([][]string, len(files))
+	var documents []DocumentMeta
 	for r := range results {
 		if r.err != nil {
-			continue // skip unreadable files
+			continue
 		}
 		metas[r.index] = r.meta
 		allTokens[r.index] = r.tokens
+		documents = append(documents, r.documents...)
 	}
 
 	o := NewOkapi(DefaultOkapiConfig())
 	o.Build(allTokens)
 
 	return NewIndex(IndexData{
-		Version:    IndexVersion,
-		IndexTime:  time.Now(),
-		TotalFiles: len(files),
-		Files:      metas,
-		DocLengths: o.DocLengths(),
-		DocFreq:    o.DocFreq(),
-		DocTerms:   o.DocTerms(),
+		Version: IndexVersion, SchemaVersion: IndexSchemaVersion, IndexTime: time.Now(),
+		TotalFiles: len(files), Files: metas, Documents: documents,
+		DocLengths: o.DocLengths(), DocFreq: o.DocFreq(), DocTerms: o.DocTerms(),
 	}), nil
 }
 
@@ -477,16 +502,16 @@ func (b *Builder) tokenizeWorker(jobs <-chan tokenizeJob, results chan<- tokeniz
 			continue
 		}
 		tokens, lines, err := b.tokenizeFile(j.path)
+		data, readErr := os.ReadFile(j.path)
+		if readErr != nil && err == nil {
+			err = readErr
+		}
 		results <- tokenizeResult{
-			index: j.index,
-			meta: FileMeta{
-				Path:    j.path,
-				Size:    info.Size(),
-				ModTime: info.ModTime(),
-				Lines:   lines,
-			},
-			tokens: tokens,
-			err:    err,
+			index:     j.index,
+			documents: ChunkSource(j.path, string(data), b.analyzerFor(j.path), 120, 20),
+			meta:      FileMeta{Path: j.path, Size: info.Size(), ModTime: info.ModTime(), Lines: lines},
+			tokens:    tokens,
+			err:       err,
 		}
 	}
 }
@@ -580,8 +605,6 @@ func (b *Builder) buildIncrementalIndex(idx *Index, added, modified []string, ol
 	for i, f := range oldFiles {
 		survivors[i] = currentSet[f.Path] && !contains(modified, f.Path)
 	}
-
-	// Pre-allocate slices.
 	survivingCount := 0
 	for _, s := range survivors {
 		if s {
@@ -590,35 +613,34 @@ func (b *Builder) buildIncrementalIndex(idx *Index, added, modified []string, ol
 	}
 	newTotal := survivingCount + len(added)
 	newFiles := make([]FileMeta, 0, newTotal)
+	newDocuments := make([]DocumentMeta, 0)
 	newDocLengths := make([]int, 0, newTotal)
 	newDocTerms := make([]map[string]int, 0, newTotal)
 
-	// Copy surviving docs.
+	// Copy surviving docs and their associated semantic chunks.
 	for i, s := range survivors {
 		if s {
 			newFiles = append(newFiles, oldFiles[i])
 			newDocLengths = append(newDocLengths, oldDocLengths[i])
 			newDocTerms = append(newDocTerms, oldDocTerms[i])
+			for _, d := range idx.Data.Documents {
+				if d.Path == oldFiles[i].Path {
+					newDocuments = append(newDocuments, d)
+				}
+			}
 		}
 	}
 
-	// Tokenise added/modified files in parallel.
 	allChanges := b.collectChanges(added, modified, oldFileMap)
-	b.tokenizeFileBatch(allChanges, &newFiles, &newDocLengths, &newDocTerms)
+	b.tokenizeFileBatch(allChanges, &newFiles, &newDocuments, &newDocLengths, &newDocTerms)
 
-	// Build fresh Okapi scorer.
 	o := NewOkapi(DefaultOkapiConfig())
 	o.SetDocData(newDocLengths, computeDocFreq(newDocTerms), newDocTerms)
 
 	return NewIndex(IndexData{
-		Version:    IndexVersion,
-		IndexTime:  time.Now(),
-		TotalFiles: len(newFiles),
-		Files:      newFiles,
-		AvgDocLen:  o.AvgDocLen(),
-		DocLengths: o.DocLengths(),
-		DocFreq:    o.DocFreq(),
-		DocTerms:   o.DocTerms(),
+		Version: IndexVersion, SchemaVersion: IndexSchemaVersion, IndexTime: time.Now(),
+		TotalFiles: len(newFiles), Files: newFiles, Documents: newDocuments,
+		AvgDocLen: o.AvgDocLen(), DocLengths: o.DocLengths(), DocFreq: o.DocFreq(), DocTerms: o.DocTerms(),
 	})
 }
 
@@ -645,17 +667,18 @@ type changeDescriptor struct {
 
 // changeResult holds the tokenisation result for one file.
 type changeResult struct {
-	path   string
-	meta   FileMeta
-	tokens []string
-	err    error
-	isMod  bool
-	oldID  int
+	path      string
+	meta      FileMeta
+	documents []DocumentMeta
+	tokens    []string
+	err       error
+	isMod     bool
+	oldID     int
 }
 
 // tokenizeFileBatch tokenises all files concurrently and appends results
 // to the output slices.
-func (b *Builder) tokenizeFileBatch(changes []changeDescriptor, newFiles *[]FileMeta, newDocLengths *[]int, newDocTerms *[]map[string]int) {
+func (b *Builder) tokenizeFileBatch(changes []changeDescriptor, newFiles *[]FileMeta, newDocuments *[]DocumentMeta, newDocLengths *[]int, newDocTerms *[]map[string]int) {
 	jobs := make(chan changeDescriptor, len(changes))
 	results := make(chan changeResult, len(changes))
 
@@ -681,6 +704,9 @@ func (b *Builder) tokenizeFileBatch(changes []changeDescriptor, newFiles *[]File
 			continue
 		}
 		*newFiles = append(*newFiles, r.meta)
+		if newDocuments != nil {
+			*newDocuments = append(*newDocuments, r.documents...)
+		}
 		*newDocLengths = append(*newDocLengths, len(r.tokens))
 		*newDocTerms = append(*newDocTerms, tokensToFreqs(r.tokens))
 	}
@@ -820,7 +846,7 @@ func (b *Builder) buildPendingIndex(idx *Index, pendingChanges []string, changes
 	var newFiles []FileMeta
 	var newDocLengths []int
 	var newDocTerms []map[string]int
-	b.tokenizeFileBatch(changes, &newFiles, &newDocLengths, &newDocTerms)
+	b.tokenizeFileBatch(changes, &newFiles, nil, &newDocLengths, &newDocTerms)
 
 	// Build pending set for survivor check.
 	pendingSet := make(map[string]bool, len(pendingChanges))
