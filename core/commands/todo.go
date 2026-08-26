@@ -45,6 +45,57 @@ func (c *TodoCommand) ShortHelp() string { return "Manage the active goal's todo
 // LongHelp returns detailed help.
 func (c *TodoCommand) LongHelp() string { return help.LongHelp(c.Name()) }
 
+// CompleteArgs provides colon-form completions for todo subcommands and the
+// numbered todos accepted by positional subcommands. Titles remain free text,
+// so add: intentionally has no second-level suggestions.
+func (c *TodoCommand) CompleteArgs(_ core.Context, prefix string) []core.ArgCompletion {
+	subcommands := []struct{ value, description string }{
+		{"list", "list todos"},
+		{"add:", "add a todo"},
+		{"edit:", "edit a todo"},
+		{"done:", "mark a todo done"},
+		{"undone:", "mark a todo pending"},
+		{"delete:", "delete a todo"},
+		{"rm:", "delete a todo (alias)"},
+	}
+	if !strings.Contains(prefix, ":") {
+		return filterTodoCompletions(prefix, subcommands)
+	}
+
+	parts := strings.SplitN(prefix, ":", 2)
+	if !isPositionalTodoSubcommand(parts[0]) || c.activeGoal() == nil {
+		return nil
+	}
+	base := parts[0] + ":"
+	var completions []core.ArgCompletion
+	for i, todo := range c.activeGoal().Todos {
+		value := fmt.Sprintf("%s%d", base, i+1)
+		if strings.HasPrefix(value, prefix) {
+			completions = append(completions, core.ArgCompletion{
+				Value: value, Description: todo.Title,
+			})
+		}
+	}
+	return completions
+}
+
+func isPositionalTodoSubcommand(subcommand string) bool {
+	_, ok := positionalSubs[subcommand]
+	return ok
+}
+
+func filterTodoCompletions(prefix string, candidates []struct{ value, description string }) []core.ArgCompletion {
+	completions := make([]core.ArgCompletion, 0, len(candidates))
+	for _, candidate := range candidates {
+		if strings.HasPrefix(candidate.value, prefix) {
+			completions = append(completions, core.ArgCompletion{
+				Value: candidate.value, Description: candidate.description,
+			})
+		}
+	}
+	return completions
+}
+
 // parsedTodoArgs is the parse result for /todo arguments.
 type parsedTodoArgs struct {
 	kind     string // list | add | add-interactive | edit | edit-interactive | done | undone | delete | error

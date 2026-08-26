@@ -202,11 +202,14 @@ func (pm *PTYManager) waitForOutputSilence(s *PTYSession, mark int, wait time.Du
 	deadline := time.Now().Add(wait)
 	const sendSilence = 500 * time.Millisecond
 	lastGrow := time.Now()
+	lastLen := mark
 	for {
-		if s.Buffer.Len() > mark {
+		currentLen := s.Buffer.Len()
+		if currentLen > lastLen {
+			lastLen = currentLen
 			lastGrow = time.Now()
 		}
-		if s.Buffer.Len() > mark && time.Since(lastGrow) >= sendSilence {
+		if currentLen > mark && time.Since(lastGrow) >= sendSilence {
 			return
 		}
 		if !s.IsRunning() {

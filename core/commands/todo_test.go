@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/tui"
 )
@@ -25,6 +26,35 @@ func newTodoTestCmd(t *testing.T) (*TodoCommand, *goal.GoalMode) {
 		}
 	}
 	return &TodoCommand{Mode: mode}, mode
+}
+
+// TestTodoCommand_CompleteArgs verifies subcommand and todo-position completion.
+func TestTodoCommand_CompleteArgs(t *testing.T) {
+	cmd, _ := newTodoTestCmd(t)
+	all := cmd.CompleteArgs(core.Context{}, "")
+	for _, want := range []string{"list", "add:", "edit:", "done:", "undone:", "delete:", "rm:"} {
+		found := false
+		for _, got := range all {
+			if got.Value == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("empty prefix missing %q: %v", want, all)
+		}
+	}
+	filtered := cmd.CompleteArgs(core.Context{}, "del")
+	if len(filtered) != 1 || filtered[0].Value != "delete:" {
+		t.Fatalf("delete prefix = %v, want delete:", filtered)
+	}
+	positions := cmd.CompleteArgs(core.Context{}, "delete:")
+	if len(positions) != 3 || positions[0].Value != "delete:1" || positions[1].Description != "second task" {
+		t.Fatalf("delete positions = %v, want numbered todos with descriptions", positions)
+	}
+	if got := cmd.CompleteArgs(core.Context{}, "add:"); len(got) != 0 {
+		t.Fatalf("add title completion = %v, want none", got)
+	}
 }
 
 // TestTodoCommand_Parse covers the positional colon forms (Issue 5).
