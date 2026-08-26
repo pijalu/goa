@@ -24,7 +24,6 @@ func (*SSHBashTool) Deferred() bool          { return true }
 func (*SessionSearchTool) Deferred() bool    { return true }
 func (*SessionEventReadTool) Deferred() bool { return true }
 func (*VerifyTool) Deferred() bool           { return true }
-func (*LSPTool) Deferred() bool              { return true }
 
 // Schedule tools (schedule_create/delete/list): rarely used — reminders are
 // created at most a few times per session — yet their schemas ship on every

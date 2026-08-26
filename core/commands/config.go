@@ -410,6 +410,8 @@ func retrySettingsLabel(cfg *config.Config) string {
 	return fmt.Sprintf("%d retries, 5m cap", maxRetries)
 }
 
+// settingRetrySettings shows the retry-settings sub-menu and dispatches the
+// selected entry through retrySettingHandlers.
 func (m *configMenu) settingRetrySettings() {
 	m.current = m.settingRetrySettings
 	cfg := m.ctx.Config
@@ -422,27 +424,49 @@ func (m *configMenu) settingRetrySettings() {
 			m.back()
 			return
 		}
-		switch selected {
-		case "retries":
-			m.ctx.ShowInput("Maximum retries:", fmt.Sprintf("%d", cfg.Execution.Retries), func(v string, accepted bool) {
-				if accepted && v != "" {
-					m.applySet("execution.retries", v)
-				}
-				m.settingRetrySettings()
-			})
-		case "provider_delay":
-			if cfg.ActiveProvider == "" {
-				m.flash("Select an active provider first.")
-				m.settingRetrySettings()
-				return
-			}
-			m.ctx.ShowInput("Provider retry cap (duration):", activeProviderRetryDelay(cfg), func(v string, accepted bool) {
-				if accepted && v != "" {
-					m.applySet("providers."+cfg.ActiveProvider+".max_retry_delay", v)
-				}
-				m.settingRetrySettings()
-			})
+		handler, ok := m.retrySettingHandlers()[selected]
+		if !ok {
+			return
 		}
+		handler(m)
+	})
+}
+
+// retrySettingHandlers maps retry-settings entries to their prompt handlers.
+func (m *configMenu) retrySettingHandlers() map[string]func(*configMenu) {
+	return map[string]func(*configMenu){
+		"retries":        (*configMenu).promptMaxRetries,
+		"provider_delay": (*configMenu).promptProviderRetryDelay,
+	}
+}
+
+// promptMaxRetries asks for the execution.retries value, then returns to the
+// retry-settings menu.
+func (m *configMenu) promptMaxRetries() {
+	m.current = m.settingRetrySettings
+	m.ctx.ShowInput("Maximum retries:", fmt.Sprintf("%d", m.ctx.Config.Execution.Retries), func(v string, accepted bool) {
+		if accepted && v != "" {
+			m.applySet("execution.retries", v)
+		}
+		m.settingRetrySettings()
+	})
+}
+
+// promptProviderRetryDelay asks for the active provider's max_retry_delay
+// value, then returns to the retry-settings menu.
+func (m *configMenu) promptProviderRetryDelay() {
+	cfg := m.ctx.Config
+	if cfg.ActiveProvider == "" {
+		m.flash("Select an active provider first.")
+		m.settingRetrySettings()
+		return
+	}
+	m.current = m.settingRetrySettings
+	m.ctx.ShowInput("Provider retry cap (duration):", activeProviderRetryDelay(cfg), func(v string, accepted bool) {
+		if accepted && v != "" {
+			m.applySet("providers."+cfg.ActiveProvider+".max_retry_delay", v)
+		}
+		m.settingRetrySettings()
 	})
 }
 

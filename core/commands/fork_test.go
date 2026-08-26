@@ -192,6 +192,14 @@ func TestForkAtTurn_TruncatesHistory(t *testing.T) {
 		t.Fatalf("forkAtTurn: %v", err)
 	}
 
+	assertForkedHistory(t, agent, events, cut)
+	assertForkSessionIdentity(t, store, agent, "src", len(events))
+}
+
+// assertForkedHistory checks the agent history equals EventsToHistory of the
+// truncated event prefix and ends with the pre-cut answer.
+func assertForkedHistory(t *testing.T, agent *agentic.Agent, events []agentic.OutputEvent, cut int) {
+	t.Helper()
 	want := agentic.EventsToHistory(events[:cut])
 	got := agent.GetHistory()
 	if len(got) != len(want) {
@@ -203,27 +211,33 @@ func TestForkAtTurn_TruncatesHistory(t *testing.T) {
 		}
 	}
 	if len(got) == 0 || got[len(got)-1].Content != "first answer" {
-		t.Errorf("last history message = %+v, want 'first answer'", got[len(got)-1])
+		t.Errorf("last history message = %+v, want 'first answer'", got)
 	}
+}
 
-	// Store writer switched to a derived fork ID, not the source.
+// assertForkSessionIdentity checks the store writer switched to a derived fork
+// ID (never the source ID), the agent stream options carry that derived ID for
+// persistence identity, and the source session events are untouched.
+func assertForkSessionIdentity(t *testing.T, store *fakeSessionStore, agent *agentic.Agent, srcID string, srcEvents int) {
+	t.Helper()
 	started := store.StartedID()
 	if started == "" {
 		t.Fatal("StartSessionWithID not called")
 	}
-	if started == "src" {
+	if started == srcID {
 		t.Error("fork session ID = source ID; want a fresh derived ID")
 	}
-	if !strings.HasPrefix(started, "src_fork_") {
-		t.Errorf("fork session ID = %q, want prefix src_fork_", started)
+	wantPrefix := srcID + "_fork_"
+	if !strings.HasPrefix(started, wantPrefix) {
+		t.Errorf("fork session ID = %q, want prefix %s", started, wantPrefix)
 	}
 	// Agent stream options carry the fork ID for persistence identity.
 	if sid := agent.StreamOptions().SessionID; sid != started {
 		t.Errorf("agent SessionID = %q, want %q", sid, started)
 	}
 	// Source events map untouched.
-	if len(store.events["src"]) != len(events) {
-		t.Errorf("source events mutated: %d, want %d", len(store.events["src"]), len(events))
+	if len(store.events[srcID]) != srcEvents {
+		t.Errorf("source events mutated: %d, want %d", len(store.events[srcID]), srcEvents)
 	}
 }
 

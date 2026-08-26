@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,17 @@ func TestSessionListAndLoad(t *testing.T) {
 	}
 }
 
+// findCompactEvent returns the first compact event in the loaded session log,
+// or nil when none was written.
+func findCompactEvent(events []agentic.OutputEvent) *agentic.OutputEvent {
+	for i := range events {
+		if events[i].Type == agentic.EventCompact {
+			return &events[i]
+		}
+	}
+	return nil
+}
+
 // TestSessionCompactEventRoundTrip verifies an EventCompact carrying the
 // structured CompactionInfo payload survives the JSONL write/read round-trip,
 // so the session log documents compressions ("context compressions
@@ -131,17 +143,14 @@ func TestSessionCompactEventRoundTrip(t *testing.T) {
 	// compact event (no user/assistant turn) is hidden from listings as an
 	// empty transcript, so seed one user message first.
 	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "hi"})
-	ss.WriteEvent(agentic.OutputEvent{
-		Type: agentic.EventCompact,
-		Text: "ceiling",
-		Compaction: &agentic.CompactionInfo{
-			Strategy:    "ceiling",
-			BeforePct:   95,
-			AfterPct:    43,
-			FreedTokens: 105689,
-			Removed:     238,
-		},
-	})
+	wantCompaction := &agentic.CompactionInfo{
+		Strategy:    "ceiling",
+		BeforePct:   95,
+		AfterPct:    43,
+		FreedTokens: 105689,
+		Removed:     238,
+	}
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventCompact, Text: "ceiling", Compaction: wantCompaction})
 	if err := ss.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -157,22 +166,16 @@ func TestSessionCompactEventRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	var got *agentic.OutputEvent
-	for i := range events {
-		if events[i].Type == agentic.EventCompact {
-			got = &events[i]
-			break
-		}
-	}
+	got := findCompactEvent(events)
 	if got == nil {
 		t.Fatal("no compact event found after round-trip")
 	}
 	if got.Compaction == nil {
 		t.Fatal("Compaction payload did not survive the JSONL round-trip")
 	}
-	if got.Compaction.Strategy != "ceiling" || got.Compaction.BeforePct != 95 ||
-		got.Compaction.AfterPct != 43 || got.Compaction.FreedTokens != 105689 ||
-		got.Compaction.Removed != 238 {
+	// The structured payload must survive byte-for-byte semantics, not just
+	// the free-text summary.
+	if !reflect.DeepEqual(got.Compaction, wantCompaction) {
 		t.Errorf("Compaction = %+v, want ceiling 95→43 freed=105689 removed=238", got.Compaction)
 	}
 }

@@ -10,6 +10,9 @@ Primary usage — search/replace (recommended):
   {"path": "file.go", "old_string": "text to find", "new_string": "replacement text"}
   Uses 3-tier matching: exact → trailing whitespace → fuzzy whitespace + reindent.
   old_string must match a contiguous block of one or more lines in the file.
+  new_string must be non-empty: an empty replacement is rejected instead of
+  silently deleting the matched block. To remove lines deliberately, use
+  operation 'delete_lines' with start_line/end_line.
 
 Operation alias:
   {"path": "file.go", "operation": "replace", "old_string": "text to find", "new_string": "replacement text"}
@@ -39,4 +42,9 @@ Troubleshooting search/replace errors:
   • invalid_range: start_line/end_line are out of bounds. Use 'read' to confirm the file
     length before editing.
   • missing_parameter: when using operation: 'replace', both old_string and new_string
-    are required. Provide the text to find and its replacement.
+    are required, and new_string must be non-empty — an empty replacement would delete
+    the matched block, so it is refused (all-or-nothing). Provide the replacement text,
+    or use 'delete_lines' for deliberate removal.
+  • missing_parameter: operation 'replace_pattern' requires 'new_content' (or
+    'new_string') with the replacement text; without it the edit fails up-front and the
+    file is untouched.

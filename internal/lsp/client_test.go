@@ -203,17 +203,26 @@ func serveOneInitializeResponse(serverIn io.Reader, serverOut io.Writer, resultJ
 	fmt.Fprintf(serverOut, "Content-Length: %d\r\n\r\n%s", len(resultJSON), resultJSON)
 }
 
+// newPipedClient wires a client to a fake server through paired pipes. The
+// returned reader/writer are the server side of the channel; closing is bound
+// to the test lifetime.
+func newPipedClient(t *testing.T) (*Client, io.Reader, io.Writer) {
+	t.Helper()
+	serverIn, clientOut := io.Pipe()
+	clientIn, serverOut := io.Pipe()
+	client := NewClient(&fakeConn{Reader: clientIn, Writer: clientOut})
+	t.Cleanup(func() { _ = client.Close() })
+	go client.ReadNotifications(context.Background())
+	return client, serverIn, serverOut
+}
+
 // TestClient_Initialize_ObjectProviderCapabilities reproduces pyright's
 // initialize response: provider flags arrive as OBJECTS
 // ({"workDoneProgress":true}), which the LSP spec allows
 // (boolean | ProviderOptions). The strict-bool unmarshal used to fail the
 // whole handshake, breaking pyright spawns (Issue LSP).
 func TestClient_Initialize_ObjectProviderCapabilities(t *testing.T) {
-	serverIn, clientOut := io.Pipe()
-	clientIn, serverOut := io.Pipe()
-	client := NewClient(&fakeConn{Reader: clientIn, Writer: clientOut})
-	defer client.Close()
-	go client.ReadNotifications(context.Background())
+	client, serverIn, serverOut := newPipedClient(t)
 
 	go serveOneInitializeResponse(serverIn, serverOut,
 		`{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":{"workDoneProgress":true},"hoverProvider":true}}}`)
@@ -230,21 +239,41 @@ func TestClient_Initialize_ObjectProviderCapabilities(t *testing.T) {
 }
 
 func TestClient_NavigationRequests(t *testing.T) {
-	serverIn, clientOut := io.Pipe()
-	clientIn, serverOut := io.Pipe()
-	client := NewClient(&fakeConn{Reader: clientIn, Writer: clientOut})
-	defer client.Close()
-	go client.ReadNotifications(context.Background())
+	client, serverIn, serverOut := newPipedClient(t)
 	go serveNavigationResponses(serverIn, serverOut)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	pos := TextDocumentPositionParams{TextDocument: TextDocumentIdentifier{URI: "file:///main.js"}, Position: Position{Line: 1, Character: 1}}
+
+	pos := navigationPosition()
+	checkNavigationBasics(t, ctx, client, pos)
+	checkCallHierarchyRoundtrip(t, ctx, client, pos)
+}
+
+// navigationPosition is the shared cursor position used by the navigation
+// round-trips against file:///main.js.
+func navigationPosition() TextDocumentPositionParams {
+	return TextDocumentPositionParams{
+		TextDocument: TextDocumentIdentifier{URI: "file:///main.js"},
+		Position:     Position{Line: 1, Character: 1},
+	}
+}
+
+// checkNavigationBasics exercises implementation lookup and workspace symbol
+// queries against the canned single-item responses.
+func checkNavigationBasics(t *testing.T, ctx context.Context, client *Client, pos TextDocumentPositionParams) {
+	t.Helper()
 	if got, err := client.Implementation(ctx, pos); err != nil || len(got) != 1 {
 		t.Fatalf("implementation: %v %#v", err, got)
 	}
 	if got, err := client.WorkspaceSymbol(ctx, WorkspaceSymbolParams{Query: "Thing"}); err != nil || len(got) != 1 || got[0].Name != "Thing" {
 		t.Fatalf("workspace symbol: %v %#v", err, got)
 	}
+}
+
+// checkCallHierarchyRoundtrip prepares a hierarchy item from pos, then
+// resolves its incoming ("caller") and outgoing ("callee") calls.
+func checkCallHierarchyRoundtrip(t *testing.T, ctx context.Context, client *Client, pos TextDocumentPositionParams) {
+	t.Helper()
 	items, err := client.PrepareCallHierarchy(ctx, CallHierarchyPrepareParams{TextDocumentPositionParams: pos})
 	if err != nil || len(items) != 1 {
 		t.Fatalf("prepare hierarchy: %v %#v", err, items)

@@ -7,6 +7,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -170,13 +171,31 @@ func reportCompression(ctx core.Context, strategy string, before, after *agentic
 	if saved > 0 {
 		ctx.Writef("Context compressed (%s): %d → %d tokens (freed %d) in %.2fs\n",
 			label, before.EstimatedTokens, after.EstimatedTokens, saved, elapsed.Seconds())
-		ctx.Writef("  Usage: %d%% → %d%% of %d context window  Messages: %d → %d\n",
-			before.UsagePercent, after.UsagePercent, after.MaxTokens, before.Messages, after.Messages)
+		ctx.Writef("  Usage: %s%% → %s%% of %d context window  Messages: %d → %d\n",
+			pctOf(before.EstimatedTokens, before.MaxTokens), pctOf(after.EstimatedTokens, after.MaxTokens),
+			after.MaxTokens, before.Messages, after.Messages)
 		return
 	}
 
 	// Even when no tokens were freed, name the strategy so the user knows
 	// the command actually ran (e.g. micro compaction had nothing to trim).
-	ctx.Writef("Context compression (%s) applied: %d tokens, %d%% usage (nothing to trim) in %.2fs  Messages: %d\n",
-		label, after.EstimatedTokens, after.UsagePercent, elapsed.Seconds(), after.Messages)
+	ctx.Writef("Context compression (%s) applied: %d tokens, %s%% usage (nothing to trim) in %.2fs  Messages: %d\n",
+		label, after.EstimatedTokens, pctOf(after.EstimatedTokens, after.MaxTokens), elapsed.Seconds(), after.Messages)
+}
+
+// pctOf renders estimated tokens as a percentage of the context window.
+//
+// The report deliberately derives percentages from EstimatedTokens — the same
+// series as the token counts on the line above — instead of ContextStats.UsagePercent.
+// UsagePercent reads the PROJECTED next-request occupancy, which is anchored at
+// the last provider-reported prompt size; any history-shrinking strategy calls
+// invalidateContextUsageLocked, dropping that anchor mid-report so the after-%
+// falls back to the raw heuristic while the before-% was still provider-anchored.
+// Mixing the two bases produced self-contradictory reports ("freed 153362 tokens"
+// yet "Usage: 35% → 51%") even though both token counts came from one estimator.
+func pctOf(tokens, max int) string {
+	if max <= 0 {
+		return "?"
+	}
+	return strconv.Itoa(tokens * 100 / max)
 }

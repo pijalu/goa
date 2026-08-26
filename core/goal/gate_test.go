@@ -80,8 +80,14 @@ func completeEvidence() GoalReasonInput {
 
 func TestRequestComplete_VerifyChallengesThenCloses(t *testing.T) {
 	m := gatedMode(t, DoneGateVerify)
+	assertVerifyChallenge(t, m)
+	assertEvidenceClosesGoal(t, m)
+}
 
-	// First model complete: challenged, goal stays active.
+// assertVerifyChallenge pins the first model complete in verify mode: it must
+// be challenged, leave the goal active, and a reason-less retry must fail.
+func assertVerifyChallenge(t *testing.T, m *GoalMode) {
+	t.Helper()
 	res, err := m.RequestComplete(context.Background(), GoalReasonInput{}, GoalActorModel)
 	if err != nil {
 		t.Fatal(err)
@@ -92,17 +98,19 @@ func TestRequestComplete_VerifyChallengesThenCloses(t *testing.T) {
 	if res.Snapshot == nil || res.Snapshot.Status != GoalActive {
 		t.Fatalf("goal must stay active after challenge, got %+v", res.Snapshot)
 	}
-	if got := m.GetActiveGoal(); got == nil {
+	if m.GetActiveGoal() == nil {
 		t.Fatal("goal was cleared despite pending verification")
 	}
-
-	// Second complete without evidence: rejected.
 	if _, err := m.RequestComplete(context.Background(), GoalReasonInput{}, GoalActorModel); err == nil {
 		t.Fatal("second complete without reason must fail")
 	}
+}
 
-	// Second complete with evidence: closes.
-	res, err = m.RequestComplete(context.Background(), completeEvidence(), GoalActorModel)
+// assertEvidenceClosesGoal completes with evidence and verifies the goal is
+// closed with the evidence recorded as terminal reason.
+func assertEvidenceClosesGoal(t *testing.T, m *GoalMode) {
+	t.Helper()
+	res, err := m.RequestComplete(context.Background(), completeEvidence(), GoalActorModel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,15 +366,7 @@ func TestRequestComplete_EscalationAutoBlocks(t *testing.T) {
 	m.SetMaxVerifyFailures(2)
 	verifier := &fakeVerifier{ok: false, output: "still failing"}
 	m.SetVerifier(verifier, true)
-	cmd := "go test ./..."
-	if _, err := m.CreateGoal(CreateGoalInput{
-		Objective:           "make the build green",
-		CompletionCriterion: ptrString("go test ./... passes"),
-		VerifyCommand:       &cmd,
-		Replace:             true,
-	}, GoalActorUser); err != nil {
-		t.Fatal(err)
-	}
+	createVerifyGoal(t, m, "make the build green", "go test ./... passes")
 
 	res, err := m.RequestComplete(context.Background(), completeEvidence(), GoalActorModel)
 	if err != nil || res.Outcome != CompleteVerifyFailed || res.Failure.Escalated {
@@ -379,6 +379,28 @@ func TestRequestComplete_EscalationAutoBlocks(t *testing.T) {
 	if res.Outcome != CompleteVerifyFailed || !res.Failure.Escalated {
 		t.Fatalf("second failure must escalate, got %v %+v", res.Outcome, res.Failure)
 	}
+	assertAutoBlocked(t, res)
+}
+
+// createVerifyGoal seeds a goal with criterion + verify command for the gate
+// tests; failures here abort the test immediately.
+func createVerifyGoal(t *testing.T, m *GoalMode, objective, criterion string) {
+	t.Helper()
+	crit, cmd := criterion, "go test ./..."
+	if _, err := m.CreateGoal(CreateGoalInput{
+		Objective:           objective,
+		CompletionCriterion: &crit,
+		VerifyCommand:       &cmd,
+		Replace:             true,
+	}, GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertAutoBlocked pins the escalation side effects: blocked status with a
+// user-review expectation surfaced in snapshot and failure message.
+func assertAutoBlocked(t *testing.T, res CompleteResult) {
+	t.Helper()
 	if res.Snapshot == nil || res.Snapshot.Status != GoalBlocked {
 		t.Fatalf("escalation must auto-block, got %+v", res.Snapshot)
 	}

@@ -27,8 +27,14 @@ func TestAnnotationsSummary_Basic(t *testing.T) {
 	}
 
 	summary := AnnotationsSummary(p)
+	assertAnnotationsHeader(t, summary)
+	assertOpenCommentsSection(t, summary)
+	assertResolvedCommentsSection(t, summary)
+}
 
-	// Check header
+// assertAnnotationsHeader checks title, objective, revision and open count.
+func assertAnnotationsHeader(t *testing.T, summary string) {
+	t.Helper()
 	if !strings.Contains(summary, "# Plan Annotations") {
 		t.Error("missing header")
 	}
@@ -41,30 +47,32 @@ func TestAnnotationsSummary_Basic(t *testing.T) {
 	if !strings.Contains(summary, "**Open comments:** 2") {
 		t.Errorf("missing open comment count, got:\n%s", summary)
 	}
+}
 
-	// Check open comments section
+// assertOpenCommentsSection checks item-grouped open comments with the
+// ≤5-word title excerpt and both open bodies.
+func assertOpenCommentsSection(t *testing.T, summary string) {
+	t.Helper()
 	if !strings.Contains(summary, "## Open Comments") {
 		t.Error("missing open comments section")
 	}
-
-	// Check item grouping with title excerpt (≤5 words)
+	// item-2 only has a resolved comment so it must not appear in open
+	// comments — but the resolved section may legitimately mention "on item-2".
 	if !strings.Contains(summary, "Setup database schema and") {
 		t.Errorf("expected item-1 title excerpt, got:\n%s", summary)
 	}
-	// item-2 only has a resolved comment, so it should not appear in open comments.
-	if strings.Contains(summary, "item-2") {
-		// but the resolved section mentions "on item-2", so this is fine.
-	}
-
-	// Check open comment content
 	if !strings.Contains(summary, "Should we use an ORM?") {
 		t.Error("missing open comment content")
 	}
 	if !strings.Contains(summary, "Add indexes") {
 		t.Error("missing second open comment content")
 	}
+}
 
-	// Check resolved comments section (current revision only)
+// assertResolvedCommentsSection checks current-revision filtering: c-3 shows,
+// c-4 (older revision) does not.
+func assertResolvedCommentsSection(t *testing.T, summary string) {
+	t.Helper()
 	if !strings.Contains(summary, "## Resolved Comments (current revision)") {
 		t.Error("missing resolved comments section")
 	}

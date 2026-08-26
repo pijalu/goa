@@ -179,6 +179,65 @@ func assertHistoryEqual(t *testing.T, want, got []Message) {
 	}
 }
 
+// userMessages projects a history snapshot onto its user-role messages.
+func userMessages(hist []Message) []Message {
+	var out []Message
+	for _, m := range hist {
+		if m.Role == User {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// assertSingleUserMessage requires exactly one user message with the given
+// content in the history snapshot.
+func assertSingleUserMessage(t *testing.T, hist []Message, wantContent string) {
+	t.Helper()
+	msgs := userMessages(hist)
+	if len(msgs) != 1 || msgs[0].Content != wantContent {
+		t.Fatalf("user messages = %+v, want exactly one with content %q", msgs, wantContent)
+	}
+}
+
+// assertAppendOnlySystemRemnant enforces the append-only invariant for denied
+// inputs: nothing may exist beyond the initial system prompt.
+func assertAppendOnlySystemRemnant(t *testing.T, hist []Message) {
+	t.Helper()
+	if len(hist) != 1 || hist[0].Role != System {
+		t.Fatalf("denied input must leave no trace beyond the system prompt, got %+v", hist)
+	}
+}
+
+// hasSystemEventContaining reports whether any system-role content event
+// carries substr.
+func hasSystemEventContaining(events []OutputEvent, substr string) bool {
+	for _, ev := range events {
+		if ev.Type == EventContent && ev.Role == System && strings.Contains(ev.Text, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// assertSystemEventPresent fails unless a system-role content event carrying
+// substr was observed.
+func assertSystemEventPresent(t *testing.T, events []OutputEvent, substr string) {
+	t.Helper()
+	if !hasSystemEventContaining(events, substr) {
+		t.Fatalf("expected system event containing %q, got %+v", substr, events)
+	}
+}
+
+// assertPayloadField compares one entry of an intercept/notify payload against
+// the expected value.
+func assertPayloadField(t *testing.T, payload map[string]any, key string, want any) {
+	t.Helper()
+	if got := payload[key]; got != want {
+		t.Errorf("payload[%s] = %v, want %v", key, got, want)
+	}
+}
+
 // TestPluginHooks_NilSinkUnchanged is the zero-behavior-change gate: for each
 // seam scenario, wiring NO sink must produce identical emitted events and
 // final history to wiring an all-Pass sink. Identical outputs prove the seams
@@ -318,43 +377,37 @@ func TestPluginHooks_MessagePreSend_Decisions(t *testing.T) {
 				t.Fatalf("run: %v", err)
 			}
 
-			hist := snapshotHistory(a)
-			var userMsgs []Message
-			for _, m := range hist {
-				if m.Role == User {
-					userMsgs = append(userMsgs, m)
-				}
-			}
-			if tc.wantNoUser {
-				// Append-only invariant: only the system prompt may exist.
-				if len(hist) != 1 || hist[0].Role != System {
-					t.Fatalf("denied input must leave no trace beyond the system prompt, got %+v", hist)
-				}
-				found := false
-				for _, ev := range obs.Events() {
-					if ev.Type == EventContent && ev.Role == System && strings.Contains(ev.Text, tc.wantRejection) {
-						found = true
-					}
-				}
-				if !found {
-					t.Fatalf("expected rejection event containing %q, got %+v", tc.wantRejection, obs.Events())
-				}
-			} else if len(userMsgs) != 1 || userMsgs[0].Content != tc.wantUser {
-				t.Fatalf("user messages = %+v, want exactly one with content %q", userMsgs, tc.wantUser)
-			}
-
-			calls := sink.interceptCallsFor(HookMessagePreSend)
-			if len(calls) != 1 {
-				t.Fatalf("expected exactly 1 pre-send intercept, got %d", len(calls))
-			}
-			if calls[0].payload["text"] != "original" {
-				t.Errorf("payload text = %v, want original", calls[0].payload["text"])
-			}
-			if calls[0].payload["role"] != "user" {
-				t.Errorf("payload role = %v, want user", calls[0].payload["role"])
-			}
+			assertMessagePreSendOutcome(t, tc.wantNoUser, tc.wantUser, tc.wantRejection,
+				snapshotHistory(a), obs.Events())
+			assertSinglePreSendIntercept(t, sink.interceptCallsFor(HookMessagePreSend))
 		})
 	}
+}
+
+// assertMessagePreSendOutcome pins the post-run contract of one pre-send
+// decision: denial leaves only the system prompt plus a rejection event;
+// pass/modification leaves exactly one user message carrying the effective
+// text.
+func assertMessagePreSendOutcome(t *testing.T, denied bool, wantUser, wantRejection string, hist []Message, events []OutputEvent) {
+	t.Helper()
+	if !denied {
+		assertSingleUserMessage(t, hist, wantUser)
+		return
+	}
+	assertAppendOnlySystemRemnant(t, hist)
+	assertSystemEventPresent(t, events, wantRejection)
+}
+
+// assertSinglePreSendIntercept requires exactly one pre-send intercept whose
+// payload exposes the ORIGINAL input text and role (the pre-modification view
+// plugins must observe).
+func assertSinglePreSendIntercept(t *testing.T, calls []hookCall) {
+	t.Helper()
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 pre-send intercept, got %d", len(calls))
+	}
+	assertPayloadField(t, calls[0].payload, "text", "original")
+	assertPayloadField(t, calls[0].payload, "role", "user")
 }
 
 // gatedDenySink denies the first intercept (blocking until released), then
@@ -461,69 +514,78 @@ func (t *recordingTool) inputs() []string {
 // TestPluginHooks_ToolCallPre_Decisions covers tool-call:pre: denial vetoes
 // before the tool runs (shell-veto style so the model sees the reason), and
 // modification rewrites the input the tool receives.
+// TestPluginHooks_ToolCallPre_Decisions covers tool-call:pre: denial vetoes
+// before the tool runs (shell-veto style so the model sees the reason), and
+// modification rewrites the input the tool receives.
 func TestPluginHooks_ToolCallPre_Decisions(t *testing.T) {
-	t.Run("denied_before_execution", func(t *testing.T) {
-		tool := &recordingTool{}
-		sink := newRecordingSink(map[HookPoint]hookAction{
-			HookToolCallPre: {decision: HookDenied, reason: "aws forbidden"},
-		})
-		a := NewAgent(Config{Tools: []Tool{tool}, Logger: NewLogger(Error), PluginHookSink: sink})
+	t.Run("denied_before_execution", testToolCallPreDeniedBeforeExecution)
+	t.Run("modified_before_shell_hooks", testToolCallPreModifiedBeforeShellHooks)
+}
 
-		res, err := a.executeToolWithResult(context.Background(), "recording", `{}`, "c1")
-		if err == nil {
-			t.Fatal("expected veto error")
-		}
-		if !strings.Contains(err.Error(), `tool "recording" blocked by plugin hook: aws forbidden`) {
-			t.Fatalf("veto error mismatched: %v", err)
-		}
-		if !strings.Contains(res.Output, "aws forbidden") {
-			t.Fatalf("veto output must carry the reason for the model, got %q", res.Output)
-		}
-		if len(tool.inputs()) != 0 {
-			t.Fatal("tool must NOT execute after a plugin denial")
-		}
+// testToolCallPreDeniedBeforeExecution verifies a plugin denial vetoes the
+// call upstream of execution and surfaces the reason to the model.
+func testToolCallPreDeniedBeforeExecution(t *testing.T) {
+	tool := &recordingTool{}
+	sink := newRecordingSink(map[HookPoint]hookAction{
+		HookToolCallPre: {decision: HookDenied, reason: "aws forbidden"},
+	})
+	a := NewAgent(Config{Tools: []Tool{tool}, Logger: NewLogger(Error), PluginHookSink: sink})
+
+	res, err := a.executeToolWithResult(context.Background(), "recording", `{}`, "c1")
+	if err == nil {
+		t.Fatal("expected veto error")
+	}
+	if !strings.Contains(err.Error(), `tool "recording" blocked by plugin hook: aws forbidden`) {
+		t.Fatalf("veto error mismatched: %v", err)
+	}
+	if !strings.Contains(res.Output, "aws forbidden") {
+		t.Fatalf("veto output must carry the reason for the model, got %q", res.Output)
+	}
+	if len(tool.inputs()) != 0 {
+		t.Fatal("tool must NOT execute after a plugin denial")
+	}
+}
+
+// testToolCallPreModifiedBeforeShellHooks is the behavioral ordering proof:
+// the shell veto rejects any input still carrying the secret. The plugin seam
+// rewrites BEFORE the shell hook runs, so the shell sees only redacted JSON
+// and lets the call pass — exactly the documented reason plugin-pre sits
+// upstream of shell.
+func testToolCallPreModifiedBeforeShellHooks(t *testing.T) {
+	tool := &recordingTool{}
+	vetoIfSecret := hooks.NewEngine(
+		&hooks.Config{Hooks: []hooks.Hook{{
+			Event:          hooks.EventBeforeTool,
+			Command:        "sh",
+			Args:           []string{"-c", "grep -q AKIA && exit 1 || exit 0"},
+			TimeoutSeconds: 5,
+		}}},
+		nil,
+	)
+	sink := newRecordingSink(map[HookPoint]hookAction{
+		HookToolCallPre: {decision: HookModified, result: map[string]any{"input": `{"redacted":true}`}},
+	})
+	a := NewAgent(Config{
+		Tools:          []Tool{tool},
+		HookEngine:     vetoIfSecret,
+		Logger:         NewLogger(Error),
+		PluginHookSink: sink,
 	})
 
-	t.Run("modified_before_shell_hooks", func(t *testing.T) {
-		tool := &recordingTool{}
-		// Behavioral ordering proof: the shell veto rejects any input still
-		// carrying the secret. The plugin seam rewrites BEFORE the shell hook
-		// runs, so the shell sees only redacted JSON and lets the call pass —
-		// exactly the documented reason plugin-pre sits upstream of shell.
-		vetoIfSecret := hooks.NewEngine(
-			&hooks.Config{Hooks: []hooks.Hook{{
-				Event:          hooks.EventBeforeTool,
-				Command:        "sh",
-				Args:           []string{"-c", "grep -q AKIA && exit 1 || exit 0"},
-				TimeoutSeconds: 5,
-			}}},
-			nil,
-		)
-		sink := newRecordingSink(map[HookPoint]hookAction{
-			HookToolCallPre: {decision: HookModified, result: map[string]any{"input": `{"redacted":true}`}},
-		})
-		a := NewAgent(Config{
-			Tools:          []Tool{tool},
-			HookEngine:     vetoIfSecret,
-			Logger:         NewLogger(Error),
-			PluginHookSink: sink,
-		})
-
-		if _, err := a.executeToolWithResult(context.Background(), "recording", `{"secret":"AKIA1234"}`, "c1"); err != nil {
-			t.Fatalf("exec after redaction must pass the shell veto: %v", err)
-		}
-		got := tool.inputs()
-		if len(got) != 1 || got[0] != `{"redacted":true}` {
-			t.Fatalf("tool saw %v, want mutated input", got)
-		}
-		pre := sink.interceptCallsFor(HookToolCallPre)
-		if len(pre) != 1 || pre[0].payload["input"] != `{"secret":"AKIA1234"}` {
-			t.Fatalf("pre payload mismatch: %+v", pre)
-		}
-		if len(vetoIfSecret.Store().Entries()) == 0 {
-			t.Fatal("shell hook engine should have audited the call")
-		}
-	})
+	if _, err := a.executeToolWithResult(context.Background(), "recording", `{"secret":"AKIA1234"}`, "c1"); err != nil {
+		t.Fatalf("exec after redaction must pass the shell veto: %v", err)
+	}
+	got := tool.inputs()
+	if len(got) != 1 || got[0] != `{"redacted":true}` {
+		t.Fatalf("tool saw %v, want mutated input", got)
+	}
+	pre := sink.interceptCallsFor(HookToolCallPre)
+	if len(pre) != 1 || pre[0].payload["input"] != `{"secret":"AKIA1234"}` {
+		t.Fatalf("pre payload mismatch: %+v", pre)
+	}
+	if len(vetoIfSecret.Store().Entries()) == 0 {
+		t.Fatal("shell hook engine should have audited the call")
+	}
 }
 
 // TestPluginHooks_ToolCallPost_ModifiedBeforeAppend pins the ordering anchor:
@@ -715,67 +777,64 @@ func TestPluginHooks_ReplyPre_ModifiedAndDenied(t *testing.T) {
 // one notification per failure episode, notify-mode only, carrying error /
 // model / classified / will_retry (+ next_delay_ms when retrying).
 func TestPluginHooks_LLMError_NotifyPayloads(t *testing.T) {
-	t.Run("retryable_transport", func(t *testing.T) {
-		p := registerFlakyStartProvider(1, errors.New("connection reset by peer"), []provider.AssistantMessageEvent{
-			{Type: provider.EventTextStart, ContentIndex: 0},
-			{Type: provider.EventTextDelta, ContentIndex: 0, Delta: "recovered"},
-			{Type: provider.EventTextEnd, ContentIndex: 0},
-		})
-		sink := newRecordingSink(nil)
-		a := hookAgent(t, p, sink)
-		if err := runHookAgent(t, a, "hi"); err != nil {
-			t.Fatalf("run: %v", err)
-		}
+	t.Run("retryable_transport", testLLMErrorNotifyRetryableTransport)
+	t.Run("non_retryable", testLLMErrorNotifyNonRetryable)
+}
 
-		calls := sink.notifyCallsFor(HookLLMError)
-		if len(calls) != 1 {
-			t.Fatalf("expected exactly 1 llm:error notify per episode, got %d", len(calls))
-		}
-		if intercepts := sink.interceptCallsFor(HookLLMError); len(intercepts) != 0 {
-			t.Fatal("llm:error is notify-only in v1; no intercept call expected")
-		}
-		payload := calls[0].payload
-		if payload["error"] != "connection reset by peer" {
-			t.Errorf("error = %v", payload["error"])
-		}
-		if payload["model"] != "test-model" {
-			t.Errorf("model = %v, want test-model", payload["model"])
-		}
-		if payload["will_retry"] != true {
-			t.Errorf("will_retry = %v, want true", payload["will_retry"])
-		}
-		if payload["classified"] != "transport" {
-			t.Errorf("classified = %v, want transport", payload["classified"])
-		}
-		delay, ok := payload["next_delay_ms"].(int64)
-		if !ok || delay < 0 {
-			t.Errorf("next_delay_ms missing or invalid: %v", payload["next_delay_ms"])
-		}
-		if _, ok := payload["attempt"]; !ok {
-			t.Error("attempt field missing from llm:error payload")
-		}
+// testLLMErrorNotifyRetryableTransport runs one recovered transport failure
+// and validates the full retrying-episode payload.
+func testLLMErrorNotifyRetryableTransport(t *testing.T) {
+	p := registerFlakyStartProvider(1, errors.New("connection reset by peer"), []provider.AssistantMessageEvent{
+		{Type: provider.EventTextStart, ContentIndex: 0},
+		{Type: provider.EventTextDelta, ContentIndex: 0, Delta: "recovered"},
+		{Type: provider.EventTextEnd, ContentIndex: 0},
 	})
+	sink := newRecordingSink(nil)
+	a := hookAgent(t, p, sink)
+	if err := runHookAgent(t, a, "hi"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
 
-	t.Run("non_retryable", func(t *testing.T) {
-		p := registerFlakyStartProvider(5, errors.New("400 invalid request: bad parameter"), nil)
-		sink := newRecordingSink(nil)
-		a := hookAgent(t, p, sink)
-		if err := runHookAgent(t, a, "hi"); err == nil {
-			t.Fatal("expected non-retryable failure to surface")
-		}
+	calls := sink.notifyCallsFor(HookLLMError)
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 llm:error notify per episode, got %d", len(calls))
+	}
+	if intercepts := sink.interceptCallsFor(HookLLMError); len(intercepts) != 0 {
+		t.Fatal("llm:error is notify-only in v1; no intercept call expected")
+	}
+	payload := calls[0].payload
+	assertPayloadField(t, payload, "error", "connection reset by peer")
+	assertPayloadField(t, payload, "model", "test-model")
+	assertPayloadField(t, payload, "will_retry", true)
+	assertPayloadField(t, payload, "classified", "transport")
+	delay, ok := payload["next_delay_ms"].(int64)
+	if !ok || delay < 0 {
+		t.Errorf("next_delay_ms missing or invalid: %v", payload["next_delay_ms"])
+	}
+	if _, ok := payload["attempt"]; !ok {
+		t.Error("attempt field missing from llm:error payload")
+	}
+}
 
-		calls := sink.notifyCallsFor(HookLLMError)
-		if len(calls) != 1 {
-			t.Fatalf("expected exactly 1 llm:error notify, got %d", len(calls))
-		}
-		payload := calls[0].payload
-		if payload["will_retry"] != false {
-			t.Errorf("will_retry = %v, want false", payload["will_retry"])
-		}
-		if _, ok := payload["next_delay_ms"]; ok {
-			t.Error("next_delay_ms must be absent when not retrying")
-		}
-	})
+// testLLMErrorNotifyNonRetryable runs a fatal 400-style failure and validates
+// the terminal-episode payload (no retry fields).
+func testLLMErrorNotifyNonRetryable(t *testing.T) {
+	p := registerFlakyStartProvider(5, errors.New("400 invalid request: bad parameter"), nil)
+	sink := newRecordingSink(nil)
+	a := hookAgent(t, p, sink)
+	if err := runHookAgent(t, a, "hi"); err == nil {
+		t.Fatal("expected non-retryable failure to surface")
+	}
+
+	calls := sink.notifyCallsFor(HookLLMError)
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 llm:error notify, got %d", len(calls))
+	}
+	payload := calls[0].payload
+	assertPayloadField(t, payload, "will_retry", false)
+	if _, ok := payload["next_delay_ms"]; ok {
+		t.Error("next_delay_ms must be absent when not retrying")
+	}
 }
 
 // TestClassifyLLMError locks the classification vocabulary surfaced to

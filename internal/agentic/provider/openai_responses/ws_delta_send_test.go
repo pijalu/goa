@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -170,6 +171,43 @@ func bodyInputTexts(t *testing.T, body map[string]interface{}) []string {
 	return out
 }
 
+// assertWSTurnInput requires the captured request at index i to carry exactly
+// the wanted input item texts (order and count).
+func assertWSTurnInput(t *testing.T, fake *fakeCodexWSServer, i int, want ...string) {
+	t.Helper()
+	got := bodyInputTexts(t, fake.request(i))
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("turn %d input = %v, want %v", i+1, got, want)
+	}
+}
+
+// assertWSChainedBy requires the body to chain by the given response id.
+func assertWSChainedBy(t *testing.T, body map[string]interface{}, want string) {
+	t.Helper()
+	if got := body["previous_response_id"]; got != want {
+		t.Errorf("previous_response_id = %v, want %v", got, want)
+	}
+}
+
+// assertWSNotChained requires the body to omit previous_response_id entirely.
+func assertWSNotChained(t *testing.T, body map[string]interface{}) {
+	t.Helper()
+	if _, chained := body["previous_response_id"]; chained {
+		t.Error("must not carry previous_response_id")
+	}
+}
+
+// assertWSCacheKeyStable requires every captured request to carry the given
+// session-stable prompt cache key.
+func assertWSCacheKeyStable(t *testing.T, fake *fakeCodexWSServer, turns int, key string) {
+	t.Helper()
+	for i := 0; i < turns; i++ {
+		if got := fake.request(i)["prompt_cache_key"]; got != key {
+			t.Errorf("turn %d prompt_cache_key = %v, want %s", i+1, got, key)
+		}
+	}
+}
+
 // TestWSCodexSendsDeltaChainedByPreviousResponseID drives a three-turn Codex
 // WS conversation: turn 1 is a full send; turns 2 and 3 must send only the
 // new tail as input chained by the previous response id, and the
@@ -206,38 +244,16 @@ func TestWSCodexSendsDeltaChainedByPreviousResponseID(t *testing.T) {
 	}
 
 	// Turn 1: full history, no chaining.
-	b1 := fake.request(0)
-	if got := bodyInputTexts(t, b1); len(got) != 1 || got[0] != "u1" {
-		t.Errorf("turn 1 input = %v, want [u1]", got)
-	}
-	if _, chained := b1["previous_response_id"]; chained {
-		t.Error("turn 1 must not carry previous_response_id")
-	}
-
-	// Turn 2: delta of one message chained by resp-1.
-	b2 := fake.request(1)
-	if got := bodyInputTexts(t, b2); len(got) != 1 || got[0] != "u2" {
-		t.Errorf("turn 2 input = %v, want [u2] (delta only)", got)
-	}
-	if got := b2["previous_response_id"]; got != "resp-1" {
-		t.Errorf("turn 2 previous_response_id = %v, want resp-1", got)
-	}
-
-	// Turn 3: delta of one message chained by resp-2.
-	b3 := fake.request(2)
-	if got := bodyInputTexts(t, b3); len(got) != 1 || got[0] != "u3" {
-		t.Errorf("turn 3 input = %v, want [u3] (delta only)", got)
-	}
-	if got := b3["previous_response_id"]; got != "resp-2" {
-		t.Errorf("turn 3 previous_response_id = %v, want resp-2", got)
-	}
+	assertWSTurnInput(t, fake, 0, "u1")
+	assertWSNotChained(t, fake.request(0))
+	// Turns 2/3: delta of one message chained by the prior response id.
+	assertWSTurnInput(t, fake, 1, "u2")
+	assertWSChainedBy(t, fake.request(1), "resp-1")
+	assertWSTurnInput(t, fake, 2, "u3")
+	assertWSChainedBy(t, fake.request(2), "resp-2")
 
 	// prompt_cache_key must be identical (session-stable) across the sequence.
-	for i := 0; i < 3; i++ {
-		if got := fake.request(i)["prompt_cache_key"]; got != "ws-sess-1" {
-			t.Errorf("turn %d prompt_cache_key = %v, want ws-sess-1", i+1, got)
-		}
-	}
+	assertWSCacheKeyStable(t, fake, 3, "ws-sess-1")
 }
 
 // TestWSCodexPropertyChangeForcesFullSend: when a matched property (here the

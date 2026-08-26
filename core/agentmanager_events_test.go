@@ -67,7 +67,7 @@ func TestAgentManager_TokenStatsEventsBecomeCompletions(t *testing.T) {
 	am.turnRecorder.FinalizeTurn(nil, "")
 	am.turnRecorder.ResetTurn(time.Now())
 	am.handleTypedEvent(agentic.OutputEvent{
-		Type: agentic.EventTokenStats,
+		Type:    agentic.EventTokenStats,
 		Timings: &agentic.TokenTimings{PromptN: 7, CacheReadTokens: 300},
 	})
 	comps = am.CompletionHistory()

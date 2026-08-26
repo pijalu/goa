@@ -31,6 +31,35 @@ func readCaptureRecords(t *testing.T, path string) []streamCaptureRecord {
 	return recs
 }
 
+// assertContentDeltaRecord checks the first thinking delta round-tripped
+// intact: type, text, delta flag and reasoning state preserved.
+func assertContentDeltaRecord(t *testing.T, rec streamCaptureRecord) {
+	t.Helper()
+	if rec.Type == "content" && rec.Text == "Let me " && rec.IsDelta && rec.State == "thinking" {
+		return
+	}
+	t.Fatalf("first delta record mangled: %+v", rec)
+}
+
+// assertToolStartRecord checks the tool-start record kept its name and input.
+func assertToolStartRecord(t *testing.T, rec streamCaptureRecord) {
+	t.Helper()
+	if rec.Type == "tool_start" && rec.ToolName == "read" && rec.ToolInput != "" {
+		return
+	}
+	t.Fatalf("tool start record mangled: %+v", rec)
+}
+
+// assertAllTimestamped requires every record to carry a monotonic timestamp.
+func assertAllTimestamped(t *testing.T, recs []streamCaptureRecord) {
+	t.Helper()
+	for i, rec := range recs {
+		if rec.TS == 0 {
+			t.Fatalf("record %d missing timestamp", i)
+		}
+	}
+}
+
 func TestStreamCapture_RecordsExactFlow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "flow.jsonl")
 	c, err := newStreamCapture(path)
@@ -53,20 +82,12 @@ func TestStreamCapture_RecordsExactFlow(t *testing.T) {
 	if len(recs) != len(events) {
 		t.Fatalf("records = %d, want %d", len(recs), len(events))
 	}
-	if recs[0].Type != "content" || recs[0].Text != "Let me " || !recs[0].IsDelta || recs[0].State != "thinking" {
-		t.Fatalf("first delta record mangled: %+v", recs[0])
-	}
-	if recs[3].Type != "tool_start" || recs[3].ToolName != "read" || recs[3].ToolInput == "" {
-		t.Fatalf("tool start record mangled: %+v", recs[3])
-	}
+	assertContentDeltaRecord(t, recs[0])
+	assertToolStartRecord(t, recs[3])
 	if recs[4].ToolResult != "package x" {
 		t.Fatalf("tool result record mangled: %+v", recs[4])
 	}
-	for i, rec := range recs {
-		if rec.TS == 0 {
-			t.Fatalf("record %d missing timestamp", i)
-		}
-	}
+	assertAllTimestamped(t, recs)
 }
 
 func TestStreamCapture_OpenFailure(t *testing.T) {

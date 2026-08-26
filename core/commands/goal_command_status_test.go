@@ -189,6 +189,13 @@ func (v *fakeCommandVerifier) Verify(_ context.Context, _ string) goal.VerifyOut
 	return goal.VerifyOutcome{Output: v.output, OK: v.ok, DurationMs: 5, TimeoutMs: 120000}
 }
 
+// /goal:list fixture objectives shared by setup and shape assertions.
+const (
+	listActiveObj = "fix the newline loss in the converter with a complete multi-line objective that must not be truncated"
+	listSecondObj = "second goal: audit provider retry logic"
+	listThirdObj  = "third goal: add json.load to gpython"
+)
+
 func TestGoalCommand_List(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
@@ -196,28 +203,33 @@ func TestGoalCommand_List(t *testing.T) {
 	ctx := testContext()
 
 	// Active goal via create, then two queued goals in order.
-	if err := cmd.Run(ctx, []string{"fix the newline loss in the converter with a complete multi-line objective that must not be truncated"}); err != nil {
+	if err := cmd.Run(ctx, []string{listActiveObj}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := queue.Append("second goal: audit provider retry logic"); err != nil {
+	if _, err := queue.Append(listSecondObj); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := queue.Append("third goal: add json.load to gpython"); err != nil {
+	if _, err := queue.Append(listThirdObj); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := cmd.Run(ctx, []string{"list"}); err != nil {
 		t.Fatal(err)
 	}
-	out := ctx.OutputBuffer.String()
+	assertGoalListShape(t, ctx.OutputBuffer.String())
+}
 
+// assertGoalListShape verifies the /goal:list markdown: header present,
+// active goal before the queued ones in queue order, numbered statuses, and
+// complete (untruncated) objectives.
+func assertGoalListShape(t *testing.T, out string) {
+	t.Helper()
 	if !strings.Contains(out, "## Goals") {
 		t.Errorf("expected markdown header in output:\n%s", out)
 	}
-	// Order: active first, then queue order.
-	i1 := strings.Index(out, "fix the newline loss")
-	i2 := strings.Index(out, "second goal: audit provider retry logic")
-	i3 := strings.Index(out, "third goal: add json.load to gpython")
+	i1 := strings.Index(out, listActiveObj)
+	i2 := strings.Index(out, listSecondObj)
+	i3 := strings.Index(out, listThirdObj)
 	if i1 < 0 || i2 < 0 || i3 < 0 {
 		t.Fatalf("missing objectives in output:\n%s", out)
 	}
@@ -229,8 +241,7 @@ func TestGoalCommand_List(t *testing.T) {
 			t.Errorf("expected %q in output:\n%s", want, out)
 		}
 	}
-	// Complete (untruncated) objectives: the long active objective must appear
-	// in full — no truncation marker.
+	// The long active objective must appear in full — no truncation marker.
 	if strings.Contains(out, "must not be tru...") || !strings.Contains(out, "must not be truncated") {
 		t.Errorf("active objective was truncated:\n%s", out)
 	}

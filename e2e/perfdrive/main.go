@@ -47,43 +47,75 @@ type sample struct {
 	rss int64         // resident size, KB
 }
 
-func main() {
-	bin := flag.String("bin", "", "binary to run (required)")
-	dir := flag.String("dir", ".", "working directory")
-	logPath := flag.String("log", "", "raw PTY output log (required)")
-	csvPath := flag.String("csv", "", "sample CSV output (required)")
-	prompt := flag.String("prompt", "", "prompt to submit (empty = idle baseline)")
-	settle := flag.Duration("settle", 12*time.Second, "wait after start before sending the prompt")
-	waitFile := flag.String("wait-file", "", "marker file that ends sampling (with --grace)")
-	grace := flag.Duration("grace", 5*time.Second, "extra sampling after the marker appears")
-	duration := flag.Duration("duration", 30*time.Second, "sampling length when no --wait-file (idle baseline)")
-	sampleEvery := flag.Duration("sample", 1*time.Second, "sampling cadence")
-	rows := flag.Uint("rows", 48, "PTY rows")
-	cols := flag.Uint("cols", 160, "PTY columns")
+// driveConfig bundles every perfdrive invocation setting parsed from flags.
+type driveConfig struct {
+	bin         string        // --bin, required
+	dir         string        // --dir working directory
+	logPath     string        // --log raw PTY output log, required
+	csvPath     string        // --csv sample CSV output, required
+	prompt      string        // --prompt (empty = idle baseline)
+	settle      time.Duration // --settle wait before sending the prompt
+	waitFile    string        // --wait-file marker ending sampling (empty = timed)
+	grace       time.Duration // --grace extra sampling after the marker
+	duration    time.Duration // --duration sampling length without --wait-file
+	sampleEvery time.Duration // --sample sampling cadence
+	rows        uint          // --rows PTY rows
+	cols        uint          // --cols PTY columns
+}
+
+// parseFlags builds the configuration from command-line flags, exiting with
+// usage status 2 when required flags are missing.
+func parseFlags() driveConfig {
+	var cfg driveConfig
+	flag.StringVar(&cfg.bin, "bin", "", "binary to run (required)")
+	flag.StringVar(&cfg.dir, "dir", ".", "working directory")
+	flag.StringVar(&cfg.logPath, "log", "", "raw PTY output log (required)")
+	flag.StringVar(&cfg.csvPath, "csv", "", "sample CSV output (required)")
+	flag.StringVar(&cfg.prompt, "prompt", "", "prompt to submit (empty = idle baseline)")
+	flag.DurationVar(&cfg.settle, "settle", 12*time.Second, "wait after start before sending the prompt")
+	flag.StringVar(&cfg.waitFile, "wait-file", "", "marker file that ends sampling (with --grace)")
+	flag.DurationVar(&cfg.grace, "grace", 5*time.Second, "extra sampling after the marker appears")
+	flag.DurationVar(&cfg.duration, "duration", 30*time.Second, "sampling length when no --wait-file (idle baseline)")
+	flag.DurationVar(&cfg.sampleEvery, "sample", 1*time.Second, "sampling cadence")
+	flag.UintVar(&cfg.rows, "rows", 48, "PTY rows")
+	flag.UintVar(&cfg.cols, "cols", 160, "PTY columns")
 	flag.Parse()
 
-	if *bin == "" || *logPath == "" || *csvPath == "" {
+	if cfg.bin == "" || cfg.logPath == "" || cfg.csvPath == "" {
 		fmt.Fprintln(os.Stderr, "required: --bin --log --csv")
 		os.Exit(2)
 	}
-	absBin, err := filepath.Abs(*bin)
+	return cfg
+}
+
+// process is the PTY-driven child together with its raw-output drain.
+type process struct {
+	cmd     *exec.Cmd
+	ptmx    *os.File
+	logf    *os.File
+	waitLog func() // blocks until the drain goroutine has finished
+}
+
+// startProcess launches cfg.bin under a PTY sized cfg.rows x cfg.cols and
+// starts draining all PTY output into cfg.logPath.
+func startProcess(cfg *driveConfig) (*process, error) {
+	absBin, err := filepath.Abs(cfg.bin)
 	if err != nil {
-		fatal(err)
+		return nil, err
 	}
-	logf, err := os.Create(*logPath)
+	logf, err := os.Create(cfg.logPath)
 	if err != nil {
-		fatal(err)
+		return nil, err
 	}
-	defer logf.Close()
 
 	cmd := exec.Command(absBin)
-	cmd.Dir = *dir
+	cmd.Dir = cfg.dir
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(*rows), Cols: uint16(*cols)})
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(cfg.rows), Cols: uint16(cfg.cols)})
 	if err != nil {
-		fatal(fmt.Errorf("pty start: %w", err))
+		logf.Close() // nothing else owns it yet
+		return nil, fmt.Errorf("pty start: %w", err)
 	}
-	defer ptmx.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -100,65 +132,101 @@ func main() {
 			}
 		}
 	}()
+	return &process{cmd: cmd, ptmx: ptmx, logf: logf, waitLog: wg.Wait}, nil
+}
 
-	pid := cmd.Process.Pid
-	fmt.Printf("started pid=%d settle=%v\n", pid, *settle)
-	time.Sleep(*settle)
+// close releases the PTY and the raw log; call once the child is done.
+func (p *process) close() {
+	p.ptmx.Close()
+	p.logf.Close()
+}
 
-	if *prompt != "" {
-		if _, err := ptmx.WriteString(*prompt + "\r"); err != nil {
-			fatal(fmt.Errorf("send prompt: %w", err))
-		}
-		fmt.Printf("prompt sent (%d chars)\n", len(*prompt))
+// sendPrompt submits prompt followed by Enter into the PTY.
+func (p *process) sendPrompt(prompt string) error {
+	if _, err := p.ptmx.WriteString(prompt + "\r"); err != nil {
+		return fmt.Errorf("send prompt: %w", err)
 	}
+	fmt.Printf("prompt sent (%d chars)\n", len(prompt))
+	return nil
+}
 
+// markerDeadline tracks the first sighting of the --wait-file marker so
+// sampling continues for the full --grace window after it appears.
+type markerDeadline struct {
+	grace  time.Duration
+	seenAt time.Time
+}
+
+func newMarkerDeadline(grace time.Duration) *markerDeadline {
+	return &markerDeadline{grace: grace}
+}
+
+// mark records the marker's first appearance, announcing it exactly once.
+func (m *markerDeadline) mark() {
+	if !m.seenAt.IsZero() {
+		return
+	}
+	m.seenAt = time.Now()
+	fmt.Printf("\n  marker seen; sampling %v more\n", m.grace)
+}
+
+// expired reports whether the grace window has fully elapsed since the marker
+// was first seen; always false before any sighting.
+func (m *markerDeadline) expired() bool {
+	return !m.seenAt.IsZero() && time.Since(m.seenAt) >= m.grace
+}
+
+// collectSamples records CPU/RSS observations at the configured cadence until
+// the process exits, the fixed duration elapses (idle baseline), or the
+// wait-file marker has been visible for the whole grace window.
+func (p *process) collectSamples(cfg *driveConfig) []sample {
 	start := time.Now()
-	var samples []sample
-	deadline := start.Add(*duration)
-	if *waitFile != "" {
+	deadline := start.Add(cfg.duration)
+	if cfg.waitFile != "" {
 		deadline = start.Add(2 * time.Hour) // bounded by marker + grace
 	}
-	var markerSeenAt time.Time
+	var (
+		samples []sample
+		markers = newMarkerDeadline(cfg.grace)
+	)
 	for time.Now().Before(deadline) {
-		time.Sleep(*sampleEvery)
-		if s, ok := sampleProc(pid); ok {
+		time.Sleep(cfg.sampleEvery)
+		if s, ok := sampleProc(p.cmd.Process.Pid); ok {
 			s.t = time.Since(start)
 			samples = append(samples, s)
 			fmt.Printf("\r  t=%4.0fs cpu=%5.1f%% rss=%4.0fMB", s.t.Seconds(), s.cpu, float64(s.rss)/1024)
 		}
-		if cmd.ProcessState != nil {
+		if p.cmd.ProcessState != nil {
 			break
 		}
-		if *waitFile == "" {
+		if cfg.waitFile == "" {
 			continue
 		}
-		if _, err := os.Stat(*waitFile); err == nil {
-			if markerSeenAt.IsZero() {
-				markerSeenAt = time.Now()
-				fmt.Printf("\n  marker seen; sampling %v more\n", *grace)
-			}
-			if time.Since(markerSeenAt) >= *grace {
+		if _, err := os.Stat(cfg.waitFile); err == nil {
+			markers.mark()
+			if markers.expired() {
 				break
 			}
 		}
 	}
 	fmt.Println()
+	return samples
+}
 
-	writeCSV(*csvPath, samples)
-	report(samples)
-
-	// Close the TUI politely, then force-kill.
-	_, _ = ptmx.WriteString("/quit\r")
+// stop asks the TUI to quit politely (/quit + Enter), waits briefly for a
+// clean exit and force-kills otherwise, then waits for the drain to finish.
+func (p *process) stop() {
+	_, _ = p.ptmx.WriteString("/quit\r")
 	done := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(done) }()
+	go func() { _ = p.cmd.Wait(); close(done) }()
 	select {
 	case <-done:
 		fmt.Println("clean exit")
 	case <-time.After(8 * time.Second):
-		_ = cmd.Process.Kill()
+		_ = p.cmd.Process.Kill()
 		fmt.Println("killed after /quit grace")
 	}
-	wg.Wait()
+	p.waitLog()
 }
 
 // sampleProc reads ps's decaying %cpu average and resident size for pid.
@@ -227,4 +295,27 @@ func report(samples []sample) {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "perfdrive:", err)
 	os.Exit(1)
+}
+
+func main() {
+	cfg := parseFlags()
+	proc, err := startProcess(&cfg)
+	if err != nil {
+		fatal(err)
+	}
+	defer proc.close()
+
+	fmt.Printf("started pid=%d settle=%v\n", proc.cmd.Process.Pid, cfg.settle)
+	time.Sleep(cfg.settle)
+
+	if cfg.prompt != "" {
+		if err := proc.sendPrompt(cfg.prompt); err != nil {
+			fatal(err)
+		}
+	}
+
+	samples := proc.collectSamples(&cfg)
+	writeCSV(cfg.csvPath, samples)
+	report(samples)
+	proc.stop()
 }

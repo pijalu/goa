@@ -25,30 +25,48 @@ func TestSpillPolicy_OverCapResultSpills(t *testing.T) {
 	original := strings.Repeat("a", 400) + strings.Repeat("b", 400)
 
 	got := p.ApplySpill("bash", original)
+	assertSpilledReplacementShape(t, got, original, 512)
+	name, spilled := readSoleSpillFile(t, dir)
+	if string(spilled) != original {
+		t.Error("spill file must hold the original result verbatim")
+	}
+	if !strings.Contains(got, name) {
+		t.Errorf("notice should reference the spill file %q", name)
+	}
+}
+
+// assertSpilledReplacementShape verifies a model-facing over-cap replacement:
+// it must fit the cap, carry the omission notice machinery, and keep preview
+// edges of the original intact.
+func assertSpilledReplacementShape(t *testing.T, got, original string, capBytes int) {
+	t.Helper()
 	if got == original {
 		t.Fatal("over-cap result should be replaced by a preview + notice")
 	}
-	if len(got) > 512 {
-		t.Errorf("model-facing content must never exceed the cap: len=%d > 512", len(got))
+	if len(got) > capBytes {
+		t.Errorf("model-facing content must never exceed the cap: len=%d > %d", len(got), capBytes)
 	}
-	if !strings.Contains(got, "(Omitted ") {
-		t.Errorf("replacement should carry the omission notice, got: %q", got)
+	for _, fragment := range []string{
+		"(Omitted ",
+		"Full result stored at: ",
+		"Use read with offset/limit",
+	} {
+		if !strings.Contains(got, fragment) {
+			t.Errorf("replacement should carry %q, got: %.120q", fragment, got)
+		}
 	}
-	if !strings.Contains(got, "Full result stored at: ") {
-		t.Errorf("replacement should carry the spill locator, got: %q", got)
-	}
-	if !strings.Contains(got, "Use read with offset/limit") {
-		t.Errorf("replacement should carry the retrieval hint, got: %q", got)
-	}
-	// Head and tail of the original survive in the preview.
-	if !strings.HasPrefix(got, strings.Repeat("a", 50)) {
+	const edge = 50 // preview edge length checked at both ends of the original
+	if !strings.HasPrefix(got, original[:edge]) {
 		t.Error("preview should keep the head of the result")
 	}
-	if !strings.Contains(got, strings.Repeat("b", 50)) {
+	if !strings.Contains(got, original[len(original)-edge:]) {
 		t.Error("preview should keep the tail of the result")
 	}
+}
 
-	// The full text is spilled verbatim under the session dir.
+// readSoleSpillFile reads the single spill file expected under dir.
+func readSoleSpillFile(t *testing.T, dir string) (name string, contents []byte) {
+	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("session spill dir should exist: %v", err)
@@ -56,16 +74,12 @@ func TestSpillPolicy_OverCapResultSpills(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected exactly one spill file, got %d", len(entries))
 	}
-	spilled, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	name = entries[0].Name()
+	contents, err = os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
 		t.Fatalf("spill file should be readable: %v", err)
 	}
-	if string(spilled) != original {
-		t.Error("spill file must hold the original result verbatim")
-	}
-	if !strings.Contains(got, entries[0].Name()) {
-		t.Errorf("notice should reference the spill file %q", entries[0].Name())
-	}
+	return name, contents
 }
 
 func TestSpillPolicy_OmittedCountIsExact(t *testing.T) {
@@ -73,11 +87,8 @@ func TestSpillPolicy_OmittedCountIsExact(t *testing.T) {
 	original := strings.Repeat("x", 1000)
 	got := p.ApplySpill("bash", original)
 
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("expected one spill file: entries=%d err=%v", len(entries), err)
-	}
-	path := filepath.Join(dir, entries[0].Name())
+	name, _ := readSoleSpillFile(t, dir)
+	path := filepath.Join(dir, name)
 	notice := fmt.Sprintf("(Omitted %d bytes. Full result stored at: %s. Use read with offset/limit, or grep this path to search within it.)",
 		len(original)-len(previewPortion(got, path)), path)
 	if !strings.Contains(got, notice) {

@@ -362,106 +362,159 @@ func TestAgentManager_BuildCompressionConfig_ExplicitWins(t *testing.T) {
 	}
 }
 
+// perModelOverlayBaseConfig returns the shared global compression fixture for
+// the per-model overlay tests: micro legacy strategy, explicit hard ceiling
+// 95, plus a full override ("local-qwen") and a partial override
+// ("partial-model").
+func perModelOverlayBaseConfig() *config.Config {
+	return &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:             ccBoolPtr(true),
+			MaxTokens:           0,
+			Strategy:            config.AgenticCompressionMicro,
+			PreserveRecentTurns: 4,
+			Thresholds: config.CompressionThresholdsConfig{
+				SoftPercent:    0,
+				TriggerPercent: 80,
+				HardPercent:    95,
+			},
+			PerModel: map[string]config.ModelCompressionOverride{
+				"local-qwen": {
+					MaxTokens: 24576,
+					Strategy:  config.AgenticCompressionHybrid,
+					Thresholds: config.CompressionThresholdsConfig{
+						SoftPercent:    40,
+						TriggerPercent: 65,
+						HardPercent:    90,
+					},
+				},
+				"partial-model": {
+					Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 70},
+				},
+			},
+		},
+	}
+}
+
+// Scenario verifiers for the per-model overlay matrix. Each lives at package
+// level so complexity tools attribute their branches to themselves, keeping
+// the table-driven test itself trivial.
+
+// assertFullOverrideApplied checks the local-qwen full override wins on every
+// overridden field.
+func assertFullOverrideApplied(t *testing.T, cc agentic.ContextCompressionConfig) {
+	t.Helper()
+	if cc.MaxTokens != 24576 {
+		t.Errorf("MaxTokens = %d, want 24576", cc.MaxTokens)
+	}
+	// Legacy whole-config strategy maps onto the hard layer.
+	if cc.Strategies.Hard != agentic.CompressionHybrid {
+		t.Errorf("Strategies.Hard = %q, want hybrid", cc.Strategies.Hard)
+	}
+	// Soft 40 and hard 90 come through; trigger_percent (65) is dropped
+	// (no trigger layer) — explicit hard_percent wins the ceiling.
+	if cc.Thresholds.SoftPercent != 40 || cc.Thresholds.HardPercent != 90 {
+		t.Errorf("Thresholds = %+v, want {Soft:40 Hard:90}", cc.Thresholds)
+	}
+}
+
+// assertPartialInheritsGlobal checks the partial-model override only replaces
+// what it declares, inheriting global values elsewhere.
+func assertPartialInheritsGlobal(t *testing.T, cc agentic.ContextCompressionConfig) {
+	t.Helper()
+	// Explicit global hard_percent (95) wins over the per-model
+	// trigger_percent (70): trigger no longer feeds the ceiling.
+	if cc.Thresholds.HardPercent != 95 {
+		t.Errorf("HardPercent = %d, want 95 (explicit global hard wins)", cc.Thresholds.HardPercent)
+	}
+	// Global legacy strategy (micro) maps onto the hard layer.
+	if cc.Strategies.Hard != agentic.CompressionMicro {
+		t.Errorf("Strategies.Hard = %q, want micro (inherited)", cc.Strategies.Hard)
+	}
+	if cc.PreserveRecentTurns != 4 {
+		t.Errorf("PreserveRecentTurns = %d, want 4 (inherited)", cc.PreserveRecentTurns)
+	}
+}
+
+// assertGlobalHardCeilingInherited checks the merged config kept the global
+// hard ceiling of 95 (default inheritance expectation).
+func assertGlobalHardCeilingInherited(t *testing.T, cc agentic.ContextCompressionConfig) {
+	t.Helper()
+	if cc.Thresholds.HardPercent != 95 {
+		t.Errorf("HardPercent = %d, want 95 (global)", cc.Thresholds.HardPercent)
+	}
+}
+
+// assertLegacyAliasCeiling maps onto the hard ceiling expectation for the
+// legacy per-model threshold_percent alias.
+func assertLegacyAliasCeiling(t *testing.T, cc agentic.ContextCompressionConfig) {
+	t.Helper()
+	// Legacy threshold_percent maps onto the hard ceiling.
+	if cc.Thresholds.HardPercent != 55 {
+		t.Errorf("HardPercent = %d, want 55 (legacy per-model alias)", cc.Thresholds.HardPercent)
+	}
+}
+
+// enableLegacyAlias clears explicit ceilings and adds a legacy
+// threshold_percent override so the alias alone defines the ceiling.
+func enableLegacyAlias(cfg *config.Config) {
+	cfg.ContextCompression.Thresholds.HardPercent = 0
+	cfg.ContextCompression.PerModel["legacy-model"] =
+		config.ModelCompressionOverride{ThresholdPercent: 55}
+}
+
 // TestAgentManager_BuildCompressionConfig_PerModelOverlay verifies that
 // per-model overrides apply on top of the global section: matching model IDs
 // get the overridden fields, non-matching IDs get the global values, and
 // partial overrides inherit the rest.
 func TestAgentManager_BuildCompressionConfig_PerModelOverlay(t *testing.T) {
-	newCfg := func() *config.Config {
-		return &config.Config{
-			ContextCompression: config.ContextCompressionConfig{
-				Enabled:             ccBoolPtr(true),
-				MaxTokens:           0,
-				Strategy:            config.AgenticCompressionMicro,
-				PreserveRecentTurns: 4,
-				Thresholds: config.CompressionThresholdsConfig{
-					SoftPercent:    0,
-					TriggerPercent: 80,
-					HardPercent:    95,
-				},
-				PerModel: map[string]config.ModelCompressionOverride{
-					"local-qwen": {
-						MaxTokens: 24576,
-						Strategy:  config.AgenticCompressionHybrid,
-						Thresholds: config.CompressionThresholdsConfig{
-							SoftPercent:    40,
-							TriggerPercent: 65,
-							HardPercent:    90,
-						},
-					},
-					"partial-model": {
-						Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 70},
-					},
-				},
-			},
-		}
+	scenarios := []struct {
+		name string
+		// model is the model ID buildCompressionConfig resolves against.
+		model string
+		// mutate optionally adjusts the base config before building.
+		mutate func(cfg *config.Config)
+		// verify asserts the merged ContextCompressionConfig.
+		verify func(t *testing.T, cc agentic.ContextCompressionConfig)
+	}{
+		{
+			name:   "full override applies",
+			model:  "local-qwen",
+			verify: assertFullOverrideApplied,
+		},
+		{
+			name:   "partial override inherits global",
+			model:  "partial-model",
+			verify: assertPartialInheritsGlobal,
+		},
+		{
+			name:   "unknown model gets global",
+			model:  "other-model",
+			verify: assertGlobalHardCeilingInherited,
+		},
+		{
+			name:   "empty model ID gets global",
+			model:  "",
+			verify: assertGlobalHardCeilingInherited,
+		},
+		{
+			name:   "legacy threshold_percent in per-model override",
+			model:  "legacy-model",
+			mutate: enableLegacyAlias,
+			verify: assertLegacyAliasCeiling,
+		},
 	}
 
-	t.Run("full override applies", func(t *testing.T) {
-		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
-		cc := am.buildCompressionConfig(newCfg(), "local-qwen", 32768)
-		if cc.MaxTokens != 24576 {
-			t.Errorf("MaxTokens = %d, want 24576", cc.MaxTokens)
-		}
-		// Legacy whole-config strategy maps onto the hard layer.
-		if cc.Strategies.Hard != agentic.CompressionHybrid {
-			t.Errorf("Strategies.Hard = %q, want hybrid", cc.Strategies.Hard)
-		}
-		// Soft 40 and hard 90 come through; trigger_percent (65) is dropped
-		// (no trigger layer) — explicit hard_percent wins the ceiling.
-		if cc.Thresholds.SoftPercent != 40 || cc.Thresholds.HardPercent != 90 {
-			t.Errorf("Thresholds = %+v, want {Soft:40 Hard:90}", cc.Thresholds)
-		}
-	})
-
-	t.Run("partial override inherits global", func(t *testing.T) {
-		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
-		cc := am.buildCompressionConfig(newCfg(), "partial-model", 32768)
-		// Explicit global hard_percent (95) wins over the per-model
-		// trigger_percent (70) override: trigger no longer feeds the ceiling.
-		if cc.Thresholds.HardPercent != 95 {
-			t.Errorf("HardPercent = %d, want 95 (explicit global hard wins)", cc.Thresholds.HardPercent)
-		}
-		// Global legacy strategy (micro) maps onto the hard layer.
-		if cc.Strategies.Hard != agentic.CompressionMicro {
-			t.Errorf("Strategies.Hard = %q, want micro (inherited)", cc.Strategies.Hard)
-		}
-		if cc.PreserveRecentTurns != 4 {
-			t.Errorf("PreserveRecentTurns = %d, want 4 (inherited)", cc.PreserveRecentTurns)
-		}
-	})
-
-	t.Run("unknown model gets global", func(t *testing.T) {
-		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
-		cc := am.buildCompressionConfig(newCfg(), "other-model", 32768)
-		if cc.Thresholds.HardPercent != 95 {
-			t.Errorf("HardPercent = %d, want 95 (global)", cc.Thresholds.HardPercent)
-		}
-		if cc.Strategies.Hard != agentic.CompressionMicro {
-			t.Errorf("Strategies.Hard = %q, want micro (global)", cc.Strategies.Hard)
-		}
-	})
-
-	t.Run("empty model ID gets global", func(t *testing.T) {
-		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
-		cc := am.buildCompressionConfig(newCfg(), "", 32768)
-		if cc.Thresholds.HardPercent != 95 {
-			t.Errorf("HardPercent = %d, want 95 (global)", cc.Thresholds.HardPercent)
-		}
-	})
-
-	t.Run("legacy threshold_percent in per-model override", func(t *testing.T) {
-		cfg := newCfg()
-		// No explicit hard ceiling anywhere so the legacy alias is the ceiling.
-		cfg.ContextCompression.Thresholds.HardPercent = 0
-		cfg.ContextCompression.PerModel["legacy-model"] = config.ModelCompressionOverride{ThresholdPercent: 55}
-		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
-		cc := am.buildCompressionConfig(cfg, "legacy-model", 32768)
-		// Legacy threshold_percent maps onto the hard ceiling.
-		if cc.Thresholds.HardPercent != 55 {
-			t.Errorf("HardPercent = %d, want 55 (legacy per-model alias)", cc.Thresholds.HardPercent)
-		}
-	})
+	for _, tc := range scenarios {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := perModelOverlayBaseConfig()
+			if tc.mutate != nil {
+				tc.mutate(cfg)
+			}
+			am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+			tc.verify(t, am.buildCompressionConfig(cfg, tc.model, 32768))
+		})
+	}
 }
 
 // TestAgentManager_BuildCompressionConfig_ToolResultPruning verifies the CX1

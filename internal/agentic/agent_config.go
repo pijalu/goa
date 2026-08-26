@@ -68,6 +68,25 @@ func (a *Agent) CompressionConfig() ContextCompressionConfig {
 	return a.cfg.ContextCompression
 }
 
+// SetAutoHealToolCalls toggles recovery of malformed tool-call markup for
+// subsequent turns without rebuilding the agent. Used when the operator flips
+// /config → Tools → "Tool call fixing" so the change applies to the ongoing
+// session instead of only after a restart (bugs-20260826-config-tool-live-sync).
+func (a *Agent) SetAutoHealToolCalls(on bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.AutoHealToolCalls = on
+}
+
+// AutoHealEnabled reports whether malformed tool-call recovery is currently
+// active. The stream-heal path reads this instead of the raw cfg field: heal
+// gating happens outside a.mu, so every read must take the lock.
+func (a *Agent) AutoHealEnabled() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.AutoHealToolCalls
+}
+
 // SetReasoningEffort replaces the reasoning-effort level for subsequent turns.
 func (a *Agent) SetReasoningEffort(effort ReasoningEffort) {
 	a.mu.Lock()

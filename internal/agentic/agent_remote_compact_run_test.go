@@ -104,6 +104,67 @@ func remoteReplacement() []provider.Message {
 	}
 }
 
+// assertRemoteCompactUsedExclusively requires exactly one remote compact call
+// and zero local summarize stream calls.
+func assertRemoteCompactUsedExclusively(t *testing.T, p *remoteCompactProbeProvider) {
+	t.Helper()
+	if n := p.compactCallCount(); n != 1 {
+		t.Errorf("remote compact call count = %d, want 1", n)
+	}
+	if n := p.streamCallCount(); n != 0 {
+		t.Errorf("local summarize must not run when remote succeeds; stream calls = %d", n)
+	}
+}
+
+// assertHistoryIsReplacementTranscript requires the history to be exactly the
+// remote replacement converted to internal form.
+func assertHistoryIsReplacementTranscript(t *testing.T, hist []Message) {
+	t.Helper()
+	if len(hist) != 2 {
+		t.Fatalf("history length = %d, want 2: %#v", len(hist), hist)
+	}
+	if hist[0].Role != User || !strings.Contains(hist[0].Content, "condensed") {
+		t.Errorf("history[0] = %#v, want the condensed user message", hist[0])
+	}
+	if hist[1].Role != Assistant {
+		t.Errorf("history[1].Role = %q, want assistant", hist[1].Role)
+	}
+}
+
+// assertCacheGenerationRotated requires the cache generation to advance by one
+// and the SSE-path cache key to rotate (non-prefix history replacement).
+func assertCacheGenerationRotated(t *testing.T, a *Agent, genBefore uint64, keyBefore string) {
+	t.Helper()
+	if a.cacheGeneration != genBefore+1 {
+		t.Errorf("cacheGeneration = %d, want %d", a.cacheGeneration, genBefore+1)
+	}
+	if keyAfter := a.cacheKey(a.cfg.Model); keyAfter == keyBefore {
+		t.Error("cache key must rotate after the non-prefix history replacement")
+	}
+}
+
+// assertRemoteCompactionProvenance pins the provenance triple of a successful
+// remote compaction: ordered start → summary → end events sharing one id, the
+// clean end, the summary carrying the remote-call usage, and exactly one
+// EventCompact labeled remote_compact.
+func assertRemoteCompactionProvenance(t *testing.T, obs *mockEventObserver, usage *provider.Usage) {
+	t.Helper()
+	txs := compactionTxEvents(obs)
+	if len(txs) != 3 {
+		t.Fatalf("expected provenance triple, got %d: %v", len(txs), obs.Events())
+	}
+	assertProvenanceTripleOrder(t, txs)
+	assertProvenanceSharedID(t, txs)
+	assertProvenanceCleanEnd(t, txs[2].CompactionTx)
+	if txs[1].CompactionTx.Usage != usage {
+		t.Errorf("compaction_summary usage = %+v, want the remote-call usage %+v", txs[1].CompactionTx.Usage, usage)
+	}
+	evs := compactEvents(obs)
+	if len(evs) != 1 || evs[0].Compaction.Strategy != string(CompressionRemoteCompact) {
+		t.Errorf("EventCompact strategy = %+v, want remote_compact", compactEvents(obs))
+	}
+}
+
 // TestCompactRemote_ReplacesHistory verifies the happy path: when availability
 // allows, Compact uses the remote endpoint, replaces history with the returned
 // transcript, advances the cache generation, and never runs a local summarize.
@@ -126,48 +187,14 @@ func TestCompactRemote_ReplacesHistory(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	if p.compactCallCount() != 1 {
-		t.Errorf("remote compact call count = %d, want 1", p.compactCallCount())
-	}
-	if p.streamCallCount() != 0 {
-		t.Errorf("local summarize must not run when remote succeeds; stream calls = %d", p.streamCallCount())
-	}
-
+	assertRemoteCompactUsedExclusively(t, p)
 	// History replaced by the returned transcript (converted to internal form).
-	if len(agent.history) != 2 {
-		t.Fatalf("history length = %d, want 2: %#v", len(agent.history), agent.history)
-	}
-	if agent.history[0].Role != User || !strings.Contains(agent.history[0].Content, "condensed") {
-		t.Errorf("history[0] = %#v, want the condensed user message", agent.history[0])
-	}
-	if agent.history[1].Role != Assistant {
-		t.Errorf("history[1].Role = %q, want assistant", agent.history[1].Role)
-	}
-
+	assertHistoryIsReplacementTranscript(t, agent.history)
 	// Cache generation advanced and the SSE-path cache key rotated.
-	if agent.cacheGeneration != genBefore+1 {
-		t.Errorf("cacheGeneration = %d, want %d", agent.cacheGeneration, genBefore+1)
-	}
-	if keyAfter := agent.cacheKey(agent.cfg.Model); keyAfter == keyBefore {
-		t.Error("cache key must rotate after the non-prefix history replacement")
-	}
-
+	assertCacheGenerationRotated(t, agent, genBefore, keyBefore)
 	// Provenance triple shares one id, ordered start → summary → end, with the
 	// remote_compact strategy label on the surviving EventCompact.
-	txs := compactionTxEvents(obs)
-	if len(txs) != 3 {
-		t.Fatalf("expected provenance triple, got %d: %v", len(txs), obs.Events())
-	}
-	assertProvenanceTripleOrder(t, txs)
-	assertProvenanceSharedID(t, txs)
-	assertProvenanceCleanEnd(t, txs[2].CompactionTx)
-	if txs[1].CompactionTx.Usage != usage {
-		t.Errorf("compaction_summary usage = %+v, want the remote-call usage %+v", txs[1].CompactionTx.Usage, usage)
-	}
-	evs := compactEvents(obs)
-	if len(evs) != 1 || evs[0].Compaction.Strategy != string(CompressionRemoteCompact) {
-		t.Errorf("EventCompact strategy = %+v, want remote_compact", compactEvents(obs))
-	}
+	assertRemoteCompactionProvenance(t, obs, usage)
 }
 
 // TestCompactRemote_SendsNormalRequestFields verifies the compact request

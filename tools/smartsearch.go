@@ -588,44 +588,68 @@ func marshalStructured(v any) (string, error) {
 // on-disk index.
 func (t *SmartSearchTool) formatResults(results []bm25.SearchResult, matches map[string][]smartLineMatch, query string, idx *bm25.Index, rebuilt bool, idxDir string) string {
 	var buf bytes.Buffer
-
-	if rebuilt {
-		fmt.Fprintf(&buf, "[smartsearch: %q] — Index was missing or corrupted; rebuilt from scratch.\n", query)
-	}
-	fmt.Fprintf(&buf, "[smartsearch: %q] — %d results from %d indexed files (index age: %s)\n",
-		query, len(results), idx.FileCount(), formatDuration(idx.IndexAge()))
-
-	// Score range for user orientation.
-	if len(results) > 0 {
-		fmt.Fprintf(&buf, "Score range: %.2f – %.2f\n\n", results[0].Score, results[len(results)-1].Score)
-	}
-
+	buf.WriteString(formatHeader(results, query, idx, rebuilt))
 	for i, r := range results {
-		relPath := r.Path
-		if t.ProjectDir != "" {
-			if p, err := filepath.Rel(t.ProjectDir, r.Path); err == nil && !strings.HasPrefix(p, "..") {
-				relPath = p
-			}
-		}
-		fmt.Fprintf(&buf, "%d. [%.2f] %s  (%d lines)", i+1, r.Score, relPath, r.Lines)
-		if r.ID != "" {
-			fmt.Fprintf(&buf, " [id: %s, lines: %d-%d, language: %s]", r.ID, r.StartLine, r.EndLine, r.Language)
-		}
-		buf.WriteByte('\n')
-		for _, m := range matches[r.Path] {
-			content := ansi.Sanitize(strings.TrimSpace(m.Text))
-			if ansi.Width(content) > 140 {
-				content = ansi.Truncate(content, 140) + "…"
-			}
-			fmt.Fprintf(&buf, "    %d: %s\n", m.Num, content)
-		}
+		buf.WriteString(t.formatOneResult(i, r, matches[r.Path]))
 	}
-
 	if idxDir != "" {
 		fmt.Fprintf(&buf, "\n(Index: %s)", filepath.Join(idxDir, bm25.IndexFile))
 	}
-
 	return buf.String()
+}
+
+// formatHeader renders the rebuild warning (when present), the result-count
+// summary line, and the score range for user orientation.
+func formatHeader(results []bm25.SearchResult, query string, idx *bm25.Index, rebuilt bool) string {
+	var b strings.Builder
+	if rebuilt {
+		fmt.Fprintf(&b, "[smartsearch: %q] — Index was missing or corrupted; rebuilt from scratch.\n", query)
+	}
+	fmt.Fprintf(&b, "[smartsearch: %q] — %d results from %d indexed files (index age: %s)\n",
+		query, len(results), idx.FileCount(), formatDuration(idx.IndexAge()))
+	if len(results) > 0 {
+		fmt.Fprintf(&b, "Score range: %.2f – %.2f\n\n", results[0].Score, results[len(results)-1].Score)
+	}
+	return b.String()
+}
+
+// formatOneResult renders a single numbered search result followed by its
+// matching source lines.
+func (t *SmartSearchTool) formatOneResult(i int, r bm25.SearchResult, lineMatches []smartLineMatch) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d. [%.2f] %s  (%d lines)", i+1, r.Score, t.relPath(r.Path), r.Lines)
+	if r.ID != "" {
+		fmt.Fprintf(&b, " [id: %s, lines: %d-%d, language: %s]", r.ID, r.StartLine, r.EndLine, r.Language)
+	}
+	b.WriteByte('\n')
+	for _, m := range lineMatches {
+		b.WriteString(formatMatchLine(m))
+	}
+	return b.String()
+}
+
+// formatMatchLine renders one matching source line, sanitised and truncated
+// to at most 140 display columns.
+func formatMatchLine(m smartLineMatch) string {
+	content := ansi.Sanitize(strings.TrimSpace(m.Text))
+	if ansi.Width(content) > 140 {
+		content = ansi.Truncate(content, 140) + "…"
+	}
+	return fmt.Sprintf("    %d: %s\n", m.Num, content)
+}
+
+// relPath renders abs relative to the project directory when it points inside
+// the project. Paths outside it — or when no project dir is known — stay
+// absolute so they remain unambiguous.
+func (t *SmartSearchTool) relPath(abs string) string {
+	if t.ProjectDir == "" {
+		return abs
+	}
+	p, err := filepath.Rel(t.ProjectDir, abs)
+	if err != nil || strings.HasPrefix(p, "..") {
+		return abs
+	}
+	return p
 }
 
 // normaliseResults applies min-max normalisation to scores in-place and sorts

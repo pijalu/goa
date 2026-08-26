@@ -156,29 +156,42 @@ func TestRegistryParity_OpenCodeIDs(t *testing.T) {
 }
 
 func TestRegistryParityEntries(t *testing.T) {
-	want := map[string][]string{
+	parity := map[string][]string{
 		"eslint": {".js", ".ts", ".vue"}, "oxlint": {".js", ".svelte", ".astro"},
 		"razor": {".razor", ".cshtml"}, "dockerfile": {}, "sourcekit-lsp": {".swift", ".m", ".mm"},
 	}
+	served := make(map[string]bool)
 	for _, spec := range Registry() {
-		exts := map[string]bool{}
-		for _, ext := range spec.Extensions {
-			exts[ext] = true
-		}
-		if extensions, ok := want[spec.ID]; ok {
-			for _, ext := range extensions {
-				if !exts[ext] {
-					t.Errorf("%s missing extension %s", spec.ID, ext)
-				}
-			}
-			if spec.ID == "dockerfile" && len(spec.Filenames) == 0 {
-				t.Error("dockerfile missing filenames")
-			}
-			delete(want, spec.ID)
+		served[spec.ID] = true
+		checkParityEntry(t, spec, parity)
+	}
+	for id := range parity {
+		if !served[id] {
+			t.Errorf("registry missing %s", id)
 		}
 	}
-	for id := range want {
-		t.Errorf("registry missing %s", id)
+}
+
+// checkParityEntry compares one registered spec against its OpenCode parity
+// expectation for the same ID (no-op when there is none). Dockerfile has an
+// empty extension expectation but must still match by filename.
+func checkParityEntry(t *testing.T, spec ServerSpec, parity map[string][]string) {
+	t.Helper()
+	wantExts, ok := parity[spec.ID]
+	if !ok {
+		return
+	}
+	haveExts := make(map[string]bool, len(spec.Extensions))
+	for _, ext := range spec.Extensions {
+		haveExts[ext] = true
+	}
+	for _, ext := range wantExts {
+		if !haveExts[ext] {
+			t.Errorf("%s missing extension %s", spec.ID, ext)
+		}
+	}
+	if spec.ID == "dockerfile" && len(spec.Filenames) == 0 {
+		t.Error("dockerfile missing filenames")
 	}
 }
 

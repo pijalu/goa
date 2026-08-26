@@ -15,6 +15,14 @@ func TestGoalMode_TodoLifecycle(t *testing.T) {
 	if _, err := mode.CreateGoal(CreateGoalInput{Objective: "multi-step"}, GoalActorUser); err != nil {
 		t.Fatal(err)
 	}
+	assertTodoMutation(t, mode)
+	assertTodoReplayRoundTrip(t, st)
+}
+
+// assertTodoMutation adds two todos, marks one done, and checks the live
+// snapshot reflects the lifecycle.
+func assertTodoMutation(t *testing.T, mode *GoalMode) {
+	t.Helper()
 	a, err := mode.AddGoalTodo("first task", GoalActorModel)
 	if err != nil {
 		t.Fatal(err)
@@ -36,8 +44,12 @@ func TestGoalMode_TodoLifecycle(t *testing.T) {
 	if snap.Todos[0].Status != TodoDone || snap.Todos[1].Status != TodoPending {
 		t.Errorf("statuses = %q/%q", snap.Todos[0].Status, snap.Todos[1].Status)
 	}
+}
 
-	// Replay round-trip preserves todos.
+// assertTodoReplayRoundTrip replays the store into a fresh GoalMode and
+// verifies todos survive.
+func assertTodoReplayRoundTrip(t *testing.T, st EventStore) {
+	t.Helper()
 	mode2 := NewGoalMode(st, nil, nil, nil)
 	if err := mode2.Replay(); err != nil {
 		t.Fatal(err)

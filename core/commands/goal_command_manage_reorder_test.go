@@ -14,13 +14,17 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
+// manageReorderCase describes one reorder scenario: highlight the queued goal
+// at selectIdx (0-based) in the manager selector and press key ("+"/"-").
+type manageReorderCase struct {
+	name      string
+	key       string // "+" or "-"
+	selectIdx int    // which queued goal to highlight (0-based)
+	wantOrder []int  // expected queue order as indices into original ids
+}
+
 func TestGoalCommand_ManageReorderKeyedRealSelector(t *testing.T) {
-	cases := []struct {
-		name      string
-		key       string // "+" or "-"
-		selectIdx int    // which queued goal to highlight (0-based)
-		wantOrder []int  // expected queue order as indices into original ids
-	}{
+	cases := []manageReorderCase{
 		{"plus moves second up", "+", 1, []int{1, 0, 2}},
 		{"minus moves first down", "-", 0, []int{1, 0, 2}},
 		{"plus on first is a no-op", "+", 0, []int{0, 1, 2}},
@@ -28,49 +32,71 @@ func TestGoalCommand_ManageReorderKeyedRealSelector(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, queue := newManagerCommand(t, "")
-			ids := appendQueued(t, queue, "g0", "g1", "g2")
-
-			ctx := testContext()
-			opens := 0
-			// Mimic the production host (internal/app wireInteractiveCallbacks):
-			// build a real selector, apply the keyed bindings, then drive it.
-			ctx.SelectOptionKeyedFunc = func(_ string, items []tui.SelectorItem, current string, keys tui.SelectorKeymap, cb func(string, bool)) {
-				opens++
-				if opens > 1 {
-					cb("", false) // close the reopened manager
-					return
-				}
-				result := make(chan string, 1)
-				sel := tui.NewSelector("Goal manager — execution order", items, current, result)
-				sel.SetKeymap(keys)
-				if !keys.ReorderMode {
-					t.Error("manager must open the selector in ReorderMode")
-				}
-				// Highlight the target queued goal. Manager rows are:
-				// [__add_first__, (no active), g0, g1, g2, __add_last__, __done__].
-				// Row 0 is the add-at-start sentinel, so goal selectIdx sits at row
-				// selectIdx+1 → press Down selectIdx+1 times. The TUI decodes
-				// terminal bytes into named keys (tui.KeyDown) and passes printable
-				// runes ("+"/"-") through unchanged.
-				for i := 0; i <= tc.selectIdx; i++ {
-					sel.HandleInput(tui.KeyDown)
-				}
-				sel.HandleInput(tc.key) // the real '+'/'-' printable key
-				select {
-				case v := <-result:
-					cb(v, v != "")
-				default:
-					t.Errorf("'%s' on a goal row produced no emit — reorder hotkey not firing", tc.key)
-					cb("", false)
-				}
-			}
-
-			if err := cmd.showQueueManager(ctx); err != nil {
-				t.Fatal(err)
-			}
-			assertQueueIDs(t, queue, ids, tc.wantOrder)
+			runManageReorderCase(t, tc)
 		})
+	}
+}
+
+func runManageReorderCase(t *testing.T, tc manageReorderCase) {
+	t.Helper()
+	cmd, queue := newManagerCommand(t, "")
+	ids := appendQueued(t, queue, "g0", "g1", "g2")
+
+	ctx := testContext()
+	ctx.SelectOptionKeyedFunc = reorderSelectorDriver(t, tc)
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertQueueIDs(t, queue, ids, tc.wantOrder)
+}
+
+// reorderSelectorDriver mimics the production host wiring (internal/app
+// wireInteractiveCallbacks): build a real selector from the manager rows,
+// apply the keyed bindings, then drive it. The first open highlights the
+// target row and presses the '+'/'-' key; the reopened manager closes
+// immediately.
+func reorderSelectorDriver(t *testing.T, tc manageReorderCase) func(string, []tui.SelectorItem, string, tui.SelectorKeymap, func(string, bool)) {
+	t.Helper()
+	opens := 0
+	return func(_ string, items []tui.SelectorItem, current string, keys tui.SelectorKeymap, cb func(string, bool)) {
+		opens++
+		if opens > 1 {
+			cb("", false) // close the reopened manager
+			return
+		}
+		result := make(chan string, 1)
+		sel := tui.NewSelector("Goal manager — execution order", items, current, result)
+		sel.SetKeymap(keys)
+		if !keys.ReorderMode {
+			t.Error("manager must open the selector in ReorderMode")
+		}
+		highlightManagerGoalRow(sel, tc.selectIdx)
+		sel.HandleInput(tc.key) // the real '+'/'-' printable key
+		emitSelectorResult(t, tc.key, result, cb)
+	}
+}
+
+// highlightManagerGoalRow presses Down until the target queued goal is
+// current: manager rows are [__add_first__, (no active), g0, g1, g2,
+// __add_last__, __done__], so goal selectIdx sits at row selectIdx+1 — press
+// Down selectIdx+1 times.
+func highlightManagerGoalRow(sel *tui.Selector, selectIdx int) {
+	for i := 0; i <= selectIdx; i++ {
+		sel.HandleInput(tui.KeyDown)
+	}
+}
+
+// emitSelectorResult forwards the selector emit to the host callback and fails
+// the test when a hotkey produced no emit at all.
+func emitSelectorResult(t *testing.T, key string, result <-chan string, cb func(string, bool)) {
+	t.Helper()
+	select {
+	case v := <-result:
+		cb(v, v != "")
+	default:
+		t.Errorf("'%s' on a goal row produced no emit — reorder hotkey not firing", key)
+		cb("", false)
 	}
 }
 

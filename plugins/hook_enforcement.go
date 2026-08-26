@@ -35,9 +35,9 @@ const HookEscapeEnv = "GOA_PLUGIN_HOOKS_APPROVED"
 // built per plugin scan and handed to the registry before any plugin script
 // runs. All methods are safe for concurrent use.
 type HookEnforcer struct {
-	store   *GrantStore
+	store    *GrantStore
 	headless bool
-	escape  bool // HookEscapeEnv=1 escape hatch
+	escape   bool // HookEscapeEnv=1 escape hatch
 
 	mu      sync.Mutex
 	decls   map[string]*PluginDef // discovered manifests by plugin id

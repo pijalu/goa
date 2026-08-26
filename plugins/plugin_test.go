@@ -470,3 +470,76 @@ func TestRegisterCompletion_GuardedWhenUnsupported(t *testing.T) {
 
 // compile-time shape check for fstest usage parity with other tests in pkg
 var _ fstest.MapFS
+
+// TestCompletionsFromExport covers the pure export→candidates conversion used
+// by buildCompletionWrapper: only an array of {value, description} maps
+// yields candidates; non-array shapes, non-map items, and entries whose value
+// is missing, nil-rendering ("<nil>"), or empty are dropped.
+func TestCompletionsFromExport(t *testing.T) {
+	tests := []struct {
+		name string
+		in   interface{}
+		want []Completion
+	}{
+		{
+			name: "nil input",
+			in:   nil,
+			want: []Completion{},
+		},
+		{
+			name: "non-array string",
+			in:   "not-an-array",
+			want: []Completion{},
+		},
+		{
+			name: "non-array bare map",
+			in:   map[string]interface{}{"value": "x"},
+			want: []Completion{},
+		},
+		{
+			name: "non-map items skipped",
+			in:   []interface{}{42, "str", nil},
+			want: []Completion{},
+		},
+		{
+			name: "missing value key dropped",
+			in:   []interface{}{map[string]interface{}{"description": "no value here"}},
+			want: []Completion{},
+		},
+		{
+			name: "nil value renders <nil> and dropped",
+			in:   []interface{}{map[string]interface{}{"value": nil}},
+			want: []Completion{},
+		},
+		{
+			name: "empty value dropped",
+			in:   []interface{}{map[string]interface{}{"value": ""}},
+			want: []Completion{},
+		},
+		{
+			name: "valid entries kept",
+			in: []interface{}{
+				map[string]interface{}{"value": "login", "description": "log in"},
+				map[string]interface{}{"value": "logout"},
+			},
+			want: []Completion{
+				{Value: "login", Description: "log in"},
+				{Value: "logout", Description: "<nil>"}, // absent description stringifies
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := completionsFromExport(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("completionsFromExport(%#v) = %#v, want %#v", tt.in, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("candidate[%d] = %#v, want %#v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

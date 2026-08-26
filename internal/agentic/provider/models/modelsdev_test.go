@@ -396,42 +396,47 @@ func TestModelsDevProviders_SurfaceAddableMetadata(t *testing.T) {
 
 	// Mapped provider: openai resolves to the catalog identity/base URL and the
 	// models.dev API override (responses), not the chat-completions fallback.
-	openai, ok := got["openai"]
-	if !ok {
-		t.Fatal("openai missing from ModelsDevProviders")
-	}
-	if openai.Identity != provider.ProviderOpenAI {
-		t.Errorf("openai Identity = %q, want %q", openai.Identity, provider.ProviderOpenAI)
-	}
+	openai := lookupAddable(t, got, "openai")
+	assertProviderFields(t, "openai", openai,
+		provider.ProviderOpenAI, "https://api.openai.com/v1", provider.ApiOpenAIResponses)
 	if openai.Name == "" {
 		t.Error("openai Name empty, want display name")
-	}
-	if openai.BaseURL != "https://api.openai.com/v1" {
-		t.Errorf("openai BaseURL = %q, want catalog base URL", openai.BaseURL)
-	}
-	if openai.API != provider.ApiOpenAIResponses {
-		t.Errorf("openai API = %q, want %q", openai.API, provider.ApiOpenAIResponses)
 	}
 
 	// Unmapped provider: tensorx synthesizes identity from the models.dev key
 	// and derives base URL/API from the provider metadata.
-	tx, ok := got["tensorx"]
-	if !ok {
-		t.Fatal("tensorx missing from ModelsDevProviders")
-	}
-	if tx.Identity != provider.Provider("tensorx") {
-		t.Errorf("tensorx Identity = %q, want %q", tx.Identity, provider.Provider("tensorx"))
-	}
+	tx := lookupAddable(t, got, "tensorx")
+	assertProviderFields(t, "tensorx", tx,
+		provider.Provider("tensorx"), "https://api.tensorx.ai/v1", provider.ApiOpenAICompletions)
 	if tx.Name != "TensorX" {
 		t.Errorf("tensorx Name = %q, want %q", tx.Name, "TensorX")
 	}
-	if tx.BaseURL != "https://api.tensorx.ai/v1" {
-		t.Errorf("tensorx BaseURL = %q, want %q", tx.BaseURL, "https://api.tensorx.ai/v1")
-	}
-	if tx.API != provider.ApiOpenAICompletions {
-		t.Errorf("tensorx API = %q, want %q", tx.API, provider.ApiOpenAICompletions)
-	}
 	if len(tx.ModelIDs) == 0 {
 		t.Error("tensorx ModelIDs empty, want tool-calling models")
+	}
+}
+
+// lookupAddable returns the enumerated addable provider by key or fails.
+func lookupAddable(t *testing.T, idx map[string]ModelsDevProvider, key string) ModelsDevProvider {
+	t.Helper()
+	p, ok := idx[key]
+	if !ok {
+		t.Fatalf("%s missing from ModelsDevProviders", key)
+	}
+	return p
+}
+
+// assertProviderFields requires the picker identity, base URL and wire API of
+// one addable provider to match the wanted values.
+func assertProviderFields(t *testing.T, key string, p ModelsDevProvider, wantIdentity provider.Provider, wantBaseURL string, wantAPI provider.Api) {
+	t.Helper()
+	if p.Identity != wantIdentity {
+		t.Errorf("%s Identity = %q, want %q", key, p.Identity, wantIdentity)
+	}
+	if p.BaseURL != wantBaseURL {
+		t.Errorf("%s BaseURL = %q, want %q", key, p.BaseURL, wantBaseURL)
+	}
+	if p.API != wantAPI {
+		t.Errorf("%s API = %q, want %q", key, p.API, wantAPI)
 	}
 }

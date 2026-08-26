@@ -168,6 +168,101 @@ func TestReportCompression_Lifespan(t *testing.T) {
 	}
 }
 
+// TestReportCompression_CoherentBasis reproduces the inconsistent /compress
+// report from production: before the compression the projected occupancy was
+// provider-anchored (UsagePercent=35 while EstimatedTokens/MaxTokens = 66%),
+// and after it the anchor was invalidated so UsagePercent fell back to the raw
+// heuristic (51% — equal to the estimate). The report must derive BOTH
+// percentages from the same series as the printed token counts
+// (EstimatedTokens), so "freed N tokens" can never sit next to a rising
+// percentage that came from a different measurement basis.
+func TestReportCompression_CoherentBasis(t *testing.T) {
+	buf := &strings.Builder{}
+	ctx := core.Context{OutputBuffer: buf}
+	before := &agentic.ContextStats{
+		EstimatedTokens: 695679,
+		ProjectedTokens: 367002,
+		MaxTokens:       1048576,
+		UsagePercent:    35, // provider-anchored projection, pre-invalidation
+		Messages:        4469,
+	}
+	after := &agentic.ContextStats{
+		EstimatedTokens: 542317,
+		ProjectedTokens: 542317,
+		MaxTokens:       1048576,
+		UsagePercent:    51, // heuristic fallback after invalidateContextUsageLocked
+		Messages:        4469,
+	}
+	reportCompression(ctx, "", before, after, 10*time.Millisecond)
+
+	out := buf.String()
+	for _, want := range []string{
+		"Context compressed (default):",
+		"695679 → 542317 tokens (freed 153362)",
+		"of 1048576 context window",
+		"Messages: 4469 → 4469",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q, got: %s", want, out)
+		}
+	}
+	// Percentages must match the printed token counts against the window:
+	// 66% before (695679/1048576) and 51% after (542317/1048576).
+	if !strings.Contains(out, " 66% → 51% of 1048576") {
+		t.Errorf("usage line not estimate-coherent, got: %s", out)
+	}
+	// The stale provider-anchored before-percent must not resurface.
+	if strings.Contains(out, "35%") {
+		t.Errorf("output leaks the cross-basis 35%% figure, got: %s", out)
+	}
+}
+
+// TestReportCompression_NothingToTrim pins the no-reduction branch to the same
+// estimate-based percentage convention as the freed-tokens branch.
+func TestReportCompression_NothingToTrim(t *testing.T) {
+	buf := &strings.Builder{}
+	ctx := core.Context{OutputBuffer: buf}
+	stats := &agentic.ContextStats{
+		EstimatedTokens: 500000,
+		ProjectedTokens: 250000,
+		MaxTokens:       1000000,
+		UsagePercent:    25, // projection disagrees with the estimate on purpose
+		Messages:        42,
+	}
+	reportCompression(ctx, "tool_elision", stats, stats, time.Millisecond)
+
+	out := buf.String()
+	if !strings.Contains(out, "(nothing to trim)") {
+		t.Errorf("expected nothing-to-trim notice, got: %s", out)
+	}
+	if !strings.Contains(out, "50% usage") { // 500000/1000000, not the projected 25%
+		t.Errorf("usage percent not derived from estimated tokens, got: %s", out)
+	}
+}
+
+// TestPctOf covers the percentage helper's arithmetic and degenerate window.
+func TestPctOf(t *testing.T) {
+	tests := []struct {
+		name   string
+		tokens int
+		max    int
+		want   string
+	}{
+		{"zero window", 123456, 0, "?"},
+		{"negative window", 1, -5, "?"},
+		{"floor division", 54, 100, "54"},
+		{"rounds down", 549, 1000, "54"},
+		{"empty", 0, 1000, "0"},
+		{"over full", 1100000, 1000000, "110"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pctOf(tt.tokens, tt.max); got != tt.want {
+				t.Errorf("pctOf(%d, %d) = %q, want %q", tt.tokens, tt.max, got, tt.want)
+			}
+		})
+	}
+}
 // TestCompressCommand_AsyncHint verifies that LLM-backed strategies (summarize,
 // hybrid, default) opt into async execution while in-memory strategies stay
 // synchronous.

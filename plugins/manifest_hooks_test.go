@@ -79,9 +79,22 @@ func TestLoadManifest_HooksYAML(t *testing.T) {
 		wantErr string
 		check   func(t *testing.T, def *PluginDef) // only on success
 	}{
-		{
-			name: "full schema",
-			yaml: `
+		{name: "full schema", yaml: fullSchemaManifestYAML, check: checkFullSchemaHooks},
+		{name: "unknown hook point", yaml: "id: m6\nname: P\nhooks:\n  - point: bogus\n    mode: notify\n", wantErr: "unknown point"},
+		{name: "bad mode", yaml: "id: m6\nname: P\nhooks:\n  - point: tool-call:post\n    mode: deny\n", wantErr: "mode must be"},
+		{name: "duplicate declaration", yaml: "id: m6\nname: P\nhooks:\n  - point: tool-call:post\n    mode: notify\n  - point: tool-call:post\n    mode: notify\n", wantErr: "duplicate"},
+		{name: "unknown permission", yaml: "id: m6\nname: P\npermissions: [sudo]\n", wantErr: "unknown permission"},
+		{name: "still validates base fields", yaml: "name: No ID\nhooks:\n  - point: tool-call:post\n    mode: notify\n", wantErr: "missing id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runManifestCase(t, tt.yaml, tt.wantErr, tt.check)
+		})
+	}
+}
+
+// fullSchemaManifestYAML exercises every manifest field relevant to hooks.
+const fullSchemaManifestYAML = `
 id: m6
 name: M6 Plugin
 version: 1.2.3
@@ -92,49 +105,52 @@ hooks:
     description: Redact AWS keys
   - point: tool-call:post
     mode: notify
-`,
-			check: func(t *testing.T, def *PluginDef) {
-				if len(def.Hooks) != 2 {
-					t.Fatalf("want 2 hooks, got %d", len(def.Hooks))
-				}
-				h := def.Hooks[0]
-				if h.Point != "tool-call:pre" || h.Mode != "intercept" || h.Description != "Redact AWS keys" {
-					t.Errorf("hook[0] mismatch: %+v", h)
-				}
-				if def.Hooks[1].Mode != "notify" {
-					t.Errorf("hook[1] mode: %q", def.Hooks[1].Mode)
-				}
-				if len(def.Permissions) != 1 || def.Permissions[0] != "provider-keys" {
-					t.Errorf("permissions: %v", def.Permissions)
-				}
-			},
-		},
-		{name: "unknown hook point", yaml: "id: m6\nname: P\nhooks:\n  - point: bogus\n    mode: notify\n", wantErr: "unknown point"},
-		{name: "bad mode", yaml: "id: m6\nname: P\nhooks:\n  - point: tool-call:post\n    mode: deny\n", wantErr: "mode must be"},
-		{name: "duplicate declaration", yaml: "id: m6\nname: P\nhooks:\n  - point: tool-call:post\n    mode: notify\n  - point: tool-call:post\n    mode: notify\n", wantErr: "duplicate"},
-		{name: "unknown permission", yaml: "id: m6\nname: P\npermissions: [sudo]\n", wantErr: "unknown permission"},
-		{name: "still validates base fields", yaml: "name: No ID\nhooks:\n  - point: tool-call:post\n    mode: notify\n", wantErr: "missing id"},
+`
+
+// runManifestCase writes yaml to a temp manifest, loads it and either expects
+// an error containing wantErr or runs check against the parsed definition.
+func runManifestCase(t *testing.T, yaml, wantErr string, check func(t *testing.T, def *PluginDef)) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "plugin.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "plugin.yaml")
-			if err := os.WriteFile(path, []byte(tt.yaml), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			def, err := loadManifest(path)
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("loadManifest: %v", err)
-			}
-			if tt.check != nil {
-				tt.check(t, def)
-			}
-		})
+	def, err := loadManifest(path)
+	if wantErr != "" {
+		requireManifestError(t, err, wantErr)
+		return
+	}
+	if err != nil {
+		t.Fatalf("loadManifest: %v", err)
+	}
+	if check != nil {
+		check(t, def)
+	}
+}
+
+// requireManifestError fails unless err contains wantErr.
+func requireManifestError(t *testing.T, err error, wantErr string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("expected error containing %q, got: %v", wantErr, err)
+	}
+}
+
+// checkFullSchemaHooks asserts the parse result of fullSchemaManifestYAML.
+func checkFullSchemaHooks(t *testing.T, def *PluginDef) {
+	t.Helper()
+	if len(def.Hooks) != 2 {
+		t.Fatalf("want 2 hooks, got %d", len(def.Hooks))
+	}
+	h := def.Hooks[0]
+	if h.Point != "tool-call:pre" || h.Mode != "intercept" || h.Description != "Redact AWS keys" {
+		t.Errorf("hook[0] mismatch: %+v", h)
+	}
+	if def.Hooks[1].Mode != "notify" {
+		t.Errorf("hook[1] mode: %q", def.Hooks[1].Mode)
+	}
+	if len(def.Permissions) != 1 || def.Permissions[0] != "provider-keys" {
+		t.Errorf("permissions: %v", def.Permissions)
 	}
 }
 

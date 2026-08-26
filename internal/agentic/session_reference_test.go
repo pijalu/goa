@@ -56,6 +56,47 @@ func projectAll(events []OutputEvent) ([]ProjectedMessage, ProjectionStats) {
 	return p.Surface()
 }
 
+// assertProjected requires one projected message to carry the wanted role and
+// exact content.
+func assertProjected(t *testing.T, label string, m ProjectedMessage, wantRole Role, wantContent string) {
+	t.Helper()
+	if m.Role != wantRole || m.Content != wantContent {
+		t.Errorf("%s = %+v, want %v %q", label, m, wantRole, wantContent)
+	}
+}
+
+// assertProjectedContains requires the content to carry every listed substring
+// (e.g. the compacted-summary frame of a checkpoint).
+func assertProjectedContains(t *testing.T, what, content string, want ...string) {
+	t.Helper()
+	for _, w := range want {
+		if !strings.Contains(content, w) {
+			t.Errorf("%s missing %q: %q", what, w, content)
+		}
+	}
+}
+
+// assertProjectedExcludes fails when any surfaced message carries a forbidden
+// substring (thinking/tool-result/shadowed-text leak detection).
+func assertProjectedExcludes(t *testing.T, msgs []ProjectedMessage, forbidden ...string) {
+	t.Helper()
+	for _, m := range msgs {
+		for _, f := range forbidden {
+			if strings.Contains(m.Content, f) {
+				t.Errorf("projected content leaked %q into surface: %q", f, m.Content)
+			}
+		}
+	}
+}
+
+// assertSurfaceSize pins the projected message count.
+func assertSurfaceSize(t *testing.T, msgs []ProjectedMessage, want int) {
+	t.Helper()
+	if len(msgs) != want {
+		t.Fatalf("len(msgs) = %d, want %d: %+v", len(msgs), want, msgs)
+	}
+}
+
 func TestSurfaceProjector_ProjectsUserAndAssistantTextOnly(t *testing.T) {
 	msgs, stats := projectAll([]OutputEvent{
 		projUser("first user"),
@@ -68,26 +109,14 @@ func TestSurfaceProjector_ProjectsUserAndAssistantTextOnly(t *testing.T) {
 		projEnd(),
 	})
 
-	if len(msgs) != 3 {
-		t.Fatalf("len(msgs) = %d, want 3: %+v", len(msgs), msgs)
-	}
-	if msgs[0].Role != User || msgs[0].Content != "first user" {
-		t.Errorf("msgs[0] = %+v, want user 'first user'", msgs[0])
-	}
-	if msgs[1].Role != Assistant || msgs[1].Content != "hello world" {
-		t.Errorf("msgs[1] = %+v, want assistant 'hello world' (deltas accumulated)", msgs[1])
-	}
-	if msgs[2].Role != User || msgs[2].Content != "second user" {
-		t.Errorf("msgs[2] = %+v, want user 'second user'", msgs[2])
-	}
+	assertSurfaceSize(t, msgs, 3)
+	assertProjected(t, "msgs[0]", msgs[0], User, "first user")
+	assertProjected(t, "msgs[1]", msgs[1], Assistant, "hello world") // deltas accumulated
+	assertProjected(t, "msgs[2]", msgs[2], User, "second user")
 	if stats.Folded || stats.OmittedMessages != 0 || stats.Truncated {
 		t.Errorf("stats = %+v, want no folding/omission/truncation", stats)
 	}
-	for _, m := range msgs {
-		if strings.Contains(m.Content, "secret reasoning") || strings.Contains(m.Content, "big tool result") {
-			t.Errorf("projected thinking/tool content: %q", m.Content)
-		}
-	}
+	assertProjectedExcludes(t, msgs, "secret reasoning", "big tool result")
 }
 
 func TestSurfaceProjector_CheckpointAwareFold(t *testing.T) {
@@ -111,28 +140,17 @@ func TestSurfaceProjector_CheckpointAwareFold(t *testing.T) {
 	}
 	// Surface: checkpoint user (compacted-summary frame) + assistant summary +
 	// retained later conversation. Shadowed text must NOT be restored.
-	if len(msgs) != 4 {
-		t.Fatalf("len(msgs) = %d, want 4: %+v", len(msgs), msgs)
-	}
+	assertSurfaceSize(t, msgs, 4)
 	checkpoint := msgs[0]
 	if checkpoint.Role != User || !checkpoint.Checkpoint {
 		t.Fatalf("msgs[0] = %+v, want checkpoint user", checkpoint)
 	}
-	if !strings.Contains(checkpoint.Content, compactSummaryOpenTag) ||
-		!strings.Contains(checkpoint.Content, "SUMMARY OF THE EARLIER CONVERSATION") {
-		t.Errorf("checkpoint content missing compacted-summary frame: %q", checkpoint.Content)
-	}
-	if msgs[1].Role != Assistant || msgs[1].Content != "SUMMARY OF THE EARLIER CONVERSATION" {
-		t.Errorf("msgs[1] = %+v, want assistant summary", msgs[1])
-	}
-	if msgs[2].Content != "retained later user" || msgs[3].Content != "retained later assistant" {
-		t.Errorf("retained later conversation wrong: %+v", msgs[2:])
-	}
-	for _, m := range msgs {
-		if strings.Contains(m.Content, "shadowed") {
-			t.Errorf("shadowed text leaked into projection: %q", m.Content)
-		}
-	}
+	assertProjectedContains(t, "checkpoint content", checkpoint.Content,
+		compactSummaryOpenTag, "SUMMARY OF THE EARLIER CONVERSATION")
+	assertProjected(t, "msgs[1]", msgs[1], Assistant, "SUMMARY OF THE EARLIER CONVERSATION")
+	assertProjected(t, "msgs[2]", msgs[2], User, "retained later user")
+	assertProjected(t, "msgs[3]", msgs[3], Assistant, "retained later assistant")
+	assertProjectedExcludes(t, msgs, "shadowed")
 }
 
 func TestSurfaceProjector_LatestCheckpointWins(t *testing.T) {

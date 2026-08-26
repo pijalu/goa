@@ -150,20 +150,28 @@ func declarationEnd(lines []string, start int, signature string) int {
 	return len(lines)
 }
 
-// ChunkSource returns semantic regions and bounded windows when no declaration
-// can be extracted. Every returned range is clamped to the source.
-func ChunkSource(path, source string, analyzer CodeAnalyzer, window, overlap int) []DocumentMeta {
+// chunkParams are the bounded window settings used when no declaration can
+// be extracted.
+type chunkParams struct {
+	window  int
+	overlap int
+}
+
+// normalizeChunkParams applies the fallbacks: window defaults to 120 lines
+// and overlap to 20 lines when unset or not strictly smaller than window.
+func normalizeChunkParams(window, overlap int) chunkParams {
 	if window <= 0 {
 		window = 120
 	}
 	if overlap < 0 || overlap >= window {
 		overlap = 20
 	}
-	if analyzer == nil {
-		analyzer = lexicalAnalyzer{}
-	}
-	regions, _ := analyzer.Analyze(path, source)
-	lines := strings.Split(source, "\n")
+	return chunkParams{window: window, overlap: overlap}
+}
+
+// regionChunks converts analyzer regions into documents clamped to source
+// bounds; ranges outside the file are skipped.
+func regionChunks(path, source string, lines []string, regions []CodeRegion) []DocumentMeta {
 	chunks := make([]DocumentMeta, 0, len(regions)+1)
 	for _, r := range regions {
 		if r.StartLine < 1 || r.StartLine > len(lines) {
@@ -180,21 +188,38 @@ func ChunkSource(path, source string, analyzer CodeAnalyzer, window, overlap int
 		doc.Imports = importsForSource(source)
 		chunks = append(chunks, doc)
 	}
-	if len(chunks) > 0 {
-		return chunks
-	}
+	return chunks
+}
+
+// windowChunks slides a fixed-size overlapping window across all lines; this
+// is the fallback for sources with no extractable declarations.
+func windowChunks(path string, lines []string, window, overlap int) []DocumentMeta {
+	chunks := make([]DocumentMeta, 0)
 	step := window - overlap
 	for start := 1; start <= len(lines); start += step {
-		end := start + window - 1
-		if end > len(lines) {
-			end = len(lines)
-		}
+		end := min(start+window-1, len(lines))
 		chunks = append(chunks, makeDocument(path, LanguageForPath(path), "window", "", "", "", start, end, strings.Join(lines[start-1:end], "\n")))
 		if end == len(lines) {
 			break
 		}
 	}
 	return chunks
+}
+
+// ChunkSource returns semantic regions and bounded windows when no declaration
+// can be extracted. Every returned range is clamped to the source.
+func ChunkSource(path, source string, analyzer CodeAnalyzer, window, overlap int) []DocumentMeta {
+	params := normalizeChunkParams(window, overlap)
+	if analyzer == nil {
+		analyzer = lexicalAnalyzer{}
+	}
+	regions, _ := analyzer.Analyze(path, source)
+	lines := strings.Split(source, "\n")
+	chunks := regionChunks(path, source, lines, regions)
+	if len(chunks) > 0 {
+		return chunks
+	}
+	return windowChunks(path, lines, params.window, params.overlap)
 }
 func importsForSource(source string) string {
 	matches := importRE.FindAllString(source, -1)

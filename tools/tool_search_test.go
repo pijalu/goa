@@ -65,14 +65,6 @@ func TestDefaultToolsTodoAndVerifyAreDeferred(t *testing.T) {
 	}
 }
 
-func schemaNames(tools []agentic.Tool) []string {
-	names := make([]string, len(tools))
-	for i, tool := range tools {
-		names[i] = tool.Schema().Name
-	}
-	return names
-}
-
 func containsName(names []string, want string) bool {
 	for _, name := range names {
 		if name == want {

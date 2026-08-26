@@ -209,29 +209,8 @@ func (t *BashTool) Execute(input string) (string, error) {
 // caller's context so a cancelled turn (Stop() / user cancellation) kills the
 // running process tree instead of waiting for the timeout to elapse.
 func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, error) {
-	var p bashParams
-	if err := json.Unmarshal([]byte(input), &p); err != nil {
-		return "", toolErr("bash", "invalid_input", fmt.Sprintf("Cannot parse parameters: %v", err))
-	}
-	if p.Command == "" {
-		return "", toolErr("bash", "missing_command", "No command provided")
-	}
-	if err := t.validateEscalationInput(&p); err != nil {
-		return "", err
-	}
-
-	if err := t.checkBlocked(p.Command); err != nil {
-		return "", err
-	}
-	if len(t.Allowed) > 0 {
-		if err := t.checkAllowed(p.Command); err != nil {
-			return "", err
-		}
-	}
-	if err := t.checkAnalyzed(p.Command); err != nil {
-		return "", err
-	}
-	if err := t.enforceConfinement(ctx, &p); err != nil {
+	p, err := t.validateInput(ctx, input)
+	if err != nil {
 		return "", err
 	}
 
@@ -240,8 +219,48 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 	// edit tool next time. Never block on this — bash is sometimes the only way.
 	fileEditHint := t.fileEditHint(p.Command)
 
-	output, duration, timedOut, tooLarge, err := t.runCommand(ctx, &p)
+	output, duration, timedOut, tooLarge, runErr := t.runCommand(ctx, p)
+	return t.reportResult(ctx, p, fileEditHint, output, duration, timedOut, tooLarge, runErr)
+}
 
+// validateInput parses and gates a bash call before anything runs. Every
+// guard fails closed with an early ToolError return: JSON decoding, required
+// command field, escalation-field pairing, blocked/allowed command lists,
+// optional AST analysis, and project-directory confinement.
+func (t *BashTool) validateInput(ctx context.Context, input string) (*bashParams, error) {
+	var p bashParams
+	if err := json.Unmarshal([]byte(input), &p); err != nil {
+		return nil, toolErr("bash", "invalid_input", fmt.Sprintf("Cannot parse parameters: %v", err))
+	}
+	if p.Command == "" {
+		return nil, toolErr("bash", "missing_command", "No command provided")
+	}
+	if err := t.validateEscalationInput(&p); err != nil {
+		return nil, err
+	}
+	if err := t.checkBlocked(p.Command); err != nil {
+		return nil, err
+	}
+	if len(t.Allowed) > 0 {
+		if err := t.checkAllowed(p.Command); err != nil {
+			return nil, err
+		}
+	}
+	if err := t.checkAnalyzed(p.Command); err != nil {
+		return nil, err
+	}
+	if err := t.enforceConfinement(ctx, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// reportResult applies the post-run precedence ladder exactly:
+// cancelled beats timeout beats tooLarge. A cancelled turn wins over every
+// outcome so a stopped turn stops promptly instead of emitting a timeout
+// bubble; a timeout wins over an oversized capture; only otherwise is the
+// captured output reported, with the non-blocking file-edit hint prepended.
+func (t *BashTool) reportResult(ctx context.Context, p *bashParams, fileEditHint string, output []byte, duration time.Duration, timedOut, tooLarge bool, runErr error) (string, error) {
 	// A cancelled turn takes precedence over the timeout/exit reporting so
 	// the agent stops promptly instead of emitting a timeout bubble.
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -251,7 +270,7 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 		return "", timeoutErr(normalizeBashTimeout(p.Timeout))
 	}
 
-	out, fmtErr := t.formatOutput(&p, output, err, duration)
+	out, fmtErr := t.formatOutput(p, output, runErr, duration)
 	if tooLarge {
 		return "", outputTooLargeErr(t.captureLimit())
 	}

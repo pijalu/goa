@@ -22,14 +22,23 @@ func TestGrantStore_RoundTripAndPreservesOthers(t *testing.T) {
 		{Point: "tool-call:post", Mode: "notify"},
 	}}
 	defB := &PluginDef{ID: "b", Name: "B", Version: "2.0.0"}
+	approveGrantFor(t, store, defA, []GrantHook{{Point: "tool-call:post", Mode: "notify"}})
+	approveGrantFor(t, store, defB, nil)
+	assertGrantA(t, store, defA)
+	assertGrantBPreservesA(t, store)
+}
 
-	if err := store.Approve(defA.ID, NewPluginGrant(defA, []GrantHook{{Point: "tool-call:post", Mode: "notify"}})); err != nil {
-		t.Fatalf("Approve a: %v", err)
+// approveGrantFor approves the plugin's current identity with hooks.
+func approveGrantFor(t *testing.T, store *GrantStore, def *PluginDef, hooks []GrantHook) {
+	t.Helper()
+	if err := store.Approve(def.ID, NewPluginGrant(def, hooks)); err != nil {
+		t.Fatalf("Approve %s: %v", def.ID, err)
 	}
-	if err := store.Approve(defB.ID, NewPluginGrant(defB, nil)); err != nil {
-		t.Fatalf("Approve b: %v", err)
-	}
+}
 
+// assertGrantA checks a's stored grant round-trips exactly.
+func assertGrantA(t *testing.T, store *GrantStore, defA *PluginDef) {
+	t.Helper()
 	gA, okA, err := store.Get("a")
 	if err != nil || !okA {
 		t.Fatalf("Get a: ok=%v err=%v", okA, err)
@@ -43,8 +52,11 @@ func TestGrantStore_RoundTripAndPreservesOthers(t *testing.T) {
 	if gA.ApprovedAt.IsZero() {
 		t.Errorf("ApprovedAt must be stamped")
 	}
+}
 
-	// b's approval must not have clobbered a.
+// assertGrantBPreservesA checks b's grant exists intact and did not clobber a.
+func assertGrantBPreservesA(t *testing.T, store *GrantStore) {
+	t.Helper()
 	gB, okB, _ := store.Get("b")
 	if !okB || gB.Version != "2.0.0" || len(gB.ApprovedHooks) != 0 {
 		t.Fatalf("grant b mismatch: ok=%v %+v", okB, gB)

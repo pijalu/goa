@@ -19,7 +19,7 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 	combined := combineContentThinking(content, thinking)
 	// DSML is recovered unconditionally; the generic XML forms only when the
 	// operator opted in to healing malformed local-model output.
-	if !hasDSMLSignal(combined) && !(a.cfg.AutoHealToolCalls && hasToolSignal(combined)) {
+	if !hasDSMLSignal(combined) && !(a.AutoHealEnabled() && hasToolSignal(combined)) {
 		a.warnUnrecoveredInvokeCall(combined)
 		return false
 	}
@@ -32,7 +32,7 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 	// Parse path: full multi-form recovery when auto-heal is on; DSML-only when
 	// it is off (generic XML healing stays opt-in, DSML never is).
 	var calls []parsedToolCall
-	if a.cfg.AutoHealToolCalls {
+	if a.AutoHealEnabled() {
 		calls = parseToolCallsFromText(combined, 0, true)
 	} else {
 		calls = parseDSMLToolCallsFromText(combined, 0, true)
@@ -103,7 +103,7 @@ func (a *Agent) dispatchHealedCall(controller *ToolLoopController, pc parsedTool
 // token). Only a closed block naming a REGISTERED tool with parseable
 // parameters warns, so prose merely discussing the XML shape stays quiet.
 func (a *Agent) warnUnrecoveredInvokeCall(combined string) {
-	if a.cfg.AutoHealToolCalls || len(a.bufferedToolCalls) > 0 {
+	if a.AutoHealEnabled() || len(a.bufferedToolCalls) > 0 {
 		return
 	}
 	sc := &toolCallScanner{content: combined, allowIncomplete: false}

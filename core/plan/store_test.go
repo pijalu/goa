@@ -5,6 +5,7 @@
 package plan
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -21,29 +22,16 @@ func TestStoreCreate(t *testing.T) {
 	defer s.Close()
 
 	// events.jsonl has 1 line (plan_created).
-	data, err := os.ReadFile(filepath.Join(s.dir, "events.jsonl"))
+	events, err := os.ReadFile(filepath.Join(s.dir, "events.jsonl"))
 	if err != nil {
 		t.Fatalf("read events.jsonl: %v", err)
 	}
-	lineCount := 0
-	for _, b := range data {
-		if b == '\n' {
-			lineCount++
-		}
-	}
-	if lineCount != 1 {
-		t.Fatalf("expected 1 line in events.jsonl, got %d", lineCount)
+	if lines := bytes.Count(events, []byte{'\n'}); lines != 1 {
+		t.Fatalf("expected 1 line in events.jsonl, got %d", lines)
 	}
 
 	// plan.json matches in-memory plan.
-	var snapshot Plan
-	snapData, err := os.ReadFile(filepath.Join(s.dir, "plan.json"))
-	if err != nil {
-		t.Fatalf("read plan.json: %v", err)
-	}
-	if err := json.Unmarshal(snapData, &snapshot); err != nil {
-		t.Fatalf("unmarshal plan.json: %v", err)
-	}
+	snapshot := readPlanSnapshot(t, s)
 	if snapshot.ID != s.id {
 		t.Errorf("plan.json ID = %q, want %q", snapshot.ID, s.id)
 	}
@@ -61,6 +49,20 @@ func TestStoreCreate(t *testing.T) {
 	if s.plan.Status != PlanDraft {
 		t.Errorf("in-memory Status = %q", s.plan.Status)
 	}
+}
+
+// readPlanSnapshot loads and unmarshals the store's plan.json.
+func readPlanSnapshot(t *testing.T, s *Store) Plan {
+	t.Helper()
+	snapData, err := os.ReadFile(filepath.Join(s.dir, "plan.json"))
+	if err != nil {
+		t.Fatalf("read plan.json: %v", err)
+	}
+	var snapshot Plan
+	if err := json.Unmarshal(snapData, &snapshot); err != nil {
+		t.Fatalf("unmarshal plan.json: %v", err)
+	}
+	return snapshot
 }
 
 func TestStoreCreateUniqueName(t *testing.T) {

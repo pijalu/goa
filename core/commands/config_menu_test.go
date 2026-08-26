@@ -610,6 +610,20 @@ func TestConfigMenu_EscReturnsToPreviousPage(t *testing.T) {
 	}
 }
 
+// assertMenuOptions asserts the recorded selector shows exactly the wanted
+// option values, in order.
+func assertMenuOptions(t *testing.T, sr *selectRecorder, want []string) {
+	t.Helper()
+	if len(sr.options) != len(want) {
+		t.Fatalf("expected %d items, got %d", len(want), len(sr.options))
+	}
+	for i, w := range want {
+		if sr.options[i].Value != w {
+			t.Errorf("item[%d].Value = %q, want %q", i, sr.options[i].Value, w)
+		}
+	}
+}
+
 func TestConfigMenu_LoopDetectionToggle(t *testing.T) {
 	cfg := &config.Config{}
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
@@ -621,15 +635,7 @@ func TestConfigMenu_LoopDetectionToggle(t *testing.T) {
 	if sr.title != "Loop detection settings:" {
 		t.Fatalf("expected loop detection menu, got %q", sr.title)
 	}
-	want := []string{"think_loop", "tool_loop", "stream_loop", "thinking_stall", "thresholds"}
-	if len(sr.options) != len(want) {
-		t.Fatalf("expected %d loop detection items, got %d", len(want), len(sr.options))
-	}
-	for i, w := range want {
-		if sr.options[i].Value != w {
-			t.Errorf("item[%d].Value = %q, want %q", i, sr.options[i].Value, w)
-		}
-	}
+	assertMenuOptions(t, sr, []string{"think_loop", "tool_loop", "stream_loop", "thinking_stall", "thresholds"})
 
 	// Thinking-loop detection starts enabled.
 	if sr.options[0].Description != "on" {
@@ -644,15 +650,7 @@ func TestConfigMenu_LoopDetectionToggle(t *testing.T) {
 	if sr.title != "Change thinking-loop detection:" {
 		t.Fatalf("expected action chooser, got %q", sr.title)
 	}
-	wantActions := []string{"temp_off", "persist_off"}
-	if len(sr.options) != len(wantActions) {
-		t.Fatalf("expected %d action items, got %d", len(wantActions), len(sr.options))
-	}
-	for i, w := range wantActions {
-		if sr.options[i].Value != w {
-			t.Errorf("action[%d].Value = %q, want %q", i, sr.options[i].Value, w)
-		}
-	}
+	assertMenuOptions(t, sr, []string{"temp_off", "persist_off"})
 
 	// Choose session-only disable.
 	sr.onSel("temp_off", true)

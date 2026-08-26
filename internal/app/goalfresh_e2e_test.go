@@ -96,22 +96,18 @@ func newMockLLM(t *testing.T) (*llmRecorder, string) {
 	return rec, srv.URL + "/v1/chat/completions"
 }
 
-// TestGoalFreshContext_EndToEnd_ResetsConversationAndID drives the full chain
-// GoalDriver → agentManagerRunner.RunFresh → agentic.Agent → provider against
-// a mock LLM, and validates that switching to a fresh-context goal:
-//
-//  1. clears the prior conversation out of the provider request (the model
-//     must not see pre-goal messages),
-//  2. rotates the conversation identity (StreamOptions.SessionID AND the
-//     prompt_cache_key stamped on the request),
-//  3. keeps appending WITHIN the clean context on subsequent goal turns
-//     without rotating again (append-only inside the new conversation).
-//
-// Regression guard for the fresh-context begin path (Issue 8 semantics).
-func TestGoalFreshContext_EndToEnd_ResetsConversationAndID(t *testing.T) {
-	if testing.Short() {
-		t.Skip("end-to-end mock-LLM test")
-	}
+// goalFreshFixture bundles the live agent stack the end-to-end test drives.
+type goalFreshFixture struct {
+	rec    *llmRecorder
+	am     *core.AgentManager
+	runner *agentManagerRunner
+}
+
+// startGoalFreshFixture builds a full AgentManager stack against the mock LLM
+// and starts its session. It returns the fixture plus the pre-goal
+// conversation ID so identity rotation can be observed later.
+func startGoalFreshFixture(t *testing.T) (*goalFreshFixture, string) {
+	t.Helper()
 	rec, endpoint := newMockLLM(t)
 
 	cfg := &config.Config{}
@@ -132,15 +128,26 @@ func TestGoalFreshContext_EndToEnd_ResetsConversationAndID(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	sessionBeforeReset := am.CurrentAgent().StreamOptions().SessionID
+	sessionIDBeforeReset := am.CurrentAgent().StreamOptions().SessionID
+	return &goalFreshFixture{
+		rec:    rec,
+		am:     am,
+		runner: &agentManagerRunner{agentMgr: am},
+	}, sessionIDBeforeReset
+}
 
-	runner := &agentManagerRunner{agentMgr: am}
+// beginFreshContextGoal runs the pre-goal turn, creates the fresh-context
+// goal, then drives it until the mock LLM has served three requests (pre-goal
+// turn + fresh begin + fresh continue), finally cancelling and requiring a
+// clean driver exit.
+func beginFreshContextGoal(t *testing.T, fx *goalFreshFixture) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Turn 0: an ordinary pre-goal turn — the mock LLM records the FULL
 	// conversation including the old question, establishing baseline key K0.
-	if err := runner.Run(ctx, "old question about quantum widgets"); err != nil {
+	if err := fx.runner.Run(ctx, "old question about quantum widgets"); err != nil {
 		t.Fatalf("pre-goal Run: %v", err)
 	}
 
@@ -152,13 +159,19 @@ func TestGoalFreshContext_EndToEnd_ResetsConversationAndID(t *testing.T) {
 		t.Fatalf("CreateGoal: %v", err)
 	}
 
-	driver := &core.GoalDriver{Mode: mode, Agent: runner}
+	driver := &core.GoalDriver{Mode: mode, Agent: fx.runner}
 	driveErr := make(chan error, 1)
 	go func() { driveErr <- driver.Drive(ctx) }()
+	awaitFreshDriveRequests(t, fx.rec.done, cancel, driveErr)
+}
 
-	// Wait for two continuation turns (fresh begin + fresh continue), then stop.
+// awaitFreshDriveRequests paces the drive: it waits for the third recorded
+// request (or fails fast if Drive ends early / hangs), cancels the context,
+// and requires the driver goroutine to exit promptly afterwards.
+func awaitFreshDriveRequests(t *testing.T, done <-chan struct{}, cancel context.CancelFunc, driveErr <-chan error) {
+	t.Helper()
 	select {
-	case <-rec.done:
+	case <-done:
 	case err := <-driveErr:
 		t.Fatalf("Drive ended early: %v", err)
 	case <-time.After(15 * time.Second):
@@ -172,46 +185,55 @@ func TestGoalFreshContext_EndToEnd_ResetsConversationAndID(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Drive did not exit after cancel")
 	}
+}
 
-	reqs := rec.snapshot()
-	if len(reqs) < 3 {
-		t.Fatalf("recorded %d requests, want >= 3", len(reqs))
-	}
-	r0, r1, r2 := reqs[0], reqs[1], reqs[2]
-
-	// --- Request 0: the pre-goal turn carries the old conversation.
+// assertPreGoalRequestCarriesOldConversation checks request 0: the pre-goal
+// turn carries the old user input under a stamped cache key.
+func assertPreGoalRequestCarriesOldConversation(t *testing.T, r0 recordedRequest) {
+	t.Helper()
 	if !strings.Contains(r0.text(), "old question about quantum widgets") {
 		t.Errorf("request 0 missing pre-goal user input:\n%s", r0.text())
 	}
 	if r0.cacheKey == "" {
 		t.Error("request 0 carried no prompt_cache_key; rotation cannot be observed")
 	}
+}
 
-	// --- Request 1 (fresh begin): clean context, NEW identity.
-	if strings.Contains(r1.text(), "old question about quantum widgets") {
-		t.Errorf("fresh-context request still contains the PRE-GOAL conversation:\n%s", r1.text())
+// assertFreshBeginRotatesConversationAndID checks request 1 (fresh begin): a
+// clean context that dropped all pre-goal content, carried the continuation
+// prompt with a visible reset note, rotated both prompt_cache_key and the
+// manager-level SessionID.
+func assertFreshBeginRotatesConversationAndID(t *testing.T, am *core.AgentManager, sessionBeforeReset string, r0, r1 recordedRequest) {
+	t.Helper()
+	text := r1.text()
+	if strings.Contains(text, "old question about quantum widgets") {
+		t.Errorf("fresh-context request still contains the PRE-GOAL conversation:\n%s", text)
 	}
-	if strings.Contains(r1.text(), "reply-1") {
-		t.Errorf("fresh-context request still contains the PRE-GOAL assistant reply:\n%s", r1.text())
+	if strings.Contains(text, "reply-1") {
+		t.Errorf("fresh-context request still contains the PRE-GOAL assistant reply:\n%s", text)
 	}
 	const continuationMark = "Continue working toward the active goal"
-	if !strings.Contains(r1.text(), continuationMark) {
-		t.Errorf("fresh-context request missing the continuation prompt:\n%s", r1.text())
+	if !strings.Contains(text, continuationMark) {
+		t.Errorf("fresh-context request missing the continuation prompt:\n%s", text)
 	}
-	if !strings.Contains(r1.text(), "Context reset") {
-		t.Errorf("fresh-context request missing the visible reset boundary note:\n%s", r1.text())
+	if !strings.Contains(text, "Context reset") {
+		t.Errorf("fresh-context request missing the visible reset boundary note:\n%s", text)
 	}
 	if r1.cacheKey == "" || r1.cacheKey == r0.cacheKey {
 		t.Errorf("prompt_cache_key did not rotate on fresh begin: before=%q after=%q", r0.cacheKey, r1.cacheKey)
 	}
 
-	// --- Conversation ID rotated at the manager level too (Hard Rule 7).
+	// Conversation ID rotated at the manager level too (Hard Rule 7).
 	if sessionAfter := am.CurrentAgent().StreamOptions().SessionID; sessionAfter == "" || sessionAfter == sessionBeforeReset {
 		t.Errorf("SessionID = %q, want a new non-empty id distinct from %q", sessionAfter, sessionBeforeReset)
 	}
+}
 
-	// --- Request 2 (fresh continue): append-only INSIDE the clean context,
-	// same identity (no re-rotation), includes the first goal turn's reply.
+// assertFreshContinueAppendsWithinCleanContext checks request 2 (fresh
+// continue): append-only INSIDE the clean context — same identity (no
+// re-rotation), includes the first goal turn's reply but no pre-goal content.
+func assertFreshContinueAppendsWithinCleanContext(t *testing.T, r1, r2 recordedRequest) {
+	t.Helper()
 	if strings.Contains(r2.text(), "old question about quantum widgets") {
 		t.Errorf("second goal turn resurrected pre-goal content:\n%s", r2.text())
 	}
@@ -227,6 +249,38 @@ func TestGoalFreshContext_EndToEnd_ResetsConversationAndID(t *testing.T) {
 	if len(r2.messagesJSON) <= len(r1.messagesJSON) {
 		t.Errorf("clean context is not append-only across goal turns: len(r1)=%d len(r2)=%d", len(r1.messagesJSON), len(r2.messagesJSON))
 	}
+}
+
+// TestGoalFreshContext_EndToEnd_ResetsConversationAndID drives the full chain
+// GoalDriver → agentManagerRunner.RunFresh → agentic.Agent → provider against
+// a mock LLM, and validates that switching to a fresh-context goal:
+//
+//  1. clears the prior conversation out of the provider request (the model
+//     must not see pre-goal messages),
+//  2. rotates the conversation identity (StreamOptions.SessionID AND the
+//     prompt_cache_key stamped on the request),
+//  3. keeps appending WITHIN the clean context on subsequent goal turns
+//     without rotating again (append-only inside the new conversation).
+//
+// Regression guard for the fresh-context begin path (Issue 8 semantics).
+func TestGoalFreshContext_EndToEnd_ResetsConversationAndID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end mock-LLM test")
+	}
+	fx, sessionBeforeReset := startGoalFreshFixture(t)
+	beginFreshContextGoal(t, fx)
+
+	reqs := fx.rec.snapshot()
+	if len(reqs) < 3 {
+		t.Fatalf("recorded %d requests, want >= 3", len(reqs))
+	}
+	r0, r1, r2 := reqs[0], reqs[1], reqs[2]
+
+	assertPreGoalRequestCarriesOldConversation(t, r0)
+
+	assertFreshBeginRotatesConversationAndID(t, fx.am, sessionBeforeReset, r0, r1)
+
+	assertFreshContinueAppendsWithinCleanContext(t, r1, r2)
 }
 
 // Compile-time guards: the adapter under test must keep satisfying both

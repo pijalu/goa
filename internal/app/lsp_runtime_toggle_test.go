@@ -36,32 +36,46 @@ func fileToolLSP(t *testing.T, subs *subsystems) (read, write, edit tools.LSPDoc
 		et.(*tools.EditFileTool).LSPManager
 }
 
+// requireFileToolsLSPWired asserts every file tool's LSPManager nil-ness
+// matches want; phase labels failures ("precondition" vs "after toggle-on").
+func requireFileToolsLSPWired(t *testing.T, subs *subsystems, want bool, phase string) {
+	t.Helper()
+	r, w, e := fileToolLSP(t, subs)
+	wired := r != nil && w != nil && e != nil
+	if wired != want {
+		t.Errorf("%s: read/edit/write LSP wiring = %v (read=%v write=%v edit=%v), want wired=%v",
+			phase, wired, r != nil, w != nil, e != nil, want)
+	}
+}
+
+// assertManagerCreatedAndStarted requires makeLSPToolRuntime to have produced
+// a live manager bound to the subsystems.
+func assertManagerCreatedAndStarted(t *testing.T, tool any, ok bool) {
+	t.Helper()
+	if !ok || tool == nil {
+		t.Fatal("makeLSPToolRuntime should create the manager and the tool")
+	}
+}
+
 // TestLSPToggleOn_CreatesManagerAndWiresFileTools verifies /tools:lsp:on brings
 // the whole integration up live when bootstrap had it fully off: the manager
 // is created AND wired into read/edit/write (Issue LSP).
 func TestLSPToggleOn_CreatesManagerAndWiresFileTools(t *testing.T) {
 	subs := lspToggleSubsystems(t)
-	if r, w, e := fileToolLSP(t, subs); r != nil || w != nil || e != nil {
-		t.Fatal("precondition: file tools must start unwired")
-	}
+	requireFileToolsLSPWired(t, subs, false, "precondition")
 
 	// /tools:lsp:on flips the config flag BEFORE the factory runs.
 	subs.cfg.Tools.Enabled.LSP = true
 	tool, ok := makeLSPToolRuntime(subs)
-	if !ok || tool == nil {
-		t.Fatal("makeLSPToolRuntime should create the manager and the tool")
-	}
+	assertManagerCreatedAndStarted(t, tool, ok)
 	if subs.lspMgr == nil || !subs.lspMgr.Started() {
 		t.Fatal("manager must exist and be started after toggle-on")
 	}
-	if r, w, e := fileToolLSP(t, subs); r == nil || w == nil || e == nil {
-		t.Errorf("read/edit/write must be wired after toggle-on (read=%v write=%v edit=%v)", r != nil, w != nil, e != nil)
-	}
+	requireFileToolsLSPWired(t, subs, true, "after toggle-on")
 	t.Cleanup(func() { makeToolTeardown(subs)("lsp") })
 
 	// Toggling on again reuses the same manager (no duplicate servers).
-	tool2, ok2 := makeLSPToolRuntime(subs)
-	if !ok2 || tool2 == nil {
+	if tool2, ok2 := makeLSPToolRuntime(subs); !ok2 || tool2 == nil {
 		t.Fatal("second toggle-on should reuse the manager")
 	}
 }

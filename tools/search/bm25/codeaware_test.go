@@ -1,6 +1,7 @@
 package bm25
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -70,4 +71,70 @@ func TestChunkSourceFallbackWindows(t *testing.T) {
 			t.Errorf("invalid fallback chunk: %+v", c)
 		}
 	}
+}
+
+// TestChunkSourceWindowTable pins the windowing arithmetic for the boundary
+// cases: source shorter than the window, length an exact multiple of the
+// step, and a stride with overlap.
+func TestChunkSourceWindowTable(t *testing.T) {
+	linesOf := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("line%d", i+1)
+		}
+		return out
+	}
+	cases := []struct {
+		name            string
+		lines           int
+		window, overlap int
+		want            [][2]int
+	}{
+		{"window exceeds length clamps to source", 3, 10, 4, [][2]int{{1, 3}}},
+		{"exact multiple ends without extra chunk", 6, 3, 0, [][2]int{{1, 3}, {4, 6}}},
+		{"overlapping stride covers all lines", 7, 3, 1, [][2]int{{1, 3}, {3, 5}, {5, 7}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := windowChunks("f.txt", linesOf(tc.lines), tc.window, tc.overlap)
+			if len(got) != len(tc.want) {
+				t.Fatalf("chunk ranges %v want %v", formatRanges(got), tc.want)
+			}
+			for i, c := range got {
+				if c.Kind != "window" || c.StartLine != tc.want[i][0] || c.EndLine != tc.want[i][1] {
+					t.Fatalf("chunk %d = %d:%d want %v", i, c.StartLine, c.EndLine, tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestNormalizeChunkParamsFallbacks pins every fallback branch of the window
+// parameter normalization.
+func TestNormalizeChunkParamsFallbacks(t *testing.T) {
+	cases := []struct {
+		window, overlap int
+		wantW, wantO    int
+	}{
+		{-5, -1, 120, 20},
+		{0, 0, 120, 0},
+		{-5, 4, 120, 4},
+		{30, 30, 30, 20},
+		{10, 25, 10, 20},
+		{12, 5, 12, 5},
+	}
+	for _, tc := range cases {
+		got := normalizeChunkParams(tc.window, tc.overlap)
+		if got.window != tc.wantW || got.overlap != tc.wantO {
+			t.Errorf("normalize(%d,%d) = {%d %d}, want {%d %d}", tc.window, tc.overlap, got.window, got.overlap, tc.wantW, tc.wantO)
+		}
+	}
+}
+
+func formatRanges(chunks []DocumentMeta) [][2]int {
+	out := make([][2]int, 0, len(chunks))
+	for _, c := range chunks {
+		out = append(out, [2]int{c.StartLine, c.EndLine})
+	}
+	return out
 }

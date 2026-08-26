@@ -323,7 +323,6 @@ func TestConfigMenu_SkillToggleLocalPersistsToProject(t *testing.T) {
 func TestSkillEnableDisableCommand(t *testing.T) {
 	var buf strings.Builder
 	ctx := skillTestContext(&buf)
-	cfg := ctx.Config
 	projectDir := t.TempDir()
 	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
 	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
@@ -331,54 +330,46 @@ func TestSkillEnableDisableCommand(t *testing.T) {
 		"qa-e2e":   localTestSkill("qa-e2e", "Run e2e QA"),
 	})
 
-	// Disable an embedded skill → home config.
-	cmd := &SkillsCommand{}
-	if err := cmd.Run(ctx, []string{"disable", "refactor"}); err != nil {
-		t.Fatalf("disable refactor: %v", err)
-	}
-	if skillEnabled(cfg, "refactor", nil) {
-		t.Error("refactor should be disabled")
-	}
 	homeCfg := filepath.Join(os.Getenv("HOME"), ".goa", "config.yaml")
-	homeData, err := os.ReadFile(homeCfg)
-	if err != nil {
-		t.Fatalf("read home config: %v", err)
-	}
-	if !strings.Contains(string(homeData), "refactor") {
-		t.Errorf("home config should disable refactor, got:\n%s", homeData)
-	}
+	projectCfg := filepath.Join(projectDir, ".goa", "config.yaml")
+
+	// Disable an embedded skill → home config.
+	assertSkillToggle(t, ctx, "disable", "refactor", false)
+	assertFileMentions(t, homeCfg, "refactor", true)
 
 	// Re-enable it → home key removed.
-	buf.Reset()
-	if err := cmd.Run(ctx, []string{"enable", "refactor"}); err != nil {
-		t.Fatalf("enable refactor: %v", err)
-	}
-	if !skillEnabled(cfg, "refactor", nil) {
-		t.Error("refactor should be enabled")
-	}
-	homeData, err = os.ReadFile(homeCfg)
-	if err != nil {
-		t.Fatalf("read home config after enable: %v", err)
-	}
-	if strings.Contains(string(homeData), "refactor") {
-		t.Errorf("home config should no longer mention refactor, got:\n%s", homeData)
-	}
+	assertSkillToggle(t, ctx, "enable", "refactor", true)
+	assertFileMentions(t, homeCfg, "refactor", false)
 
 	// Disable a local skill → project config.
-	buf.Reset()
-	if err := cmd.Run(ctx, []string{"disable", "qa-e2e"}); err != nil {
-		t.Fatalf("disable qa-e2e: %v", err)
+	assertSkillToggle(t, ctx, "disable", "qa-e2e", false)
+	assertFileMentions(t, projectCfg, "qa-e2e", true)
+}
+
+// assertSkillToggle runs /skill:<verb> <name> and asserts the resulting
+// effective enablement matches want.
+func assertSkillToggle(t *testing.T, ctx core.Context, verb, name string, want bool) {
+	t.Helper()
+	cmd := &SkillsCommand{}
+	if err := cmd.Run(ctx, []string{verb, name}); err != nil {
+		t.Fatalf("%s %s: %v", verb, name, err)
 	}
-	if skillEnabled(cfg, "qa-e2e", nil) {
-		t.Error("qa-e2e should be disabled")
+	if got := skillEnabled(ctx.Config, name, nil); got != want {
+		t.Errorf("%s %s: enabled = %v, want %v", verb, name, got, want)
 	}
-	projectCfg := filepath.Join(projectDir, ".goa", "config.yaml")
-	projectData, err := os.ReadFile(projectCfg)
+}
+
+// assertFileMentions reads path and requires needle to be present (want=true)
+// or absent (want=false).
+func assertFileMentions(t *testing.T, path, needle string, want bool) {
+	t.Helper()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read project config: %v", err)
+		t.Fatalf("read %s: %v", path, err)
 	}
-	if !strings.Contains(string(projectData), "qa-e2e") {
-		t.Errorf("project config should disable qa-e2e, got:\n%s", projectData)
+	has := strings.Contains(string(data), needle)
+	if has != want {
+		t.Errorf("%s contains %q = %v, want %v, got:\n%s", path, needle, has, want, data)
 	}
 }
 

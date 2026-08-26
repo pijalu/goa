@@ -234,6 +234,21 @@ func TestAgent_RetriesInitialStreamError_408(t *testing.T) {
 
 	obs := &mockEventObserver{}
 	agent.AddObserver(obs)
+	runDrained(t, agent)
+
+	events := obs.Events()
+	if n := countRetryNotifications(events); n == 0 {
+		t.Errorf("expected a retry notification, got none")
+	}
+	if contents := assistantContents(events); !containsContent(contents, "Recovered after 408") {
+		t.Errorf("expected content recovered after initial 408 retry, got %q", contents)
+	}
+}
+
+// runDrained drains the agent Output channel and runs one turn with a
+// bounded context.
+func runDrained(t *testing.T, agent *Agent) {
+	t.Helper()
 	go func() {
 		for range agent.Output {
 		}
@@ -244,25 +259,31 @@ func TestAgent_RetriesInitialStreamError_408(t *testing.T) {
 	if err := agent.Run(ctx, "prompt"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+}
 
+// assistantContents extracts assistant-role content event texts.
+func assistantContents(events []OutputEvent) []string {
 	var contents []string
-	var retryNotifications int
-	for _, e := range obs.Events() {
+	for _, e := range events {
 		if e.Type == EventContent && e.Role == Assistant {
 			contents = append(contents, e.Text)
 		}
-		if e.Type == EventContent && e.Role == System && e.Metadata != nil && e.Metadata["category"] == "system-notification" {
-			if strings.Contains(e.Text, "retrying") {
-				retryNotifications++
-			}
+	}
+	return contents
+}
+
+// countRetryNotifications counts system-notification content events that
+// announce a retry.
+func countRetryNotifications(events []OutputEvent) int {
+	n := 0
+	for _, e := range events {
+		isNotify := e.Type == EventContent && e.Role == System &&
+			e.Metadata != nil && e.Metadata["category"] == "system-notification"
+		if isNotify && strings.Contains(e.Text, "retrying") {
+			n++
 		}
 	}
-	if retryNotifications == 0 {
-		t.Errorf("expected a retry notification, got none")
-	}
-	if !containsContent(contents, "Recovered after 408") {
-		t.Errorf("expected content recovered after initial 408 retry, got %q", contents)
-	}
+	return n
 }
 
 func containsContent(contents []string, text string) bool {

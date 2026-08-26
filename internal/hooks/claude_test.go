@@ -171,8 +171,7 @@ func TestParseClaudeHooks_ExecFormAndTimeout(t *testing.T) {
     ]
   }
 }`)
-	project := "/proj"
-	hooks, warnings, err := parseClaudeHooks(data, project)
+	hooks, warnings, err := parseClaudeHooks(data, "/proj")
 	if err != nil {
 		t.Fatalf("parseClaudeHooks: %v", err)
 	}
@@ -182,28 +181,41 @@ func TestParseClaudeHooks_ExecFormAndTimeout(t *testing.T) {
 	if len(hooks) != 2 {
 		t.Fatalf("expected 2 hooks, got %d", len(hooks))
 	}
-	pre := hooks[0]
-	if pre.Event != EventBeforeTool || pre.Dialect != DialectClaudeCode {
-		t.Errorf("unexpected PreToolUse mapping: %+v", pre)
+	assertClaudeToolHookParsed(t, hooks[0])
+	assertClaudeSessionHookParsed(t, hooks[1])
+}
+
+// assertClaudeToolHookParsed verifies the PreToolUse entry: event/dialect
+// mapping, matcher preservation, ${CLAUDE_PROJECT_DIR} exec-form substitution,
+// and the per-hook timeout override.
+func assertClaudeToolHookParsed(t *testing.T, hook Hook) {
+	t.Helper()
+	if hook.Event != EventBeforeTool || hook.Dialect != DialectClaudeCode {
+		t.Errorf("unexpected PreToolUse mapping: %+v", hook)
 	}
-	if pre.Matcher != "Bash|Write" {
-		t.Errorf("tool matcher should be preserved, got %q", pre.Matcher)
+	if hook.Matcher != "Bash|Write" {
+		t.Errorf("tool matcher should be preserved, got %q", hook.Matcher)
 	}
-	if len(pre.Args) != 1 || pre.Args[0] != "/proj/x.js" {
-		t.Errorf("exec-form args should be substituted, got %v", pre.Args)
+	if len(hook.Args) != 1 || hook.Args[0] != "/proj/x.js" {
+		t.Errorf("exec-form args should be substituted, got %v", hook.Args)
 	}
-	if pre.TimeoutSeconds != 30 {
-		t.Errorf("expected per-hook timeout 30, got %d", pre.TimeoutSeconds)
+	if hook.TimeoutSeconds != 30 {
+		t.Errorf("expected per-hook timeout 30, got %d", hook.TimeoutSeconds)
 	}
-	sess := hooks[1]
-	if sess.Event != EventSessionStart {
-		t.Errorf("expected SessionStart mapping, got %v", sess.Event)
+}
+
+// assertClaudeSessionHookParsed verifies the SessionStart entry: event
+// mapping, discarded session matcher, and the CC default timeout.
+func assertClaudeSessionHookParsed(t *testing.T, hook Hook) {
+	t.Helper()
+	if hook.Event != EventSessionStart {
+		t.Errorf("expected SessionStart mapping, got %v", hook.Event)
 	}
-	if sess.Matcher != "" {
-		t.Errorf("session matcher should be discarded, got %q", sess.Matcher)
+	if hook.Matcher != "" {
+		t.Errorf("session matcher should be discarded, got %q", hook.Matcher)
 	}
-	if sess.TimeoutSeconds != 600 {
-		t.Errorf("expected CC default timeout 600, got %d", sess.TimeoutSeconds)
+	if hook.TimeoutSeconds != 600 {
+		t.Errorf("expected CC default timeout 600, got %d", hook.TimeoutSeconds)
 	}
 }
 

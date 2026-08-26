@@ -62,34 +62,38 @@ func TestHookEnforcer_DeclarationGate(t *testing.T) {
 // helper so the table tests below stay readable
 func enforcerAllow(e *HookEnforcer, s HookSpec) error { return e.Allow(s) }
 
+// applyHookDecision grants the given decision strings for def, failing the
+// test on approval errors so table entries stay straight-line.
+func applyHookDecision(t *testing.T, store *GrantStore, def *PluginDef, decisions ...string) {
+	t.Helper()
+	if err := ApplyHookDecision(store, def, decisions); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// approveDefVersion approves def under an explicit version string.
+func approveDefVersion(t *testing.T, store *GrantStore, def *PluginDef, version string) {
+	t.Helper()
+	d := *def
+	d.Version = version
+	if err := store.Approve(def.ID, NewPluginGrant(&d, nil)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHookEnforcer_GrantGate(t *testing.T) {
-	tests := []struct {
-		name     string
-		grant    func(t *testing.T, def *PluginDef, store *GrantStore)
-		point    string
-		mode     HookMode
-		wantErr  string // empty ⇒ allowed
-		headless bool
-	}{
+	var tests = []grantGateCase{
 		{name: "approved pair passes", grant: func(t *testing.T, def *PluginDef, store *GrantStore) {
-			if err := ApplyHookDecision(store, def, []string{"intercept|tool-call:pre"}); err != nil {
-				t.Fatal(err)
-			}
+			applyHookDecision(t, store, def, "intercept|tool-call:pre")
 		}, point: "tool-call:pre", mode: HookIntercept},
 		{name: "declared but unapproved pair fails", grant: func(t *testing.T, def *PluginDef, store *GrantStore) {
-			if err := ApplyHookDecision(store, def, []string{"intercept|tool-call:pre"}); err != nil {
-				t.Fatal(err)
-			}
+			applyHookDecision(t, store, def, "intercept|tool-call:pre")
 		}, point: "tool-call:post", mode: HookNotify,
 			wantErr: "not selected in the install review"},
 		{name: "missing grant fails", grant: func(*testing.T, *PluginDef, *GrantStore) {},
 			point: "tool-call:pre", mode: HookIntercept, wantErr: "(re-)approval required"},
 		{name: "stale version re-prompts", grant: func(t *testing.T, def *PluginDef, store *GrantStore) {
-			g := NewPluginGrant(def, nil)
-			g.Version = "0.9.0"
-			if err := store.Approve(def.ID, g); err != nil {
-				t.Fatal(err)
-			}
+			approveDefVersion(t, store, def, "0.9.0")
 		}, point: "tool-call:pre", mode: HookIntercept, wantErr: "(re-)approval required"},
 		{name: "stale fingerprint re-prompts", grant: func(t *testing.T, def *PluginDef, store *GrantStore) {
 			old := &PluginDef{ID: def.ID, Version: def.Version, Hooks: def.Hooks[:1]}
@@ -99,28 +103,40 @@ func TestHookEnforcer_GrantGate(t *testing.T) {
 		}, point: "tool-call:post", mode: HookNotify, wantErr: "(re-)approval required"},
 		{name: "headless fail-closed despite grant", headless: true,
 			grant: func(t *testing.T, def *PluginDef, store *GrantStore) {
-				if err := ApplyHookDecision(store, def, []string{"intercept|tool-call:pre"}); err != nil {
-					t.Fatal(err)
-				}
+				applyHookDecision(t, store, def, "intercept|tool-call:pre")
 			}, point: "tool-call:pre", mode: HookIntercept,
 			wantErr: HookEscapeEnv},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			enf, store := newEnforceFixture(t, tt.headless)
-			def := enforceFixtureDef()
-			tt.grant(t, def, store)
-			err := enforcerAllow(enf, specFor(tt.point, tt.mode))
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("expected allow, got: %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
-			}
-		})
+		t.Run(tt.name, func(t *testing.T) { runGrantGateCase(t, tt) })
+	}
+}
+
+// grantGateCase mirrors the anonymous struct used in TestHookEnforcer_GrantGate.
+type grantGateCase = struct {
+	name     string
+	grant    func(t *testing.T, def *PluginDef, store *GrantStore)
+	point    string
+	mode     HookMode
+	wantErr  string // empty ⇒ allowed
+	headless bool
+}
+
+// runGrantGateCase executes one grant-gate scenario.
+func runGrantGateCase(t *testing.T, tt grantGateCase) {
+	enf, store := newEnforceFixture(t, tt.headless)
+	def := enforceFixtureDef()
+	tt.grant(t, def, store)
+	err := enforcerAllow(enf, specFor(tt.point, tt.mode))
+	switch {
+	case tt.wantErr == "":
+		if err != nil {
+			t.Fatalf("expected allow, got: %v", err)
+		}
+	default:
+		if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
+		}
 	}
 }
 

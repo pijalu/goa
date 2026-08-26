@@ -95,32 +95,56 @@ func TestCompactEndpointRequestBody(t *testing.T) {
 		t.Errorf("unexpected roles: %#v", resp.Messages)
 	}
 
-	var body map[string]any
-	if err := json.Unmarshal(fx.body, &body); err != nil {
-		t.Fatalf("request body not JSON: %v\n%s", err, fx.body)
-	}
-	for _, field := range []string{"model", "input", "instructions", "tools", "parallel_tool_calls", "reasoning", "service_tier", "prompt_cache_key", "text"} {
-		if _, ok := body[field]; !ok {
-			t.Errorf("compact request missing field %q: %s", field, fx.body)
-		}
-	}
-	for _, forbidden := range []string{"stream", "store", "tool_choice", "previous_response_id", "max_output_tokens"} {
-		if _, ok := body[forbidden]; ok {
-			t.Errorf("compact request must not carry %q: %s", forbidden, fx.body)
-		}
-	}
-	if body["prompt_cache_key"] != "goa_cache_key_123" {
-		t.Errorf("prompt_cache_key = %v, want goa_cache_key_123", body["prompt_cache_key"])
-	}
-	if body["service_tier"] != "flex" {
-		t.Errorf("service_tier = %v, want flex", body["service_tier"])
-	}
-	if body["instructions"] != "You are a coding agent." {
-		t.Errorf("instructions = %v", body["instructions"])
-	}
+	body := mustDecodeBody(t, fx.body)
+	assertRequestFieldsPresent(t, body, fx.body,
+		"model", "input", "instructions", "tools", "parallel_tool_calls",
+		"reasoning", "service_tier", "prompt_cache_key", "text")
+	assertRequestFieldsAbsent(t, body, fx.body,
+		"stream", "store", "tool_choice", "previous_response_id", "max_output_tokens")
+	assertBodyValue(t, body, "prompt_cache_key", "goa_cache_key_123")
+	assertBodyValue(t, body, "service_tier", "flex")
+	assertBodyValue(t, body, "instructions", "You are a coding agent.")
 	// Codex identity headers present; no secrets beyond the bearer token.
-	if fx.headers.Get("originator") != "goa" {
-		t.Errorf("originator header = %q, want goa", fx.headers.Get("originator"))
+	if got := fx.headers.Get("originator"); got != "goa" {
+		t.Errorf("originator header = %q, want goa", got)
+	}
+}
+
+// mustDecodeBody decodes the captured request JSON body or fails the test.
+func mustDecodeBody(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("request body not JSON: %v\n%s", err, raw)
+	}
+	return body
+}
+
+// assertRequestFieldsPresent requires every listed top-level field to exist.
+func assertRequestFieldsPresent(t *testing.T, body map[string]any, raw []byte, fields ...string) {
+	t.Helper()
+	for _, field := range fields {
+		if _, ok := body[field]; !ok {
+			t.Errorf("compact request missing field %q: %s", field, raw)
+		}
+	}
+}
+
+// assertRequestFieldsAbsent requires none of the listed fields to exist.
+func assertRequestFieldsAbsent(t *testing.T, body map[string]any, raw []byte, fields ...string) {
+	t.Helper()
+	for _, field := range fields {
+		if _, ok := body[field]; ok {
+			t.Errorf("compact request must not carry %q: %s", field, raw)
+		}
+	}
+}
+
+// assertBodyValue compares one decoded body entry against the wanted value.
+func assertBodyValue(t *testing.T, body map[string]any, key string, want any) {
+	t.Helper()
+	if got := body[key]; got != want {
+		t.Errorf("%s = %v, want %v", key, got, want)
 	}
 }
 

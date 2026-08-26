@@ -69,48 +69,81 @@ func (s *FieldedScorer) Score(query string, d DocumentMeta, docID int) (float64,
 	if docID < 0 || docID >= len(s.docs) {
 		return 0, 0, 0
 	}
-	terms := expandQuery(s.tokenizer.Tokenize(query))
-	if len(terms) == 0 {
+	expanded := expandQuery(s.tokenizer.Tokenize(query))
+	if len(expanded) == 0 {
 		return 0, 0, 0
 	}
 	fd := s.docs[docID]
 	score, matched := 0.0, 0
-	seen := make(map[string]bool)
-	for _, q := range terms {
-		if seen[q] {
+	for _, q := range dedupeTokens(expanded) {
+		contribution := s.termContribution(q, fd)
+		if contribution > 0 {
+			matched++
+			score += contribution
+		}
+	}
+	score *= identifierBoost(query, d)
+	coverage := float64(matched) / float64(len(expanded))
+	return score, coverage, confidenceFor(score, coverage)
+}
+
+// dedupeTokens drops repeated query terms while preserving first-seen order.
+func dedupeTokens(terms []string) []string {
+	seen := make(map[string]bool, len(terms))
+	out := make([]string, 0, len(terms))
+	for _, t := range terms {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// termContribution sums the BM25F contribution of one distinct query term
+// across all five fields. The mean field length is clamped at 1 so sparse or
+// empty fields cannot blow up the length normalization.
+func (s *FieldedScorer) termContribution(q string, fd fieldDocument) float64 {
+	idf := math.Log(1 + (float64(s.count)-float64(s.df[q])+0.5)/(float64(s.df[q])+0.5))
+	score := 0.0
+	for f := range fd.fields {
+		tf := float64(fd.terms[f][q])
+		if tf == 0 {
 			continue
 		}
-		seen[q] = true
-		termScore := 0.0
-		for f := 0; f < 5; f++ {
-			tf := float64(fd.terms[f][q])
-			if tf == 0 {
-				continue
-			}
-			idf := math.Log(1 + (float64(s.count)-float64(s.df[q])+0.5)/(float64(s.df[q])+0.5))
-			avg := s.avg[f]
-			if avg < 1 {
-				avg = 1
-			}
-			k := 1.5 * (0.25 + 0.75*float64(fd.lengths[f])/avg)
-			termScore += s.fieldWeight(f) * idf * (tf * 2.5) / (tf + k)
-		}
-		if termScore > 0 {
-			matched++
-			score += termScore
-		}
+		k := 1.5 * (0.25 + 0.75*float64(fd.lengths[f])/clampedAvg(s.avg[f]))
+		score += s.fieldWeight(f) * idf * (tf * 2.5) / (tf + k)
 	}
-	// Exact identifier matches are highly reliable and should beat body noise.
+	return score
+}
+
+// clampedAvg guards the length normalization: averages below one line would
+// otherwise over-weight short fields (avg<1 clamp).
+func clampedAvg(avg float64) float64 {
+	if avg < 1 {
+		return 1
+	}
+	return avg
+}
+
+// identifierBoost returns the score multiplier for exact identifier matches:
+// the trimmed query equal-folding the document symbol or base file name earns
+// 1.8x so it beats body noise; anything else leaves the score untouched.
+func identifierBoost(query string, d DocumentMeta) float64 {
 	identifier := strings.ToLower(strings.TrimSpace(query))
 	if identifier != "" && (strings.EqualFold(identifier, d.Symbol) || strings.EqualFold(identifier, filepath.Base(d.Path))) {
-		score *= 1.8
+		return 1.8
 	}
-	coverage := float64(matched) / float64(len(terms))
-	confidence := coverage
-	if score > 0 {
-		confidence = math.Min(1, coverage*0.7+(1-math.Exp(-score/8))*0.3)
+	return 1
+}
+
+// confidenceFor blends term coverage with score saturation: confidence climbs
+// toward 1 with score and saturates there; without score it stays raw coverage.
+func confidenceFor(score, coverage float64) float64 {
+	if score <= 0 {
+		return coverage
 	}
-	return score, coverage, confidence
+	return math.Min(1, coverage*0.7+(1-math.Exp(-score/8))*0.3)
 }
 func (s *FieldedScorer) fieldWeight(f int) float64 {
 	return [...]float64{s.weights.Path, s.weights.Symbol, s.weights.Signature, s.weights.Imports, s.weights.Body}[f]
