@@ -6,6 +6,13 @@ Copyright (C) 2026 Pierre Poissinger
 
 Usage: /goal[:subcommand[:<text>]]
 
+  A text-consuming subcommand also tolerates ONE space instead of the
+  second colon (/goal:next audit taxes, /goal:new build the parser,
+  /goal:cancel all, /goal:pause next): it routes exactly like its colon
+  form. No-argument subcommands are never space-split, so a free-form
+  objective may still start with such a word (/goal:list pending items
+  creates that goal instead of running /goal:list).
+
   /goal                       Create a new goal interactively (prompts for objective)
   /goal:new                   Create a new goal interactively
   /goal:new:<text>            Create a goal with the given objective

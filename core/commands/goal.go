@@ -160,10 +160,8 @@ const (
 	subScope
 )
 
-// goalSubcommandKinds maps each subcommand keyword to its parse behavior and
-// resulting parsedGoalArgs.kind (or kind pattern). Table-driven to keep
-// parseSubcommand under the cyclomatic budget.
-var goalSubcommandKinds = map[string]struct {
+// goalSubSpec describes how one /goal subcommand keyword parses its args.
+type goalSubSpec struct {
 	mode      subcommandMode
 	kind      string // kind when text is present
 	bareKind  string // kind when no text (subOptional)
@@ -171,7 +169,12 @@ var goalSubcommandKinds = map[string]struct {
 	// scopeKinds (subScope only): allowed scope tokens (lowercased) → kind;
 	// the "" key is the bare form.
 	scopeKinds map[string]string
-}{
+}
+
+// goalSubcommandKinds maps each subcommand keyword to its parse behavior and
+// resulting parsedGoalArgs.kind (or kind pattern). Table-driven to keep
+// parseSubcommand under the cyclomatic budget.
+var goalSubcommandKinds = map[string]goalSubSpec{
 	"status":  {mode: subNone, kind: "status"},
 	"current": {mode: subNone, kind: "current"},
 	"list":    {mode: subNone, kind: "list"},
@@ -194,13 +197,12 @@ var goalSubcommandKinds = map[string]struct {
 }
 
 func (c *GoalCommand) parseSubcommand(args []string) parsedGoalArgs {
-	cmd := strings.ToLower(args[0])
-	spec, known := goalSubcommandKinds[cmd]
-	if !known {
+	kw, spec, rest := resolveGoalKeyword(args)
+	if spec == nil {
 		// No subcommand keyword: treat all args as the objective (create).
 		return parseObjectiveArg(args, "create-interactive", "create")
 	}
-	text := strings.TrimSpace(strings.Join(args[1:], " "))
+	text := strings.TrimSpace(strings.Join(rest, " "))
 	switch spec.mode {
 	case subNone:
 		return parsedGoalArgs{kind: spec.kind}
@@ -218,8 +220,48 @@ func (c *GoalCommand) parseSubcommand(args []string) parsedGoalArgs {
 		}
 		return parsedGoalArgs{kind: kind}
 	default: // subOptional
-		return parseOptionalGoalArgs(cmd, spec.kind, spec.bareKind, text)
+		return parseOptionalGoalArgs(kw, spec.kind, spec.bareKind, text)
 	}
+}
+
+// goalSpaceSplittable lists keywords whose TEXT argument may arrive GLUED to
+// them by a space inside a single router arg ("/goal:next fix tests" splits
+// on ':' only, so Run sees one "next fix tests" argument). Only text-
+// consuming keywords are listed: splitting a no-argument keyword would
+// hijack free-form objectives that merely start with it ("/goal:list pending
+// items" must stay an objective, not become /goal:list).
+var goalSpaceSplittable = []string{"new", "next", "replace", "reorder", "cancel", "pause"}
+
+// resolveGoalKeyword identifies the leading /goal subcommand keyword. It
+// returns the keyword name, its parse spec, and the remaining args; a nil
+// spec means no keyword was recognized. Besides the canonical colon form
+// (/goal:<kw>:<rest>) it also accepts the space-glued form "/goal:<kw>
+// <rest>", where the keyword and its text arrive inside ONE argument because
+// CommandRouter splits on ':' only — the tail is prepended to rest so
+// downstream parsing sees exactly the same shape as the colon form.
+func resolveGoalKeyword(args []string) (kw string, spec *goalSubSpec, rest []string) {
+	head := strings.ToLower(args[0])
+	if s, ok := goalSubcommandKinds[head]; ok {
+		return head, &s, args[1:]
+	}
+	glued, _, ok := splitLeadingToken(head, goalSpaceSplittable...)
+	if !ok {
+		return "", nil, nil
+	}
+	s, known := goalSubcommandKinds[glued]
+	if !known {
+		return "", nil, nil
+	}
+	// Re-cut the tail from the UN-lowered argument: lowercasing is for the
+	// keyword lookup only and the objective must keep its original case
+	// ("reorder 2B,1A" must not degrade to "2b,1a"). The keyword is pure
+	// ASCII, so its byte length is identical in both versions; fall back to
+	// the no-keyword result on any unexpected mismatch.
+	if len(glued) > len(args[0]) || !strings.EqualFold(args[0][:len(glued)], glued) {
+		return "", nil, nil
+	}
+	tail := strings.TrimSpace(strings.TrimPrefix(args[0][len(glued):], " "))
+	return glued, &s, append([]string{tail}, args[1:]...)
 }
 
 // parseOptionalGoalArgs parses subOptional subcommands (new/next/replace):

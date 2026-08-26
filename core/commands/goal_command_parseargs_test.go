@@ -67,7 +67,6 @@ func TestGoalCommand_parseArgs(t *testing.T) {
 		}
 	}
 }
-
 func TestGoalCommand_parseArgs_EscapesReservedWords(t *testing.T) {
 	// With colon nomenclature, reserved words live cleanly in the text arg:
 	// /goal:new:pause the server → args=["new","pause the server"]
@@ -78,6 +77,56 @@ func TestGoalCommand_parseArgs_EscapesReservedWords(t *testing.T) {
 	}
 }
 
+func TestGoalCommand_parseArgs_SpaceGluedSubcommand(t *testing.T) {
+	// The router splits on ':' only, so "/goal:next fix tests" reaches Run
+	// as ONE arg "next fix tests". Text-consuming subcommands must be
+	// recognized even when glued to their text by a space — else the line
+	// falls into the objective-create flow (replace-or-queue prompt).
+	cmd := &GoalCommand{}
+	cases := []struct {
+		args      []string
+		kind      string
+		objective string
+	}{
+		{args: []string{"next fix tests"}, kind: "next-add", objective: "fix tests"},
+		{args: []string{"NEXT audit queue"}, kind: "next-add", objective: "audit queue"},
+		{args: []string{"next last audit"}, kind: "next-add", objective: "audit"},
+		{args: []string{"next"}, kind: "next-interactive"},
+		{args: []string{"new build the parser"}, kind: "create", objective: "build the parser"},
+		{args: []string{"replace flaky suite"}, kind: "replace", objective: "flaky suite"},
+		{args: []string{"reorder 2B,1A"}, kind: "reorder", objective: "2B,1A"},
+		{args: []string{"cancel all"}, kind: "cancel-all"},
+		{args: []string{"cancel bogus"}, kind: "error"},
+		{args: []string{"pause next"}, kind: "pause-next"},
+		{args: []string{"pause next off"}, kind: "pause-next-off"},
+	}
+	for _, tc := range cases {
+		got := cmd.parseArgs(tc.args)
+		if got.kind != tc.kind || got.objective != tc.objective {
+			t.Errorf("parseArgs(%q) = {kind %q, objective %q}, want {kind %q, objective %q}",
+				tc.args, got.kind, got.objective, tc.kind, tc.objective)
+		}
+	}
+}
+
+func TestGoalCommand_parseArgs_NonTextKeywordsStayObjectives(t *testing.T) {
+	// Escape hatch: only text-consuming keywords are space-split. An
+	// objective starting with a no-argument keyword ("list everything …")
+	// still parses as a free-form objective.
+	cmd := &GoalCommand{}
+	for _, args := range [][]string{
+		{"list everything twice"},
+		{"status now please"},
+		{"resume tomorrow cleanup"},
+	} {
+		wantText := strings.Join(args, " ")
+		got := cmd.parseArgs(args)
+		if got.kind != "create" || got.objective != wantText {
+			t.Errorf("parseArgs(%q) = {kind %q, objective %q}, want {create, %q}",
+				args, got.kind, got.objective, wantText)
+		}
+	}
+}
 func TestGoalCommand_parseNextArgs(t *testing.T) {
 	cmd := &GoalCommand{}
 	cases := []struct {

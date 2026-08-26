@@ -117,6 +117,33 @@ func TestGoalCommand_QueueOpsPublishRefresh(t *testing.T) {
 	}
 }
 
+func TestGoalCommand_SpaceGluedNextQueuesAsNext(t *testing.T) {
+	// "/goal:next fix tests" (space between keyword and text) reaches Run as
+	// ONE arg; it must enqueue-as-NEXT like /goal:next:fix tests — NOT fall
+	// into the create flow's replace-or-queue prompt.
+	cmd, queue := newManagerCommand(t, "seed active goal")
+	ctx := testContext()
+
+	// Sanity: the seeded goal is active and the queue starts empty.
+	if cmd.Mode.GetGoal().Goal == nil {
+		t.Fatal("seed: expected an active goal")
+	}
+	assertQueueObjectives(t, queue, nil)
+
+	if err := cmd.Run(ctx, []string{"next fix tests"}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertQueueObjectives(t, queue, []string{"fix tests"})
+	out := ctx.OutputBuffer.String()
+	if !strings.Contains(out, "Queued goal to run next") {
+		t.Errorf("output = %q, want the queue-next confirmation", out)
+	}
+	if strings.Contains(out, "A goal is already active") {
+		t.Errorf("output = %q, must not open the replace-or-queue create prompt", out)
+	}
+}
+
 type testAutonomySwitcher struct {
 	level internal.AutonomyLevel
 }
