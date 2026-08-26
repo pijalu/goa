@@ -6,6 +6,7 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -67,6 +68,13 @@ type sshBashParams struct {
 
 // Execute runs a command on a remote host via SSH.
 func (t *SSHBashTool) Execute(input string) (string, error) {
+	return t.ExecuteContext(context.Background(), input)
+}
+
+// ExecuteContext runs an SSH command and cancels the local ssh process when the
+// caller stops the turn or the requested timeout expires. CommandContext waits
+// for the process after cancellation, so no command goroutine is left behind.
+func (t *SSHBashTool) ExecuteContext(ctx context.Context, input string) (string, error) {
 	var p sshBashParams
 	if err := json.Unmarshal([]byte(input), &p); err != nil {
 		return "", &internal.ToolError{
@@ -108,35 +116,31 @@ func (t *SSHBashTool) Execute(input string) (string, error) {
 		}
 	}
 
-	// Execute
-	start := time.Now()
-	cmd := exec.Command("ssh", sshArgs...)
-
-	// Handle timeout with goroutine + select
-	resultCh := make(chan execResult, 1)
-	go func() {
-		output, err := cmd.CombinedOutput()
-		resultCh <- execResult{output: output, err: err}
-	}()
-
-	var result execResult
+	// Execute synchronously under a derived context. This avoids the former
+	// goroutine + timer pattern, which could return while CombinedOutput was
+	// still blocked after a failed Process.Kill.
+	runCtx := ctx
+	cancel := func() {}
 	if timeoutSec > 0 {
-		select {
-		case r := <-resultCh:
-			result = r
-		case <-time.After(time.Duration(timeoutSec) * time.Second):
-			cmd.Process.Kill()
-			// Wait for goroutine to finish after kill
-			r := <-resultCh
-			result = r
-			return "", &internal.ToolError{
-				Tool: "ssh_bash", Type: "timeout",
-				Detail:   fmt.Sprintf("SSH command timed out after %ds", timeoutSec),
-				HintText: "Increase the timeout value or check connectivity to the remote host.",
-			}
+		runCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	}
+	defer cancel()
+	start := time.Now()
+	cmd := exec.CommandContext(runCtx, "ssh", sshArgs...)
+	output, runErr := cmd.CombinedOutput()
+	result := execResult{output: output, err: runErr}
+	if ctx.Err() != nil {
+		return "", &internal.ToolError{
+			Tool: "ssh_bash", Type: "cancelled",
+			Detail: fmt.Sprintf("SSH command cancelled: %v", ctx.Err()),
 		}
-	} else {
-		result = <-resultCh
+	}
+	if runCtx.Err() == context.DeadlineExceeded {
+		return "", &internal.ToolError{
+			Tool: "ssh_bash", Type: "timeout",
+			Detail:   fmt.Sprintf("SSH command timed out after %ds", timeoutSec),
+			HintText: "Increase the timeout value or check connectivity to the remote host.",
+		}
 	}
 
 	duration := time.Since(start)
@@ -153,6 +157,8 @@ func (t *SSHBashTool) Execute(input string) (string, error) {
 
 	return buf.String(), nil
 }
+
+var _ agentic.ContextTool = (*SSHBashTool)(nil)
 
 func (t *SSHBashTool) IsRetryable(err error) bool { return false }
 
