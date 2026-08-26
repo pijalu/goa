@@ -58,6 +58,33 @@ func (r *ToolRegistry) Schemas() []agentic.ToolSchema
 func (r *ToolRegistry) AllDocumented() []DocumentedTool
 ```
 
+## Deferred loading (tool_search)
+
+Some tools are **deferred**: they stay registered and executable, but their
+call schemas are withheld from every request to save context. Deferral
+activates when the session's tool set contains the `tool_search` loader and
+at least 8 deferred-eligible tools; otherwise all schemas ship eagerly.
+
+The model discovers deferred tools from two surfaces:
+
+- The system prompt `<deferred_tools>` block lists every withheld tool with a
+  one-line description, plus the load instruction.
+- The `tool_search` schema itself carries a compact name-only list (fallback
+  for sub-agents that do not receive goa's app system prompt).
+
+Loading is explicit and on demand:
+
+```
+tool_search {"query": "select:lsp,verify"}   // load exact tools
+tool_search {"query": "language server"}     // discovery only (no load)
+```
+
+`select:` returns the full schemas and exposes the tools on the next round;
+calling an unloaded deferred tool is rejected with an error naming the exact
+`select:` remedy. Runtime toggles (`/tools:*`, `/config`, MCP connect /
+disconnect, plugin load/unload) are announced to the model as one batched
+`[goa-tools]` user message listing what was enabled/disabled.
+
 ## Tool Reference
 
 ### `read` — Read file contents

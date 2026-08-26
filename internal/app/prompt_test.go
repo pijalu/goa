@@ -624,3 +624,114 @@ func TestAvailableSkillsSection_FiltersModelInvocable(t *testing.T) {
 		t.Errorf("user_invocable:false skill must never appear in the model's tool schema:\n%s", got)
 	}
 }
+
+// deferredSectionProbe / loader stubs exercise renderDeferredToolsSection
+// without depending on concrete goa tools.
+
+type deferredSectionProbe struct {
+	agentic.BaseTool
+	name string
+	desc string
+}
+
+func (p *deferredSectionProbe) Deferred() bool { return true }
+
+func (p *deferredSectionProbe) Schema() agentic.ToolSchema {
+	return agentic.ToolSchema{Name: p.name, Description: p.desc, Schema: map[string]interface{}{"type": "object"}}
+}
+
+func (p *deferredSectionProbe) Execute(input string) (string, error) { return "", nil }
+
+type sectionLoaderProbe struct{ agentic.BaseTool }
+
+func (l *sectionLoaderProbe) IsDeferredToolLoader() bool { return true }
+
+func (l *sectionLoaderProbe) Schema() agentic.ToolSchema {
+	return agentic.ToolSchema{Name: "tool_search", Description: "loader"}
+}
+
+func (l *sectionLoaderProbe) Execute(input string) (string, error) { return "", nil }
+
+// buildSectionSet returns a tool set that crosses the deferral threshold:
+// 8 deferred probes + 2 eager tools + the loader.
+func buildSectionSet(longDesc bool) []agentic.Tool {
+	desc := "short description"
+	if longDesc {
+		desc = strings.Repeat("very long ", 20)
+	}
+	set := []agentic.Tool{
+		&sectionLoaderProbe{},
+		&mockTool{name: "bash"},
+	}
+	names := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"}
+	for i, n := range names {
+		d := desc
+		if i > 0 {
+			d = "short description"
+		}
+		set = append(set, &deferredSectionProbe{name: n, desc: d})
+	}
+	return set
+}
+
+// The system prompt lists every withheld deferred tool with its short
+// description and the select: load instruction (bugs.md 2026-08-26).
+func TestRenderDeferredToolsSection(t *testing.T) {
+	got := renderDeferredToolsSection(buildSectionSet(false))
+	for _, want := range []string{
+		"<deferred_tools>", "</deferred_tools>",
+		"- alpha:", "- bravo:", "- charlie:", "- delta:", "- echo:",
+		"- foxtrot:", "- golf:", "- hotel:",
+		`tool_search`, `select:<name>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("section missing %q:\n%s", want, got)
+		}
+	}
+	// Descriptions are capped on one line.
+	if strings.Contains(got, "\n") && strings.Contains(got, "very long very long very long very long") {
+		t.Errorf("description not truncated:\n%s", got)
+	}
+}
+
+// Below the activation threshold (or without a loader) nothing is advertised.
+func TestRenderDeferredToolsSection_InactiveDeferral(t *testing.T) {
+	small := []agentic.Tool{
+		&sectionLoaderProbe{},
+		&deferredSectionProbe{name: "alpha", desc: "d"},
+		&deferredSectionProbe{name: "bravo", desc: "d"},
+	}
+	if got := renderDeferredToolsSection(small); got != "" {
+		t.Errorf("deferral below threshold must render no section, got:\n%s", got)
+	}
+
+	noLoader := []agentic.Tool{&mockTool{name: "bash"}}
+	for i := 0; i < 10; i++ {
+		noLoader = append(noLoader, &deferredSectionProbe{name: fmt.Sprintf("p%d", i), desc: "d"})
+	}
+	if got := renderDeferredToolsSection(noLoader); got != "" {
+		t.Errorf("no loader must render no section, got:\n%s", got)
+	}
+}
+
+// Long descriptions are capped to one line at deferredDescRunes runes.
+func TestRenderDeferredToolsSection_DescCap(t *testing.T) {
+	got := renderDeferredToolsSection(buildSectionSet(true))
+	line := ""
+	for _, l := range strings.Split(got, "\n") {
+		if strings.HasPrefix(l, "- alpha:") {
+			line = l
+			break
+		}
+	}
+	if line == "" {
+		t.Fatalf("alpha line not found:\n%s", got)
+	}
+	body := strings.TrimPrefix(line, "- alpha: ")
+	if len([]rune(body)) > deferredDescRunes+1 { // +1 ellipsis
+		t.Errorf("desc = %d runes, want ≤ %d+1", len([]rune(body)), deferredDescRunes)
+	}
+	if !strings.HasSuffix(body, "…") {
+		t.Errorf("truncated desc should end with ellipsis: %q", body)
+	}
+}

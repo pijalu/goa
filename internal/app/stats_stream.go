@@ -60,7 +60,8 @@ func (a *App) handleStreamContent(ev *agentic.OutputEvent) {
 // replayed history and mid-turn drained steering, both of which must appear.
 func (a *App) handleUserOrSystemContent(ev *agentic.OutputEvent) {
 	if ev.Role == agentic.User && ev.Text != "" {
-		if isSteeringDrained(ev) {
+		switch {
+		case isSteeringDrained(ev):
 			// Mid-turn steering was drained from the queue and woven into the
 			// conversation: clear the pending bubble and show the consumed text
 			// as a user message (the bubble's whole point was "this will send").
@@ -68,7 +69,12 @@ func (a *App) handleUserOrSystemContent(ev *agentic.OutputEvent) {
 				a.subs.steeringChrome.Clear()
 			}
 			a.subs.chat.AddUserMessage(ev.Text)
-		} else if isReplay(ev) {
+		case isToolsetNotice(ev):
+			// Host-generated toolset-change notice (AgentManager.SetTools).
+			// The model receives it as a user message; the human sees it as a
+			// system info line — it is not something the user typed.
+			a.subs.chat.AddSystemMessage(ev.Text)
+		case isReplay(ev):
 			a.subs.chat.AddUserMessage(ev.Text)
 		}
 		return
@@ -84,6 +90,13 @@ func (a *App) handleUserOrSystemContent(ev *agentic.OutputEvent) {
 		}
 		a.subs.chat.AddSystemMessage(ev.Text)
 	}
+}
+
+// isToolsetNotice reports whether ev is the host-generated toolset-change
+// notice injected by AgentManager.SetTools (user-role message tagged with
+// agentic.MetaToolsetNotice). The TUI surfaces it as a system info line.
+func isToolsetNotice(ev *agentic.OutputEvent) bool {
+	return ev.Metadata != nil && ev.Metadata[agentic.MetaToolsetNotice] == "true"
 }
 
 // isStreamRetry reports whether ev is the agent's stream-retry notification,
@@ -237,7 +250,9 @@ func (a *App) echoScrolledOffToolResult(tc *tui.ToolExecutionComponent, _ *agent
 	if a.subs.chat == nil || !a.subs.chat.IsScrolledOff(tc) {
 		return
 	}
-	a.subs.chat.AddToolResult(tc.CompletionEcho())
+	// Boxed continuation of the tool block: status-colored one-liner keeping
+	// the ← continuation marker (bugs.md 2026-08-26).
+	a.subs.chat.AddToolEcho(tc.CompletionEcho(), tc.Status() == tui.ToolSuccess)
 }
 
 // handleToolStart flips a tool widget from waiting (⧖, queued) to running

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -156,6 +157,11 @@ type AgentManager struct {
 	companionReviewSet     bool
 	hookEngine             hooks.AgentHookEngine
 
+	// lastToolNames mirrors the tool set pushed to the active agent
+	// (StartSession seed + every SetTools). SetTools diffs against it to emit
+	// one batched toolset-change notice to the model (bugs.md 2026-08-26).
+	lastToolNames []string
+
 	// pluginHookSink receives plugin interception points from the agent loop
 	// (M2 §3.5). Wired once at boot by the app layer; nil = plugin hooks
 	// disabled. The sink reads a live registry, so later plugin loads are
@@ -216,6 +222,9 @@ func (am *AgentManager) StartSession(mdl agenticprovider.Model, opts agenticprov
 
 	tools = am.toolsWithBus(tools)
 	am.baseSystemPrompt = systemPrompt
+	// Seed the tool-name mirror so the FIRST SetTools diff reports only real
+	// changes instead of "everything enabled".
+	am.lastToolNames = toolNameList(tools)
 	finalPrompt := am.augmentSystemPrompt(systemPrompt)
 	if am.sessionStore != nil {
 		sessionID := am.sessionStore.StartSession()
@@ -779,14 +788,94 @@ func (am *AgentManager) SetRunningForTest(running bool) {
 
 // SetTools updates the tools available to the active agent. Changes take
 // effect on the next turn without restarting the session.
+//
+// Toolset-change notice (bugs.md 2026-08-26): the previous tool set is
+// diffed against the new one and ONE batched user-role message is injected
+// into the conversation, so the model is always aware of tools that became
+// available or unavailable (enable, disable, MCP connect/disconnect, plugin
+// load/unload — every toggle funnels through here). The injection happens
+// OUTSIDE am.mu: it emits events that call back into OnEvent → logEvent,
+// which acquires am.mu (same discipline as InjectSystemMessage).
 func (am *AgentManager) SetTools(tools []agentic.Tool) error {
+	var (
+		agent     *agentic.Agent
+		wrapped   []agentic.Tool
+		added     []string
+		removed   []string
+		hasChange bool
+	)
 	am.mu.Lock()
-	defer am.mu.Unlock()
 	if am.activeAgent == nil {
+		am.mu.Unlock()
 		return fmt.Errorf("no active agent session")
 	}
-	am.activeAgent.SetTools(am.toolsWithBus(tools))
+	wrapped = am.toolsWithBus(tools)
+	added, removed = diffToolNames(am.lastToolNames, toolNameList(wrapped))
+	hasChange = len(added) > 0 || len(removed) > 0
+	am.lastToolNames = toolNameList(wrapped)
+	agent = am.activeAgent
+	am.mu.Unlock()
+
+	agent.SetTools(wrapped)
+	if hasChange {
+		agent.InjectUserMessage(toolsetNotice(added, removed))
+	}
 	return nil
+}
+
+// toolNameList extracts tool names in stable order.
+func toolNameList(tools []agentic.Tool) []string {
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Schema().Name
+	}
+	return names
+}
+
+// diffToolNames returns which names were added and removed between the
+// previous and next tool sets. Order: alphabetical for deterministic notices.
+func diffToolNames(prev, next []string) (added, removed []string) {
+	prevSet := make(map[string]bool, len(prev))
+	for _, n := range prev {
+		prevSet[n] = true
+	}
+	nextSet := make(map[string]bool, len(next))
+	for _, n := range next {
+		nextSet[n] = true
+	}
+	for _, n := range next {
+		if !prevSet[n] {
+			added = append(added, n)
+		}
+	}
+	for _, n := range prev {
+		if !nextSet[n] {
+			removed = append(removed, n)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+// toolsetNotice renders the batched toolset-change notice injected as a
+// user-role message. Empty when nothing changed.
+func toolsetNotice(added, removed []string) string {
+	if len(added) == 0 && len(removed) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[goa-tools] Toolset changed.")
+	if len(added) > 0 {
+		b.WriteString("\nEnabled: ")
+		b.WriteString(strings.Join(added, ", "))
+	}
+	if len(removed) > 0 {
+		b.WriteString("\nDisabled: ")
+		b.WriteString(strings.Join(removed, ", "))
+	}
+	b.WriteString("\nDeferred tools load on demand via tool_search (query \"select:<name>\").")
+	return b.String()
 }
 
 // SetModeRegistry sets the ModeRegistry used for resolving mode definitions.

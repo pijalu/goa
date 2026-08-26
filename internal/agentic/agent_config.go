@@ -166,6 +166,26 @@ func (a *Agent) InjectSystemMessage(content string) {
 	a.emitMessage(msg)
 }
 
+// MetaToolsetNotice marks an injected user-role toolset-change notice
+// (AgentManager.SetTools → InjectUserMessage). Like all Message.Metadata it
+// is never sent to the provider; hosts read it to render the notice as a
+// system info line instead of user input.
+const MetaToolsetNotice = "toolset_notice"
+
+// InjectUserMessage appends a user-role message to the conversation history.
+// Host-generated notices that must reach the model with user-role salience
+// (runtime tool enable/disable) use this path: some providers weight mid-
+// session system messages lightly, while user messages are reliably attended
+// to. Append-only, so request N+1 stays a strict prefix-extension of request
+// N (prompt-cache safe).
+func (a *Agent) InjectUserMessage(content string) {
+	msg := Message{Type: Content, Role: User, Content: content, Metadata: map[string]string{MetaToolsetNotice: "true"}}
+	a.mu.Lock()
+	a.history = append(a.history, msg)
+	a.mu.Unlock()
+	a.emitMessage(msg)
+}
+
 // metaEphemeral marks a history message as transient: it is sent to the model
 // during the turn it is injected but stripped before the next turn so it does
 // not pollute future context (e.g. the recovery hint or the repeat-loop nudge).

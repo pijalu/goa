@@ -10,10 +10,35 @@ import (
 	"sync"
 )
 
-// deferralThreshold is the minimum number of deferred-eligible tools required
+// DeferralThreshold is the minimum number of deferred-eligible tools required
 // for deferral to activate. Below it, the indirection cost (the tool_search
 // loader + catalog) is not worth the bytes saved by withholding schemas.
-const deferralThreshold = 8
+const DeferralThreshold = 8
+
+// PartitionDeferred splits a tool set into its deferred-tool loader name and
+// the alpha-sorted deferred-eligible tool names. It applies exactly the same
+// activation rules as NewToolRegistry: deferral requires BOTH a
+// DeferredToolLoader in the set AND at least DeferralThreshold
+// deferred-eligible tools; otherwise loader is "" and deferred is nil.
+// Exported so prompt builders can render the deferred-tool listing from the
+// same source of truth the agent registry will use (single partition logic).
+func PartitionDeferred(tools []Tool) (loader string, deferred []string) {
+	var deferredAll []string
+	for _, t := range tools {
+		name := t.Schema().Name
+		if l, ok := t.(DeferredToolLoader); ok && l.IsDeferredToolLoader() && loader == "" {
+			loader = name
+		}
+		if d, ok := t.(Deferred); ok && d.Deferred() {
+			deferredAll = append(deferredAll, name)
+		}
+	}
+	if loader == "" || len(deferredAll) < DeferralThreshold {
+		return "", nil
+	}
+	sort.Strings(deferredAll)
+	return loader, deferredAll
+}
 
 // ToolLookup is the abstraction the agent depends on for resolving tools by
 // name and producing stable, cache-friendly tool schemas. Depending on this
@@ -88,32 +113,23 @@ func NewToolRegistry(tools []Tool) *ToolRegistry {
 // the current permission mode" gate — a mode-filtered tool set simply has no
 // loader, so nothing is withheld), and (2) the deferred-eligible count meets
 // the threshold. Otherwise every schema ships eagerly, which is the
-// pre-deferral behavior.
+// pre-deferral behavior. The partition rules live in PartitionDeferred so
+// prompt builders render listings from the same source of truth.
 func (r *ToolRegistry) configureDeferral() {
-	var loaderName string
-	for name, t := range r.tools {
-		if l, ok := t.(DeferredToolLoader); ok && l.IsDeferredToolLoader() {
-			loaderName = name
-			break
-		}
+	all := make([]Tool, 0, len(r.tools))
+	for _, t := range r.tools {
+		all = append(all, t)
 	}
+	loaderName, deferred := PartitionDeferred(all)
 	if loaderName == "" {
 		return
 	}
-	var deferred []string
-	for name, t := range r.tools {
-		if d, ok := t.(Deferred); ok && d.Deferred() {
-			deferred = append(deferred, name)
-			r.deferredSet[name] = true
-		}
-	}
-	if len(deferred) < deferralThreshold {
-		return
-	}
-	sort.Strings(deferred)
 	r.deferralActive = true
 	r.loaderName = loaderName
 	r.deferred = deferred
+	for _, name := range deferred {
+		r.deferredSet[name] = true
+	}
 }
 
 // Get retrieves a tool by name. Returns false if the tool is not registered.

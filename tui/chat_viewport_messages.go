@@ -129,6 +129,14 @@ func (cv *ChatViewport) AddToolResult(text string) {
 	cv.Append(MessageEntry{Data: MessageData{Type: ConsoleToolResult, Text: text}, View: newToolResult(text)})
 }
 
+// AddToolEcho appends the compact completion echo for a tool that finished
+// while scrolled into terminal scrollback. Rendered as a boxed one-liner in
+// the tool's status color (green ✓ / red ✗) so it reads as a continuation of
+// the tool call block (bugs.md 2026-08-26); persisted as ConsoleToolResult.
+func (cv *ChatViewport) AddToolEcho(text string, ok bool) {
+	cv.Append(MessageEntry{Data: MessageData{Type: ConsoleToolResult, Text: text}, View: newToolEcho(text, ok)})
+}
+
 // AddAgentMessage is defined in agent_message.go (factory + AddMessage).
 
 // FlashNotice implements the ScrollbackGuard notice sink: it shows a

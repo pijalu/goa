@@ -6,6 +6,7 @@ package tools_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -198,7 +199,7 @@ func TestToolSearchCatalogStable(t *testing.T) {
 	}
 }
 
-// The catalog respects its byte budget.
+// The results catalog respects its byte budget.
 func TestToolSearchCatalogBudget(t *testing.T) {
 	reg := tools.NewToolRegistry()
 	// Deferred tools with long one-line descriptions force the budget to
@@ -221,13 +222,17 @@ func TestToolSearchCatalogBudget(t *testing.T) {
 	reg.Register(&longDescDeferredTool{})
 	loader := tools.NewToolSearchTool(reg)
 
-	desc := loader.Schema().Description
-	// The catalog portion must stay under the 512-byte budget.
-	idx := strings.Index(desc, "Deferred tools available")
-	if idx < 0 {
-		t.Fatal("catalog header not found in description")
+	// The annotated catalog ships in RESULTS (empty query = full catalog).
+	res, err := loader.ExecuteWithResult(`{"query":""}`)
+	if err != nil {
+		t.Fatalf("ExecuteWithResult: %v", err)
 	}
-	catalog := desc[idx:]
+	catalog := res.Output
+	idx := strings.Index(catalog, "Deferred tools available")
+	if idx < 0 {
+		t.Fatal("catalog header not found in result")
+	}
+	catalog = catalog[idx:]
 	if len(catalog) > 600 { // budget 512 + header slack
 		t.Errorf("catalog = %d bytes, want ≤ ~512", len(catalog))
 	}
@@ -235,6 +240,67 @@ func TestToolSearchCatalogBudget(t *testing.T) {
 		t.Errorf("expected count-summary for truncated catalog, got: %.160s", catalog)
 	}
 }
+
+// The schema description's name-only list must track registry changes
+// IMMEDIATELY: tools can be registered/unregistered at runtime (/tools,
+// /config, MCP), and the once-cached catalog went stale after such toggles
+// (bugs.md 2026-08-26). Regression: Schema() computed once via sync.Once.
+func TestToolSearchDescriptionTracksRegistryChanges(t *testing.T) {
+	reg, _ := deferredProbeSet()
+	loader := tools.NewToolSearchTool(reg)
+
+	before := loader.Schema().Description
+	if strings.Contains(before, "long_desc_probe") {
+		t.Fatal("probe tool unexpectedly listed before registration")
+	}
+
+	reg.Register(&longDescDeferredTool{})
+	afterRegister := loader.Schema().Description
+	if !strings.Contains(afterRegister, "long_desc_probe") {
+		t.Error("description not refreshed after Register — catalog went stale")
+	}
+
+	reg.Unregister("long_desc_probe")
+	afterUnregister := loader.Schema().Description
+	if strings.Contains(afterUnregister, "long_desc_probe") {
+		t.Error("description still lists tool after Unregister — catalog went stale")
+	}
+}
+
+// The name-only description list is capped: beyond the budget it summarizes
+// the remainder instead of listing every name.
+func TestToolSearchNameCatalogCap(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	for i := 0; i < 70; i++ {
+		reg.Register(&namedDeferredProbe{name: fmt.Sprintf("deferred_probe_%02d", i)})
+	}
+	loader := tools.NewToolSearchTool(reg)
+	desc := loader.Schema().Description
+
+	if !strings.Contains(desc, "and 6 more") { // 70 - 64 listed
+		t.Errorf("expected overflow summary for capped name list, got:\n%s", desc)
+	}
+	if strings.Contains(desc, "deferred_probe_69") {
+		t.Error("name list exceeded its cap")
+	}
+	if !strings.Contains(desc, "deferred_probe_00") {
+		t.Error("name list missing its first entry")
+	}
+}
+
+// namedDeferredProbe is a deferred tool with a configurable name for cap tests.
+type namedDeferredProbe struct {
+	agentic.BaseTool
+	name string
+}
+
+func (p *namedDeferredProbe) Deferred() bool { return true }
+
+func (p *namedDeferredProbe) Schema() agentic.ToolSchema {
+	return agentic.ToolSchema{Name: p.name, Description: "probe", Schema: map[string]interface{}{"type": "object"}}
+}
+
+func (*namedDeferredProbe) Execute(input string) (string, error) { return "", nil }
 
 // longDescDeferredTool is a deferred tool with a deliberately long
 // description used to force catalog truncation in budget tests.

@@ -420,10 +420,9 @@ func enableRuntimeTool(ctx core.Context, name string) {
 		}
 		ctx.ToolRegistry.Register(tool)
 	}
+	// The model is notified by AgentManager.SetTools (batched toolset-change
+	// notice) — no separate injection here.
 	refreshToolRegistry(ctx)
-	if ctx.AgentManager != nil {
-		_ = ctx.AgentManager.InjectSystemMessage(fmt.Sprintf("A new tool is now available to you: %s. You may use it on subsequent turns.", name))
-	}
 }
 
 func disableRuntimeTool(ctx core.Context, name string) {

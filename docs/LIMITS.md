@@ -161,6 +161,15 @@ hard ceiling when no compression thresholds are set; `execution.token_warning`
 | read `count` / wait `timeout` | `500` lines / `5s` | Terminal read defaults; PTY opens at 80×24. |
 | `tools.terminal.sandbox.*` | off | Command screening lists for the terminals tool; disabled by default (the internal safety blocklist still screens). |
 
+### Deferred tools (tool_search)
+
+| Key | Default | Description |
+|---|---|---|
+| Deferral activation threshold *(code)* | `8` deferred tools + loader present | Below this, all schemas ship eagerly (no `tool_search` indirection). |
+| `tool_search` description name list *(code)* | 64 names, then "+N more" | Name-only discovery surface in the loader schema; recomputed from the live registry on every call. |
+| `tool_search` result catalog *(code)* | `512` bytes / `80`-rune descriptions | Annotated catalog served in tool results; overflow summarized with a count line. |
+| `<deferred_tools>` prompt section *(code)* | `80`-rune descriptions | System-prompt listing of every withheld tool; lowest-priority section (dropped first under budget pressure). |
+
 ## Memory & dream
 
 | Key | Default | Description |

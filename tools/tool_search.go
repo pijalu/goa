@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/pijalu/goa/internal/agentic"
 )
@@ -26,9 +25,15 @@ const catalogDescriptionRunes = 80
 
 // ToolSearchTool is the deferred-tool loader (P1 deferred tool loading).
 // Its schema is tiny (one query string) and its description embeds the
-// compact catalog of deferred tools (name + one-line description, budgeted).
-// The model calls it to discover and pull deferred tool schemas on demand
-// instead of shipping every schema with every request.
+// compact NAME-ONLY list of deferred tools. The model calls it to discover
+// and pull deferred tool schemas on demand instead of shipping every schema
+// with every request.
+//
+// The name list is recomputed from the live registry on EVERY Schema() call:
+// tools can be registered/unregistered at runtime (/tools, /config, MCP,
+// plugins), and a once-cached list went stale after such toggles
+// (bugs.md 2026-08-26). The full catalog with descriptions is served in tool
+// RESULTS (fallback paths below); the schema description stays lean.
 //
 // Query semantics:
 //
@@ -47,14 +52,11 @@ type ToolSearchTool struct {
 	// deferred tool set (the tool set is fully registered by the time the
 	// loader's schema is first built).
 	reg *ToolRegistry
-
-	catalogOnce sync.Once
-	catalogText string
 }
 
 // NewToolSearchTool creates the loader bound to the app-level registry. The
-// compact catalog is computed lazily on first Schema() call so registration
-// order does not matter.
+// deferred-tool listing is derived from the live registry on every access so
+// runtime toggles are reflected immediately.
 func NewToolSearchTool(reg *ToolRegistry) *ToolSearchTool {
 	return &ToolSearchTool{reg: reg}
 }
@@ -64,7 +66,7 @@ func NewToolSearchTool(reg *ToolRegistry) *ToolSearchTool {
 func (t *ToolSearchTool) IsDeferredToolLoader() bool { return true }
 
 // Schema returns the tiny loader schema. The description embeds the compact
-// catalog of deferred tools so the model can discover and pull them.
+// name-only list of deferred tools so the model can discover and pull them.
 func (t *ToolSearchTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "tool_search",
@@ -199,36 +201,65 @@ func (t *ToolSearchTool) deferredByName() map[string]agentic.Tool {
 	return m
 }
 
-// description returns the loader schema description embedding the catalog.
+// description returns the loader schema description: query semantics plus a
+// compact name-only list of deferred tools. The name list is the fallback
+// discovery surface for contexts without goa's app system prompt (sub-agents,
+// skill runners); the full annotated catalog ships in tool results instead.
 func (t *ToolSearchTool) description() string {
-	return "Search and load deferred tools. Deferred tools are withheld from the main tool set to save context; load them here before calling them.\n\n" + t.catalog()
+	return "Search and load deferred tools. Deferred tools are withheld from the main tool set to save context; load them here before calling them.\n\n" + t.nameCatalog()
 }
 
-// catalog returns the compact, byte-stable catalog of deferred tools
-// (name + one-line description), computed once. Always lists at least one
-// tool; overflow is summarized with a count line.
+// nameCatalogBudget caps how many names the description's name-only list
+// carries before summarizing the remainder.
+const nameCatalogBudget = 64
+
+// nameCatalog returns the compact, byte-stable, name-only list of currently
+// registered deferred tools, recomputed from the live registry on each call
+// so enable/disable toggles are reflected immediately.
+func (t *ToolSearchTool) nameCatalog() string {
+	tools := t.deferredTools()
+	var b strings.Builder
+	b.WriteString("Deferred tools available to load (call with \"select:Name1,Name2\"):\n")
+	listed := 0
+	for _, tool := range tools {
+		if listed == nameCatalogBudget {
+			break
+		}
+		b.WriteString("- ")
+		b.WriteString(tool.Schema().Name)
+		b.WriteString("\n")
+		listed++
+	}
+	if remaining := len(tools) - listed; remaining > 0 {
+		fmt.Fprintf(&b, "- … and %d more (unknown names list all)\n", remaining)
+	}
+	return b.String()
+}
+
+// catalog returns the compact catalog of deferred tools (name + one-line
+// description), recomputed from the live registry on EVERY call so runtime
+// register/unregister is reflected immediately. Served in tool RESULTS
+// (empty-query and no-match fallbacks); always lists at least one tool;
+// overflow is summarized with a count line.
 func (t *ToolSearchTool) catalog() string {
-	t.catalogOnce.Do(func() {
-		tools := t.deferredTools()
-		var b strings.Builder
-		b.WriteString("Deferred tools available to load (call with \"select:Name1,Name2\"):\n")
-		listed := 0
-		for _, tool := range tools {
-			s := tool.Schema()
-			line := fmt.Sprintf("- %s: %s\n", s.Name, firstRunes(s.Description, catalogDescriptionRunes))
-			// Always list at least one; after that, respect the budget.
-			if listed > 0 && b.Len()+len(line) > catalogBudget {
-				break
-			}
-			b.WriteString(line)
-			listed++
+	tools := t.deferredTools()
+	var b strings.Builder
+	b.WriteString("Deferred tools available to load (call with \"select:Name1,Name2\"):\n")
+	listed := 0
+	for _, tool := range tools {
+		s := tool.Schema()
+		line := fmt.Sprintf("- %s: %s\n", s.Name, firstRunes(s.Description, catalogDescriptionRunes))
+		// Always list at least one; after that, respect the budget.
+		if listed > 0 && b.Len()+len(line) > catalogBudget {
+			break
 		}
-		if remaining := len(tools) - listed; remaining > 0 {
-			fmt.Fprintf(&b, "- … and %d more (unknown names list all)\n", remaining)
-		}
-		t.catalogText = b.String()
-	})
-	return t.catalogText
+		b.WriteString(line)
+		listed++
+	}
+	if remaining := len(tools) - listed; remaining > 0 {
+		fmt.Fprintf(&b, "- … and %d more (unknown names list all)\n", remaining)
+	}
+	return b.String()
 }
 
 // firstRunes returns the first n runes of s on a single line.

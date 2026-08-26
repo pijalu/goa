@@ -7,6 +7,7 @@ package agentic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -55,16 +56,16 @@ func (*probeLoader) Schema() ToolSchema {
 func (*probeLoader) Execute(input string) (string, error) { return "", nil }
 
 // deferralProbeRegistry builds a registry with threshold-1 eager tools, one
-// loader, and exactly deferralThreshold deferred tools so deferral activates.
+// loader, and exactly DeferralThreshold deferred tools so deferral activates.
 func deferralProbeRegistry() *ToolRegistry {
 	tools := []Tool{
 		&probeEagerTool{name: "read"},
 		&probeEagerTool{name: "write"},
 		&probeLoader{},
 	}
-	// deferralThreshold deferred tools (all named d0..d7) so the count is ≥
+	// DeferralThreshold deferred tools (all named d0..d7) so the count is ≥
 	// threshold.
-	for i := 0; i < deferralThreshold; i++ {
+	for i := 0; i < DeferralThreshold; i++ {
 		tools = append(tools, &probeDeferredTool{name: "d" + string(rune('0'+i))})
 	}
 	return NewToolRegistry(tools)
@@ -131,7 +132,7 @@ func TestDeferralInactiveBelowThreshold(t *testing.T) {
 		&probeEagerTool{name: "read"},
 		&probeLoader{},
 	}
-	for i := 0; i < deferralThreshold-1; i++ {
+	for i := 0; i < DeferralThreshold-1; i++ {
 		tools = append(tools, &probeDeferredTool{name: "d" + string(rune('0'+i))})
 	}
 	reg := NewToolRegistry(tools)
@@ -145,7 +146,7 @@ func TestDeferralInactiveBelowThreshold(t *testing.T) {
 // be unreachable, so everything ships eagerly.
 func TestDeferralInactiveWithoutLoader(t *testing.T) {
 	tools := []Tool{}
-	for i := 0; i < deferralThreshold; i++ {
+	for i := 0; i < DeferralThreshold; i++ {
 		tools = append(tools, &probeDeferredTool{name: "d" + string(rune('0'+i))})
 	}
 	reg := NewToolRegistry(tools)
@@ -243,8 +244,8 @@ func TestDeferralStatus(t *testing.T) {
 func TestDeferralAllSchemas(t *testing.T) {
 	reg := deferralProbeRegistry()
 	all := reg.AllSchemas()
-	if len(all) != 2+1+deferralThreshold {
-		t.Errorf("AllSchemas() = %d, want full set %d", len(all), 2+1+deferralThreshold)
+	if len(all) != 2+1+DeferralThreshold {
+		t.Errorf("AllSchemas() = %d, want full set %d", len(all), 2+1+DeferralThreshold)
 	}
 }
 
@@ -304,5 +305,57 @@ func TestApplyToolLoadRequests(t *testing.T) {
 	}
 	if len(reg.Schemas()) != 5 { // 2 eager + loader + d0 + d1
 		t.Errorf("schema count = %d, want 5", len(reg.Schemas()))
+	}
+}
+
+// PartitionDeferred is the single partition source of truth shared with the
+// prompt builder: same activation rules, alpha-sorted names.
+func TestPartitionDeferred_ActivatesLikeRegistry(t *testing.T) {
+	loader, deferred := PartitionDeferred([]Tool{
+		&probeEagerTool{name: "read"},
+		&probeLoader{},
+		&probeDeferredTool{name: "zeta"},
+		&probeDeferredTool{name: "alpha"},
+		&probeDeferredTool{name: "mid"},
+		&probeDeferredTool{name: "d3"},
+		&probeDeferredTool{name: "d4"},
+		&probeDeferredTool{name: "d5"},
+		&probeDeferredTool{name: "d6"},
+		&probeDeferredTool{name: "d7"},
+		&probeDeferredTool{name: "d8"},
+	})
+	if loader != "tool_search" {
+		t.Errorf("loader = %q, want tool_search", loader)
+	}
+	if len(deferred) != 9 {
+		t.Fatalf("deferred = %v (%d), want 9 entries", deferred, len(deferred))
+	}
+	for i := 1; i < len(deferred); i++ {
+		if deferred[i-1] > deferred[i] {
+			t.Errorf("deferred not sorted: %v", deferred)
+			break
+		}
+	}
+}
+
+func TestPartitionDeferred_BelowThresholdNil(t *testing.T) {
+	_, deferred := PartitionDeferred([]Tool{
+		&probeLoader{},
+		&probeEagerTool{name: "read"},
+		&probeDeferredTool{name: "only-one"},
+	})
+	if deferred != nil {
+		t.Errorf("below threshold deferred = %v, want nil", deferred)
+	}
+}
+
+func TestPartitionDeferred_NoLoaderNil(t *testing.T) {
+	var many []Tool
+	for i := 0; i < DeferralThreshold+2; i++ {
+		many = append(many, &probeDeferredTool{name: fmt.Sprintf("p%d", i)})
+	}
+	loader, deferred := PartitionDeferred(many)
+	if loader != "" || deferred != nil {
+		t.Errorf("no-loader partition = (%q, %v), want empty", loader, deferred)
 	}
 }

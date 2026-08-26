@@ -83,6 +83,15 @@ func buildSystemPrompt(subs *subsystems) string {
 		parts = append(parts, mcpSection)
 	}
 
+	// 7. Deferred tools listing — name + short description for every tool the
+	// agent registry withholds behind tool_search, so the model knows these
+	// exist and can pull details/schemas on demand (bugs.md 2026-08-26).
+	// Appended LAST on purpose: applySystemPromptBudget drops trailing
+	// sections first, and this listing is the lowest-priority context.
+	if deferredSection := deferredToolsSection(subs); deferredSection != "" {
+		parts = append(parts, deferredSection)
+	}
+
 	prompt := strings.Join(parts, "\n\n")
 	if budget > 0 && len(prompt) > budget {
 		prompt = applySystemPromptBudget(parts, budget)
@@ -116,6 +125,57 @@ func buildMCPInstructionsSection(subs *subsystems) string {
 	}
 	b.WriteString("\n</mcp_instructions>")
 	return b.String()
+}
+
+// deferredDescRunes caps each deferred tool's short description in the
+// <deferred_tools> listing (mirrors the tool_search catalog cap).
+const deferredDescRunes = 80
+
+// deferredToolsSection renders the system-prompt listing of deferred tools
+// from the app registry as filtered for the current mode. Returns "" when
+// there is no registry or deferral does not activate for this tool set.
+func deferredToolsSection(subs *subsystems) string {
+	if subs.toolRegistry == nil {
+		return ""
+	}
+	return renderDeferredToolsSection(filterToolsForCurrentMode(subs, subs.toolRegistry.All()))
+}
+
+// renderDeferredToolsSection builds the <deferred_tools> block: one line per
+// withheld tool (name + capped one-line description) plus the load
+// instruction. PartitionDeferred is the single source of truth for which
+// tools are actually withheld, so the prompt can never advertise a tool the
+// agent registry would serve eagerly. Pure function for unit testing.
+func renderDeferredToolsSection(toolsList []agentic.Tool) string {
+	_, deferred := agentic.PartitionDeferred(toolsList)
+	if len(deferred) == 0 {
+		return ""
+	}
+	desc := make(map[string]string, len(toolsList))
+	for _, t := range toolsList {
+		s := t.Schema()
+		desc[s.Name] = firstLineRunes(s.Description, deferredDescRunes)
+	}
+	var b strings.Builder
+	b.WriteString("<deferred_tools>\n")
+	b.WriteString("These tools exist but their schemas are withheld to save context. " +
+		"When a task matches one, first run tool_search with query \"select:<name>\" to load it, then call it normally; " +
+		"calls to unloaded deferred tools are rejected.")
+	for _, name := range deferred {
+		fmt.Fprintf(&b, "\n- %s: %s", name, desc[name])
+	}
+	b.WriteString("\n</deferred_tools>")
+	return b.String()
+}
+
+// firstLineRunes returns the first line of s capped at n runes.
+func firstLineRunes(s string, n int) string {
+	s = strings.SplitN(strings.TrimSpace(s), "\n", 2)[0]
+	runes := []rune(s)
+	if len(runes) > n {
+		return string(runes[:n]) + "…"
+	}
+	return s
 }
 
 // modelContextWindow returns the effective context window for the active model.

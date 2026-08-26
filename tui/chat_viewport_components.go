@@ -705,6 +705,41 @@ func (m *toolResult) Render(width int) []string {
 	return withSpacers([]string{padToWidth(color+padded+ansi.Reset, width)}, width, "")
 }
 
+// toolEcho renders the offscreen completion echo (CompletionEcho in
+// tui/tool_execution.go): a compact BOXED one-liner styled with the finished
+// tool's success/error color so it reads as a continuation of the tool call
+// block it belongs to (bugs.md 2026-08-26). The ← prefix is kept as the
+// continuation-of-message marker; content never replays raw output.
+type toolEcho struct {
+	text string // CompletionEcho text (already one line, ANSI-stripped on render)
+	ok   bool   // true = tool succeeded (green), false = failed (red)
+}
+
+func newToolEcho(text string, ok bool) *toolEcho { return &toolEcho{text: text, ok: ok} }
+func (m *toolEcho) HandleInput(string)          {}
+func (m *toolEcho) Invalidate()                 {}
+
+// Render draws a single bordered row: │ ← <echo> │ with the vertical borders
+// and text in the status color. Truncates with an ellipsis when the echo
+// exceeds the available width.
+func (m *toolEcho) Render(width int) []string {
+	color := ansi.Fg(TheTheme.ColorHex("tool_success"))
+	if !m.ok {
+		color = ansi.Fg(TheTheme.ColorHex("tool_error"))
+	}
+	clean := ansi.Strip(m.text)
+	inner := "← " + clean
+	// Budget: two border cells + one space of padding on each side.
+	if maxLen := width - 4; maxLen > 8 {
+		if runes := []rune(inner); len(runes) > maxLen {
+			inner = string(runes[:maxLen-1]) + "…"
+		}
+	}
+	border := color + ansi.BoxVertical + ansi.Reset
+	line := border + " " + color + inner + ansi.Reset + " " + border
+	return []string{padToWidth(line, width)}
+}
+
 // infoMessage renders simple informational text without box or background.
 // Unlike systemMessage which uses renderGoaPanel (bordered panel with dark
 // background), this is for plain status notices like "Connected to Model X.".

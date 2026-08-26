@@ -1,3 +1,40 @@
+## Deferred-tool discoverability: system-prompt listing + toolset-change notices (2026-08-26)
+
+Requirement: the tools reachable only through `tool_search` should be listed with a short description **in the system prompt**, and a user-role message should be sent to the model whenever a tool is enabled/disabled so it is aware of toolset changes. The system-prompt list tells the model these tools exist; when one is of interest the model runs `tool_search select:<name>` to retrieve details/full call schema before calling (already supported; unloaded calls already get the redirect error naming the exact remedy — `internal/agentic/agent_tools.go:457`).
+
+Review findings (enhancements over the raw requirement):
+
+1. **Stale catalog (bug):** the deferred catalog inside `tool_search`'s schema description is computed once (`catalogOnce sync.Once`, `tools/tool_search.go`) — after any runtime enable/disable the catalog no longer matches the registry until process restart.
+2. **Truncated discovery:** the catalog has a 512-byte budget and ends with "… and N more" — the model cannot see every deferred tool name. The system-prompt section should list ALL deferred tools; the `tool_search` description can shrink to query semantics plus a name-only fallback (sub-agents/skill runners do not get goa's app system prompt and still need in-schema discovery).
+3. **Cache discipline (Hard Rule 7):** notifications must be append-only user messages (steering-drain style, metadata-tagged), batched/deduped per toggle episode; never rewrite history. System-prompt section must be alpha-stable between changes; changes coincide with tool-block changes anyway, so incremental prefix-cache cost is nil.
+4. **Consistency:** disabled tools must vanish from both the section and the loader catalog; toggles rebuild the agent registry (`AgentManager.SetTools` → fresh `agentic.ToolRegistry`, loaded tail reset) — acceptable, the notice tells the model what changed.
+
+Implementation plan:
+
+1. `tools/tool_search.go`: drop `sync.Once`; compute the catalog per `Schema()`/description call from the live registry (cheap: ~14 schema reads). Keep `select:` semantics; embed a compact name-only fallback list.
+2. `internal/app/prompt.go`: new `deferredToolsSection(subs)` mirroring `availableSkillsSection` — `<deferred_tools>` block, alpha-sorted `- name: short-desc` lines + instruction "Load with tool_search select:<name> before calling; unloaded calls are rejected." Wire into `buildSystemPrompt` as a low-priority budgeted section (dropped first under pressure).
+3. Toolset notices: app-level pending-notice queue (pattern: steering queue); producers are `/tools:*` toggles (`setToolEnabled`, `core/commands/docs.go`), MCP server enable/disable, plugin load/unload. Drain at next turn start → append `Message{Role: User, Metadata: metaToolsetNotice}` with batched "Enabled: … / Disabled: …"; TUI renders it as a system info line, not a user bubble.
+4. Tests: catalog freshness after register/unregister; prompt section lists every deferred name, respects budget, byte-stable across unchanged builds; notice batching/dedup/drain order; redirect error text unchanged; `Schemas()` prefix byte-equality across loads.
+5. Docs: TOOLS.md "Deferred loading" section; LIMITS row for section/catalog budgets. Gate: `go vet ./... && go test -count=1 -race ./tools ./internal/agentic ./internal/app`.
+
+**Implemented (2026-08-26).** `tools/tool_search.go`: `catalogOnce` removed — the description's name-only list (capped at 64 names) and the results catalog are recomputed from the live registry on every call (`TestToolSearchDescriptionTracksRegistryChanges`, `TestToolSearchNameCatalogCap`; budget test retargeted to the results catalog). `internal/agentic`: partition rules extracted into exported `PartitionDeferred`/`DeferralThreshold` shared by registry construction and the prompt builder; new `InjectUserMessage` + `MetaToolsetNotice` (append-only user-role notice, cache-safe). `internal/app/prompt.go`: `<deferred_tools>` section appended as the lowest-priority budgeted part (`renderDeferredToolsSection` unit tests cover listing, threshold/no-loader inactivity, description caps). `core/agentmanager.go`: `SetTools` diffs previous vs next tool names and injects ONE batched `[goa-tools] Enabled:/Disabled:` user message (seeded at StartSession; identical sets stay silent; enable/disable, MCP, plugin toggles all funnel through it — docs.go's redundant enable-only system message removed); TUI renders the notice as a system info line via `isToolsetNotice`. Validation: `go test -count=1 -race ./tools ./internal/agentic ./tui ./core ./internal/app` PASS, `go vet ./...` clean, gocyclo/gocognit within budget on changed files.
+
+## Completion echo should read as a boxed continuation of the tool block (2026-08-26)
+
+When a tool finishes while fully scrolled into terminal scrollback, the completion echo (`CompletionEcho`, `tui/tool_execution.go:424`) is appended via `AddToolResult` (`internal/app/stats_stream.go:240`) and rendered by the generic `toolResult` component (`tui/chat_viewport_components.go:680`) — a dim plain line in `system_msg` color with a hardcoded `"  ← "` prefix: no box, no success/error identity, truncated at width.
+
+Desired: the echo should read as a **continuation of the tool call block it belongs to** — a compact boxed one-liner styled with that block's green/red status colors (`tool_success`/`tool_error`). The `←` prefix is KEPT as the continuation-of-message marker.
+
+Example target:
+
+```
+← ✓ $ ls -la /Users/muaddib/dev/goa/docs/ | head -60 — Took 0.08s · 2.4 KB · 44 lines
+```
+
+Plan sketch: dedicated echo component carrying the widget's terminal status (or a `ConsoleToolEcho` type) rendering one bordered row with the status color instead of routing through generic `toolResult`; keep the `←` marker and the existing content contract (never replay raw output). TUI test asserting box + green styling for ✓ echoes and red for ✗ echoes.
+
+**Implemented (2026-08-26).** New `toolEcho` component (`tui/chat_viewport_components.go`): single boxed row `│ ← <echo> │` with borders and text in `tool_success`/`tool_error` per the widget's terminal status, truncating with an ellipsis to the terminal width; the `←` continuation marker is kept. Wired via `ChatViewport.AddToolEcho` (persisted as `ConsoleToolResult`) from `echoScrolledOffToolResult`. Tests: `tui/tool_echo_test.go` pins status coloring (green ✓ / red ✗), boxing, content preservation, and width truncation. Validation: `go test ./tui -run TestToolEcho -count=1` PASS; full `./tui` race suite PASS.
+
 ## Deferred default tool schemas (2026-08-26)
 
 Moved `todo_list`, `verify`, `lsp`, and `run_skill` out of the eager tool schema block. They remain registered and executable, but their schemas are loaded through `tool_search` on demand, reducing per-request context overhead. Added regression coverage for eager omission and `select:todo_list,verify,lsp` loading. Validation: `go test ./tools -run TestDefaultToolsTodoAndVerifyAreDeferred -count=1 -timeout 60s` passes.
