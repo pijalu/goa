@@ -1,3 +1,18 @@
+## OpenCode Go quota segment regression (2026-08-26)
+
+Observed failure: `TestQuota_OpencodeSegmentShowsQuota` returned an empty status segment for the configured `opencode-go` provider, despite the usage API returning rolling/weekly/monthly percentages. The test run also emitted a duplicate-plugin warning while loading a stale copy:
+
+```text
+2026/08/26 07:17:04 Warning duplicate plugin id dup at /tmp/TestPluginLoader_DuplicateIDLoadsOnce439849839/001/b/dup — already loaded from another directory, skipping stale copy
+--- FAIL: TestQuota_OpencodeSegmentShowsQuota (0.05s)
+    quota_plugin_test.go:489: opencode-go segment should show usage percentages, got ""
+FAIL
+coverage: 81.9% of statements
+FAIL github.com/pijalu/goa/plugins
+```
+
+Root cause/fix: OpenCode Go was not consistently resolved to the OpenCode quota fetcher and its real `/zen/go/v1/usage` response (`usage.rolling`, `usage.weekly`, `usage.monthly`) was not guaranteed to become window limits. The fetcher now aliases `opencode-go`, routes the usage URL through `/zen/go/v1`, maps all three percentage windows, and the status segment follows the active provider. Regression evidence: `go test ./plugins -run TestQuota_OpencodeSegmentShowsQuota -count=1 -timeout 30s` and `go test ./plugins -count=1 -timeout 120s` pass. The duplicate-plugin warning is retained as test-loader evidence and is unrelated to the quota failure.
+
 ## Comprehensive validation evidence (2026-08-25)
 
 Registry parity now has a table-driven 38-ID OpenCode fixture and the PHP Intelephense ID is aligned with OpenCode (`php intelephense`). Hermetic launcher, protocol, diagnostics, lifecycle, workspace-edit, timeout/cancellation, and fake-server tests pass. Evidence:
@@ -206,6 +221,10 @@ The comparison target was `../opencode/packages/opencode/src/lsp/lsp.ts`, `lsp/c
 ### LSP-011 — TypeScript workspace initialization lacks OpenCode's local tsserver resolution (Medium)
 
 **Evidence:** OpenCode resolves `typescript/lib/tsserver.js` from the workspace and passes it in initialization options. Goa only adds generic `initOptions` and its TypeScript registry entry has no equivalent dynamic tsserver path.
+
+## Workspace-edit partial mutation regression (2026-08-26)
+
+`ApplyWorkspaceEdit` previously validated and replaced files sequentially. If a later file contained an invalid range, earlier files had already been changed, despite the operation being described as atomic. The implementation now prepares and validates all file edits before mutation, then rolls back already-committed files if backup/replacement fails. Regression test: `TestApplyWorkspaceEditValidatesAllFilesBeforeMutation` proves an invalid second edit leaves the first file unchanged. Validation: `go test ./internal/lsp -run 'Test(WorkspaceEdit|ApplyWorkspaceEdit)' -count=1 -timeout 60s` passes.
 
 **Plan:** Resolve the nearest workspace TypeScript installation, pass the server-specific initialization option, and test monorepos/nested package roots and missing-local-TypeScript fallback.
 

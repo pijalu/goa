@@ -40,6 +40,28 @@ func TestWorkspaceEditProtectedPath(t *testing.T) {
 	}
 }
 
+func TestApplyWorkspaceEditValidatesAllFilesBeforeMutation(t *testing.T) {
+	d := t.TempDir()
+	first := filepath.Join(d, "a.go")
+	second := filepath.Join(d, "b.go")
+	if err := osWrite(first, "first\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := osWrite(second, "second\n"); err != nil {
+		t.Fatal(err)
+	}
+	e := &WorkspaceEdit{Changes: map[string][]TextEdit{
+		uriFor(first):  {{Range: Range{Start: Position{Line: 0, Character: 0}, End: Position{Line: 0, Character: 5}}, NewText: "changed"}},
+		uriFor(second): {{Range: Range{Start: Position{Line: 9}, End: Position{Line: 9}}, NewText: "invalid"}},
+	}}
+	if _, err := ApplyWorkspaceEdit(e, WorkspaceEditPolicy{Root: d}); err == nil {
+		t.Fatal("expected invalid later edit to fail")
+	}
+	if got, _ := osRead(first); string(got) != "first\n" {
+		t.Fatalf("first file was partially changed: %q", got)
+	}
+}
+
 func TestWorkspaceEditPreviewAndApply(t *testing.T) {
 	d := t.TempDir()
 	p := filepath.Join(d, "a.go")

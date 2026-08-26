@@ -50,34 +50,66 @@ func ApplyWorkspaceEdit(edit *WorkspaceEdit, policy WorkspaceEditPolicy) (Worksp
 		return WorkspaceEditPreview{}, err
 	}
 	preview, _ := previewFiles(files)
+	prepared, err := prepareWorkspaceFiles(files)
+	if err != nil {
+		return WorkspaceEditPreview{}, err
+	}
 	if policy.BackupDir == "" {
 		policy.BackupDir = filepath.Join(policy.Root, ".goa", "backups")
 	}
 	if err := os.MkdirAll(policy.BackupDir, 0700); err != nil {
 		return WorkspaceEditPreview{}, err
 	}
-	for _, f := range files {
-		if err := applyWorkspaceFile(f, policy.BackupDir); err != nil {
-			return WorkspaceEditPreview{}, err
-		}
+	if err := commitWorkspaceFiles(prepared, policy.BackupDir); err != nil {
+		return WorkspaceEditPreview{}, err
 	}
 	return preview, nil
 }
 
-func applyWorkspaceFile(f workspaceFileEdits, backupDir string) error {
-	data, err := os.ReadFile(f.path)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", f.path, err)
+type preparedWorkspaceFile struct {
+	path, original, updated string
+}
+
+// prepareWorkspaceFiles performs all reads and edit validation before any file
+// is changed. This prevents a malformed later edit from leaving a partial
+// workspace mutation.
+func prepareWorkspaceFiles(files []workspaceFileEdits) ([]preparedWorkspaceFile, error) {
+	prepared := make([]preparedWorkspaceFile, 0, len(files))
+	for _, f := range files {
+		data, err := os.ReadFile(f.path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", f.path, err)
+		}
+		updated, err := applyTextEdits(string(data), f.edits)
+		if err != nil {
+			return nil, fmt.Errorf("edit %s: %w", f.path, err)
+		}
+		prepared = append(prepared, preparedWorkspaceFile{f.path, string(data), updated})
 	}
-	backup := filepath.Join(backupDir, filepath.Base(f.path)+".bak")
-	if err := os.WriteFile(backup, data, 0600); err != nil {
-		return fmt.Errorf("backup %s: %w", f.path, err)
+	return prepared, nil
+}
+
+func commitWorkspaceFiles(files []preparedWorkspaceFile, backupDir string) error {
+	committed := make([]preparedWorkspaceFile, 0, len(files))
+	for _, f := range files {
+		backup := filepath.Join(backupDir, filepath.Base(f.path)+".bak")
+		if err := os.WriteFile(backup, []byte(f.original), 0600); err != nil {
+			rollbackWorkspaceFiles(committed)
+			return fmt.Errorf("backup %s: %w", f.path, err)
+		}
+		if err := replaceFile(f.path, f.updated); err != nil {
+			rollbackWorkspaceFiles(committed)
+			return fmt.Errorf("replace %s: %w", f.path, err)
+		}
+		committed = append(committed, f)
 	}
-	updated, err := applyTextEdits(string(data), f.edits)
-	if err != nil {
-		return fmt.Errorf("edit %s: %w", f.path, err)
+	return nil
+}
+
+func rollbackWorkspaceFiles(files []preparedWorkspaceFile) {
+	for _, f := range files {
+		_ = replaceFile(f.path, f.original)
 	}
-	return replaceFile(f.path, updated)
 }
 
 func replaceFile(path, content string) error {
