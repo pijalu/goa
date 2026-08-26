@@ -209,8 +209,19 @@ func restoreSession(
 		}
 	}
 
+	// Re-bind the session's own provider/model (bugs.md 2026-08-26): the
+	// recorded pair — not the ~/.goa-latest selection — must drive the next
+	// turn and the status bar. Runs after StartSessionWithID so any fresh
+	// switch marker lands in the restored file. Memory-only: nothing is
+	// written back to the shared config cascade.
+	adoptedModel := adoptRestoredSessionModel(es, events)
+
 	es.ClearChat()
-	es.Flash(fmt.Sprintf("Restored session '%s' — %d events", name, len(events)))
+	restoredMsg := fmt.Sprintf("Restored session '%s' — %d events", name, len(events))
+	if adoptedModel != "" {
+		restoredMsg += " · model " + adoptedModel
+	}
+	es.Flash(restoredMsg)
 
 	// Replay events off the command goroutine so the UI event loop can drain
 	// the agent bus. Synchronous sends would deadlock when the command loop is
@@ -222,6 +233,35 @@ func restoreSession(
 		es.Flash(fmt.Sprintf("Loaded session: %s (%d events)", name, len(events)))
 	}()
 	return nil
+}
+
+// adoptRestoredSessionModel re-binds the restored session's recorded
+// provider/model onto every live surface (provider-manager session selection,
+// in-memory config, agent + stream options + thinking level, footer/status
+// bar). The shared config cascade is NOT persisted to: browsing an old
+// session must never rewrite the user's ~/.goa default (bugs.md 2026-08-26).
+// Returns the adopted "model @ provider" display string, or "" when nothing
+// was adopted — legacy sessions without markers keep today's behavior.
+func adoptRestoredSessionModel(es core.EventSink, events []agentic.OutputEvent) string {
+	providerID, modelID, found := core.SessionModelFromEvents(events)
+	if !found {
+		return ""
+	}
+	ctx, ok := es.(core.Context)
+	if !ok || ctx.Config == nil || ctx.ProviderManager == nil || ctx.AgentManager == nil {
+		return ""
+	}
+	// persist=false: switch PM selection + live config copy + agent + footer
+	// as ONE unit, skipping the home/project config write (RC-5 machinery).
+	// saver nil is safe because persist=false never touches it.
+	if err := applyCoupledSwitchPersisting(ctx, ctx.Config, nil, providerID, modelID, false); err != nil {
+		ctx.Flash(fmt.Sprintf("Recorded model %q (%s) could not be restored: %v — keeping the current selection", modelID, providerID, err))
+		return ""
+	}
+	if providerID == "" {
+		providerID = ctx.Config.ActiveProvider
+	}
+	return fmt.Sprintf("%s @ %s", modelID, providerID)
 }
 
 // buildCombinedInputHistory combines session-specific input history with

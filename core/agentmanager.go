@@ -120,6 +120,11 @@ type AgentManager struct {
 	// pendingInputHistory holds input history extracted from a restored
 	// session, waiting to be applied to the editor by the app layer.
 	pendingInputHistory []string
+
+	// lastModelMarker mirrors the most recent model_selected marker appended
+	// to the session file (start + every changed switch; bugs.md 2026-08-26).
+	// SetModel compares against it so repeated identical bindings stay silent.
+	lastModelMarker markerPair
 }
 
 // NewAgentManager creates a new agent manager.
@@ -188,7 +193,26 @@ func (am *AgentManager) StartSession(mdl agenticprovider.Model, opts agenticprov
 		"model":    mdl.ID,
 		"provider": am.cfg.ActiveProvider,
 	})
+	// Session-model binding (bugs.md 2026-08-26): persist WHICH provider/model
+	// this session starts on, so /session restore can re-bind it later instead
+	// of falling back to the ~/.goa-latest selection. The CONFIG couple is
+	// recorded (not the resolved Model: registry merging rewrites Provider to
+	// the canonical API family and may swap the ID for the API name — neither
+	// round-trips through ProviderManager.SetActive). Written straight to the
+	// store — no observer pipeline echo, no double persistence.
+	providerID := firstNonEmptyString(am.cfgActiveProvider(), string(mdl.Provider))
+	modelID := firstNonEmptyString(am.cfgActiveModel(), mdl.ID)
+	am.recordSessionMarkerLocked(ModelMarkerSourceStart, providerID, modelID)
 	return am.events, nil
+}
+
+func firstNonEmptyString(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (am *AgentManager) toolsWithBus(tools []agentic.Tool) []agentic.Tool {
@@ -675,8 +699,18 @@ func (am *AgentManager) InjectSystemMessage(content string) error {
 // config's active model.
 func (am *AgentManager) SetModel(mdl agenticprovider.Model) {
 	am.mu.Lock()
+	var marker *agentic.OutputEvent
+	if am.sessionStore != nil {
+		ev := am.switchMarkerLocked(
+			firstNonEmptyString(am.cfgActiveProvider(), string(mdl.Provider)),
+			firstNonEmptyString(am.cfgActiveModel(), mdl.ID))
+		if ev != nil {
+			marker = ev
+		}
+	}
 	if am.activeAgent == nil {
 		am.mu.Unlock()
+		emitSessionModelMarker(am, marker)
 		return
 	}
 	am.activeAgent.SetModel(mdl)
@@ -685,7 +719,57 @@ func (am *AgentManager) SetModel(mdl agenticprovider.Model) {
 		am.activeAgent.SetContextCompression(compressionCfg)
 	}
 	am.mu.Unlock()
+	emitSessionModelMarker(am, marker)
 	am.syncThinkingLevelForActiveModel()
+}
+
+// switchMarkerLocked builds the model_selected switch marker for the couple
+// when it CHANGED relative to the last recorded binding, updating the cache;
+// returns nil for an unchanged couple (silent re-selection). Requires am.mu.
+// Callers have already committed the new couple to the config (SetModel
+// contract), so reading the config here captures the user-facing pair.
+func (am *AgentManager) switchMarkerLocked(providerID, modelID string) *agentic.OutputEvent {
+	pair := pairFrom(providerID, modelID)
+	if am.lastModelMarker == pair {
+		return nil
+	}
+	am.lastModelMarker = pair
+	ev := ModelSelectedMarker(ModelMarkerSourceSwitch, providerID, modelID)
+	return &ev
+}
+
+// recordSessionMarkerLocked unconditionally appends a binding marker (the
+// session-start variant: the writer just rotated, nothing to dedupe against).
+// Requires am.mu.
+func (am *AgentManager) recordSessionMarkerLocked(source, providerID, modelID string) {
+	if am.sessionStore == nil {
+		return
+	}
+	am.lastModelMarker = pairFrom(providerID, modelID)
+	am.sessionStore.WriteEvent(ModelSelectedMarker(source, providerID, modelID))
+}
+
+// emitSessionModelMarker performs the deferred store write outside am.mu,
+// mirroring the lock discipline documented on InjectSystemMessage.
+func emitSessionModelMarker(am *AgentManager, marker *agentic.OutputEvent) {
+	if marker == nil || am.sessionStore == nil {
+		return
+	}
+	am.sessionStore.WriteEvent(*marker)
+}
+
+func (am *AgentManager) cfgActiveProvider() string {
+	if am.cfg == nil {
+		return ""
+	}
+	return am.cfg.ActiveProvider
+}
+
+func (am *AgentManager) cfgActiveModel() string {
+	if am.cfg == nil {
+		return ""
+	}
+	return am.cfg.ActiveModel
 }
 
 // syncThinkingLevelForActiveModel re-resolves the thinking level for the
