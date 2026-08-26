@@ -34,8 +34,10 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 	if sr.title != "Compression:" {
 		t.Fatalf("title = %q, want Compression:", sr.title)
 	}
-	// 5 main rows + Advanced… — no derived/read-only rows.
-	want := []string{"soft_percent", "soft_method", "hard_percent", "hard_method", "on_error", "advanced"}
+	// Master switch + 5 main rows + Advanced… — no derived/read-only rows.
+	// The enabled row is first-class since bugs.md 2026-08-26 (the session
+	// once ran with compression disabled and no visible surface for it).
+	want := []string{"enabled", "soft_percent", "soft_method", "hard_percent", "hard_method", "on_error", "advanced"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d compression items, got %d: %+v", len(want), len(sr.options), sr.options)
 	}

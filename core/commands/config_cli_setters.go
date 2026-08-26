@@ -314,6 +314,8 @@ func setPerModelCompressionField(cfg *config.Config, modelID, field, value strin
 // applyPerModelField validates and writes one per-model override field.
 func applyPerModelField(ov *config.ModelCompressionOverride, field, value string) error {
 	switch field {
+	case "enabled":
+		return setPerModelEnabled(ov, value)
 	case "strategy":
 		v := strings.ToLower(value)
 		switch v {
@@ -344,6 +346,24 @@ func applyPerModelField(ov *config.ModelCompressionOverride, field, value string
 		return setPerModelIntRange(&ov.PreserveRecentTurns, field, value, 0, 100)
 	}
 	return fmt.Errorf("unknown per-model compression field: %s", field)
+}
+
+// setPerModelEnabled validates and writes the per-model enable tri-state
+// (bugs.md 2026-08-26): empty clears to inherit; true/false materialize an
+// explicit per-model enable/disable.
+func setPerModelEnabled(ov *config.ModelCompressionOverride, value string) error {
+	switch strings.ToLower(value) {
+	case "":
+		ov.Enabled = nil
+		return nil
+	case "true", "on", "1", "yes":
+		ov.Enabled = boolPtr(true)
+		return nil
+	case "false", "off", "0", "no":
+		ov.Enabled = boolPtr(false)
+		return nil
+	}
+	return fmt.Errorf("per-model enabled must be \"true\" or \"false\" (empty = inherit)")
 }
 
 // setPerModelLayerStrategy validates a per-layer strategy override; the soft

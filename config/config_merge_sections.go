@@ -564,13 +564,18 @@ func mergeCompressionThresholds(dst *CompressionThresholdsConfig, src Compressio
 
 // mergeCompressionPerModel overlays per-model override entries, merging
 // field-wise so a higher cascade layer can adjust a single field without
-// restating the whole entry.
+// restating the whole entry. EVERY overridable field is merged — the earlier
+// version silently dropped Enabled, Strategies and CacheGate from a higher
+// layer (bugs.md 2026-08-26).
 func mergeCompressionPerModel(dst *map[string]ModelCompressionOverride, src map[string]ModelCompressionOverride) {
 	for id, o := range src {
 		if *dst == nil {
 			*dst = map[string]ModelCompressionOverride{}
 		}
 		m := (*dst)[id]
+		if o.Enabled != nil {
+			m.Enabled = o.Enabled
+		}
 		if o.MaxTokens != 0 {
 			m.MaxTokens = o.MaxTokens
 		}
@@ -578,8 +583,12 @@ func mergeCompressionPerModel(dst *map[string]ModelCompressionOverride, src map[
 			m.ThresholdPercent = o.ThresholdPercent
 		}
 		mergeCompressionThresholds(&m.Thresholds, o.Thresholds)
+		mergeCompressionStrategies(&m.Strategies, o.Strategies)
 		if o.Strategy != "" {
 			m.Strategy = o.Strategy
+		}
+		if o.CacheGate != "" {
+			m.CacheGate = o.CacheGate
 		}
 		if o.PreserveRecentTurns != 0 {
 			m.PreserveRecentTurns = o.PreserveRecentTurns

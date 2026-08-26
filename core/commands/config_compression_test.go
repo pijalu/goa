@@ -429,6 +429,76 @@ func TestConfigMenu_CompressionShowsPerModelEntry(t *testing.T) {
 	}
 }
 
+// TestApplyConfigSet_PerModelEnabledKeys verifies the per-model `enabled`
+// tri-state setter (bugs.md 2026-08-26): true/false materialize an explicit
+// pointer, empty clears back to inherit.
+func TestApplyConfigSet_PerModelEnabledKeys(t *testing.T) {
+	cfg := cfgWithModel("qwen")
+	ctx, _, _, _ := newMenuTestContext(t, cfg)
+	key := "context_compression.per_model.qwen.enabled"
+
+	if err := applyConfigSet(*ctx, key, "true"); err != nil {
+		t.Fatalf("applyConfigSet true: %v", err)
+	}
+	ov := cfg.ContextCompression.PerModel["qwen"]
+	if ov.Enabled == nil || *ov.Enabled != true {
+		t.Fatalf("Enabled = %v, want explicit true", ov.Enabled)
+	}
+
+	if err := applyConfigSet(*ctx, key, "false"); err != nil {
+		t.Fatalf("applyConfigSet false: %v", err)
+	}
+	ov = cfg.ContextCompression.PerModel["qwen"]
+	if ov.Enabled == nil || *ov.Enabled != false {
+		t.Fatalf("Enabled = %v, want explicit false", ov.Enabled)
+	}
+
+	// Empty clears back to inherit (nil).
+	if err := applyConfigSet(*ctx, key, ""); err != nil {
+		t.Fatalf("applyConfigSet clear: %v", err)
+	}
+	if ov := cfg.ContextCompression.PerModel["qwen"]; ov.Enabled != nil {
+		t.Errorf("Enabled after clear = %v, want nil (inherit)", *ov.Enabled)
+	}
+
+	// A non-boolean value is rejected: the override entry (left over from the
+	// earlier set/clear steps) keeps its cleared nil Enabled — never
+	// materialized by the rejected write.
+	if err := applyConfigSet(*ctx, key, "maybe"); err != nil {
+		t.Fatalf("applyConfigSet maybe: %v", err)
+	}
+	if ov := cfg.ContextCompression.PerModel["qwen"]; ov.Enabled != nil {
+		t.Errorf("invalid enabled value mutated the override: %+v", ov)
+	}
+}
+
+// TestConfigMenu_CompressionShowsEnabledTopLevel verifies the `enabled`
+// master switch is a first-class row of the compression menu — the user
+// must be able to SEE and flip it without entering Advanced (bugs.md
+// 2026-08-26: the session's project layer had compression disabled and the
+// setting was effectively invisible).
+func TestConfigMenu_CompressionShowsEnabledTopLevel(t *testing.T) {
+	cfg := cfgWithModel("qwen")
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+	menu.settingCompression()
+	if findOption(sr.options, "enabled") == nil {
+		t.Fatalf("top-level compression menu missing enabled row, got %v", sr.options)
+	}
+}
+
+// TestConfigMenu_PerModelEditorShowsEnabled verifies the per-model override
+// editor exposes the enabled tri-state.
+func TestConfigMenu_PerModelEditorShowsEnabled(t *testing.T) {
+	cfg := cfgWithModel("qwen")
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+	menu.settingCompressionPerModelEdit("qwen")
+	if findOption(sr.options, "enabled") == nil {
+		t.Fatalf("per-model editor missing enabled row, got %v", sr.options)
+	}
+}
+
 // findOption returns the selector item with the given value, or nil.
 func findOption(options []tui.SelectorItem, value string) *tui.SelectorItem {
 	for i := range options {

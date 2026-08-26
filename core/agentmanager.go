@@ -714,10 +714,10 @@ func (am *AgentManager) SetModel(mdl agenticprovider.Model) {
 		return
 	}
 	am.activeAgent.SetModel(mdl)
-	compressionCfg := am.buildCompressionConfig(am.cfg, mdl.ID, mdl.ContextWindow)
-	if compressionCfg.MaxTokens > 0 || am.hasCompressionOverride(mdl.ID) {
-		am.activeAgent.SetContextCompression(compressionCfg)
-	}
+	// Always push the freshly resolved compression config on a model switch:
+	// the previous model's per-model ceiling must never stick on the agent,
+	// and the reactive net must survive a global disable (bugs.md 2026-08-26).
+	am.activeAgent.SetContextCompression(am.buildCompressionConfig(am.cfg, mdl.ID, mdl.ContextWindow))
 	am.mu.Unlock()
 	emitSessionModelMarker(am, marker)
 	am.syncThinkingLevelForActiveModel()
@@ -787,21 +787,11 @@ func (am *AgentManager) syncThinkingLevelForActiveModel() {
 	}
 }
 
-// hasCompressionOverride reports whether a per-model compression override
-// exists for the given model ID (in which case SetModel must re-apply the
-// compression config even when MaxTokens is 0/auto).
-func (am *AgentManager) hasCompressionOverride(modelID string) bool {
-	if modelID == "" {
-		return false
-	}
-	_, ok := am.cfg.ContextCompression.PerModel[modelID]
-	return ok
-}
-
 // RefreshContextCompression re-resolves the compression config for the
 // active model (including per-model overrides) and applies it to the active
 // agent, so /config changes to context_compression take effect immediately
-// instead of on the next session or model switch.
+// instead of on the next session or model switch. The push is unconditional:
+// a global disable must still deliver the reactive net (bugs.md 2026-08-26).
 func (am *AgentManager) RefreshContextCompression() {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -809,10 +799,7 @@ func (am *AgentManager) RefreshContextCompression() {
 		return
 	}
 	mdl := am.activeAgent.Model()
-	compressionCfg := am.buildCompressionConfig(am.cfg, mdl.ID, mdl.ContextWindow)
-	if am.cfg.ContextCompression.EnabledValue() || compressionCfg.MaxTokens > 0 {
-		am.activeAgent.SetContextCompression(compressionCfg)
-	}
+	am.activeAgent.SetContextCompression(am.buildCompressionConfig(am.cfg, mdl.ID, mdl.ContextWindow))
 }
 
 // RefreshAutoHeal pushes the current execution.auto_heal_tool_calls value

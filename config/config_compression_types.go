@@ -95,6 +95,12 @@ type CompressionLayerStrategiesConfig struct {
 // model, keyed by models[].id under context_compression.per_model. Zero
 // fields inherit the global context_compression values.
 type ModelCompressionOverride struct {
+	// Enabled is tri-state: nil = inherit the global enablement (with the
+	// implicit-activation rule of CompressionEnabledForModel); an explicit
+	// true force-enables compression for this model even when the global
+	// flag is off, and an explicit false force-disables it for this model
+	// even when the global flag is on (bugs.md 2026-08-26).
+	Enabled             *bool                            `yaml:"enabled,omitempty"`
 	MaxTokens           int                              `yaml:"max_tokens,omitempty"`
 	ThresholdPercent    int                              `yaml:"threshold_percent,omitempty"` // Deprecated alias for Thresholds.TriggerPercent.
 	Thresholds          CompressionThresholdsConfig      `yaml:"thresholds,omitempty"`
@@ -102,6 +108,37 @@ type ModelCompressionOverride struct {
 	Strategy            string                           `yaml:"strategy,omitempty"`
 	CacheGate           string                           `yaml:"cache_gate,omitempty"`
 	PreserveRecentTurns int                              `yaml:"preserve_recent_turns,omitempty"`
+}
+
+// CompressionEnabledForModel resolves whether compression is active for one
+// model, folding the global flag with the per-model override. Precedence
+// (most specific wins, bugs.md 2026-08-26):
+//  1. an explicit per-model enabled (true/false) always wins;
+//  2. otherwise, when the global flag is OFF, a per-model entry that states
+//     any threshold (soft/trigger/hard/legacy threshold_percent) implicitly
+//     activates compression for that model — a stated ceiling is a deliberate
+//     ask for compression on that model and must not be silently neutralized
+//     by a blanket higher-layer disable (e.g. a stale project config dump);
+//  3. otherwise the global flag governs.
+func (cc ContextCompressionConfig) CompressionEnabledForModel(modelID string) bool {
+	o, ok := cc.PerModel[modelID]
+	if ok && o.Enabled != nil {
+		return *o.Enabled
+	}
+	if cc.EnabledValue() {
+		return true
+	}
+	return ok && overrideStatesThreshold(o)
+}
+
+// overrideStatesThreshold reports whether a per-model override states at
+// least one compression ceiling — the implicit opt-in signal used when the
+// global enable flag is off.
+func overrideStatesThreshold(o ModelCompressionOverride) bool {
+	return o.Thresholds.SoftPercent != 0 ||
+		o.Thresholds.TriggerPercent != 0 ||
+		o.Thresholds.HardPercent != 0 ||
+		o.ThresholdPercent != 0
 }
 
 // EnabledValue reports whether context compression is active. Nil means the

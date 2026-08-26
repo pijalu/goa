@@ -14,6 +14,10 @@ func (m *configMenu) settingCompression() {
 	m.current = m.settingCompression
 	cfg := m.ctx.Config
 	items := []tui.SelectorItem{
+		// The master switch is a first-class row: a stale higher-layer
+		// `enabled: false` once silently disabled compression with no visible
+		// surface (bugs.md 2026-08-26). Toggling flips it inline.
+		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.EnabledValue())},
 		{Value: "soft_percent", Label: "Soft ceiling %", Description: ceilingPercentLabel(cfg.ContextCompression.Thresholds.SoftPercent)},
 		{Value: "soft_method", Label: "Soft ceiling method", Description: layerMethodLabel(cfg.ContextCompression.Strategies.Soft, "micro")},
 		{Value: "hard_percent", Label: "Hard ceiling %", Description: ceilingPercentLabel(cfg.ContextCompression.Thresholds.HardPercent)},
@@ -38,6 +42,11 @@ func (m *configMenu) settingCompression() {
 		// regression behind the "returns to main menu" bug report).
 		if open, found := openers[selected]; found {
 			m.open(open)
+			return
+		}
+		if selected == "enabled" {
+			m.applySet("context_compression.enabled", toggleBoolLabel(cfg.ContextCompression.EnabledValue()))
+			m.settingCompression()
 		}
 	})
 }
@@ -631,6 +640,7 @@ func (m *configMenu) settingCompressionPerModelEdit(modelID string) {
 	ov := cfg.ContextCompression.PerModel[modelID]
 	keyPrefix := "context_compression.per_model." + modelID + "."
 	items := []tui.SelectorItem{
+		{Value: "enabled", Label: "Enabled", Description: perModelEnabledLabel(ov)},
 		{Value: "strategy", Label: "Trigger strategy", Description: perModelStrategyLabel(ov.Strategy)},
 		{Value: "strategies.soft", Label: "Soft strategy", Description: perModelStrategyLabel(ov.Strategies.Soft)},
 		{Value: "strategies.hard", Label: "Hard strategy", Description: perModelStrategyLabel(ov.Strategies.Hard)},
@@ -665,6 +675,8 @@ func (m *configMenu) openPerModelCompressionField(modelID, keyPrefix, field stri
 	m.current = func() { m.openPerModelCompressionField(modelID, keyPrefix, field) }
 	key := keyPrefix + field
 	switch field {
+	case "enabled":
+		m.selectPerModelValue("Compression for "+modelID+":", key, perModelEnabledItems())
 	case "strategy":
 		m.selectPerModelValue("Strategy for "+modelID+":", key, compressionStrategyItems(true))
 	case "strategies.soft":
@@ -757,6 +769,30 @@ func perModelCacheGateLabel(v string) string {
 		return "inherit"
 	}
 	return v
+}
+
+// perModelEnabledLabel renders the per-model enable tri-state: unset means
+// inherit (the global flag plus the implicit-activation rule), an explicit
+// on/off force-enables/disables compression for this model (bugs.md
+// 2026-08-26).
+func perModelEnabledLabel(ov config.ModelCompressionOverride) string {
+	if ov.Enabled == nil {
+		return "inherit"
+	}
+	if *ov.Enabled {
+		return "on (forced)"
+	}
+	return "off (forced)"
+}
+
+// perModelEnabledItems is the per-model enable picker: inherit (clear),
+// force on, force off.
+func perModelEnabledItems() []tui.SelectorItem {
+	return []tui.SelectorItem{
+		{Value: "", Label: "inherit (clear)", Description: "follow the global flag; a stated ceiling still opts in"},
+		{Value: "true", Label: "on", Description: "compression on for this model even if globally disabled"},
+		{Value: "false", Label: "off", Description: "compression off for this model even if globally enabled"},
+	}
 }
 
 func perModelIntInheritLabel(v int) string {

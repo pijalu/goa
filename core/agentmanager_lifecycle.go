@@ -275,10 +275,12 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 			return am.loopDetector.Disabled("stall")
 		},
 	}
-	compressionCfg := am.buildCompressionConfig(cfg, mdl.ID, mdl.ContextWindow)
-	if cfg.ContextCompression.EnabledValue() || compressionCfg.MaxTokens > 0 {
-		agenticCfg.ContextCompression = compressionCfg
-	}
+	// Always apply the resolved compression config: the proactive thresholds
+	// may be zeroed (enable toggle), but the reactive net (on_context_error /
+	// on_error_strategy) and the max_tokens window bound must still reach the
+	// agent — skipping the block on a global disable silently dropped the
+	// documented reactive net (bugs.md 2026-08-26).
+	agenticCfg.ContextCompression = am.buildCompressionConfig(cfg, mdl.ID, mdl.ContextWindow)
 	// Remote-compaction opt-in gate (Codex Phase 2b): ANDed with the
 	// provider/model capability inside the agent. Default off keeps the local
 	// compression ladder unchanged; detection/gating only, no request logic.
@@ -360,11 +362,14 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 	ov := overlayCompressionForModel(cfg.ContextCompression, modelID)
 
 	thresholds := am.resolveAgenticThresholds(cfg, ov.thresholds, ov.legacyTrigger)
-	// Honor the Enabled toggle: an explicit `enabled: false` disables every
-	// proactive layer (all thresholds zeroed — with the opt-in semantics 0
-	// disables each layer including the hard ceiling). The reactive safety
-	// net (on_context_error / on_error_strategy) is unaffected.
-	if !cfg.ContextCompression.EnabledValue() {
+	// Honor the enable toggle PER MODEL: the global `enabled: false` disables
+	// every proactive layer — unless this model's per-model override states a
+	// ceiling or an explicit enabled:true (a stated per-model ceiling is an
+	// opt-in the blanket disable must not neutralize, bugs.md 2026-08-26).
+	// An explicit per-model enabled:false force-disables the model. The
+	// reactive safety net (on_context_error / on_error_strategy) is always
+	// carried through below, independent of this toggle.
+	if !cfg.ContextCompression.CompressionEnabledForModel(modelID) {
 		thresholds = agentic.CompressionThresholds{}
 	}
 

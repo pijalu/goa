@@ -37,13 +37,28 @@ func TestCompressionMenu_NoDeadRows(t *testing.T) {
 			t.Errorf("selectable item %q has empty Value (acts as cancel)", it.Label)
 		}
 	}
-	// Each row must open a picker: the selector title moves off "Compression:".
+	// The enabled row is an inline TOGGLE (like the advanced toggles): it
+	// applies a set instead of opening a picker.
+	toggles := map[string]bool{"enabled": true}
+	// Each opener row must open a picker: the selector title moves off
+	// "Compression:".
 	for _, it := range sr.options {
+		if toggles[it.Value] {
+			continue
+		}
 		menu.settingCompression()
 		sr.onSel(it.Value, true)
 		if sr.title == "Compression:" && sr.options[0].Value == it.Value {
 			t.Errorf("row %q (%s) is dead: no picker opened after selection", it.Label, it.Value)
 		}
+	}
+	// The toggle row must apply a set (config flips), even though no picker
+	// opens.
+	menu.settingCompression()
+	before := cfg.ContextCompression.EnabledValue()
+	sr.onSel("enabled", true)
+	if cfg.ContextCompression.EnabledValue() == before {
+		t.Error("enabled toggle did not apply")
 	}
 }
 
