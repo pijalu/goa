@@ -357,3 +357,33 @@ func walkForSecret(t *testing.T, dir, secret string) error {
 		return nil
 	})
 }
+
+// TestWarnLiveModelDiscoveryFallback_SingleLine pins the flash-site defense
+// (Bug B, 2026-08-27): no matter how verbose or multi-line the underlying
+// error is, the rendered flash is collapsed to a bounded single line so a raw
+// HTML error page can never overflow the UI again.
+func TestWarnLiveModelDiscoveryFallback_SingleLine(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.EventBus = event.MakeBus(4, 4, 4, 4)
+
+	verbose := fmt.Errorf("provider returned status 403: <html>\n<head>\n<meta http-equiv=\"refresh\" content=\"360\">\n</head>\n<body>%s</body>\n</html>", strings.Repeat("<div>x</div>", 200))
+	warnLiveModelDiscoveryFallback(ctx, "openai-codex", verbose, 0)
+
+	select {
+	case ev := <-ctx.EventBus.Chat:
+		if ev.Flash == nil {
+			t.Fatalf("expected a flash, got %+v", ev)
+		}
+		txt := ev.Flash.Text
+		if strings.ContainsAny(txt, "\n\r") {
+			t.Errorf("flash must be single-line, got %q", txt)
+		}
+		for _, frag := range []string{"<html", "<head", "<div", "<body"} {
+			if strings.Contains(txt, frag) {
+				t.Errorf("flash leaks raw markup fragment %q: %q", frag, txt)
+			}
+		}
+	default:
+		t.Fatal("expected a flash, got none")
+	}
+}

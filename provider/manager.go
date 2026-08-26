@@ -282,7 +282,7 @@ func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("provider %q does not support /models endpoint", providerID)
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("provider returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("provider returned status %d: %s", resp.StatusCode, summarizeModelErrBody(body))
 	}
 
 	var result ModelListResponse
@@ -291,6 +291,46 @@ func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
 	}
 
 	return result.Data, nil
+}
+
+// modelErrBodyCap bounds the body snippet embedded in a discovery error, so a
+// verbose error page can never overflow the flash that renders it.
+const modelErrBodyCap = 160
+
+// summarizeModelErrBody renders an HTTP error body as a bounded, single-line
+// snippet for a discovery error (Bug B, 2026-08-27). The Cloudflare/HTML
+// challenge pages that gated /models endpoints return must never reach the UI
+// raw: markup collapses to a fixed note, while a short plaintext/JSON body is
+// preserved (whitespace-collapsed) so the real reason stays visible. The
+// result is always single-line and capped.
+func summarizeModelErrBody(body []byte) string {
+	s := strings.Join(strings.Fields(string(body)), " ") // collapse all whitespace runs to one space
+	if looksLikeHTML(s) {
+		return "(HTML error page)"
+	}
+	if s == "" {
+		return "(empty body)"
+	}
+	if len(s) > modelErrBodyCap {
+		s = s[:modelErrBodyCap] + "…"
+	}
+	return s
+}
+
+// looksLikeHTML reports whether s is an HTML/XML document rather than a plain
+// error message. The marker is a tag opener at the start or a known document
+// tag anywhere — a plaintext body that merely mentions a tag is left intact.
+func looksLikeHTML(s string) bool {
+	l := strings.ToLower(strings.TrimSpace(s))
+	if strings.HasPrefix(l, "<") {
+		return true
+	}
+	for _, tag := range []string{"<html", "<!doctype", "<head", "<body", "<svg", "<div", "<meta"} {
+		if strings.Contains(l, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 // ListRegistryModels returns catalog models for a provider config ID, as

@@ -255,11 +255,13 @@ func TestModelCommand_Add(t *testing.T) {
 	}
 }
 
-// TestModelCommand_AddUpsert verifies adding an existing model ID updates it
-// in place instead of duplicating it, matching doAddModel semantics.
+// TestModelCommand_AddUpsert verifies that re-adding an existing model ID for
+// the SAME provider updates it in place instead of duplicating it, matching
+// doAddModel semantics. (Cross-provider reuse of the ID is a distinct entry —
+// see TestDoAddModel_CrossProviderNoClobber.)
 func TestModelCommand_AddUpsert(t *testing.T) {
 	ctx := newModeTestContext()
-	ctx.Config.Models = []config.ModelConfig{{ID: "gpt-4o", ProviderID: "old", Model: "old-name"}}
+	ctx.Config.Models = []config.ModelConfig{{ID: "gpt-4o", ProviderID: "openai", Model: "old-name"}}
 	saver := &fakeConfigSaver{}
 	ctx.ConfigSaver = saver
 	var buf strings.Builder

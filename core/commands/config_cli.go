@@ -62,25 +62,30 @@ func addModel(ctx core.Context, args []string) error {
 	return doAddModel(ctx.Config, ctx.ConfigSaver, ctx, args[0], args[1], args[2])
 }
 
+// doAddModel adds or updates a model. Model identity is provider-scoped
+// (Bug A, 2026-08-27): an explicit ID updates in place ONLY when the provider
+// also matches (a genuine upsert). When the ID is already taken by a
+// DIFFERENT provider, the add must not clobber that binding — a new entry is
+// appended under a unique provider-qualified ID instead.
 func doAddModel(cfg *config.Config, saver config.ConfigSaver, out core.OutputWriter, id, providerID, modelName string) error {
 	for i := range cfg.Models {
-		if cfg.Models[i].ID != id {
+		if cfg.Models[i].ID != id || cfg.Models[i].ProviderID != providerID {
 			continue
 		}
-		cfg.Models[i].ProviderID = providerID
 		cfg.Models[i].Model = modelName
 		if cfg.Models[i].Name == "" {
 			cfg.Models[i].Name = modelName
 		}
 		return saveAndReport(out, saver, cfg, "model", id)
 	}
+	modelID := uniqueModelID(cfg.Models, id, providerID)
 	cfg.Models = append(cfg.Models, config.ModelConfig{
-		ID:         id,
+		ID:         modelID,
 		Name:       modelName,
 		ProviderID: providerID,
 		Model:      modelName,
 	})
-	return saveAndReport(out, saver, cfg, "model", id)
+	return saveAndReport(out, saver, cfg, "model", modelID)
 }
 
 func saveAndReport(out core.OutputWriter, saver config.ConfigSaver, cfg *config.Config, kind, id string) error {

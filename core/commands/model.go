@@ -303,16 +303,23 @@ func promptCustomModelName(host core.UIHost, cfg *config.Config, saver config.Co
 }
 
 // addAndShowModel adds a model to config, persists, and re-shows the model selector.
+//
+// Model identity is provider-scoped (Bug A, 2026-08-27): the duplicate guard
+// fires ONLY for the exact same provider+name pair (a genuine re-add). A model
+// whose name already exists under a DIFFERENT provider is a distinct entry —
+// it is appended under a unique provider-qualified ID (uniqueModelID) so the
+// bare-ID-keyed lookups stay unambiguous and the existing binding is left
+// untouched.
 func addAndShowModel(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID, modelName string) {
 	if isModelSentinel(modelName) {
 		return
 	}
-	if modelIndex(cfg.Models, modelName) >= 0 {
-		host.Flash("Model " + modelName + " already configured.")
+	if modelIndexForProvider(cfg.Models, providerID, modelName) >= 0 {
+		host.Flash("Model " + modelName + " already configured for provider " + providerID + ".")
 		_ = showModelSelector(host, cfg, saver, cfg.GetProviderByID(providerID))
 		return
 	}
-	modelID := deriveModelID(modelName)
+	modelID := uniqueModelID(cfg.Models, deriveModelID(modelName), providerID)
 	cfg.Models = append(cfg.Models, config.ModelConfig{
 		ID:         modelID,
 		Name:       modelName,
@@ -354,6 +361,19 @@ func modelSearchLabel(id, providerID, modelName string) string {
 func modelIndex(models []config.ModelConfig, id string) int {
 	for i, m := range models {
 		if m.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// modelIndexForProvider returns the index of the model served by providerID
+// under the given name, or -1 if not found. Model identity is provider-scoped
+// (Bug A, 2026-08-27): a name carried by ANOTHER provider is not a match, so
+// cross-provider same-name models are distinct entries rather than duplicates.
+func modelIndexForProvider(models []config.ModelConfig, providerID, modelName string) int {
+	for i, m := range models {
+		if m.ProviderID == providerID && m.Model == modelName {
 			return i
 		}
 	}
@@ -573,11 +593,51 @@ func warnLiveModelDiscoveryFallback(host core.UIHost, providerID string, err err
 	if len(registryCount) > 0 {
 		known = registryCount[0] > 0
 	}
+	reason := singleLineErr(err)
 	if !known {
-		host.Flash(fmt.Sprintf("Model discovery failed for %s (%v); no known models for this provider — type a custom model name.", providerID, err))
+		host.Flash(fmt.Sprintf("Model discovery failed for %s (%s); no known models for this provider — type a custom model name.", providerID, reason))
 		return
 	}
-	host.Flash(fmt.Sprintf("Model discovery failed for %s (%v); using known models.", providerID, err))
+	host.Flash(fmt.Sprintf("Model discovery failed for %s (%s); using known models.", providerID, reason))
+}
+
+// flashErrCap bounds the rendered error snippet in a discovery-failure flash,
+// so even an unsanitized verbose error cannot overflow the flash overlay.
+const flashErrCap = 200
+
+// singleLineErr collapses an error to a bounded single line for flash
+// rendering (Bug B, 2026-08-27): whitespace runs become one space, any raw
+// markup collapses to a fixed note, and the result is hard-capped. This is
+// defense-in-depth behind the source-side sanitize in provider/manager.go —
+// it guarantees the flash never carries raw HTML or newlines regardless of
+// which error reaches it.
+func singleLineErr(err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	s := strings.Join(strings.Fields(err.Error()), " ")
+	if looksLikeHTMLString(s) {
+		return "(HTML error page)"
+	}
+	if len(s) > flashErrCap {
+		s = s[:flashErrCap] + "…"
+	}
+	return s
+}
+
+// looksLikeHTMLString mirrors the HTML detection used for discovery errors:
+// a tag opener at the start or a known document tag anywhere marks markup.
+func looksLikeHTMLString(s string) bool {
+	l := strings.ToLower(strings.TrimSpace(s))
+	if strings.HasPrefix(l, "<") {
+		return true
+	}
+	for _, tag := range []string{"<html", "<!doctype", "<head", "<body", "<svg", "<div", "<meta"} {
+		if strings.Contains(l, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 // isModelSentinel reports whether v is a selector action/sentinel value that

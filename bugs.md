@@ -1,6 +1,64 @@
 # Known bugs & features
 
 
+## BUG: adding a model whose name already exists under ANOTHER provider is refused or silently replaces it — model identity is the bare derived ID, not provider-scoped (2026-08-27)
+
+**Observed:** with `deepseek-v4-flash` configured under provider `deepseek`, adding `deepseek-v4-flash` served by provider `opencode` (a legitimately distinct entry — same model name, different endpoint/auth) does not work. Via the picker (`/model` → `+` → custom) the add is REFUSED with `Model deepseek-v4-flash already configured.` and the selector re-opens; via the CLI (`/config:add model <id> <provider> <name>` or `/model add`) the EXISTING entry is silently REWRITTEN in place (its `ProviderID`/`Model` overwritten), so the deepseek binding is clobbered into opencode. Either path loses or blocks a valid configuration: two providers serving the same model name cannot coexist.
+
+**Root cause (model identity is the bare ID, provider is not part of it — three colluding defects):**
+1. **ID derivation is provider-blind.** `deriveModelID` (`core/commands/config_tail.go:99`) strips any `provider/` prefix and slugifies the base name, so `deepseek/deepseek-v4-flash` and `opencode/deepseek-v4-flash` both derive to the SAME ID `deepseek-v4-flash`. Identity carries no provider.
+2. **Picker add refuses on bare-ID match.** `addAndShowModel` (`core/commands/model.go:310`) does `modelIndex(cfg.Models, modelName) >= 0` → flash "already configured" and return. `modelIndex` matches on `ID` only, so a same-named model under a DIFFERENT provider trips the duplicate guard and the cross-provider add never happens.
+3. **CLI add upserts across providers.** `doAddModel` (`core/commands/config_cli.go:66-76`) matches on `ID` alone and, on a hit, overwrites `ProviderID` and `Model` in place — a silent replace/clash when the same ID is reused for a different provider. This behavior is currently PINNED by `TestModelCommand_AddUpsert` ("adding an existing model ID updates it in place … matching doAddModel semantics"), so the fix must deliberately re-spec that test.
+
+**Requirement:** adding a model that shares a name with an existing model under a DIFFERENT provider MUST succeed as a distinct, coexisting entry — never refused, never a silent in-place replace of the other provider's binding. Because the whole model architecture is keyed by bare ID (`providerIDForModel`, `modelIndex`, `applyModelSelection`, remove-by-ID), the clean fix that preserves that architecture is to GUARANTEE ID UNIQUENESS at add time: a cross-provider same-name add derives a unique, deterministic provider-qualified ID (e.g. `deepseek-v4-flash-opencode`) instead of colliding. The duplicate guard must fire ONLY for the exact same provider+model pair (genuinely already configured → idempotent no-op/refusal). An explicit-ID CLI add must update in place ONLY when the provider also matches; when the ID exists under a different provider, it must derive a unique ID and add a new entry rather than overwrite.
+
+**Fix plan:**
+- `core/commands/config_tail.go`: add `uniqueModelID(models []config.ModelConfig, baseID, providerID string) string` — returns `baseID` when free; when `baseID` is taken by a DIFFERENT provider, returns a deterministic provider-qualified variant (`baseID-<providerSlug>`), then numeric fallback (`-2`, `-3`…) if that is also taken. Same-provider occupants are the caller's idempotent-noop case, handled before this is consulted.
+- `core/commands/model.go` `addAndShowModel`: scope the existence check to the (providerID, model-name) pair — refuse only when BOTH match. On a cross-provider name clash, derive the ID via `uniqueModelID` and append the distinct entry (flash notes the disambiguated ID).
+- `core/commands/config_cli.go` `doAddModel`: match on (ID AND providerID) for the in-place upsert; when the ID exists under a different provider, append a new entry under `uniqueModelID(...)` instead of overwriting. Re-spec `TestModelCommand_AddUpsert` to same-provider upsert, and add a cross-provider no-clobber case.
+- ID-uniqueness invariant keeps every bare-ID lookup (`providerIDForModel`, `modelIndex`, remove, selection) unambiguous — no change needed there.
+
+**Required tests/UT coverage (red before the fix):**
+- `uniqueModelID`: base free → base; base taken by other provider → `base-providerSlug`; that also taken → numeric fallback; provider slugified (spaces/case).
+- Picker add: same name + same provider → "already configured" refusal (no duplicate); same name + DIFFERENT provider → new entry appended with a unique provider-qualified ID, both entries survive, ActiveModel untouched, persisted.
+- `doAddModel`: same ID + same provider → in-place update (upsert preserved); same ID + DIFFERENT provider → new distinct entry, original binding NOT overwritten (no-clobber regression guard).
+
+**Implemented (2026-08-27).** Model identity is now provider-scoped and bare IDs are guaranteed unique at add time, so the whole ID-keyed architecture (`providerIDForModel`, `modelIndex`, remove-by-ID, selection) stays unambiguous. `core/commands/config_tail.go`: extracted `slugifyModelID` from `deriveModelID` (shared slug logic) and added `uniqueModelID(models, baseID, providerID)` — returns `baseID` when free or held by the same provider (the caller's idempotent/upsert case); on a cross-provider clash returns the deterministic `baseID-<providerSlug>`, then a numeric `-2/-3…` fallback; plus a `findModelByID` helper. `core/commands/model.go`: added `modelIndexForProvider` (matches on providerID AND model name) and rewired `addAndShowModel` — the duplicate guard now fires only for the exact same provider+name pair (message "already configured for provider X"), and a cross-provider same-name add appends a distinct entry under `uniqueModelID`. `core/commands/config_cli.go` `doAddModel`: the in-place upsert now matches on (ID AND providerID); a cross-provider ID reuse appends a new entry under `uniqueModelID` instead of overwriting `ProviderID`/`Model`. Tests written RED first, GREEN after: new `core/commands/model_crossprovider_test.go` — `TestUniqueModelID_{FreeBase,CrossProviderClashQualifies,SlugifiesProvider,NumericFallbackWhenQualifiedAlsoTaken}`, `TestAddAndShowModel_{SameProviderSameNameRefused,CrossProviderCoexists}`, `TestDoAddModel_{SameProviderUpsert,CrossProviderNoClobber}`; `TestModelCommand_AddUpsert` re-specced to the same-provider case (it previously pinned the cross-provider clobber). Validation: `go vet ./...` clean; `go test -count=1 -race -cover ./...` PASS (exit 0); gocognit `-over 15` / gocyclo `-over 12` on touched files zero findings; gofmt clean.
+
+## BUG: model-discovery failure dumps the raw HTML error page into the flash UI (regression of "Codex cannot list models", fixed 2026-08-17) (2026-08-27)
+
+**Observed:** in the `/model` picker, live model discovery for `openai-codex` fails (its endpoint has no `/models` route; Cloudflare answers 403 with an HTML challenge page) and the flash renders the ENTIRE raw HTML document across the UI:
+
+```
+│ ⚡ Model discovery failed for openai-codex (provider returned status 403: <html>
+│ <head>
+│   <meta name="viewport" content="width=device-width, initial-scale=1" />
+│   <style global>body{font-family:Arial,Helvetica,sans-serif}…
+│   … (svg logo, challenge-error-text, meta refresh) …
+│ </html>
+```
+
+The flash box overflows with multi-line markup, pushing the picker down and rendering the message unreadable. The picker list itself still populates (other providers' models are shown); only the diagnostic is broken.
+
+**Root cause (error text carries the raw response body end-to-end into the UI):**
+1. `provider/manager.go:285` builds the discovery error with the raw body: `fmt.Errorf("provider returned status %d: %s", resp.StatusCode, string(body))` — a multi-KB Cloudflare HTML page becomes the error string.
+2. `warnLiveModelDiscoveryFallback` (`core/commands/model.go:571-581`) interpolates that error straight into the flash via `%v`, with no truncation or single-line collapsing — so the full HTML lands in the flash overlay.
+
+This is a REGRESSION of the 2026-08-17 "Codex cannot list models" fix (see `docs/archive/bugs.2026-08-18.md`): that fix delivered the accurate no-known-models wording (F2) and the codex registry alias (F1) but never sanitized the error BODY — the raw-HTML dump into the flash was left in place.
+
+**Requirement:** a model-discovery failure flash must be ONE concise single-line diagnostic — provider, HTTP status, and a short reason — NEVER the raw response body. Sanitize at the source (the error must not embed raw multi-line HTML) AND defend at the flash site (any verbose/multi-line error is collapsed to a bounded single line before rendering), so no future verbose provider error can blow up the UI again.
+
+**Fix plan:**
+- `provider/manager.go`: in `ListModels`, replace the raw-body error with a sanitized summary — HTTP status plus a bounded, single-line body snippet (HTML pages collapse to a note like `(HTML error page)`; short plaintext bodies kept, whitespace collapsed, hard length cap). Add an unexported `summarizeErrBody`-style helper to keep it testable and within complexity budget.
+- `core/commands/model.go` `warnLiveModelDiscoveryFallback`: render the error through a single-line truncation helper (first line / whitespace-collapsed, hard cap) before flashing, as defense-in-depth for any error source.
+
+**Required tests/UT coverage (red before the fix):**
+- `provider/manager.go`: a live `/models` fetch answered with 403 + a large HTML body yields an error that contains the status, does NOT contain `<html>`/`<svg>`/raw markup, and is single-line and length-bounded; a short plaintext error body (e.g. `{"error":"..."}`) is preserved (truncated only if over the cap).
+- `core/commands/model.go`: `warnLiveModelDiscoveryFallback` with a multi-line verbose error flashes a single-line, capped message (no embedded newlines, no raw HTML).
+
+**Implemented (2026-08-27).** The discovery error no longer carries a raw response body, and the flash is defended against any verbose error. `provider/manager.go` `ListModels`: the non-200 branch now embeds `summarizeModelErrBody(body)` instead of `string(body)` — a new helper that collapses all whitespace runs to one space, folds any HTML/XML document to the fixed note `(HTML error page)` (via `looksLikeHTML`: a leading tag opener or a known document tag anywhere), maps an empty body to `(empty body)`, preserves a short plaintext/JSON reason, and hard-caps the snippet at `modelErrBodyCap` (160). `core/commands/model.go` `warnLiveModelDiscoveryFallback`: the error is now rendered through `singleLineErr` (whitespace-collapsed, markup → `(HTML error page)` via `looksLikeHTMLString`, hard-capped at `flashErrCap` 200) as defense-in-depth, so no future verbose provider error can overflow the flash again. Tests written RED first, GREEN after: new `provider/manager_discovery_error_test.go` — `TestListModels_ErrorBodyHTMLIsSanitized` (403 + Cloudflare HTML → status kept, no `<html`/`<svg>`/`<style>`/`<p>`/`JavaScript`, single-line), `TestListModels_ErrorBodyPlaintextKept` (401 + short JSON reason preserved), `TestListModels_ErrorBodyLengthCapped` (5 KB body → bounded error), all driven through an `httptest` server; and `TestWarnLiveModelDiscoveryFallback_SingleLine` in `core/commands/model_discovery_test.go` (multi-line HTML error → single-line, markup-free flash). Validation: `go vet ./...` clean; `go test -count=1 -race -cover ./...` PASS (exit 0); gocognit `-over 15` / gocyclo `-over 12` on touched files zero findings; gofmt clean.
+
+
 ## BUG: per-model compression never triggers — a stale project-layer `enabled: false` silently kills the per-model hard ceiling, and hard limits must never be cache-deferred (2026-08-26)
 
 **Observed:** home `~/.goa/config.yaml` configures `context_compression.per_model.glm-5-3-flash: {thresholds: {hard_percent: 20}, strategies: {hard: summarize}, cache_gate: off}`. A long glm-5.3-flash session (zai, 1.0M window) in `~/dev/frigolite` sailed past the 20% per-model ceiling with NOTHING firing — no proactive compression at 200K, no reactive net, no warning — until the user fired `/compress` by hand at 31% (310,483 → 13,593 tokens, 939 → 2 messages, 78.74s). The status bar read `26.2%/1.0M` while the configured per-model hard limit sat at 20%. Separately, `context_compression.enabled` is not visible/changeable as a first-class row in `/config` (only under "Advanced…"), so the user could not SEE that the session's project layer had compression disabled.

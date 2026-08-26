@@ -2,6 +2,7 @@
 package commands
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/pijalu/goa/config"
@@ -101,16 +102,59 @@ func deriveModelID(s string) string {
 	if i := strings.LastIndex(s, "/"); i >= 0 {
 		base = s[i+1:]
 	}
+	if id := slugifyModelID(base); id != "" {
+		return id
+	}
+	return "model"
+}
+
+// slugifyModelID lowercases s and maps every non [a-z0-9] rune to '-',
+// trimming leading/trailing dashes. Returns "" when nothing usable remains.
+func slugifyModelID(s string) string {
 	var b strings.Builder
-	for _, r := range strings.ToLower(base) {
+	for _, r := range strings.ToLower(s) {
 		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
 			b.WriteRune(r)
 		} else {
 			b.WriteByte('-')
 		}
 	}
-	if id := strings.Trim(b.String(), "-"); id != "" {
-		return id
+	return strings.Trim(b.String(), "-")
+}
+
+// uniqueModelID returns a model ID derived from baseID that does not collide
+// with any EXISTING entry, preserving the bare-ID-keyed architecture
+// (providerIDForModel / modelIndex / remove-by-ID / selection all key on ID,
+// so IDs must stay unique). Model identity is provider-scoped: a baseID that
+// is free, or is taken by the SAME provider, is returned unchanged (the caller
+// treats a same-provider occupant as the idempotent no-op / upsert case). Only
+// a baseID taken by a DIFFERENT provider is disambiguated — first to the
+// deterministic provider-qualified variant `baseID-<providerSlug>`, then to
+// numeric suffixes (`-2`, `-3`…) if that is also taken.
+func uniqueModelID(models []config.ModelConfig, baseID, providerID string) string {
+	occupant := findModelByID(models, baseID)
+	if occupant == nil || occupant.ProviderID == providerID {
+		return baseID
 	}
-	return "model"
+	if slug := slugifyModelID(providerID); slug != "" {
+		if qualified := baseID + "-" + slug; findModelByID(models, qualified) == nil {
+			return qualified
+		}
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", baseID, i)
+		if findModelByID(models, candidate) == nil {
+			return candidate
+		}
+	}
+}
+
+// findModelByID returns the model with the exact ID, or nil.
+func findModelByID(models []config.ModelConfig, id string) *config.ModelConfig {
+	for i := range models {
+		if models[i].ID == id {
+			return &models[i]
+		}
+	}
+	return nil
 }
