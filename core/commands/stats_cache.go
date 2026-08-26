@@ -13,10 +13,23 @@ import (
 	"github.com/pijalu/goa/internal/metrics"
 )
 
-// This file implements the /stats:cache view: an evolution bar chart of the
-// per-completion cache hit rate plus a table of cache drops (before/after
-// rates), derived from the current session's turn history (all agent calls
-// in this session) — not from the persistent cross-session usage store.
+// This file implements the /stats:cache view: per agent/goal sections (the
+// section labels use the goal's user-friendly alias such as "cheery.swan"
+// when the session's goal log can resolve it — opaque IDs are only shown
+// otherwise), each with the required report layout:
+//
+//	1. Last 10 exchanges   — one MD-table row per LLM API call with its own
+//	                          cache-hit rate plus the tokens Lost vs the
+//	                          previous interaction's cached prefix.
+//	2. Global statistics   — token-weighted session hit rate and the
+//	                          headline "missed cache tokens" totals measured
+//	                          against previous content: a perfect chain
+//	                          loses 0 tokens, a full cache miss costs the
+//	                          complete size of the previously-cached prefix.
+//	+ supporting detail tables (per-turn usage, misses, drops).
+//
+// Derived from the current session's turn history (all agent calls in this
+// session) — not from the persistent cross-session usage store.
 //
 // Rates use metrics.CacheHitPct — the same formula as the footer CH% stat —
 // so the chart, the drop table, and the live footer always agree.
@@ -151,20 +164,22 @@ const cacheChartBars = 10
 // red <90%, orange <95%, green ≥95%. Used by the weighted session total
 // line so all sections agree.
 func cacheLevelColor(pct float64) string {
-	const (
-		red    = "#f85149"
-		orange = "#d29922"
-		green  = "#3fb950"
-	)
 	switch {
 	case pct >= 95:
-		return ansi.Fg(green)
+		return ansi.Fg(cacheColorGreen)
 	case pct >= 90:
-		return ansi.Fg(orange)
+		return ansi.Fg(cacheColorOrange)
 	default:
-		return ansi.Fg(red)
+		return ansi.Fg(cacheColorRed)
 	}
 }
+
+// Severity band colors shared by every /stats:cache surface.
+const (
+	cacheColorRed    = "#f85149"
+	cacheColorOrange = "#d29922"
+	cacheColorGreen  = "#3fb950"
+)
 
 // cacheGroup is one agent/goal section of the cache view.
 type cacheGroup struct {
@@ -174,15 +189,21 @@ type cacheGroup struct {
 }
 
 // cacheGroupKey derives the section key of a turn/completion from its
-// identity. Solo sessions collapse to a single unlabeled group so the output
-// keeps today's header-less look.
-func cacheGroupKey(t cacheTurn) string {
+// identity, labeling the active goal with its user-friendly alias when the
+// name source knows it ("main · cheery.swan"); unknown or absent aliases
+// keep today's opaque form ("main · goal:<id>"). Solo sessions collapse to
+// a single unlabeled group so the output keeps today's header-less look.
+func cacheGroupKey(t cacheTurn, names map[string]string) string {
 	key := t.AgentRole
 	if key == "" {
 		key = "main"
 	}
 	if t.GoalID != "" {
-		key += " · goal:" + t.GoalID
+		label := "goal:" + t.GoalID
+		if alias := names[t.GoalID]; alias != "" {
+			label = alias
+		}
+		key += " · " + label
 	}
 	return key
 }
@@ -191,11 +212,11 @@ func cacheGroupKey(t cacheTurn) string {
 // first-appearance order, then assigns each completion of the per-call log to
 // its matching section (creating a section when the completion log covers a
 // group the turn series does not, e.g. after a history reset).
-func groupCacheTurns(turns []cacheTurn, completions []cacheTurn) []cacheGroup {
+func groupCacheTurns(turns []cacheTurn, completions []cacheTurn, names map[string]string) []cacheGroup {
 	var groups []cacheGroup
 	index := map[string]int{}
 	for _, t := range turns {
-		key := cacheGroupKey(t)
+		key := cacheGroupKey(t, names)
 		i, ok := index[key]
 		if !ok {
 			groups = append(groups, cacheGroup{key: key})
@@ -205,7 +226,7 @@ func groupCacheTurns(turns []cacheTurn, completions []cacheTurn) []cacheGroup {
 		groups[i].turns = append(groups[i].turns, t)
 	}
 	for _, c := range completions {
-		key := cacheGroupKey(c)
+		key := cacheGroupKey(c, names)
 		i, ok := index[key]
 		if !ok {
 			groups = append(groups, cacheGroup{key: key})
@@ -217,12 +238,13 @@ func groupCacheTurns(turns []cacheTurn, completions []cacheTurn) []cacheGroup {
 	return groups
 }
 
-// writeCacheView renders the /stats:cache output: per agent/goal group, the
-// last-10 completions chart, the per-turn average bars, the weighted session
-// total, and the cache-miss list. A single group (the common solo session)
-// renders without a section header.
-func writeCacheView(b *strings.Builder, turns, completions []cacheTurn) {
-	groups := groupCacheTurns(turns, completions)
+// writeCacheView renders the /stats:cache output: per agent/goal group
+// (friendly goal aliases in the headers), the last-10 exchanges table, the
+// global statistics block (weighted total + missed-cache-token headline),
+// then the per-turn average bars, miss list, and drops. A single group (the
+// common solo session) renders without a section header.
+func writeCacheView(b *strings.Builder, turns, completions []cacheTurn, names map[string]string) {
+	groups := groupCacheTurns(turns, completions, names)
 	multi := len(groups) > 1
 	for _, g := range groups {
 		if multi {
@@ -232,65 +254,126 @@ func writeCacheView(b *strings.Builder, turns, completions []cacheTurn) {
 	}
 }
 
-// writeCacheGroupSections renders the four required sections for one group.
+// writeCacheGroupSections renders the report layout for one group: the two
+// user-facing sections first, then the supporting detail tables.
 func writeCacheGroupSections(b *strings.Builder, g cacheGroup) {
 	writeCacheHitLast10(b, g.completions)
+	writeCacheGlobalStatistics(b, g)
 	writeCacheAvgPerTurn(b, g.turns)
-	writeCacheSessionTotal(b, g.turns)
 	writeCacheMissList(b, g.turns)
 	writeCacheDrops(b, detectCacheDrops(g.turns, cacheDropThresholdPts))
 }
 
-func cacheMisses(turns []cacheTurn) []cacheMissTurn {
-	out := make([]cacheMissTurn, 0, len(turns))
+// missScan is one index-aligned step of the shared cache-miss scan: Prev is
+// the previous entry's cached-prefix size, Missed the tokens lost here.
+type missScan struct {
+	Num    int
+	Prev   int
+	Missed int
+}
+
+// Full reports a full cache miss: every previously-cached token stopped
+// being served (the whole prefix must be recomputed from scratch).
+func (s missScan) Full() bool { return s.Missed > 0 && s.Missed == s.Prev }
+
+// Partial reports a partial miss: part of the previous prefix vanished.
+func (s missScan) Partial() bool { return s.Missed > 0 && s.Missed != s.Prev }
+
+// scanMisses walks ANY chronological series (per-turn or per-API-call) and
+// classifies each entry against the previous interaction's cached content —
+// the single place encoding the rules so footer CM counters, miss tables,
+// Lost columns and global totals can never disagree:
+//
+//   - no loss until a prefix is established;
+//   - read falling to zero after establishment = FULL miss worth the entire
+//     previous prefix ("complete size from the previous interaction");
+//   - reads shrinking by more than the tolerance = PARTIAL miss worth the
+//     vanished remainder;
+//   - growth and sub-tolerance wobble cost nothing → perfect caches total 0.
+func scanMisses(series []cacheTurn) []missScan {
+	out := make([]missScan, len(series))
 	prev, established := 0, false
-	for _, t := range turns {
-		m := cacheMissTurn{num: t.Num, prev: prev}
+	for i, t := range series {
 		if t.CacheRead > 0 {
 			established = true
 		}
+		s := missScan{Num: t.Num, Prev: prev}
 		switch {
 		case established && t.CacheRead == 0 && prev > 0:
-			m.full, m.missed = 1, prev
+			s.Missed = prev
 		case prev > 0 && t.CacheRead+cacheMissDropTolerance < prev:
-			m.partial, m.missed = 1, prev-t.CacheRead
+			s.Missed = prev - t.CacheRead
 		}
-		out = append(out, m)
+		out[i] = s
 		prev = t.CacheRead
 	}
 	return out
 }
 
-// writeCacheHitLast10 renders section 1: an MD table of the last ≤10
-// completions (oldest first, newest last), one row per LLM API call with its
-// own cache-hit rate. Unlike the old turn-keyed view this keeps cache-bust
-// calls (0%) — hiding the very call that dropped the rate would defeat the
-// per-call window — so the filter is "actually called the LLM" (any
-// prompt-side volume), matching the per-turn table's semantics. The call
-// ordinal distinguishes the multiple calls a single multi-round turn
-// contributes. Rendered on screen through the MD pipeline.
+// cacheMisses folds the shared scan into the per-turn miss rows consumed by
+// the CM counters and the misses table (shape kept for compatibility).
+func cacheMisses(turns []cacheTurn) []cacheMissTurn {
+	scans := scanMisses(turns)
+	out := make([]cacheMissTurn, len(turns))
+	for i, sc := range scans {
+		m := cacheMissTurn{num: sc.Num, missed: sc.Missed, prev: sc.Prev}
+		if sc.Full() {
+			m.full = 1
+		} else if sc.Partial() {
+			m.partial = 1
+		}
+		out[i] = m
+	}
+	return out
+}
+
+// writeCacheHitLast10 renders report section 1 "Last 10 exchanges": an MD
+// table of the last ≤10 exchanges (oldest first, newest last), one row per
+// LLM API call with its own cache-hit rate plus the Lost column — tokens
+// measured against the PREVIOUS interaction's cached prefix, so a healthy
+// exchange shows 0 and a full bust shows the complete previous size. Unlike
+// the old turn-keyed view this keeps cache-bust calls (0%) — hiding the very
+// call that dropped the rate would defeat the per-call window. Rendered on
+// screen through the MD pipeline.
 func writeCacheHitLast10(b *strings.Builder, completions []cacheTurn) {
-	b.WriteString("# Cache hit — last completions\n")
-	active := cacheTurnsOnActivity(completions)
-	if len(active) == 0 {
+	b.WriteString("# Last 10 exchanges\n")
+	scans := scanMisses(completions) // index-aligned with completions
+	type exchangeRow struct {
+		turn cacheTurn
+		lost int
+	}
+	rows := make([]exchangeRow, 0, len(completions))
+	for i, c := range completions { // keep only LLM-active calls (see below)
+		if !cacheCallActive(c) {
+			continue
+		}
+		rows = append(rows, exchangeRow{turn: c, lost: scans[i].Missed})
+	}
+	if len(rows) == 0 {
 		b.WriteString("No cache activity recorded yet.\n")
 		return
 	}
-	if len(active) > cacheChartBars {
-		active = active[len(active)-cacheChartBars:]
+	if len(rows) > cacheChartBars {
+		rows = rows[len(rows)-cacheChartBars:]
 	}
-	b.WriteString("| Turn | Call | CH % |\n|---|---|---|\n")
+	b.WriteString("| Turn | Call | CH % | Lost |\n|---|---|---|---|\n")
 	// Ordinal of each call within its turn: consecutive completions sharing a
 	// turn number are calls 1, 2, … of that turn.
 	callNo, lastTurn := 0, 0
-	for _, t := range active {
-		if t.Num != lastTurn {
-			callNo, lastTurn = 1, t.Num
+	for _, r := range rows {
+		if r.turn.Num != lastTurn {
+			callNo, lastTurn = 1, r.turn.Num
 		} else {
 			callNo++
 		}
-		fmt.Fprintf(b, "| T%d | #%d | %.1f%% |\n", t.Num, callNo, cacheTurnRate(t))
+		fmt.Fprintf(b, "| T%d | #%d | %.1f%% | %s |\n", r.turn.Num, callNo, cacheTurnRate(r.turn), groupThousands(int64(r.lost)))
 	}
+}
+
+// cacheCallActive mirrors cacheTurnsOnActivity for one call: it actually
+// called the LLM, so bust rounds stay visible in the exchanges window.
+func cacheCallActive(t cacheTurn) bool {
+	return t.PromptN > 0 || t.CacheRead > 0 || t.CacheWrite > 0
 }
 
 // cacheActiveTurns filters to turns with any cache activity (read or write).
@@ -356,13 +439,19 @@ func cacheMissCounters(turns []cacheTurn) map[int][2]int {
 	return out
 }
 
-// writeCacheSessionTotal renders section 3: the token-weighted cache-hit
-// percentage across the group's turns.
+// writeCacheSessionTotal renders the token-weighted cache-hit percentage
+// line (kept as a wrapper; it now lives inside Global statistics).
 func writeCacheSessionTotal(b *strings.Builder, turns []cacheTurn) {
 	active := cacheActiveTurns(turns)
 	if len(active) == 0 {
 		return
 	}
+	writeSessionTotalLine(b, active)
+}
+
+// writeSessionTotalLine emits the weighted-percentage headline over an
+// already-filtered cache-active series.
+func writeSessionTotalLine(b *strings.Builder, active []cacheTurn) {
 	var read, write, prompt int
 	for _, t := range active {
 		read += t.CacheRead
@@ -370,8 +459,72 @@ func writeCacheSessionTotal(b *strings.Builder, turns []cacheTurn) {
 		prompt += t.PromptN
 	}
 	total := metrics.CacheHitPct(read, write, prompt)
-	fmt.Fprintf(b, "# Session total: %s%.2f%%%s cache hit (token-weighted over %d turns)\n",
+	fmt.Fprintf(b, "Session total: %s%.2f%%%s cache hit (token-weighted over %d turns)\n",
 		cacheLevelColor(total), total, ansi.Reset, len(active))
+}
+
+// missTotals aggregates one chain's missed-cache-token accounting for the
+// Global statistics headline.
+type missTotals struct {
+	Tokens                int // total tokens recomputed against previous content
+	Events, Full, Partial int // miss counts by kind
+}
+
+// totalMissedTokens folds a chain's per-call (falling back to per-turn when
+// no call log exists) miss detection into headline figures. Semantics fixed
+// by requirement: a perfect chain totals ZERO tokens; a full bust totals the
+// complete size of the previous interaction's prefix; partials only the
+// vanished portion beyond the shared tolerance.
+func totalMissedTokens(series []cacheTurn) missTotals {
+	var tot missTotals
+	for _, sc := range scanMisses(series) {
+		if sc.Missed == 0 {
+			continue
+		}
+		tot.Tokens += sc.Missed
+		tot.Events++
+		if sc.Full() {
+			tot.Full++
+		} else {
+			tot.Partial++
+		}
+	}
+	return tot
+}
+
+// missedTokensLine renders the headline figures color-banded: green zero
+// (perfect), red when any full bust occurred, orange otherwise.
+func missedTokensLine(tot missTotals) string {
+	label := fmt.Sprintf("Missed cache tokens: %s", groupThousands(int64(tot.Tokens)))
+	color := cacheColorOrange
+	if tot.Tokens == 0 {
+		color = cacheColorGreen
+	} else if tot.Full > 0 {
+		color = cacheColorRed
+	}
+	if tot.Tokens == 0 {
+		return fmt.Sprintf("%s%s — perfect cache%s\n", ansi.Fg(color), label, ansi.Reset)
+	}
+	return fmt.Sprintf("%s%s across %d exchange(s) (%d full, %d partial)%s\n",
+		ansi.Fg(color), label, tot.Events, tot.Full, tot.Partial, ansi.Reset)
+}
+
+// writeCacheGlobalStatistics renders report section 2 "Global statistics":
+// the token-weighted session hit rate plus the clear missed-cache-token
+// totals measured against previous content. Silent when the group never
+// called the LLM (matching the legacy session-total renderer).
+func writeCacheGlobalStatistics(b *strings.Builder, g cacheGroup) {
+	active := cacheActiveTurns(g.turns)
+	if len(active) == 0 {
+		return
+	}
+	b.WriteString("# Global statistics\n")
+	writeSessionTotalLine(b, active)
+	series := g.completions
+	if len(series) == 0 {
+		series = g.turns // legacy sessions without a per-call log
+	}
+	b.WriteString(missedTokensLine(totalMissedTokens(series)))
 }
 
 // writeCacheMissList renders section 4: an MD table with one row per cache
@@ -447,14 +600,16 @@ func writeCacheDrops(b *strings.Builder, drops []cacheDrop) {
 }
 
 // runCacheStats backs /stats:cache: read the current session's turn history
-// and render the cache hit-rate evolution view.
+// and render the cache hit-rate evolution view, labeling goal sections with
+// their friendly aliases when a goal name source is wired.
 func (c *StatsCommand) runCacheStats(ctx core.Context, _ []string) error {
-	return showCacheStats(ctx, ctx)
+	return showCacheStats(ctx, ctx, c.goalAliases())
 }
 
 // showCacheStats renders the session cache view from any SessionRecorder
-// source (the core.Context in production, a fake in tests).
-func showCacheStats(w core.OutputWriter, rec core.SessionRecorder) error {
+// source (the core.Context in production, a fake in tests). names maps goal
+// IDs to friendly aliases; nil keeps the opaque-ID labels of old sessions.
+func showCacheStats(w core.OutputWriter, rec core.SessionRecorder, names map[string]string) error {
 	history := rec.TurnHistory()
 	current := rec.CurrentTurn()
 	completions := rec.CompletionHistory()
@@ -464,7 +619,7 @@ func showCacheStats(w core.OutputWriter, rec core.SessionRecorder) error {
 	}
 	turns := cacheTurnsFromHistory(history, current)
 	var b strings.Builder
-	writeCacheView(&b, turns, cacheCompletionsFromHistory(completions))
+	writeCacheView(&b, turns, cacheCompletionsFromHistory(completions), names)
 	writeFmt(w, "%s", b.String())
 	return nil
 }

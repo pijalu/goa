@@ -146,19 +146,23 @@ func TestStatsCommand_CacheView(t *testing.T) {
 	}
 
 	w := newWriter()
-	if err := showCacheStats(w, rec); err != nil {
+	if err := showCacheStats(w, rec, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	assertCacheViewSkeleton(t, w.Text())
 }
 
-// assertCacheViewSections checks the five section headings are present.
+// assertCacheViewSections checks the required section headings are present:
+// the two user-facing report sections (last 10 exchanges, global statistics)
+// plus the supporting detail tables.
 func assertCacheViewSections(t *testing.T, plain string) {
 	t.Helper()
 	for _, want := range []string{
-		"Cache hit — last completions",
-		"Cache usage per turn",
+		"Last 10 exchanges",
+		"Global statistics",
 		"Session total",
+		"Missed cache tokens:",
+		"Cache usage per turn",
 		"Cache misses",
 		"Cache drops",
 	} {
@@ -182,8 +186,9 @@ func assertCacheViewSkeleton(t *testing.T, plain string) {
 		t.Errorf("want ≥4 MD tables (last10/per-turn/misses/drops), found %d separators:\n%s", got, plain)
 	}
 	for _, want := range []string{
-		"| T1 | #1 | 75.0% |",                // last-completions row (75%)
-		"| T4 | #1 | 33.3% |",                // last-completions row (recovery)
+		"| T1 | #1 | 75.0% | 0 |",            // last-exchanges row (75%, nothing lost)
+		"| T4 | #1 | 33.3% | 0 |",            // recovery exchange, no loss vs 200
+		"| T3 | #1 | 0.0% | 400 |",           // bust lost the whole 400-token prefix
 		"| T1 | 000000.4 | 0-0 | 75.0% |",    // per-turn row
 		"| T3 | 000000.5 | 1-0 | 0.0% |",     // per-turn row after bust
 		"| T3 | 80.0% | 0.0% | 80.0 | 400 |", // drops row before/after/Δ/lost
@@ -202,7 +207,7 @@ func assertCacheViewSkeleton(t *testing.T, plain string) {
 func TestStatsCommand_CacheViewEmpty(t *testing.T) {
 	rec := &fakeSessionRecorder{}
 	w := newWriter()
-	if err := showCacheStats(w, rec); err != nil {
+	if err := showCacheStats(w, rec, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if !strings.Contains(w.Text(), "No turn history available") {
@@ -249,7 +254,7 @@ func TestWriteCacheHitLast10(t *testing.T) {
 	if rows != 10 {
 		t.Errorf("table must cap at 10 data rows, got %d:\n%s", rows, out)
 	}
-	if !strings.HasPrefix(out, "# Cache hit — last completions\n| Turn | Call | CH % |\n|---|---|---|\n") {
+	if !strings.HasPrefix(out, "# Last 10 exchanges\n| Turn | Call | CH % | Lost |\n|---|---|---|---|\n") {
 		t.Errorf("missing heading or table skeleton:\n%s", out)
 	}
 	// Oldest first, newest last: first data row is T3, last is T12.
@@ -277,10 +282,10 @@ func TestWriteCacheHitLast10_PerCallRows(t *testing.T) {
 	writeCacheHitLast10(&b, cacheCompletionsFromHistory(comps))
 	out := b.String()
 	want := []string{
-		"| T2 | #1 | 75.0% |",
-		"| T2 | #2 | 0.0% |",
-		"| T2 | #3 | 33.3% |",
-		"| T3 | #1 | 90.0% |",
+		"| T2 | #1 | 75.0% | 0 |",  // nothing cached before this chain
+		"| T2 | #2 | 0.0% | 300 |", // bust: whole previous prefix lost
+		"| T2 | #3 | 33.3% | 0 |",  // prev read was already 0
+		"| T3 | #1 | 90.0% | 0 |",  // grew from 200 → 900
 	}
 	last := -1
 	for _, w := range want {
@@ -312,16 +317,16 @@ func TestWriteCacheHitLast10_GroupsPerAgentGoal(t *testing.T) {
 		{TurnNumber: 2, AgentRole: "companion", CacheRead: 800, CacheWrite: 200},
 	}
 	var b strings.Builder
-	writeCacheView(&b, cacheTurnsFromHistory(turns, nil), cacheCompletionsFromHistory(comps))
+	writeCacheView(&b, cacheTurnsFromHistory(turns, nil), cacheCompletionsFromHistory(comps), nil)
 	out := b.String()
 	// Two sections, each carrying only its own completions: main keeps its
 	// two per-call rows, companion its one.
 	for _, want := range []string{
 		"## main\n",
 		"## companion\n",
-		"| T1 | #1 | 75.0% |",
-		"| T1 | #2 | 90.0% |",
-		"| T2 | #1 | 80.0% |",
+		"| T1 | #1 | 75.0% | 0 |",
+		"| T1 | #2 | 90.0% | 0 |",
+		"| T2 | #1 | 80.0% | 0 |",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("sectioned output missing %q:\n%s", want, out)
@@ -447,7 +452,7 @@ func TestWriteCacheMDOutput_RendersThroughMarkdownPipeline(t *testing.T) {
 		),
 	}
 	w := newWriter()
-	if err := showCacheStats(w, rec); err != nil {
+	if err := showCacheStats(w, rec, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	r := tui.NewMDStreamRenderer(80, tui.DarkTheme())
@@ -457,5 +462,213 @@ func TestWriteCacheMDOutput_RendersThroughMarkdownPipeline(t *testing.T) {
 	}
 	if strings.Contains(rendered, "█") {
 		t.Errorf("rendered output still contains bar blocks:\n%s", rendered)
+	}
+}
+
+// --- Friendly goal names + missed-token totals (bugs.md 2026-08-26) -------
+
+// fakeGoalNamer is a stub GoalNameSource with a fixed ID→name map.
+type fakeGoalNamer struct{ names map[string]string }
+
+func (f fakeGoalNamer) GoalFriendlyNames() map[string]string { return f.names }
+
+// TestCacheGroupKeyFriendlyNames pins the section-key contract: a goal with
+// a known friendly alias renders the alias; an unknown/empty mapping falls
+// back to the opaque ID form; goals and roles absent stay unlabeled.
+func TestCacheGroupKeyFriendlyNames(t *testing.T) {
+	turn := func(role, goalID string) cacheTurn {
+		return cacheTurn{Num: 1, PromptN: 1, AgentRole: role, GoalID: goalID}
+	}
+	names := map[string]string{"goal-3f9c1a2b": "cheery.swan"}
+	for tc, want := range map[string]string{
+		cacheGroupKey(turn("main", "goal-3f9c1a2b"), names):      "main · cheery.swan",
+		cacheGroupKey(turn("main", "goal-ffffffff"), names):      "main · goal:goal-ffffffff",
+		cacheGroupKey(turn("main", "goal-ffffffff"), nil):        "main · goal:goal-ffffffff",
+		cacheGroupKey(turn("companion", "goal-3f9c1a2b"), names): "companion · cheery.swan",
+	} {
+		if tc != want {
+			t.Errorf("cacheGroupKey = %q, want %q", tc, want)
+		}
+	}
+	// Solo no-goal sessions stay unlabeled — today's header-less look.
+	if got := cacheGroupKey(cacheTurn{Num: 1, PromptN: 1}, names); got != "main" {
+		t.Errorf("solo key = %q, want \"main\"", got)
+	}
+}
+
+// TestWriteCacheView_FriendlyGoalHeaders verifies the rendered section
+// headers carry the friendly name end-to-end through writeCacheView.
+func TestWriteCacheView_FriendlyGoalHeaders(t *testing.T) {
+	turns := []core.TurnRecord{
+		{Number: 1, AgentRole: "main", GoalID: "g1", TokenUsage: core.TurnTokenUsage{PromptN: 10, CacheRead: 300, CacheWrite: 100}},
+	}
+	comps := []core.CompletionRecord{
+		{TurnNumber: 1, AgentRole: "main", GoalID: "g1", PromptN: 10, CacheRead: 300, CacheWrite: 100},
+	}
+	var b strings.Builder
+	writeCacheView(&b,
+		cacheTurnsFromHistory(turns, nil),
+		cacheCompletionsFromHistory(comps),
+		map[string]string{"g1": "tidy.falcon"},
+	)
+	// The single-group case renders without a section header (as before);
+	// force the multi-group path to observe the label.
+	turns2 := append(append([]core.TurnRecord{}, turns...), core.TurnRecord{
+		Number: 2, AgentRole: "companion", TokenUsage: core.TurnTokenUsage{PromptN: 5},
+	})
+	comps2 := append(comps, core.CompletionRecord{TurnNumber: 2, AgentRole: "companion", PromptN: 5})
+	b.Reset()
+	writeCacheView(&b, cacheTurnsFromHistory(turns2, nil), cacheCompletionsFromHistory(comps2),
+		map[string]string{"g1": "tidy.falcon"})
+	out := b.String()
+	if !strings.Contains(out, "## main · tidy.falcon\n") || !strings.Contains(out, "## companion\n") {
+		t.Errorf("friendly main header and unlabeled unnamed-goal fallback missing:\n%s", out)
+	}
+}
+
+// TestScanMissesSemantics locks the shared per-call miss classification used
+// by the Lost column and the global totals: perfect caching contributes zero;
+// a full bust loses the entire previous prefix; narrow falls under the
+// tolerance are not misses; growth never loses.
+func TestScanMissesSemantics(t *testing.T) {
+	series := []cacheTurn{
+		{Num: 1, PromptN: 10, CacheRead: 0},    // cold: nothing established
+		{Num: 2, PromptN: 10, CacheRead: 8000}, // writes establish prefix
+		{Num: 3, PromptN: 10, CacheRead: 8010}, // grew → no loss
+		{Num: 4, PromptN: 10, CacheRead: 7900}, // wobble <1024 → tolerated
+		{Num: 5, PromptN: 10, CacheRead: 6200}, // partial −1700
+		{Num: 6, PromptN: 10, CacheRead: 0},    // full bust → whole prev prefix
+	}
+	scans := scanMisses(series)
+	if len(scans) != len(series) {
+		t.Fatalf("scan length %d, want %d", len(scans), len(series))
+	}
+	type expect struct {
+		missed int
+		full   bool
+	}
+	want := []expect{{0, false}, {0, false}, {0, false}, {0, false}, {1700, false}, {6200, true}}
+	for i, e := range want {
+		if scans[i].Missed != e.missed {
+			t.Errorf("step %d missed = %d, want %d", i+1, scans[i].Missed, e.missed)
+		}
+		if scans[i].Full() != e.full {
+			t.Errorf("step %d full = %v (scan %+v)", i+1, scans[i].Full(), scans[i])
+		}
+	}
+	// Perfect chain: identical warm reads every call.
+	for _, s := range scanMisses([]cacheTurn{
+		{Num: 1, CacheRead: 5000}, {Num: 2, CacheRead: 5000}, {Num: 3, CacheRead: 5200},
+	}) {
+		if s.Missed != 0 {
+			t.Errorf("perfect-cache scan shows loss: %+v", s)
+		}
+	}
+}
+
+// TestTotalMissedTokens checks the Global statistics aggregation over both
+// granularity series, including the mixed multi-call-turn sum.
+func TestTotalMissedTokens(t *testing.T) {
+	cases := []struct {
+		name   string
+		series []cacheTurn
+		tot    missTotals
+	}{
+		{"perfect cache is zero loss", []cacheTurn{
+			{Num: 1, CacheRead: 4000}, {Num: 2, CacheRead: 4400},
+		}, missTotals{}},
+		{"full bust costs the previous interaction's size", []cacheTurn{
+			{Num: 1, CacheRead: 9000}, {Num: 2, PromptN: 1, CacheRead: 0},
+		}, missTotals{Tokens: 9000, Events: 1, Full: 1}},
+		{"partial narrows by the vanished portion", []cacheTurn{
+			{Num: 1, CacheRead: 7000}, {Num: 2, CacheRead: 6500},
+		}, missTotals{}}, // 500 < 1024 tolerance → not a miss event
+		{"multi-call turn accumulates calls", []cacheTurn{
+			{Num: 1, CacheRead: 8000},
+			{Num: 1, CacheRead: 0},    // full: 8,000
+			{Num: 1, CacheRead: 2000}, // recovery vs 0
+			{Num: 1, CacheRead: 900},  // partial: −1100
+		}, missTotals{Tokens: 9100, Events: 2, Full: 1, Partial: 1}},
+	}
+	for _, tc := range cases {
+		if got := totalMissedTokens(tc.series); got != tc.tot {
+			t.Errorf("%s: totals = %+v, want %+v", tc.name, got, tc.tot)
+		}
+	}
+}
+
+// TestWriteCacheGlobalStatistics verifies the section heading, the weighted
+// session-total line, and the headline missed-cache-tokens line with counts;
+// plus that a perfect session advertises zero loss.
+func TestWriteCacheGlobalStatistics(t *testing.T) {
+	g := cacheGroup{
+		key: "main",
+		turns: cacheTurnsFromHistory(cacheTurns(
+			[3]int{100, 50, 50},
+			[3]int{100, 810, 90},
+		), nil),
+		completions: []cacheTurn{
+			{Num: 1, CacheRead: 60}, {Num: 2, CacheRead: 900},
+		},
+	}
+	var b strings.Builder
+	writeCacheGlobalStatistics(&b, g)
+	out := b.String()
+	if !strings.Contains(out, "# Global statistics\n") ||
+		!strings.Contains(out, "Session total:") || !strings.Contains(out, "weighted over 2 turns") {
+		t.Fatalf("global statistics skeleton missing:\n%s", out)
+	}
+	if !strings.Contains(out, "Missed cache tokens: 0") || !strings.Contains(out, "perfect cache") {
+		t.Errorf("perfect session must report zero loss:\n%s", out)
+	}
+	// Bust chain: full-miss totals in red with counts.
+	g.completions = []cacheTurn{{Num: 1, CacheRead: 8000}, {Num: 2, PromptN: 1, CacheRead: 0}}
+	b.Reset()
+	writeCacheGlobalStatistics(&b, g)
+	out = b.String()
+	if !strings.Contains(out, "Missed cache tokens: 8,000 across 1 exchange(s) (1 full, 0 partial)") ||
+		!strings.Contains(out, "\x1b[38;2;248;81;73m") {
+		t.Errorf("bust totals line wrong:\n%q", out)
+	}
+	// No activity → silent, as the old session-total renderer behaved.
+	b.Reset()
+	writeCacheGlobalStatistics(&b, cacheGroup{})
+	if b.Len() != 0 {
+		t.Errorf("no-activity group must render nothing, got:\n%s", b.String())
+	}
+}
+
+// TestShowCacheStats_UsesFriendlyNames drives the command end-to-end with an
+// injected name source and expects the friendly aliases on multi-goal output.
+func TestShowCacheStats_UsesFriendlyNames(t *testing.T) {
+	rec := &fakeSessionRecorder{
+		history: []core.TurnRecord{
+			{Number: 1, AgentRole: "main", GoalID: "goal-1", TokenUsage: core.TurnTokenUsage{PromptN: 10, CacheRead: 300, CacheWrite: 100}},
+			{Number: 2, AgentRole: "companion", TokenUsage: core.TurnTokenUsage{PromptN: 20}},
+		},
+		completions: []core.CompletionRecord{
+			{TurnNumber: 1, AgentRole: "main", PromptN: 10, CacheRead: 300, CacheWrite: 100},
+			{TurnNumber: 2, AgentRole: "companion", PromptN: 20},
+		},
+	}
+	w := newWriter()
+	if err := showCacheStats(w, rec, map[string]string{"goal-1": "tidy.falcon"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	out := w.Text()
+	if !strings.Contains(out, "## main · tidy.falcon\n") || !strings.Contains(out, "## companion\n") {
+		t.Errorf("expected friendly main header and unnamed companion fallback:\n%s", out)
+	}
+}
+
+// TestStatsCommand_GoalNameSourceInjection guards the lazy nil-safe accessor.
+func TestStatsCommand_GoalNameSourceInjection(t *testing.T) {
+	c := &StatsCommand{}
+	if names := c.goalAliases(); names != nil {
+		t.Errorf("nil source must yield nil names, got %v", names)
+	}
+	c.GoalNames = fakeGoalNamer{names: map[string]string{"g": "happy.fox"}}
+	if names := c.goalAliases(); len(names) != 1 || names["g"] != "happy.fox" {
+		t.Errorf("injected source bypassed: %v", names)
 	}
 }

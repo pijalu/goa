@@ -190,12 +190,32 @@ func showSystemPrompt(w core.OutputWriter, sp core.SystemPromptProvider, args []
 	return nil
 }
 
+// GoalNameSource resolves goal IDs to their user-friendly aliases for
+// display surfaces. Satisfied by *goal.GoalMode; injected into StatsCommand
+// at registration so /stats:cache can label sections "main · cheery.swan"
+// instead of the opaque "main · goal:3f9c1a2b" (bugs.md 2026-08-26).
+type GoalNameSource interface {
+	GoalFriendlyNames() map[string]string
+}
+
 // StatsCommand shows token usage and performance statistics.
 type StatsCommand struct {
 	// OpenStore/ProjectDir are optional test hooks forwarded to the underlying
 	// UsageCommand for the global and :project views (nil = production store).
 	OpenStore  func() (usageStore, error)
 	ProjectDir string
+	// GoalNames is the optional source of goal-ID → friendly-alias mappings.
+	// Nil (tests, dep-less registration) keeps opaque IDs on /stats:cache.
+	GoalNames GoalNameSource
+}
+
+// goalAliases resolves the ID→alias map through the injected source, lazily
+// and nil-safe so every caller can pass the result straight through.
+func (c *StatsCommand) goalAliases() map[string]string {
+	if c.GoalNames == nil {
+		return nil
+	}
+	return c.GoalNames.GoalFriendlyNames()
 }
 
 func (c *StatsCommand) Name() string      { return "stats" }

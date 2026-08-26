@@ -114,7 +114,6 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		// transparency
 		&ExchangeCommand{},
 		&PromptCommand{},
-		&StatsCommand{},
 		// usage
 		&UsageCommand{},
 		// ui
@@ -160,6 +159,15 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		if err := r.Register(&TodoCommand{Mode: dep.GoalCommand.Mode}); err != nil {
 			return err
 		}
+	}
+	// /stats:cache labels its per-goal sections with friendly aliases; bind
+	// the same GoalMode. Dep-less registrations keep opaque IDs (nil-safe).
+	statsCmd := &StatsCommand{}
+	if dep.GoalCommand != nil {
+		statsCmd.GoalNames = dep.GoalCommand.Mode
+	}
+	if err := r.Register(statsCmd); err != nil {
+		return err
 	}
 	return nil
 }
