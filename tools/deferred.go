@@ -12,7 +12,8 @@ package tools
 //
 // The set is the "opt-in-heavy" tool family: tools that are rarely needed on
 // every request yet still ship multi-hundred-byte schemas. Core tools
-// (read/write/edit/bash/search/python/ask/goal/run_skill) stay eager.
+// (read/write/edit/bash/search/python/ask/goal) stay eager; heavier optional
+// tools, including lsp, verify, and run_skill, load on demand.
 
 func (*TerminalsTool) Deferred() bool        { return true }
 func (*WebFetchTool) Deferred() bool         { return true }
@@ -22,6 +23,8 @@ func (*SmartSearchTool) Deferred() bool      { return true }
 func (*SSHBashTool) Deferred() bool          { return true }
 func (*SessionSearchTool) Deferred() bool    { return true }
 func (*SessionEventReadTool) Deferred() bool { return true }
+func (*VerifyTool) Deferred() bool           { return true }
+func (*LSPTool) Deferred() bool              { return true }
 
 // Schedule tools (schedule_create/delete/list): rarely used — reminders are
 // created at most a few times per session — yet their schemas ship on every

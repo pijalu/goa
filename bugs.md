@@ -1,3 +1,7 @@
+## Deferred default tool schemas (2026-08-26)
+
+Moved `todo_list`, `verify`, `lsp`, and `run_skill` out of the eager tool schema block. They remain registered and executable, but their schemas are loaded through `tool_search` on demand, reducing per-request context overhead. Added regression coverage for eager omission and `select:todo_list,verify,lsp` loading. Validation: `go test ./tools -run TestDefaultToolsTodoAndVerifyAreDeferred -count=1 -timeout 60s` passes.
+
 ## OpenCode Go quota segment regression (2026-08-26)
 
 Observed failure: `TestQuota_OpencodeSegmentShowsQuota` returned an empty status segment for the configured `opencode-go` provider, despite the usage API returning rolling/weekly/monthly percentages. The test run also emitted a duplicate-plugin warning while loading a stale copy:

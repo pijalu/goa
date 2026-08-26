@@ -11,6 +11,7 @@ import (
 
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tools/todo"
 )
 
 // deferredProbeSet builds a registry + loader with a controlled deferred set
@@ -29,6 +30,57 @@ func deferredProbeSet() (*tools.ToolRegistry, []agentic.Tool) {
 }
 
 // The loader's catalog lists every deferred tool with its name.
+func TestDefaultToolsTodoAndVerifyAreDeferred(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	deferred := []agentic.Tool{
+		&tools.TerminalsTool{}, &tools.WebFetchTool{}, &tools.BGExecTool{},
+		&tools.MementoTool{}, &tools.SmartSearchTool{}, &tools.SSHBashTool{},
+		&tools.SessionSearchTool{}, &tools.SessionEventReadTool{},
+		&tools.VerifyTool{}, &todo.TodoListTool{}, &tools.LSPTool{},
+	}
+	for _, tool := range deferred {
+		reg.Register(tool)
+	}
+	loader := tools.NewToolSearchTool(reg)
+	reg.Register(loader)
+	all := append([]agentic.Tool{}, deferred...)
+	all = append(all, loader)
+	eagerSchemas := agentic.NewToolRegistry(all).Schemas()
+	eager := make([]string, len(eagerSchemas))
+	for i, schema := range eagerSchemas {
+		eager[i] = schema.Name
+	}
+	for _, name := range []string{"todo_list", "verify", "lsp"} {
+		if containsName(eager, name) {
+			t.Fatalf("%s unexpectedly included in eager schemas: %v", name, eager)
+		}
+	}
+	res, err := loader.ExecuteWithResult(`{"query":"select:todo_list,verify,lsp"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Meta[agentic.MetaLoadTools]; got != "todo_list,verify,lsp" {
+		t.Fatalf("loaded tools = %q", got)
+	}
+}
+
+func schemaNames(tools []agentic.Tool) []string {
+	names := make([]string, len(tools))
+	for i, tool := range tools {
+		names[i] = tool.Schema().Name
+	}
+	return names
+}
+
+func containsName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestToolSearchCatalogListsDeferred(t *testing.T) {
 	reg, deferred := deferredProbeSet()
 	loader := tools.NewToolSearchTool(reg)
