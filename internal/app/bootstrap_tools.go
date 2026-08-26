@@ -98,6 +98,9 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		CompressionResolver: func() bool { return compression },
 		Analyzer:            analyzerForBash(cfg.Tools.Bash),
 		Redactor:            secrets.DefaultRedactor(),
+		// Reconcile LSP overlays after shell commands: sed -i, git checkout
+		// and friends mutate files behind the structured file tools.
+		LSPSyncer: lspMgr,
 	})
 	registerOptionalTools(reg, wm, projectDir, cfg, bgMgr, changeTracker, headless)
 	// P1 deferred-tool loader: a tiny schema whose description embeds the

@@ -6,10 +6,13 @@ package lsp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,7 +73,8 @@ type serverClient struct {
 	// several goroutines can notify the same client at once — the unguarded
 	// map caused "fatal error: concurrent map writes" (Issue 19).
 	mu           sync.Mutex
-	versions     map[string]int // uri → latest didOpen/didChange version
+	versions     map[string]int    // uri → latest didOpen/didChange version
+	sent         map[string]string // uri → hash of the content last pushed to the server (ResyncExternal skip marker)
 	capabilities ServerCapabilities
 	// registrations records dynamic server capabilities (for example pull
 	// diagnostics) acknowledged through client/registerCapability.
@@ -274,7 +278,7 @@ func (m *Manager) spawn(spec *ServerSpec, root string) (*serverClient, error) {
 		return nil, fmt.Errorf("lsp: start %s: %w", spec.ID, err)
 	}
 	client := server.Client()
-	running := &serverClient{server: server, spec: spec, root: root, versions: make(map[string]int), registrations: make(map[string]string), resultIDs: make(map[string]string)}
+	running := &serverClient{server: server, spec: spec, root: root, versions: make(map[string]int), sent: make(map[string]string), registrations: make(map[string]string), resultIDs: make(map[string]string)}
 	m.registerClientHandlers(client, running)
 	capabilities, err := m.handshake(hsCtx, client, spec, root)
 	if err != nil {
@@ -362,6 +366,25 @@ func uriFor(path string) string {
 		path = resolved
 	}
 	return "file://" + filepath.ToSlash(path)
+}
+
+// pathFromURI is the inverse of uriFor: it converts a file:// URI produced by
+// this client back to a filesystem path. ok is false for non-file schemes
+// (untitled:, https:…) which have no on-disk counterpart to reconcile.
+func pathFromURI(uri string) (path string, ok bool) {
+	const scheme = "file://"
+	if !strings.HasPrefix(uri, scheme) {
+		return "", false
+	}
+	return filepath.FromSlash(strings.TrimPrefix(uri, scheme)), true
+}
+
+// contentHash fingerprints pushed document content so ResyncExternal can skip
+// documents whose overlay already matches disk. SHA-256 truncation-free hex;
+// document pushes are rare and files are small, so the cost is negligible.
+func contentHash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
 }
 
 // clientCapabilities declares what the goa LSP client supports. Crucially it

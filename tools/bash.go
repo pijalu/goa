@@ -96,6 +96,15 @@ type BashTool struct {
 	// and routes through the same perms-driven approval path as tool
 	// confirmation. When nil, escalations are denied — fail closed.
 	EscalationApprover sandbox.EscalationApprover
+
+	// LSPSyncer, when set, reconciles language-server document overlays with
+	// on-disk content after every command run. Shell commands mutate files
+	// behind goa's structured file tools (sed -i, git checkout, gofmt -w);
+	// LSP servers ignore disk changes under an open overlay, so without this
+	// hook they keep analyzing stale buffers and report phantom errors
+	// (Issue: gopls flagged declarations a bash-side file split had already
+	// removed from plugin.go).
+	LSPSyncer ExternalLSPSyncer
 }
 
 // Bash timeout defaults.
@@ -113,6 +122,30 @@ const (
 // and the TUI shows "Running: <command>" while a call is in flight.
 func (t *BashTool) LoopHints() agentic.ToolLoopHints {
 	return agentic.ToolLoopHints{HealArg: "command", Status: commandRunStatus}
+}
+
+// lspResyncTimeout bounds post-command overlay reconciliation so reporting
+// command output is never delayed by more than this.
+const lspResyncTimeout = 2 * time.Second
+
+// ExternalLSPSyncer reconciles documents a language server holds open with
+// their on-disk content, returning how many were refreshed. Defined here (at
+// the consumer) so bash tests can inject a tiny fake instead of the manager.
+type ExternalLSPSyncer interface {
+	ResyncExternal(ctx context.Context) int
+}
+
+// resyncLSP pushes fresh disk content into open language-server overlays that
+// the just-finished command may have modified externally. Best-effort: a nil
+// syncer, a cancelled turn, or an over-deadline reconcile never fails the
+// command whose output was already captured.
+func (t *BashTool) resyncLSP(ctx context.Context) {
+	if t.LSPSyncer == nil || ctx.Err() != nil {
+		return
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, lspResyncTimeout)
+	defer cancel()
+	_ = t.LSPSyncer.ResyncExternal(syncCtx)
 }
 
 // Schema returns the tool schema for bash.
@@ -220,6 +253,10 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 	fileEditHint := t.fileEditHint(p.Command)
 
 	output, duration, timedOut, tooLarge, runErr := t.runCommand(ctx, p)
+	// The command may have mutated files outside goa's file tools; refresh
+	// open LSP overlays BEFORE the model sees the result so follow-up edits
+	// and diagnostics reflect on-disk reality, not stale server buffers.
+	t.resyncLSP(ctx)
 	return t.reportResult(ctx, p, fileEditHint, output, duration, timedOut, tooLarge, runErr)
 }
 

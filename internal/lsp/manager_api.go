@@ -20,6 +20,7 @@ func (c *serverClient) notifyOpen(uri, languageID, text string) error {
 	if v, opened := c.versions[uri]; opened {
 		return c.didChangeLocked(uri, v, text)
 	}
+	c.sent[uri] = contentHash(text)
 	c.versions[uri] = 1
 	return c.server.Client().DidOpen(DidOpenTextDocumentParams{
 		TextDocument: TextDocumentItem{
@@ -38,6 +39,7 @@ func (c *serverClient) notifyChange(uri, languageID, text string) error {
 	defer c.mu.Unlock()
 	v, opened := c.versions[uri]
 	if !opened {
+		c.sent[uri] = contentHash(text)
 		c.versions[uri] = 1
 		return c.server.Client().DidOpen(DidOpenTextDocumentParams{
 			TextDocument: TextDocumentItem{
@@ -56,6 +58,7 @@ func (c *serverClient) notifyChange(uri, languageID, text string) error {
 func (c *serverClient) didChangeLocked(uri string, version int, text string) error {
 	version++
 	c.versions[uri] = version
+	c.sent[uri] = contentHash(text)
 	return c.server.Client().DidChange(DidChangeTextDocumentParams{
 		TextDocument:   VersionedTextDocumentIdentifier{URI: uri, Version: version},
 		ContentChanges: []TextDocumentContentChangeEvent{{Text: text}},
@@ -102,6 +105,99 @@ func (m *Manager) DidChange(ctx context.Context, path, text string) error {
 	c.mu.Unlock()
 	m.diags.MarkPending(uri, version)
 	return c.notifyChange(uri, c.spec.languageID(path), text)
+}
+
+// ResyncExternal reconciles every document a language server holds open with
+// its on-disk content, pushing a full-content didChange for each document
+// whose disk copy differs from what was last pushed. It returns the number of
+// documents refreshed.
+//
+// Why it exists: LSP servers treat an open document's overlay as the source
+// of truth and IGNORE disk changes underneath it. goa's structured tools
+// (read/edit/write) push their own updates, but files mutated behind their
+// back — sed -i, git checkout, gofmt -w, any shell command — never reach the
+// server, which then analyzes stale text and reports phantom errors (Issue:
+// after a bash-side file split of plugins/plugin.go, gopls kept flagging
+// declarations that no longer existed on disk). Tools that mutate files
+// outside the structured file tools call this when they finish.
+func (m *Manager) ResyncExternal(ctx context.Context) int {
+	if m == nil || !m.Started() {
+		return 0
+	}
+	m.mu.Lock()
+	clients := make([]*serverClient, 0, len(m.clients))
+	for _, c := range m.clients {
+		clients = append(clients, c)
+	}
+	m.mu.Unlock()
+	refreshed := 0
+	for _, c := range clients {
+		updates := c.resync(ctx)
+		for _, r := range updates {
+			// Pending targets the exact wire version just pushed, matching
+			// OpenDocument/DidChange: a publication echoing that version
+			// resolves the wait; older ones cannot.
+			m.diags.MarkPending(r.URI, r.Version)
+		}
+		refreshed += len(updates)
+	}
+	return refreshed
+}
+
+// docRefresh records one document reconciled with disk: its URI and the
+// wire version the full-content didChange carried.
+type docRefresh struct {
+	URI     string
+	Version int
+}
+
+// resync reconciles this client's open documents with disk, sending a
+// full-content didChange wherever the disk copy differs from what was last
+// pushed. Returns one entry per refreshed document (map-iteration order —
+// order carries no meaning). The snapshot of open URIs is taken under the
+// client lock; each reconcile re-locks via notifyChange so wire order stays
+// version-ordered.
+func (c *serverClient) resync(ctx context.Context) []docRefresh {
+	c.mu.Lock()
+	uris := make([]string, 0, len(c.versions))
+	for uri := range c.versions {
+		uris = append(uris, uri)
+	}
+	spec := c.spec
+	c.mu.Unlock()
+
+	var refreshed []docRefresh
+	for _, uri := range uris {
+		if ctx.Err() != nil {
+			return refreshed
+		}
+		path, ok := pathFromURI(uri)
+		if !ok {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue // deleted or unreadable: leave the overlay untouched
+		}
+		if c.matchesSent(uri, string(data)) {
+			continue // overlay already matches disk
+		}
+		if err := c.notifyChange(uri, spec.languageID(path), string(data)); err == nil {
+			c.mu.Lock()
+			version := c.versions[uri]
+			c.mu.Unlock()
+			refreshed = append(refreshed, docRefresh{URI: uri, Version: version})
+		}
+	}
+	return refreshed
+}
+
+// matchesSent reports whether text matches the content last pushed for uri.
+func (c *serverClient) matchesSent(uri, text string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sent, ok := c.sent[uri]
+	return ok && sent == contentHash(text)
 }
 
 // noClientError describes why no client is available for path: unsupported
