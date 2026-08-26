@@ -12,8 +12,8 @@ package tools
 //
 // The set is the "opt-in-heavy" tool family: tools that are rarely needed on
 // every request yet still ship multi-hundred-byte schemas. Core tools
-// (read/write/edit/bash/search/python/ask/goal) stay eager; heavier optional
-// tools, including lsp, verify, and run_skill, load on demand.
+// (read/write/edit/bash/search/ask/goal) stay eager; heavier optional tools,
+// including lsp, verify, run_skill, and python, load on demand.
 
 func (*TerminalsTool) Deferred() bool        { return true }
 func (*WebFetchTool) Deferred() bool         { return true }
@@ -34,3 +34,10 @@ func (*VerifyTool) Deferred() bool           { return true }
 func (*ScheduleCreateTool) Deferred() bool { return true }
 func (*ScheduleDeleteTool) Deferred() bool { return true }
 func (*ScheduleListTool) Deferred() bool   { return true }
+
+// Python joins the deferred set: its schema is one of the heaviest non-goal
+// payloads shipped on every request, yet bash covers trivial scripting until
+// real Python is needed. The model loads it on demand via tool_search
+// (select:python); before that, calls get the standard deferred-redirect
+// error naming the remedy.
+func (*PythonTool) Deferred() bool { return true }

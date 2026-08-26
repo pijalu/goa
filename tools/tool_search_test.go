@@ -336,6 +336,56 @@ func TestScheduleToolsAreDeferred(t *testing.T) {
 	assertScheduleToolsLoadable(t, areg)
 }
 
+// TestPythonToolIsDeferred pins the move of the python tool out of the eager
+// core into tool_search: its schema is one of the heaviest non-goal payloads
+// shipped on every request, yet bash covers trivial scripting until Python is
+// genuinely needed. The model discovers it via the tool_search catalog /
+// <deferred_tools> prompt block and loads it with select:python. Guards
+// against someone removing the Deferred marker in tools/deferred.go.
+func TestPythonToolIsDeferred(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	for _, d := range []agentic.Tool{
+		&tools.TerminalsTool{}, &tools.WebFetchTool{}, &tools.BGExecTool{},
+		&tools.MementoTool{}, &tools.SmartSearchTool{}, &tools.SSHBashTool{},
+		&tools.SessionSearchTool{}, &tools.SessionEventReadTool{},
+	} {
+		reg.Register(d)
+	}
+	reg.Register(&tools.PythonTool{})
+	reg.Register(tools.NewToolSearchTool(reg)) // loader, last (bootstrap order)
+	areg := agentic.NewToolRegistry(reg.All())
+
+	// Deferral active + python withheld from the eager schema block.
+	eager := map[string]bool{}
+	for _, s := range areg.Schemas() {
+		eager[s.Name] = true
+	}
+	if _, unloaded := areg.DeferredStatus("python"); !unloaded {
+		t.Fatal("python is EAGER, want deferred (loadable via tool_search)")
+	}
+	if eager["python"] {
+		t.Error("python present in eager schema block, want withheld")
+	}
+	if !strings.Contains(catalogText(reg), "python") {
+		t.Error("python missing from tool_search deferred catalog")
+	}
+
+	// select:python loads it: status cleared, schema served.
+	if loaded := areg.LoadDeferred([]string{"python"}); len(loaded) != 1 || loaded[0] != "python" {
+		t.Fatalf("LoadDeferred([python]) = %v, want [python]", loaded)
+	}
+	if _, unloaded := areg.DeferredStatus("python"); unloaded {
+		t.Error("python still deferred after LoadDeferred")
+	}
+	served := map[string]bool{}
+	for _, s := range areg.Schemas() {
+		served[s.Name] = true
+	}
+	if !served["python"] {
+		t.Error("python schema not served after LoadDeferred")
+	}
+}
+
 // newScheduleTestRegistry builds a registry with the full deferred family (so
 // deferral crosses the activation threshold), the schedule tools, and the
 // tool_search loader last (bootstrap order).

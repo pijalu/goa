@@ -283,6 +283,10 @@ Runs Python code using the embedded gpython interpreter. Each call gets a
 fresh isolated interpreter context with stdout and stderr captured. Supports
 Python 3.4 language subset and stdlib modules provided by gpython.
 
+**Deferred:** like other opt-in-heavy tools, the `python` schema loads on
+demand via `tool_search select:python` (see "Deferred loading" above); it
+stays registered and executable once loaded.
+
 **Parameters:**
 | Field | Type | Description |
 |-------|------|-------------|
