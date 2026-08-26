@@ -182,7 +182,14 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	if src.WorktreeMode != "" {
 		dst.WorktreeMode = src.WorktreeMode
 	}
-	dst.AutoSaveModel = src.AutoSaveModel
+	// AutoSaveModel is tri-state (*bool): a layer that states the key wins;
+	// a layer that omits it preserves the lower layer's value. The embedded
+	// default (true) must survive configs written before the key existed —
+	// unconditional assignment used to flip every legacy install to false,
+	// silently disabling the per-project model pin (bugs.md).
+	if src.AutoSaveModel != nil {
+		dst.AutoSaveModel = src.AutoSaveModel
+	}
 	dst.DisableToolBudget = src.DisableToolBudget
 	// AutoHealToolCalls is the /config "Tool call fixing" toggle. Copied
 	// unconditionally like its sibling bools: it has no meaningful "unset"

@@ -10,6 +10,18 @@ import (
 	"github.com/pijalu/goa/config"
 )
 
+// writeTestFileT creates the parent directory and writes content — used to
+// seed legacy on-disk configs for the auto_save_model cascade tests.
+func writeTestFileT(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
 // TestSaveProjectActiveModel_CreatesAndUpdates pins the config-layer pin:
 // the project .goa/config.yaml is created when missing, updated afterwards,
 // and other keys in the file are preserved.
@@ -66,7 +78,7 @@ func TestSaveProjectActiveModel_CreatesAndUpdates(t *testing.T) {
 func TestPersistModelSwitch_ProjectFirstOrder(t *testing.T) {
 	saver := &fakeConfigSaver{}
 	cfg := twoProviderConfig(t)
-	cfg.Execution.AutoSaveModel = true
+	cfg.Execution.AutoSaveModel = boolPtr(true)
 	cfg.ActiveProvider = "stealth"
 	cfg.ActiveModel = "stealth/ox-alpha"
 
@@ -83,7 +95,7 @@ func TestPersistModelSwitch_ProjectFirstOrder(t *testing.T) {
 
 	// Opt-out (auto_save_model false): no project pin, home fallback only.
 	saver2 := &fakeConfigSaver{}
-	cfg.Execution.AutoSaveModel = false
+	cfg.Execution.AutoSaveModel = boolPtr(false)
 	if err := persistModelSwitch(cfg, saver2); err != nil {
 		t.Fatalf("persistModelSwitch opt-out: %v", err)
 	}
@@ -102,7 +114,7 @@ func TestPersistModelSwitch_ProjectFirstOrder(t *testing.T) {
 func TestPersistModelSwitch_ProjectErrorFallsBackToHome(t *testing.T) {
 	saver := &fakeConfigSaver{projectActiveErr: config.ErrNoProjectDir}
 	cfg := twoProviderConfig(t)
-	cfg.Execution.AutoSaveModel = true
+	cfg.Execution.AutoSaveModel = boolPtr(true)
 
 	if err := persistModelSwitch(cfg, saver); err != nil {
 		t.Fatalf("persistModelSwitch with failing project layer: %v", err)
@@ -124,7 +136,7 @@ func TestModelSwitch_PerProjectPinEndToEnd(t *testing.T) {
 	projectA := t.TempDir()
 
 	cfg := twoProviderConfig(t)
-	cfg.Execution.AutoSaveModel = true
+	cfg.Execution.AutoSaveModel = boolPtr(true)
 	ctx, pm := newPickerTestContextWithProject(t, cfg, projectA)
 
 	applyModelSelectionForProvider(*ctx, cfg, ctx.ConfigSaver, "stealth", "stealth/ox-alpha")
@@ -200,7 +212,7 @@ func TestPersistModelSwitch_UnwritableProjectFallsBackToHome(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, ".goa"), []byte("not a dir"), 0o644); err != nil {
 		t.Fatalf("block project dir: %v", err)
 	}
-	cfg.Execution.AutoSaveModel = true
+	cfg.Execution.AutoSaveModel = boolPtr(true)
 	cfg.ActiveModel = "new-model"
 
 	if err := persistModelSwitch(cfg, loader); err != nil {
@@ -209,6 +221,107 @@ func TestPersistModelSwitch_UnwritableProjectFallsBackToHome(t *testing.T) {
 	homePath := filepath.Join(home, ".goa", "config.yaml")
 	if !strings.Contains(readTestFile(t, homePath), "active_model: new-model") {
 		t.Fatalf("home fallback missing after unwritable project:\n%s", readTestFile(t, homePath))
+	}
+}
+
+// TestModelSwitch_LegacyConfigPinsProjectModel is the bugs.md acceptance
+// flow for "switching model with /model isn't saved into the project config":
+// a PRE-EXISTING install whose home yaml predates auto_save_model (execution
+// section present, key absent) must still pin the switched pair into the
+// project layer, because nil now resolves to the embedded default TRUE
+// instead of being clobbered to false by the cascade merge.
+func TestModelSwitch_LegacyConfigPinsProjectModel(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GOA_HOME", home) // CascadeLoader resolves home via internal.GoaHome
+
+	// Legacy install: home carries an execution section WITHOUT the key,
+	// project exists with a STALE active_model pin from an earlier era.
+	writeTestFileT(t, filepath.Join(home, ".goa", "config.yaml"),
+		"execution:\n  thinking_default: high\n")
+	writeTestFileT(t, filepath.Join(project, ".goa", "config.yaml"),
+		"active_provider: openai-codex\nactive_model: ox-alpha\n")
+
+	loader := config.NewCascadeLoader(project, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Execution.AutoSaveModelEnabled() {
+		t.Fatalf("precondition: legacy config must resolve auto_save_model=true before the switch")
+	}
+	if cfg.ActiveModel != "ox-alpha" {
+		t.Fatalf("precondition: boot model = %q, want the stale project pin ox-alpha", cfg.ActiveModel)
+	}
+
+	// The REAL user path: /model new-model while booted on the stale pin.
+	// GOA_HOME was set before the context helper so its loader lands on the
+	// seeded home.
+	ctx, _ := newPickerTestContextWithProject(t, cfg, project)
+	if err := runModelCommand(*ctx, ctx.ProviderManager, cfg, ctx.ConfigSaver, []string{"new-model"}); err != nil {
+		t.Fatalf("runModelCommand: %v", err)
+	}
+
+	rawProject, err := os.ReadFile(filepath.Join(project, ".goa", "config.yaml"))
+	if err != nil {
+		t.Fatalf("project config read: %v", err)
+	}
+	if !strings.Contains(string(rawProject), "active_model: new-model") {
+		t.Fatalf("project config not pinned with the switched model:\n%s", rawProject)
+	}
+	// Home stays out of it: the project layer was changeable.
+	rawHome, err := os.ReadFile(filepath.Join(home, ".goa", "config.yaml"))
+	if err == nil && strings.Contains(string(rawHome), "active_model:") {
+		t.Fatalf("home must not receive the pin when the project layer works:\n%s", rawHome)
+	}
+	// Reload feeds the NEXT session's boot model.
+	reloaded, err := config.NewCascadeLoader(project, "", nil).Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.ActiveProvider != "openai-codex" || reloaded.ActiveModel != "new-model" {
+		t.Fatalf("reloaded pair = (%s, %s), want project pin (openai-codex, new-model)",
+			reloaded.ActiveProvider, reloaded.ActiveModel)
+	}
+}
+
+// TestModelSwitch_ExplicitOptOutSkipsProjectPin pins the other side of the
+// tri-state contract: an explicit execution.auto_save_model:false on disk is
+// an intentional opt-out — no project pin may appear when switching; home
+// remains the only persistence (legacy behavior byte-for-byte).
+func TestModelSwitch_ExplicitOptOutSkipsProjectPin(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GOA_HOME", home)
+
+	writeTestFileT(t, filepath.Join(home, ".goa", "config.yaml"),
+		"execution:\n  auto_save_model: false\n")
+	writeTestFileT(t, filepath.Join(project, ".goa", "config.yaml"),
+		"mode:\n  default:\n    major: coder\n")
+
+	loader := config.NewCascadeLoader(project, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Execution.AutoSaveModelEnabled() {
+		t.Fatalf("explicit false must resolve disabled")
+	}
+
+	if err := persistModelSwitch(cfg, loader); err != nil {
+		t.Fatalf("persistModelSwitch: %v", err)
+	}
+	rawProject, _ := os.ReadFile(filepath.Join(project, ".goa", "config.yaml"))
+	if strings.Contains(string(rawProject), "active_model") {
+		t.Fatalf("opted-out switch must not pin the project:\n%s", rawProject)
+	}
+	homePath := filepath.Join(home, ".goa", "config.yaml")
+	if !strings.Contains(readTestFile(t, homePath), "active_model") {
+		t.Fatalf("opt-out persistence must still reach home:\n%s", readTestFile(t, homePath))
 	}
 }
 
@@ -226,7 +339,7 @@ func TestRemoveActiveModel_ClearsProjectPin(t *testing.T) {
 	project := t.TempDir()
 
 	cfg := twoProviderConfig(t)
-	cfg.Execution.AutoSaveModel = true
+	cfg.Execution.AutoSaveModel = boolPtr(true)
 	cfg.ActiveProvider = "stealth"
 	cfg.ActiveModel = "ox-alpha" // ID-keyed pin (YAML-configured model flow)
 	ctx, _ := newPickerTestContextWithProject(t, cfg, project)

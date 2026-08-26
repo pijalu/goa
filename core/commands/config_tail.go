@@ -19,7 +19,7 @@ func (m *configMenu) saveConfig() {
 }
 func (m *configMenu) saveProvidersAndModels() {
 	if m.ctx.ConfigSaver != nil {
-		if e := persistModelSwitch(m.ctx.Config, m.ctx.ConfigSaver); e != nil {
+		if e := persistModelCatalogChange(m.ctx, m.ctx.Config, m.ctx.ConfigSaver); e != nil {
 			m.flash("Failed to save config: " + e.Error())
 		}
 	}

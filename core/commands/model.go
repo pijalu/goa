@@ -319,7 +319,7 @@ func addAndShowModel(host core.UIHost, cfg *config.Config, saver config.ConfigSa
 		ProviderID: providerID,
 		Model:      modelName,
 	})
-	if err := persistModelSwitch(cfg, saver); err != nil {
+	if err := persistModelCatalogChange(host, cfg, saver); err != nil {
 		host.Flash("Failed to save: " + err.Error())
 	}
 	host.Flash("Model " + modelID + " added.")
@@ -387,7 +387,7 @@ func removeModelFromConfig(cfg *config.Config, id string, saver config.ConfigSav
 		if cfg.ActiveModel == id {
 			cfg.ActiveModel = ""
 		}
-		if err := persistModelSwitch(cfg, saver); err != nil {
+		if err := persistModelCatalogChange(host, cfg, saver); err != nil {
 			host.Flash("Failed to save: " + err.Error())
 			return
 		}

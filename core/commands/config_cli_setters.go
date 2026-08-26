@@ -23,7 +23,7 @@ var configSetters = map[string]configSetter{
 	"multi_agent.companion_model":                    setStringWithValidate(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionModel }, validateActiveModel),
 	"execution.mode":                                 setExecutionMode,
 	"execution.retries":                              setInt(func(cfg *config.Config) *int { return &cfg.Execution.Retries }),
-	"execution.auto_save_model":                      setBool(func(cfg *config.Config) *bool { return &cfg.Execution.AutoSaveModel }),
+	"execution.auto_save_model":                      setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.AutoSaveModel }),
 	"execution.auto_heal_tool_calls":                 setBool(func(cfg *config.Config) *bool { return &cfg.Execution.AutoHealToolCalls }),
 	"mode.plan_file_path":                            setString(func(cfg *config.Config) *string { return &cfg.Mode.PlanFilePath }),
 	"execution.max_tool_calls":                       setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolCalls }),

@@ -51,13 +51,15 @@ func TestProviderCommand_StatusEmptyWhenNoConfig(t *testing.T) {
 }
 
 // TestProviderCommand_WithArgs_SwitchesProvider verifies /provider:id switches
-// and persists provider/model config to the home directory.
+// and persists the provider/model couple to the project pin (the default
+// auto_save_model=on contract; ~/.goa is only the fallback layer).
 func TestProviderCommand_WithArgs_SwitchesProvider(t *testing.T) {
 	cmd := &ProviderCommand{}
 	var buf strings.Builder
 	cfg := &config.Config{ActiveProvider: "old", Providers: []config.ProviderConfig{
 		{ID: "openai", Name: "OpenAI"},
 	}}
+	cfg.Execution.AutoSaveModel = boolPtr(true)
 	saver := &fakeConfigSaver{}
 	ctx := core.Context{OutputBuffer: &buf, Config: cfg, ConfigSaver: saver}
 	if err := cmd.Run(ctx, []string{"openai"}); err != nil {
@@ -69,11 +71,11 @@ func TestProviderCommand_WithArgs_SwitchesProvider(t *testing.T) {
 	if !strings.Contains(buf.String(), "Switched to provider") {
 		t.Errorf("output = %q, want 'Switched to provider'", buf.String())
 	}
-	if saver.savedCfg == nil {
-		t.Error("expected provider switch to be persisted")
+	if saver.projectActiveSaved == nil {
+		t.Error("expected provider switch to be persisted (project pin)")
 	}
-	if saver.savedCfg.ActiveProvider != "openai" {
-		t.Errorf("saved ActiveProvider = %q, want openai", saver.savedCfg.ActiveProvider)
+	if saver.projectActiveSaved.ActiveProvider != "openai" {
+		t.Errorf("saved ActiveProvider = %q, want openai", saver.projectActiveSaved.ActiveProvider)
 	}
 }
 

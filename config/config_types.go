@@ -49,10 +49,10 @@ type Config struct {
 	Goals              GoalsConfig              `yaml:"goals,omitempty"`
 	// Features holds opt-in feature gates (e.g. features.remote_compaction).
 	// All gates default off; see FeaturesConfig.
-	Features           FeaturesConfig           `yaml:"features,omitempty"`
-	Plan               PlanConfig               `yaml:"plan,omitempty"`
-	RegistryLoaders    RegistryLoaders          `yaml:"registry_loaders,omitempty"`
-	Permissions        []perms.Rule             `yaml:"permissions,omitempty"`
+	Features        FeaturesConfig  `yaml:"features,omitempty"`
+	Plan            PlanConfig      `yaml:"plan,omitempty"`
+	RegistryLoaders RegistryLoaders `yaml:"registry_loaders,omitempty"`
+	Permissions     []perms.Rule    `yaml:"permissions,omitempty"`
 	// MCP holds Model Context Protocol server definitions keyed by server name.
 	// Goa acts as an MCP client: each enabled server's tools are exposed to the
 	// agent under the "mcp__<server>__<tool>" namespace.
@@ -72,27 +72,33 @@ type Config struct {
 
 // ExecutionConfig controls execution mode, retries, thresholds, and timeouts.
 type ExecutionConfig struct {
-	Mode                     internal.ExecutionMode `yaml:"mode"`
-	Retries                  int                    `yaml:"retries"`
-	TokenWarning             int                    `yaml:"token_warning"`
-	TokenCritical            int                    `yaml:"token_critical"`
-	LoopWarning              int                    `yaml:"loop_warning"`
-	LoopInterrupt            int                    `yaml:"loop_interrupt"`
-	ActivityTimeout          string                 `yaml:"activity_timeout"`
-	ErrorThreshold           float64                `yaml:"error_threshold"`
-	WorktreeMode             internal.WorktreeMode  `yaml:"worktree_mode"`
-	AutoSaveModel            bool                   `yaml:"auto_save_model"`
-	MaxToolRepeatTotal       int                    `yaml:"max_tool_repeat_total"`
-	MaxToolRepeatConsecutive int                    `yaml:"max_tool_repeat_consecutive"`
-	MaxToolCalls             int                    `yaml:"max_tool_calls"`
-	MaxToolErrorStreak       int                    `yaml:"max_tool_error_streak"`
-	DisableToolBudget        bool                   `yaml:"disable_tool_budget"`
-	ToolCallLimitResetWindow int                    `yaml:"tool_call_limit_reset_window"`
-	MaxStreamRounds          int                    `yaml:"max_stream_rounds"`
-	MaxConsecutiveToolRounds int                    `yaml:"max_consecutive_tool_rounds"`
-	AutoHealToolCalls        bool                   `yaml:"auto_heal_tool_calls"`
-	ThinkingStallWarnSeconds int                    `yaml:"thinking_stall_warn_seconds"`
-	ThinkingStallStopSeconds int                    `yaml:"thinking_stall_stop_seconds"`
+	Mode            internal.ExecutionMode `yaml:"mode"`
+	Retries         int                    `yaml:"retries"`
+	TokenWarning    int                    `yaml:"token_warning"`
+	TokenCritical   int                    `yaml:"token_critical"`
+	LoopWarning     int                    `yaml:"loop_warning"`
+	LoopInterrupt   int                    `yaml:"loop_interrupt"`
+	ActivityTimeout string                 `yaml:"activity_timeout"`
+	ErrorThreshold  float64                `yaml:"error_threshold"`
+	WorktreeMode    internal.WorktreeMode  `yaml:"worktree_mode"`
+	// AutoSaveModel is tri-state: nil = inherit from the lower cascade layer
+	// (embedded default true). An explicit false opts out of the per-project
+	// model pin, falling back to legacy home-only persistence. The pointer is
+	// what lets a layer that omits the key preserve the default instead of
+	// clobbering it with the bool zero value (bugs.md: /model not pinned to
+	// project config on pre-existing installs).
+	AutoSaveModel            *bool `yaml:"auto_save_model,omitempty"`
+	MaxToolRepeatTotal       int   `yaml:"max_tool_repeat_total"`
+	MaxToolRepeatConsecutive int   `yaml:"max_tool_repeat_consecutive"`
+	MaxToolCalls             int   `yaml:"max_tool_calls"`
+	MaxToolErrorStreak       int   `yaml:"max_tool_error_streak"`
+	DisableToolBudget        bool  `yaml:"disable_tool_budget"`
+	ToolCallLimitResetWindow int   `yaml:"tool_call_limit_reset_window"`
+	MaxStreamRounds          int   `yaml:"max_stream_rounds"`
+	MaxConsecutiveToolRounds int   `yaml:"max_consecutive_tool_rounds"`
+	AutoHealToolCalls        bool  `yaml:"auto_heal_tool_calls"`
+	ThinkingStallWarnSeconds int   `yaml:"thinking_stall_warn_seconds"`
+	ThinkingStallStopSeconds int   `yaml:"thinking_stall_stop_seconds"`
 	// DisableThinkingLoopDetection/DisableToolLoopDetection persistently
 	// disable the corresponding loop detector across sessions. Tri-state:
 	// nil (default) = detection on, true = off, false = explicitly on.

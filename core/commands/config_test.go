@@ -390,6 +390,8 @@ func TestApplyConfigSet_ActiveModelMissingProvider(t *testing.T) {
 
 // TestApplyConfigSet_AutoSaveModel verifies /config:set can toggle
 // execution.auto_save_model (previously only editable by hand in YAML).
+// The field is tri-state (*bool): the setter must MATERIALIZE an explicit
+// value, never leave it nil.
 func TestApplyConfigSet_AutoSaveModel(t *testing.T) {
 	ctx := newModeTestContext()
 	ctx.ConfigSaver = &fakeConfigSaver{}
@@ -397,15 +399,15 @@ func TestApplyConfigSet_AutoSaveModel(t *testing.T) {
 	if err := applyConfigSet(ctx, "execution.auto_save_model", "on"); err != nil {
 		t.Fatalf("applyConfigSet on: %v", err)
 	}
-	if !ctx.Config.Execution.AutoSaveModel {
-		t.Error("AutoSaveModel = false after 'on', want true")
+	if ctx.Config.Execution.AutoSaveModel == nil || !*ctx.Config.Execution.AutoSaveModel {
+		t.Errorf("AutoSaveModel = %v after 'on', want materialized true", ctx.Config.Execution.AutoSaveModel)
 	}
 
 	if err := applyConfigSet(ctx, "execution.auto_save_model", "off"); err != nil {
 		t.Fatalf("applyConfigSet off: %v", err)
 	}
-	if ctx.Config.Execution.AutoSaveModel {
-		t.Error("AutoSaveModel = true after 'off', want false")
+	if ctx.Config.Execution.AutoSaveModel == nil || *ctx.Config.Execution.AutoSaveModel {
+		t.Errorf("AutoSaveModel = %v after 'off', want materialized false", ctx.Config.Execution.AutoSaveModel)
 	}
 }
 

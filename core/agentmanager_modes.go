@@ -164,7 +164,7 @@ func (am *AgentManager) saveModelThinkingLevel(level string) error {
 	if err := saver.SaveHomeProvidersAndModels(cfg); err != nil {
 		return fmt.Errorf("failed to save model thinking level: %w", err)
 	}
-	if cfg.Execution.AutoSaveModel {
+	if cfg.Execution.AutoSaveModelEnabled() {
 		if err := saver.SaveProjectProvidersAndModels(cfg); err != nil {
 			return fmt.Errorf("failed to save model thinking level to project: %w", err)
 		}

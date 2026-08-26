@@ -111,6 +111,15 @@ func (g GoalsConfig) FreshContextEnabled() bool {
 	return g.FreshContext == nil || *g.FreshContext
 }
 
+// AutoSaveModelEnabled reports whether a model switch pins active_provider /
+// active_model into the project .goa/config.yaml (default true). An explicit
+// execution.auto_save_model:false opts out, keeping legacy home-only
+// persistence. Tri-state: nil inherits the lower cascade layer's value, so
+// configs written before the key existed resolve to the embedded default.
+func (e ExecutionConfig) AutoSaveModelEnabled() bool {
+	return e.AutoSaveModel == nil || *e.AutoSaveModel
+}
+
 // VerifyTimeoutOr parses goals.verify_timeout, returning fallback when the
 // value is empty or invalid.
 func (g GoalsConfig) VerifyTimeoutOr(fallback time.Duration) time.Duration {

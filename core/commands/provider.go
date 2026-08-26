@@ -250,7 +250,7 @@ func startCodexOAuthFromPicker(ctx core.Context, cfg *config.Config, saver confi
 	go func() {
 		if err := loginFlowRunner(ctx, preset.ID); err != nil && !preExisting {
 			pickerProviderMu.Lock()
-			removeProviderConfig(cfg, saver, preset.ID)
+			removeProviderConfig(ctx, cfg, saver, preset.ID)
 			pickerProviderMu.Unlock()
 			ctx.Flash(preset.Name + " sign-in failed: " + err.Error() + " (provider removed)")
 		}
@@ -259,7 +259,7 @@ func startCodexOAuthFromPicker(ctx core.Context, cfg *config.Config, saver confi
 
 // removeProviderConfig deletes a provider entry and persists, mirroring
 // doRemoveProvider but without user-facing messaging (the caller flashes).
-func removeProviderConfig(cfg *config.Config, saver config.ConfigSaver, providerID string) {
+func removeProviderConfig(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID string) {
 	for i, p := range cfg.Providers {
 		if p.ID != providerID {
 			continue
@@ -268,7 +268,7 @@ func removeProviderConfig(cfg *config.Config, saver config.ConfigSaver, provider
 		if cfg.ActiveProvider == providerID {
 			cfg.ActiveProvider = ""
 		}
-		_ = persistModelSwitch(cfg, saver)
+		_ = persistModelCatalogChange(host, cfg, saver)
 		return
 	}
 }
@@ -331,7 +331,7 @@ func doRemoveProvider(cfg *config.Config, saver config.ConfigSaver, host core.UI
 		if cfg.ActiveProvider == providerID {
 			cfg.ActiveProvider = ""
 		}
-		if err := persistModelSwitch(cfg, saver); err != nil {
+		if err := persistModelCatalogChange(host, cfg, saver); err != nil {
 			host.Flash("Failed to save: " + err.Error())
 			return
 		}

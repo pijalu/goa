@@ -92,6 +92,9 @@ func newPickerTestContextWithProject(t *testing.T, cfg *config.Config, projectDi
 // provider through to the coupled switch.
 func TestApplyModelSelectionForProvider_CarriesPickerProvider(t *testing.T) {
 	cfg := twoProviderConfig(t)
+	// Production configs resolve auto_save_model ON via Load; state it
+	// explicitly so the persistence assertion targets the project pin.
+	cfg.Execution.AutoSaveModel = boolPtr(true)
 	ctx, pm := newPickerTestContext(t, cfg)
 	saver := ctx.ConfigSaver.(*fakeConfigSaver)
 
@@ -109,12 +112,12 @@ func TestApplyModelSelectionForProvider_CarriesPickerProvider(t *testing.T) {
 		t.Fatalf("config pair = (%s, %s), want (stealth, stealth/ox-alpha)",
 			cfg.ActiveProvider, cfg.ActiveModel)
 	}
-	if saver.savedCfg == nil {
-		t.Fatalf("switch was not persisted")
+	if saver.projectActiveSaved == nil {
+		t.Fatalf("switch was not persisted (project pin)")
 	}
-	if saver.savedCfg.ActiveProvider != "stealth" || saver.savedCfg.ActiveModel != "stealth/ox-alpha" {
+	if saver.projectActiveSaved.ActiveProvider != "stealth" || saver.projectActiveSaved.ActiveModel != "stealth/ox-alpha" {
 		t.Fatalf("persisted pair = (%s, %s), want switched couple",
-			saver.savedCfg.ActiveProvider, saver.savedCfg.ActiveModel)
+			saver.projectActiveSaved.ActiveProvider, saver.projectActiveSaved.ActiveModel)
 	}
 
 	// Footer rendering of the resulting couple must not show a mixed pair:

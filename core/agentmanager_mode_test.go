@@ -578,6 +578,9 @@ func thinkingLevelTestConfig() *config.Config {
 // change kimi.
 func TestAgentManager_SetThinkingLevel_SavesAtModelLevel(t *testing.T) {
 	cfg := thinkingLevelTestConfig()
+	// Explicit opt-out: this test pins the home-only path, not the default-on
+	// project pin (tri-state nil now resolves to the embedded default TRUE).
+	cfg.Execution.AutoSaveModel = ccBoolPtr(false)
 	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
 	am := NewAgentManager(cfg, nil, nil, sessionState, event.MakeBus(10, 10, 10, 10), "")
 	saver := &recordingConfigSaver{}
@@ -682,7 +685,7 @@ func TestAgentManager_SetThinkingLevel_UnconfiguredModel(t *testing.T) {
 // is also updated when execution.auto_save_model is enabled.
 func TestAgentManager_SetThinkingLevel_AutoSaveModel(t *testing.T) {
 	cfg := thinkingLevelTestConfig()
-	cfg.Execution.AutoSaveModel = true
+	cfg.Execution.AutoSaveModel = ccBoolPtr(true)
 	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
 	saver := &recordingConfigSaver{}
 	am.SetConfigSaver(saver)
