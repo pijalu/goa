@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,8 +84,11 @@ func TestTeeStderr_GatedWhileTUIOwnsScreen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tuiOwns := false
-	cleanup := teeStderr(f, func() bool { return tuiOwns })
+	// tuiOwns is read by the tee's drain goroutine (via the ownsScreen
+	// callback) while the test body flips it — it must be atomic to avoid a
+	// data race between the drain goroutine and the test goroutine.
+	var tuiOwns atomic.Bool
+	cleanup := teeStderr(f, tuiOwns.Load)
 
 	fmt.Fprint(os.Stderr, "tty-visible-marker-aaaa\n")
 	if got := readPipeUntil(t, ttyR, "tty-visible-marker-aaaa"); !strings.Contains(got, "tty-visible-marker-aaaa") {
@@ -92,7 +96,7 @@ func TestTeeStderr_GatedWhileTUIOwnsScreen(t *testing.T) {
 	}
 
 	// TUI takes the screen: forwarding must stop, capture must continue.
-	tuiOwns = true
+	tuiOwns.Store(true)
 	fmt.Fprint(os.Stderr, "tty-hidden-marker-bbbb\n")
 
 	cleanup() // restores fd 2 (to our pipe), drains the tee into f
@@ -113,6 +117,78 @@ func TestTeeStderr_GatedWhileTUIOwnsScreen(t *testing.T) {
 	n, _ := ttyR.Read(buf)
 	if n > 0 && strings.Contains(string(buf[:n]), "tty-hidden-marker-bbbb") {
 		t.Fatalf("stderr write while TUI owned the screen leaked to the terminal: %q", buf[:n])
+	}
+}
+
+// TestStderrSink_WriteDropsOnFullTTY is the deterministic regression test for
+// the multi-process UI freeze (display-sleep TTY stall → the stderr self-pipe
+// drain goroutine blocked writing to the congested terminal → the 64KB pipe
+// filled → every fd-2 writer, including the Go runtime and child processes,
+// deadlocked and the process could not even dump goroutines on SIGQUIT).
+//
+// It drives stderrSink.Write directly with a ttyFd that is a full, never-
+// drained pipe. Before the fix the sink used a blocking os.File write, which
+// would park forever here; after the fix the non-blocking unix.Write returns
+// EAGAIN immediately and the byte is dropped (crash.log still gets it).
+func TestStderrSink_WriteDropsOnFullTTY(t *testing.T) {
+	// A raw, non-poller pipe filled to capacity and never read. unix.Pipe fds
+	// are not registered with Go's netpoller, matching the production saved
+	// stderr (a dup of the TTY): a blocking write(2) to it would hang.
+	fds := []int{-1, -1}
+	if err := unix.Pipe(fds); err != nil {
+		t.Fatal(err)
+	}
+	rFd, wFd := fds[0], fds[1]
+	defer unix.Close(rFd)
+	defer unix.Close(wFd)
+	if err := unix.SetNonblock(wFd, true); err != nil {
+		t.Fatal(err)
+	}
+	fill := make([]byte, 4096)
+	for {
+		if _, err := unix.Write(wFd, fill); err != nil {
+			break // EAGAIN: pipe full
+		}
+	}
+	// Leave wFd non-blocking: the sink relies on the fd being non-blocking so a
+	// full terminal yields EAGAIN instead of a stall.
+
+	f, err := os.Create(filepath.Join(t.TempDir(), "crash.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	// ownsScreen=false forces the sink to attempt the (full) terminal forward.
+	sink := &stderrSink{ttyFd: wFd, file: f, ownsScreen: func() bool { return false }}
+
+	done := make(chan error, 1)
+	go func() {
+		payload := []byte("captured-stderr-line\n")
+		n, err := sink.Write(payload)
+		if n != len(payload) {
+			done <- fmt.Errorf("short file write: %d/%d", n, len(payload))
+			return
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("sink.Write: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stderrSink.Write blocked on a full terminal descriptor — the drain goroutine would deadlock the stderr pipe")
+	}
+
+	// The crash log must have received the bytes even though the TTY was full.
+	data, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "captured-stderr-line") {
+		t.Fatalf("crash log missing the captured write: %q", data)
 	}
 }
 
