@@ -175,13 +175,16 @@ func (t *TUI) resolveAppShortcut(key string) (func(), bool) {
 		}
 	}
 	// Multi-agent tab cycling (Tab/Shift+Tab + Alt+]/[ aliases): resolved
-	// conditionally so an unbound host callback never swallows the key.
-	if fn, ok := t.resolveAgentTabCycle(key); ok {
+	// conditionally so an unbound host callback never swallows the key. The
+	// macOS Option-char alias is passed so Option+[ / Option+] (which deliver
+	// the literal '“'/'‘' under the default keyboard layout) resolve to the
+	// alt+[/alt+] aliases exactly like the ESC-prefixed form.
+	if fn, ok := t.resolveAgentTabCycle(key, altKey); ok {
 		return fn, true
 	}
 	// Alt+<digit> jumps: also conditional, after the flat table so an
 	// explicit built-in binding always wins.
-	if fn, ok := t.resolveAgentTabJump(key); ok {
+	if fn, ok := t.resolveAgentTabJump(key, altKey); ok {
 		return fn, true
 	}
 	// Plugin-registered hotkeys take lowest precedence (built-ins win ties).
@@ -196,15 +199,15 @@ func (t *TUI) resolveAppShortcut(key string) (func(), bool) {
 // table because these keys are only consumed when the host actually bound a
 // handler — an unbound entry must fall through (e.g. plain Tab reaching the
 // focused editor).
-func (t *TUI) resolveAgentTabCycle(key string) (func(), bool) {
+func (t *TUI) resolveAgentTabCycle(key, altKey string) (func(), bool) {
 	switch {
 	case matchesKey(key, KeyTab) && t.OnAgentTabNext != nil:
 		return t.OnAgentTabNext, true
 	case matchesKey(key, KeyShiftTab) && t.OnAgentTabPrev != nil:
 		return t.OnAgentTabPrev, true
-	case matchesKey(key, "alt+]") && t.OnAgentTabNext != nil:
+	case (matchesKey(key, "alt+]") || matchesKey(altKey, "alt+]")) && t.OnAgentTabNext != nil:
 		return t.OnAgentTabNext, true
-	case matchesKey(key, "alt+[") && t.OnAgentTabPrev != nil:
+	case (matchesKey(key, "alt+[") || matchesKey(altKey, "alt+[")) && t.OnAgentTabPrev != nil:
 		return t.OnAgentTabPrev, true
 	}
 	return nil, false
@@ -214,11 +217,18 @@ func (t *TUI) resolveAgentTabCycle(key string) (func(), bool) {
 // jump. Kept out of the flat appShortcuts table so the jump does not need
 // nine near-identical rows; returns false when the key is not a digit jump
 // or no handler is bound.
-func (t *TUI) resolveAgentTabJump(key string) (func(), bool) {
-	if t.OnAgentTabDigit == nil || len(key) != 5 || !strings.HasPrefix(key, "alt+") {
+func (t *TUI) resolveAgentTabJump(key, altKey string) (func(), bool) {
+	// Prefer the canonical ESC-prefixed form; fall back to the macOS
+	// Option-char alias (Option+1..9 deliver '¡™£¢∞§¶•ª' under the default
+	// keyboard layout) so the digit jump works on Mac too.
+	name := key
+	if !(len(name) == 5 && strings.HasPrefix(name, "alt+")) {
+		name = altKey
+	}
+	if t.OnAgentTabDigit == nil || len(name) != 5 || !strings.HasPrefix(name, "alt+") {
 		return nil, false
 	}
-	d := key[4]
+	d := name[4]
 	if d < '1' || d > '9' {
 		return nil, false
 	}
@@ -292,7 +302,7 @@ var appShortcuts = []appShortcut{
 	// conditionally in resolveAgentTabCycle (Tab yields to a visible editor
 	// completion popup; unbound handlers must not swallow the key), and
 	// Alt+<digit> jumps in resolveAgentTabJump.
-	{keys: []string{"alt+t"}, callback: func(t *TUI) func() { return t.OnCycleThinkingLevel }},
+	{keys: []string{"alt+t"}, altAlias: "alt+t", callback: func(t *TUI) func() { return t.OnCycleThinkingLevel }},
 	{keys: []string{KeyCtrlL}, callback: func(t *TUI) func() { return t.OnChangeModel }},
 	{keys: []string{KeyCtrlT}, callback: func(t *TUI) func() { return t.OnToggleThinkingBlocks }},
 	{keys: []string{"ctrl+x"}, callback: func(t *TUI) func() { return t.OnOpenAgentTabs }},
