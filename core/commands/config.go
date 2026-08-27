@@ -417,6 +417,7 @@ func (m *configMenu) settingRetrySettings() {
 	cfg := m.ctx.Config
 	items := []tui.SelectorItem{
 		{Value: "retries", Label: "Maximum retries", Description: retrySettingsLabel(cfg)},
+		{Value: "provider_idle", Label: "Active provider stream idle timeout", Description: activeProviderIdleTimeout(cfg)},
 		{Value: "provider_delay", Label: "Active provider retry cap", Description: activeProviderRetryDelay(cfg)},
 	}
 	m.ctx.SelectOption("Retry settings:", items, "", func(selected string, ok bool) {
@@ -436,6 +437,7 @@ func (m *configMenu) settingRetrySettings() {
 func (m *configMenu) retrySettingHandlers() map[string]func(*configMenu) {
 	return map[string]func(*configMenu){
 		"retries":        (*configMenu).promptMaxRetries,
+		"provider_idle":  (*configMenu).promptProviderIdleTimeout,
 		"provider_delay": (*configMenu).promptProviderRetryDelay,
 	}
 }
@@ -452,7 +454,32 @@ func (m *configMenu) promptMaxRetries() {
 	})
 }
 
-// promptProviderRetryDelay asks for the active provider's max_retry_delay
+// promptProviderIdleTimeout asks for the active provider's stream idle timeout.
+func (m *configMenu) promptProviderIdleTimeout() {
+	cfg := m.ctx.Config
+	if cfg.ActiveProvider == "" {
+		m.flash("Select an active provider first.")
+		m.settingRetrySettings()
+		return
+	}
+	m.current = m.settingRetrySettings
+	m.ctx.ShowInput("Provider stream idle timeout (duration):", activeProviderIdleTimeout(cfg), func(v string, accepted bool) {
+		if accepted && v != "" {
+			m.applySet("providers."+cfg.ActiveProvider+".idle_timeout", v)
+		}
+		m.settingRetrySettings()
+	})
+}
+
+func activeProviderIdleTimeout(cfg *config.Config) string {
+	for _, p := range cfg.Providers {
+		if p.ID == cfg.ActiveProvider && p.IdleTimeout != "" {
+			return p.IdleTimeout
+		}
+	}
+	return "2m (default)"
+}
+
 // value, then returns to the retry-settings menu.
 func (m *configMenu) promptProviderRetryDelay() {
 	cfg := m.ctx.Config

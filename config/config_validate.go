@@ -143,11 +143,18 @@ func (c *Config) validateActiveProvider(ve *internal.ValidationError) {
 }
 
 func (c *Config) validateTimeout(ve *internal.ValidationError) {
-	if c.Execution.ActivityTimeout == "" {
-		return
+	if c.Execution.ActivityTimeout != "" {
+		if _, err := time.ParseDuration(c.Execution.ActivityTimeout); err != nil {
+			ve.Add(fmt.Sprintf("execution.activity_timeout: cannot parse %q as duration: %v", c.Execution.ActivityTimeout, err))
+		}
 	}
-	if _, err := time.ParseDuration(c.Execution.ActivityTimeout); err != nil {
-		ve.Add(fmt.Sprintf("execution.activity_timeout: cannot parse %q as duration: %v", c.Execution.ActivityTimeout, err))
+	for _, p := range c.Providers {
+		if p.IdleTimeout == "" {
+			continue
+		}
+		if _, err := time.ParseDuration(p.IdleTimeout); err != nil {
+			ve.Add(fmt.Sprintf("providers.%s.idle_timeout: cannot parse %q as duration: %v", p.ID, p.IdleTimeout, err))
+		}
 	}
 }
 

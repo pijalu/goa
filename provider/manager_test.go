@@ -341,6 +341,7 @@ func buildAllFieldsConfig(temp float64) *config.Config {
 				Endpoint:       "https://api.openai.com/v1",
 				APIKey:         "key",
 				Timeout:        "30s",
+				IdleTimeout:    "7m",
 				MaxRetries:     3,
 				MaxRetryDelay:  "2s",
 				Transport:      "sse",
@@ -372,6 +373,9 @@ func assertStreamProviderFields(t *testing.T, opts agenticprovider.StreamOptions
 	}
 	if opts.Timeout != 30*time.Second {
 		t.Errorf("Timeout = %v, want 30s", opts.Timeout)
+	}
+	if opts.IdleTimeout != 7*time.Minute {
+		t.Errorf("IdleTimeout = %v, want 7m", opts.IdleTimeout)
 	}
 	if opts.MaxRetries != 3 {
 		t.Errorf("MaxRetries = %d, want 3", opts.MaxRetries)

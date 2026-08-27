@@ -77,6 +77,12 @@ func TestRetryConfigSetters(t *testing.T) {
 	if cfg.Providers[0].MaxRetryDelay != "5m" {
 		t.Fatalf("max retry delay = %q, want 5m", cfg.Providers[0].MaxRetryDelay)
 	}
+	if err := setConfigField(cfg, []string{"providers", "local", "idle_timeout"}, "10m"); err != nil {
+		t.Fatalf("set provider idle_timeout: %v", err)
+	}
+	if cfg.Providers[0].IdleTimeout != "10m" {
+		t.Fatalf("idle timeout = %q, want 10m", cfg.Providers[0].IdleTimeout)
+	}
 	if err := setConfigField(cfg, []string{"providers", "local", "retry_policy", "max_retries"}, "7"); err != nil {
 		t.Fatalf("set provider max retries: %v", err)
 	}

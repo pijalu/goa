@@ -55,6 +55,27 @@ func TestBuildCompressionConfig_PerModelCeilingSurvivesGlobalDisable(t *testing.
 	}
 }
 
+// TestBuildCompressionConfig_UsesConfigIDForAPINameMismatch ensures the
+// per-model override survives when the stable config ID differs from the wire
+// model name sent by the provider.
+func TestBuildCompressionConfig_UsesConfigIDForAPINameMismatch(t *testing.T) {
+	cfg := &config.Config{
+		Models: []config.ModelConfig{{ID: "glm-5-3-flash", Model: "glm-5.3-flash"}},
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:    ccBool(true),
+			Thresholds: config.CompressionThresholdsConfig{HardPercent: 95},
+			PerModel: map[string]config.ModelCompressionOverride{
+				"glm-5-3-flash": {Thresholds: config.CompressionThresholdsConfig{HardPercent: 20}},
+			},
+		},
+	}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+	cc := am.buildCompressionConfig(cfg, "glm-5.3-flash", 1_000_000)
+	if cc.Thresholds.HardPercent != 20 {
+		t.Fatalf("HardPercent = %d, want 20 for config ID override", cc.Thresholds.HardPercent)
+	}
+}
+
 // TestBuildCompressionConfig_PerModelExplicitOptOut: per-model enabled:false
 // takes that model fully off even under a globally enabled compression.
 func TestBuildCompressionConfig_PerModelExplicitOptOut(t *testing.T) {

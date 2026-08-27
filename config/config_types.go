@@ -173,15 +173,18 @@ type RetryPolicyConfig struct {
 // ProviderConfig configures a single LLM provider (endpoint + auth).
 // Model selection is handled separately via ModelConfig.
 type ProviderConfig struct {
-	ID         string            `yaml:"id"`
-	Name       string            `yaml:"name"`
-	Endpoint   string            `yaml:"endpoint"`
-	APIKey     string            `yaml:"api_key"`
-	Timeout    string            `yaml:"timeout"`
-	MaxRetries int               `yaml:"max_retries"`
-	Headers    map[string]string `yaml:"headers"`
-	UserAgent  string            `yaml:"user_agent"`
-	Preferred  bool              `yaml:"preferred"`
+	ID       string `yaml:"id"`
+	Name     string `yaml:"name"`
+	Endpoint string `yaml:"endpoint"`
+	APIKey   string `yaml:"api_key"`
+	Timeout  string `yaml:"timeout"`
+	// IdleTimeout bounds the maximum gap between meaningful stream events.
+	// Increase it for local models that can take longer than two minutes between tokens.
+	IdleTimeout string            `yaml:"idle_timeout,omitempty"`
+	MaxRetries  int               `yaml:"max_retries"`
+	Headers     map[string]string `yaml:"headers"`
+	UserAgent   string            `yaml:"user_agent"`
+	Preferred   bool              `yaml:"preferred"`
 	// Deprecated: use ModelConfig instead. Kept during refactor.
 	DefaultModel string `yaml:"default_model,omitempty"`
 

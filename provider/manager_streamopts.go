@@ -141,6 +141,9 @@ func applyProviderTimeoutRetries(opts *agenticprovider.StreamOptions, pCfg *conf
 	if d := parsePositiveDuration(pCfg.Timeout); d > 0 {
 		opts.Timeout = d
 	}
+	if d := parsePositiveDuration(pCfg.IdleTimeout); d > 0 {
+		opts.IdleTimeout = d
+	}
 	if pCfg.MaxRetries > 0 {
 		opts.MaxRetries = pCfg.MaxRetries
 	}

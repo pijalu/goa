@@ -541,7 +541,7 @@ func parseProviderRetryKey(path []string) (providerID, field string, ok bool) {
 	}
 	field = strings.Join(path[2:], ".")
 	switch field {
-	case "max_retry_delay", "retry_policy.max_retries", "retry_policy.backoff.max_ms":
+	case "idle_timeout", "max_retry_delay", "retry_policy.max_retries", "retry_policy.backoff.max_ms":
 		return path[1], field, true
 	default:
 		return "", "", false
@@ -559,6 +559,11 @@ func setProviderRetryField(cfg *config.Config, providerID, field, value string) 
 
 func setProviderRetryValue(p *config.ProviderConfig, field, value string) error {
 	switch field {
+	case "idle_timeout":
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("idle_timeout must be a duration: %w", err)
+		}
+		p.IdleTimeout = value
 	case "max_retry_delay":
 		if _, err := time.ParseDuration(value); err != nil {
 			return fmt.Errorf("max_retry_delay must be a duration: %w", err)

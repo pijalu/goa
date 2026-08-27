@@ -359,7 +359,12 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 	// e.g., for local models whose loaded context is smaller than the default).
 	// Auto-deriving a hard MaxTokens from the initial model window would make
 	// the value stale and hide the real capacity in the UI.
-	ov := overlayCompressionForModel(cfg.ContextCompression, modelID)
+	// provider.Model.ID is the wire/API model name. Per-model compression
+	// overrides, however, are keyed by the stable config model ID; resolve that
+	// key before applying the overlay so an ID/API-name mismatch cannot lose the
+	// configured ceiling.
+	modelKey := compressionModelConfigID(cfg, modelID)
+	ov := overlayCompressionForModel(cfg.ContextCompression, modelKey)
 
 	thresholds := am.resolveAgenticThresholds(cfg, ov.thresholds, ov.legacyTrigger)
 	// Honor the enable toggle PER MODEL: the global `enabled: false` disables
@@ -369,7 +374,7 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 	// An explicit per-model enabled:false force-disables the model. The
 	// reactive safety net (on_context_error / on_error_strategy) is always
 	// carried through below, independent of this toggle.
-	if !cfg.ContextCompression.CompressionEnabledForModel(modelID) {
+	if !cfg.ContextCompression.CompressionEnabledForModel(modelKey) {
 		thresholds = agentic.CompressionThresholds{}
 	}
 
@@ -459,6 +464,29 @@ type compressionOverlay struct {
 	strategies          config.CompressionLayerStrategiesConfig
 	cacheGate           string
 	legacyTrigger       int
+}
+
+// compressionModelConfigID maps the runtime/API model name back to the stable
+// config ID used by context_compression.per_model. If no configured model
+// matches, the runtime value is already the best available key.
+func compressionModelConfigID(cfg *config.Config, modelName string) string {
+	if cfg == nil || modelName == "" {
+		return modelName
+	}
+	// A caller may still provide the stable ID directly; preserve that exact
+	// key before searching API names (which can be shared by multiple entries).
+	for i := range cfg.Models {
+		if cfg.Models[i].ID == modelName {
+			return modelName
+		}
+	}
+	for i := range cfg.Models {
+		m := cfg.Models[i]
+		if m.Model == modelName && m.ID != "" {
+			return m.ID
+		}
+	}
+	return modelName
 }
 
 // overlayCompressionForModel resolves the per-model overlay: start from the
