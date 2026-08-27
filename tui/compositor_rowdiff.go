@@ -12,13 +12,31 @@ import (
 
 // prevRowTranscript returns the previous-frame canvas row the terminal
 // currently shows at transcript canvas index i (viewport top vt), plus whether
-// such a baseline exists. The mapping is screen-relative: i - vt is the
-// on-screen row, which held c.prevLines[i - vt + c.vt] in the previous frame.
+// such a baseline exists.
+//
+// The mapping depends on whether this frame scrolled:
+//
+//   - Scrolled (lastScrollCount > 0): advanceScrollback already pushed the top
+//     rows into scrollback, so screen row r now PHYSICALLY holds
+//     prevLines[vt + r - 1] — the same canvas index the repaint is about to
+//     draw (i = vt + r - 1). The baseline is therefore prevLines[i] itself.
+//   - No scroll: the screen still shows the previous window anchored at c.vt,
+//     so screen row r holds prevLines[c.vt + r - 1] = prevLines[i - vt + c.vt]
+//     (screen-position mapping; the transient-shrink dip regime).
+//
+// Using the screen-position mapping after a scroll diffs against a baseline
+// off by exactly the scroll count: partial splices then keep prefix/suffix
+// cells of whatever row physically sits there (the /quota + /skill corruption:
+// "──┌────", "› /sID │ Title" — popup cells spliced into table rows) and the
+// unchanged-row skip leaves whole stale rows behind.
 func (c *Compositor) prevRowTranscript(i, vt int) (string, bool) {
 	if c.prevLines == nil {
 		return "", false
 	}
-	prevIdx := i - vt + c.vt
+	prevIdx := i
+	if c.lastScrollCount == 0 {
+		prevIdx = i - vt + c.vt
+	}
 	if prevIdx < 0 || prevIdx >= len(c.prevLines) {
 		return "", false
 	}
