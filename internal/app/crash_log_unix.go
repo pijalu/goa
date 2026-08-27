@@ -61,19 +61,28 @@ func teeStderr(f *os.File, ownsScreen func() bool) func() {
 	// TTY echo is best-effort). A stalled/asleep terminal can therefore never
 	// backpressure the pipe.
 	savedFile := os.NewFile(uintptr(saved), "original-stderr")
-	_ = unix.SetNonblock(saved, true)
+	// The terminal echo must be non-blocking so a stalled/asleep terminal can
+	// never backpressure the sole drain goroutine (see below). But O_NONBLOCK
+	// is a flag on the OPEN FILE DESCRIPTION, not the descriptor — and in a
+	// real terminal session the shell dup2s the PTY slave onto fds 0, 1 AND 2,
+	// so `saved` (a dup of fd 2) SHARES one open file description with stdout
+	// (fd 1). Calling SetNonblock(saved, true) therefore silently flipped
+	// stdout to non-blocking: every multi-KB TUI frame write via os.Stdout.Write
+	// then short-wrote or failed with EAGAIN (Go treats a char device as a
+	// blocking fd, so EAGAIN surfaces as a plain error the render loop drops),
+	// and the screen showed only the first couple of mascot/logo lines before
+	// the render collapsed. To get a non-blocking descriptor WITHOUT poisoning
+	// the shared stdout OFD, open a FRESH file description for the controlling
+	// terminal. Fall back to the saved fd only when no fresh tty is available.
+	ttyFd := echoFd(saved)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(&stderrSink{ttyFd: saved, file: f, ownsScreen: ownsScreen}, r)
+		_, _ = io.Copy(&stderrSink{ttyFd: ttyFd, file: f, ownsScreen: ownsScreen}, r)
 	}()
 
 	return func() {
-		// Restore the saved descriptor's blocking mode before handing it back
-		// to fd 2 (we set it non-blocking for the lossy forward); the process's
-		// post-tee stderr must behave exactly as it did before setup.
-		_ = unix.SetNonblock(saved, false)
 		// Restore fd 2 first so later writes bypass the pipe entirely. The
 		// dup2 drops fd 2's reference to the pipe write end.
 		_ = unix.Dup2(saved, unix.Stderr)
@@ -82,18 +91,62 @@ func teeStderr(f *os.File, ownsScreen func() bool) func() {
 		_ = w.Close()
 		wg.Wait()
 		_ = r.Close()
+		if ttyFd >= 0 && ttyFd != saved {
+			_ = unix.Close(ttyFd)
+		}
 		_ = savedFile.Close()
 		_ = f.Close()
 	}
 }
 
+// echoFd picks the descriptor the drain echoes captured stderr to.
+//
+// When saved stderr is a TERMINAL (the normal interactive case — and the only
+// case that can stall the drain), it returns a FRESH, non-blocking open file
+// description of the controlling terminal (/dev/tty). A new open() gets its
+// own file-status flags, so O_NONBLOCK here cannot leak onto the shared
+// stdout/stderr OFD the way SetNonblock on a dup of fd 2 did. If /dev/tty is
+// unavailable it returns -1 (echo disabled; the crash log still gets every
+// byte) rather than risking a blocking write to a stalled terminal.
+//
+// When saved stderr is NOT a terminal (a redirected file or pipe), it returns
+// the saved descriptor unchanged: a file or pipe cannot produce the
+// stalled-TTY backpressure the non-blocking path guards against, and the echo
+// must go to the actual redirect target, not the (possibly unrelated)
+// controlling terminal. The saved fd's blocking mode is left untouched.
+func echoFd(saved int) int {
+	if !isTty(saved) {
+		return saved
+	}
+	return openControllingTty()
+}
+
+// isTty reports whether fd refers to a terminal (a character device that
+// answers the TIOCGETA termios ioctl).
+func isTty(fd int) bool {
+	_, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
+	return err == nil
+}
+
+// openControllingTty opens a FRESH, non-blocking write descriptor for the
+// controlling terminal (/dev/tty), or -1 if there is none. See echoFd.
+func openControllingTty() int {
+	fd, err := unix.Open("/dev/tty", unix.O_WRONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1
+	}
+	return fd
+}
+
 // stderrSink is the tee's drain destination: the crash log always receives
 // every captured byte; the original terminal receives them only while no
 // full-screen TUI owns it (nil ownsScreen = never owns = always forward).
-// ttyFd is the raw saved-stderr descriptor (non-blocking); it is written with
-// unix.Write directly — NOT via os.File — so a full terminal returns EAGAIN
-// immediately instead of parking on Go's netpoller (os.File.Write on a
-// poller-managed fd would block, defeating the non-blocking guarantee).
+// ttyFd is a dedicated non-blocking descriptor for the terminal echo — a
+// FRESH open file description of /dev/tty (see openControllingTty), never a
+// dup of the shared stdout/stderr OFD. It is written with unix.Write directly
+// — NOT via os.File — so a full terminal returns EAGAIN immediately instead
+// of parking on Go's netpoller (os.File.Write on a poller-managed fd would
+// block, defeating the non-blocking guarantee).
 type stderrSink struct {
 	ttyFd      int
 	file       *os.File
@@ -109,10 +162,11 @@ type stderrSink struct {
 // block: if it did, the stderr pipe would fill and freeze every fd-2 writer.
 func (s *stderrSink) Write(p []byte) (int, error) {
 	n, err := s.file.Write(p)
-	if s.ownsScreen == nil || !s.ownsScreen() {
-		// Best-effort echo to the terminal. The fd is non-blocking, so this
-		// returns promptly even when the terminal is stalled; on a partial
-		// write or would-block (EAGAIN) we simply drop the rest.
+	if s.ttyFd >= 0 && (s.ownsScreen == nil || !s.ownsScreen()) {
+		// Best-effort echo to the terminal. A tty descriptor is non-blocking,
+		// so this returns promptly even when the terminal is stalled; on a
+		// partial write or would-block (EAGAIN) we simply drop the rest. A
+		// negative ttyFd means no echo target (no controlling terminal).
 		_, _ = unix.Write(s.ttyFd, p)
 	}
 	return n, err
