@@ -122,9 +122,12 @@ func echoFd(saved int) int {
 }
 
 // isTty reports whether fd refers to a terminal (a character device that
-// answers the TIOCGETA termios ioctl).
+// answers the platform's termios-read ioctl — getTermiosReq, TIOCGETA on
+// BSD/Darwin and TCGETS on Linux). The request constant is platform-specific
+// because the two ioctl numbers differ and x/sys/unix only defines each on
+// the family that supports it.
 func isTty(fd int) bool {
-	_, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
+	_, err := unix.IoctlGetTermios(fd, getTermiosReq)
 	return err == nil
 }
 

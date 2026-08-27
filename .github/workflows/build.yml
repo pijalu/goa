@@ -33,6 +33,21 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # go vet compiles for the HOST GOOS only (ubuntu = linux), so a
+      # constant/API that exists on Linux but not on another target — e.g.
+      # the reverse of the unix.TIOCGETA-vs-TCGETS split in
+      # internal/app/crash_log_unix.go — would pass here and break on
+      # another platform. Vet every GOOS the project ships to catch
+      # platform-specific compile errors package-wide before push. The build
+      # matrix below compiles only ./cmd/goa/ and runs after quality, so it
+      # is neither broad enough nor early enough to substitute for this.
+      - name: Vet (cross-platform)
+        run: |
+          for goos in linux darwin windows; do
+            echo "=== go vet GOOS=$goos ==="
+            GOOS=$goos GOARCH=amd64 go vet ./...
+          done
+
       - name: Lint (complexity)
         run: |
           go install github.com/uudashr/gocognit/cmd/gocognit@latest
