@@ -179,6 +179,14 @@ var configSavePaths = map[string][]string{
 	"thinking_level": {"thinking_levels", "main_agent"},
 }
 
+// projectScopedConfigKeys lists config keys that must be persisted to the
+// project layer (.goa/config.yaml) instead of the home layer
+// (~/.goa/config.yaml). These are tool/execution toggles that are typically
+// project-specific and are expected to be committed alongside the repo.
+var projectScopedConfigKeys = map[string]bool{
+	"execution.auto_heal_tool_calls": true,
+}
+
 // modeDefaultsPath returns the YAML path for persisting the autonomy level of
 // the current major mode. This makes /config:set execution.mode yolo survive a
 // restart even when the previous session had a non-yolo default.
@@ -354,7 +362,14 @@ func persistConfigValue(ctx core.Context, key string, path []string, value strin
 		}
 		return nil
 	}
-	if err := ctx.ConfigSaver.SaveHomeField(savePath, scalarValue(value)); err != nil {
+	// Project-scoped keys (e.g. execution.auto_heal_tool_calls) must survive
+	// restarts even when the project config already pins the key: writing to
+	// the home layer would be shadowed by the project file on next load.
+	if projectScopedConfigKeys[key] {
+		if err := ctx.ConfigSaver.SaveProjectField(savePath, scalarValue(value)); err != nil {
+			return fmt.Errorf("set %s = %s (in memory, but failed to persist to project config: %v)", key, value, err)
+		}
+	} else if err := ctx.ConfigSaver.SaveHomeField(savePath, scalarValue(value)); err != nil {
 		return fmt.Errorf("set %s = %s (in memory, but failed to persist: %v)", key, value, err)
 	}
 	// Setting the tiered trigger_percent clears the deprecated legacy
