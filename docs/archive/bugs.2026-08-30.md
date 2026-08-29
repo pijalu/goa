@@ -31,6 +31,37 @@ and the open "# To fix" list from this date on).
 
 **Implemented (2026-08-30).** Exactly the plan above; `needsChatCompletionsSuffix`/`setModelBaseURL` deleted (single-use helpers folded into `modelEndpointURL`). Validation: RED first (all five new/updated test groups failed with the reported shapes — including `gpt-4o` resolving `openai-responses` onto a `/chat/completions` URL); GREEN after. An unconditional registry-wins first draft was correctly rejected by the pre-existing `TestResolveActiveModel_KnownModelViaLocalProvider`/`PrefixedKnownModel` guards (gemma on LM Studio must stay completions) — which produced the provider-match rule. Gates: `go vet ./...` clean; `go test -count=1 -race -timeout 900s ./...` PASS (0 FAILs); gocognit `-over 15` / gocyclo `-over 12` on touched files zero findings; gofmt clean.
 
+## BUG: muse-spark via OpenCode 400s on every turn — Responses requests pair `include:["reasoning.encrypted_content"]` with `previous_response_id`, which the muse upstream rejects — muse does not support encrypted reasoning (2026-08-29)
+
+**Observed:** after eecf2f5 (muse-spark → `api: openai-responses` pin), switching to `muse-spark-1-2-contributor` (provider "Console Go") and sending any message fails with a non-retryable 400:
+
+```
+Error: 400 - Error from provider (Console Go): Upstream request failed:
+[invalid_request_error] reasoning.encrypted_content cannot be used with previous_response_id
+{"param":"include","type":"invalid_request_error","message":"Error from provider (Console Go): ..."}
+```
+
+Session export: `.goa/exports/goa-export-20260829-202918.zip`. Every turn fails (session IDs are always set, so every request chains).
+
+**Constraint:** muse on opencode REQUIRES the OpenAI Responses surface — the eecf2f5 `api: openai-responses` pin is correct and must NOT be reverted to chat-completions. The fix is in the Responses REQUEST SHAPE.
+
+**Root cause (include requested where it is both useless and forbidden):** `protocol/openai_responses.go` `applyResponsesSamplingFields` unconditionally sends `include:["reasoning.encrypted_content"]` for any reasoning model, while `applyResponsesSessionFields` chains plain/Azure Responses via `previous_response_id = opts.SessionID`. Encrypted reasoning content exists so a STATELESS client (store:false, full-history replay) can carry reasoning items itself; a `previous_response_id`-chained request keeps the reasoning server-side, so the include is redundant at best — and strict upstreams (muse via the OpenCode gateways) reject the combination with HTTP 400. Goa never replays reasoning items in Responses input anyway (`convertResponsesAssistant` emits only message/function_call items), so nothing on this path consumes the encrypted content. Note: muse (openai-responses + opencode-go) resolves to `DefaultProfile` (`opencode-go.json` matches `api: openai-completions` only) → `supports_store:false` → `store:false` rides along; the upstream tolerated `store`, only `include` was flagged.
+
+**Requirement:** chained Responses requests must not request `reasoning.encrypted_content`; stateless requests (no chaining) keep it (Codex parity pins must stay green — the Codex flavor never chains). A per-model escape hatch must exist for backends that reject encrypted content outright (e.g. session-less sub-agent requests): tri-state compat flag, nil = standard behavior, explicit false = never send the include.
+
+**Fix plan:**
+- `protocol/openai_responses.go`: thread `isCodex` into `applyResponsesSamplingFields`; gate the include behind a `responsesWantsEncryptedContent(opts, profile, isCodex)` helper — explicit `Compat.SupportsEncryptedContent == false` wins (hard off), otherwise send only when stateless (`isCodex || opts.SessionID == ""`). `text`/`reasoning` blocks unchanged.
+- `schema/variant.go`: add `CompatFlags.SupportsEncryptedContent *bool` (tri-state doc mirroring `SupportsTemperature`); `resolver.go` `mergeCompat`: `setIfNotNil`.
+
+**Required tests/UT coverage (red before the fix):**
+- Plain Responses + reasoning model + SessionID → body has `previous_response_id`/`text`/`reasoning` but NO `include` (today: 400-shaped body — RED).
+- Plain Responses + reasoning model, no SessionID → `include` present (existing gpt-5 pin stays green).
+- Azure Responses chained → same omission as plain; Codex flavor + SessionID → `include` PRESENT, no `previous_response_id` (parity).
+- Explicit `SupportsEncryptedContent:false` → `include` absent even stateless; explicit `true` → `include` present even chained (full tri-state control).
+- `MergeProfiles` carries `SupportsEncryptedContent` override (schema_test).
+- Muse-shaped wire regression: `{ID: muse-spark-1.2-contributor, Provider: opencode-go, Api: openai-responses, Reasoning: true}` + SessionID → no `include` key (the exact reported failure).
+
+**Implemented (2026-08-29).** Exactly the plan above. `protocol/openai_responses.go`: `applyResponsesSamplingFields` takes `isCodex` and gates the include behind the new `responsesWantsEncryptedContent` (explicit flag wins both directions; default = stateless only: `isCodex || opts.SessionID == ""`). `schema/variant.go`: `CompatFlags.SupportsEncryptedContent *bool` (tri-state, JSON `supports_encrypted_content`); `schema/resolver.go` `mergeCompat` carries it via `setIfNotNil`. The `muse-spark-` `api: openai-responses` overrides are untouched. Tests written RED first (`protocol/openai_responses_encrypted_test.go`, `schema/schema_test.go` `TestMergeProfiles_SupportsEncryptedContent`): the RED muse-shaped body reproduced the exact failing wire shape (`previous_response_id` + `include` + `store:false`); GREEN after. Existing pins kept green: stateless gpt-5 include, `TestOpenAIResponsesPromptCacheKey`, codex body pins (`openai_responses` WS/SSE suites). Validation: `go vet ./...` clean; `staticcheck ./...` clean; `gocognit -over 15` clean; `gocyclo -over 12` only the pre-existing unrelated `TestRetryConfigSetters` warning; `go test -count=1 -race -cover -timeout 240s ./...` PASS (87 packages ok, 0 FAILs).
 
 ## BUG: loop auto-resume toggle is not saved across sessions — plain-bool merge lets a higher cascade layer that OMITS the key clobber a lower layer's `true` (2026-08-29)
 

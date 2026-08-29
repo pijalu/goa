@@ -252,6 +252,7 @@ func mergeThinkingBudgets(d *Defaults, o Defaults) {
 
 func mergeCompat(c *CompatFlags, o CompatFlags) {
 	setIfNotNil(&c.SupportsStore, o.SupportsStore)
+	setIfNotNil(&c.SupportsEncryptedContent, o.SupportsEncryptedContent)
 	setIfNonEmpty(&c.MaxTokensField, o.MaxTokensField)
 	setIfNonEmpty(&c.ThinkingFormat, o.ThinkingFormat)
 	setIfNonEmpty(&c.ReasoningKey, o.ReasoningKey)

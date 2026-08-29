@@ -227,6 +227,26 @@ func TestMergeProfiles(t *testing.T) {
 	assert.Equal(t, "Authorization", merged.Auth.Header)
 }
 
+// TestMergeProfiles_SupportsEncryptedContent pins the tri-state carry of the
+// encrypted-reasoning escape hatch: an override that states the flag wins, an
+// override that omits it inherits the base.
+func TestMergeProfiles_SupportsEncryptedContent(t *testing.T) {
+	base := VariantProfile{
+		ID:     "base",
+		Compat: CompatFlags{SupportsEncryptedContent: ptr(true)},
+	}
+
+	overrideOff := VariantProfile{Compat: CompatFlags{SupportsEncryptedContent: ptr(false)}}
+	merged := MergeProfiles(base, overrideOff)
+	require.NotNil(t, merged.Compat.SupportsEncryptedContent)
+	assert.False(t, *merged.Compat.SupportsEncryptedContent, "explicit override must win")
+
+	overrideEmpty := VariantProfile{ID: "empty"}
+	merged = MergeProfiles(base, overrideEmpty)
+	require.NotNil(t, merged.Compat.SupportsEncryptedContent)
+	assert.True(t, *merged.Compat.SupportsEncryptedContent, "unstated override must inherit the base")
+}
+
 func TestLoadUserProfiles(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

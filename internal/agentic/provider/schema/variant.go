@@ -58,6 +58,14 @@ type CompatFlags struct {
 	// omitting the field lets the endpoint apply its own default instead of
 	// erroring the whole turn. Nil means supported (standard behavior).
 	SupportsTemperature *bool `json:"supports_temperature,omitempty"`
+	// SupportsEncryptedContent, when explicitly false, never sends the
+	// include:["reasoning.encrypted_content"] request on the Responses APIs.
+	// Some backends (e.g. muse-spark behind the OpenCode gateways) do not
+	// support encrypted reasoning replay and reject it with HTTP 400. Nil
+	// means standard behavior: the include rides only on stateless requests —
+	// a previous_response_id-chained request keeps the reasoning server-side,
+	// making the include redundant there (and forbidden on strict upstreams).
+	SupportsEncryptedContent *bool `json:"supports_encrypted_content,omitempty"`
 	// RemoteCompaction is the provider/model-scoped server-side compaction
 	// capability: "" / "none" (default) = not supported, "v1" or "v2" = the
 	// endpoint understands /responses/compact. This is opt-in detection only

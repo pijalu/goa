@@ -98,7 +98,7 @@ func buildResponsesBody(model schema.Model, ctx schema.Context, opts schema.Stre
 	}
 	applyResponsesToolFields(body, ctx)
 	applyResponsesSessionFields(body, model, opts, isCodex)
-	applyResponsesSamplingFields(body, model, opts, profile)
+	applyResponsesSamplingFields(body, model, opts, profile, isCodex)
 	if store := profile.Compat.SupportsStore; store != nil {
 		body["store"] = *store
 	}
@@ -158,7 +158,7 @@ func applyResponsesSessionFields(body map[string]any, model schema.Model, opts s
 
 // applyResponsesSamplingFields wires token/temperature/top_p and the reasoning
 // (thinking) block request fields.
-func applyResponsesSamplingFields(body map[string]any, model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile) {
+func applyResponsesSamplingFields(body map[string]any, model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile, isCodex bool) {
 	if opts.MaxTokens > 0 {
 		body["max_output_tokens"] = opts.MaxTokens
 	}
@@ -169,10 +169,30 @@ func applyResponsesSamplingFields(body map[string]any, model schema.Model, opts 
 		body["top_p"] = *opts.TopP
 	}
 	if model.Reasoning || profile.Compat.ThinkingFormat != "" {
-		body["include"] = []string{"reasoning.encrypted_content"}
+		if responsesWantsEncryptedContent(opts, profile, isCodex) {
+			body["include"] = []string{"reasoning.encrypted_content"}
+		}
 		body["text"] = map[string]any{"verbosity": "low"}
 		body["reasoning"] = map[string]any{"summary": "auto"}
 	}
+}
+
+// responsesWantsEncryptedContent decides whether the request asks for
+// reasoning.encrypted_content. Encrypted reasoning content exists so a
+// STATELESS client replaying its full history can carry reasoning items
+// itself; a previous_response_id-chained request keeps the reasoning
+// server-side, so the include is redundant there — and a hard HTTP 400 on
+// strict upstreams (muse-spark via the OpenCode gateways rejects the pair,
+// bugs.md 2026-08-29). The Codex flavor never chains (prompt_cache_key-only
+// affinity), so it keeps the include its request shape pins. An explicit
+// CompatFlags.SupportsEncryptedContent overrides the default rule in both
+// directions (escape hatch for backends that reject encrypted content
+// outright, e.g. session-less sub-agent requests).
+func responsesWantsEncryptedContent(opts schema.StreamOptions, profile schema.VariantProfile, isCodex bool) bool {
+	if profile.Compat.SupportsEncryptedContent != nil {
+		return *profile.Compat.SupportsEncryptedContent
+	}
+	return isCodex || opts.SessionID == ""
 }
 
 // shouldSendOpenAIResponsesPromptCacheKey mirrors Pi's behavior: Azure and Codex

@@ -28,4 +28,23 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-(empty — no open items; completed entries live in docs/archive/)
+## BUG: CI/CD failure — plugins `TestQuota_ZaiEndpointWithPathStillHitsMonitorHost` fails: CN endpoint with path renders an empty quota segment; monitor-host fallback not applied (2026-08-29)
+
+**Observed:** full-gate run (`go test -count=1 -race -cover ./...`) fails in `github.com/pijalu/goa/plugins`:
+
+```
+--- FAIL: TestQuota_ZaiEndpointWithPathStillHitsMonitorHost (0.22s)
+    --- FAIL: TestQuota_ZaiEndpointWithPathStillHitsMonitorHost/CN_endpoint_with_path (0.07s)
+        quota_zai_test.go:59: segment should show quota via the monitor host open.bigmodel.cn: ""
+coverage: 82.1% of statements
+FAIL    github.com/pijalu/goa/plugins  12.296s
+```
+
+The same CI log carries `Warning: duplicate plugin id dup ... skipping stale copy` from `TestPluginLoader_DuplicateIDLoadsOnce` — expected warning output of a passing test, unrelated noise; the failing test is the zai quota one.
+
+**Expected:** a z.ai endpoint configured with a URL path (CN endpoint with path) must still resolve quota monitoring to the bare monitor host `open.bigmodel.cn`, and the quota segment must render the fetched quota data.
+
+**Fix plan:**
+- Reproduce locally: `go test ./plugins -run TestQuota_ZaiEndpointWithPathStillHitsMonitorHost -count=1` (RED).
+- Localize the endpoint→monitor-host normalization for endpoints-with-path in the zai quota path; smallest fix; keep the table-driven cases.
+- Validation: the five gates (guideline §6, each run separately).
