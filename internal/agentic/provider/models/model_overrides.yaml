@@ -759,3 +759,14 @@ models:
       cache_read: 2.8e-06
       cache_write: 0.0
     input_types: [text]
+  # Muse Spark is served by OpenCode through the OpenAI Responses API
+  # ({base}/responses, npm @ai-sdk/openai), NOT the chat-completions surface
+  # the opencode provider entries declare (bugs.md 2026-08-30). Prefix ID so
+  # every family member is covered (muse-spark-1.2, -contributor-free,
+  # -contributor); all other fields inherit from the models.dev entry.
+  - id: "muse-spark-"
+    provider: opencode
+    api: openai-responses
+  - id: "muse-spark-"
+    provider: opencode-go
+    api: openai-responses

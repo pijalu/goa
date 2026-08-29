@@ -148,20 +148,28 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 		return agenticprovider.Model{}, fmt.Errorf("no provider configured")
 	}
 
-	resolveURL := func(api agenticprovider.Api, endpoint string) string {
-		if endpoint == "" {
-			return ""
-		}
-		if needsChatCompletionsSuffix(api) {
-			return ChatCompletionsEndpoint(endpoint)
-		}
-		return endpoint
-	}
+	resolveURL := modelEndpointURL
 
-	if m := models.GetModel(modelName); m != nil {
+	prov, api := inferProviderIdentity(*pCfg)
+	// Provider-exact first: identical model IDs exist under multiple providers
+	// (e.g. muse-spark-1.2 on opencode AND llmgateway) and only the
+	// provider-exact entry carries this deployment's metadata — the global ID
+	// index is first-wins and may belong to an aggregator.
+	m := models.GetModelForProvider(prov, modelName)
+	if m == nil {
+		m = models.GetModel(modelName)
+	}
+	if m != nil {
 		mdl := *m
 		mdl.ID = modelName
 		mdl.Name = modelName
+		// Same provider-match rule as the main resolve path (mergeRegistryModel):
+		// a catalog entry borrowed from a different provider (Google's gemma
+		// entry resolved on LM Studio) keeps the serving provider's wire API;
+		// a per-model catalog pin applies only on its home provider.
+		if mdl.Provider != "" && mdl.Provider != prov {
+			mdl.Api = api
+		}
 		if pCfg.Endpoint != "" {
 			mdl.BaseURL = resolveURL(mdl.Api, pCfg.Endpoint)
 		}
@@ -173,7 +181,6 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 		mdl := *m
 		mdl.ID = modelName
 		mdl.Name = modelName
-		prov, api := inferProviderIdentity(*pCfg)
 		if mdl.Provider == "" {
 			mdl.Provider = prov
 		}
@@ -186,7 +193,6 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 		return mdl, nil
 	}
 
-	prov, api := inferProviderIdentity(*pCfg)
 	return agenticprovider.Model{
 		ID:         modelName,
 		Name:       modelName,

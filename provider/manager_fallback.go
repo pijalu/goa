@@ -52,10 +52,19 @@ func mergeRegistryModel(m agenticprovider.Model, pCfg config.ProviderConfig, mCf
 	mdl.Name = modelName
 
 	prov, api := inferEffectiveProviderAPI(pCfg, mCfg)
+	// Per-model catalog API pins (model_overrides.yaml `api:` — e.g. Muse
+	// Spark's openai-responses on the opencode gateways) apply only when the
+	// registry entry describes THIS provider: a catalog entry borrowed from a
+	// different provider (Google's gemma entry prefix-matched on LM Studio)
+	// must keep the serving provider's wire API. An explicit model-config api
+	// always wins.
+	if mCfg.API == "" && m.Api != "" && m.Provider == prov {
+		api = m.Api
+	}
 	mdl.Provider = prov
 	mdl.Api = api
 
-	setModelBaseURL(&mdl, pCfg.Endpoint, api)
+	mdl.BaseURL = modelEndpointURL(api, pCfg.Endpoint)
 	applyModelConfigCapabilities(&mdl, mCfg, api)
 	applyProviderExtra(&mdl, pCfg)
 	return mdl
@@ -96,10 +105,7 @@ func buildFallbackModel(pCfg config.ProviderConfig, mCfg config.ModelConfig, mod
 		inputTypes = []string{"text"}
 	}
 
-	baseURL := pCfg.Endpoint
-	if needsChatCompletionsSuffix(api) {
-		baseURL = ChatCompletionsEndpoint(pCfg.Endpoint)
-	}
+	baseURL := modelEndpointURL(api, pCfg.Endpoint)
 	mdl := agenticprovider.Model{
 		ID:         modelName,
 		Name:       modelName,

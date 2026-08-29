@@ -72,18 +72,6 @@ func inferEffectiveProviderAPI(pCfg config.ProviderConfig, mCfg config.ModelConf
 	return prov, api
 }
 
-// setModelBaseURL sets BaseURL based on the resolved API and provider endpoint.
-func setModelBaseURL(mdl *agenticprovider.Model, endpoint string, api agenticprovider.Api) {
-	if endpoint == "" {
-		return
-	}
-	if needsChatCompletionsSuffix(api) {
-		mdl.BaseURL = ChatCompletionsEndpoint(endpoint)
-	} else {
-		mdl.BaseURL = endpoint
-	}
-}
-
 // applyModelConfigCapabilities applies model-level overrides from config onto
 // a registry model without replacing its built-in capabilities.
 func applyModelConfigCapabilities(mdl *agenticprovider.Model, mCfg config.ModelConfig, api agenticprovider.Api) {

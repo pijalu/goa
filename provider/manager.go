@@ -202,15 +202,42 @@ func modelsEndpoint(endpoint string) string {
 	return u.String()
 }
 
-// needsChatCompletionsSuffix returns true for API types that use the
-// OpenAI-compatible /chat/completions endpoint. Non-OpenAI APIs (Anthropic,
-// Google, Bedrock, Mistral) manage their own URL in the provider streamer.
-func needsChatCompletionsSuffix(api agenticprovider.Api) bool {
+// ResponsesEndpoint ensures the endpoint URL points to the OpenAI Responses
+// route ({base}/responses). Accepts base API URLs (https://host/v1) and full
+// responses URLs (idempotent). OpenCode's Zen gateway serves its Muse Spark
+// family at https://opencode.ai/zen/v1/responses (npm @ai-sdk/openai), not on
+// the chat-completions surface (bugs.md 2026-08-30).
+func ResponsesEndpoint(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return endpoint // fallback
+	}
+	// Strip trailing slash for clean path joining
+	u.Path = strings.TrimRight(u.Path, "/")
+	// Append /responses if not already present
+	if !strings.HasSuffix(u.Path, "/responses") {
+		u.Path += "/responses"
+	}
+	return u.String()
+}
+
+// modelEndpointURL adapts a configured provider endpoint to the wire URL for
+// an API: /chat/completions for the OpenAI-compatible surface, /responses for
+// the OpenAI Responses surfaces (the generic protocol runtime POSTs the URL
+// verbatim, so the full route must be in the model's BaseURL), the endpoint
+// itself when the protocol owns its path (Anthropic, Google, Bedrock, Mistral;
+// Codex normalization happens at request time).
+func modelEndpointURL(api agenticprovider.Api, endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
 	switch api {
-	case agenticprovider.ApiOpenAICompletions, agenticprovider.ApiOpenAIResponses, agenticprovider.ApiAzureOpenAIResponses:
-		return true
+	case agenticprovider.ApiOpenAICompletions:
+		return ChatCompletionsEndpoint(endpoint)
+	case agenticprovider.ApiOpenAIResponses, agenticprovider.ApiAzureOpenAIResponses:
+		return ResponsesEndpoint(endpoint)
 	default:
-		return false
+		return endpoint
 	}
 }
 
