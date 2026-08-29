@@ -334,13 +334,43 @@ func (e *quotaTestEnv) callCommand(name string, args ...string) string {
 }
 
 // renderSegment evaluates the quota status segment.
+//
+// Mirrors the app render loop's FINAL state rather than its first pass: the
+// plugin primes its cache at load via goa.setTimeout(…,0) and that scheduler
+// frame's enterVM window spans HTTP hops, so buildSegmentRender transiently
+// returns "" while the VM is busy (only delayed, never lost — production
+// re-renders on goa.ui.refreshSegment). A single immediate render therefore
+// flakes; CI saw exactly that in
+// TestQuota_ZaiEndpointWithPathStillHitsMonitorHost. While the VM is busy,
+// wait (bounded) for the frame to drain and return the first render made
+// with a quiescent VM; renders with an idle VM return as-is, keeping
+// by-design empty segments (no_api_key, …) immediate.
 func (e *quotaTestEnv) renderSegment() string {
-	for _, s := range e.segments.Segments() {
-		if s.ID == "quota" && s.Render != nil {
-			return s.Render()
+	const (
+		retryBudget = 2 * time.Second
+		retryPause  = 5 * time.Millisecond
+	)
+	deadline := time.Now().Add(retryBudget)
+	for {
+		var render func() string
+		for _, s := range e.segments.Segments() {
+			if s.ID == "quota" && s.Render != nil {
+				render = s.Render
+				break
+			}
 		}
+		if render == nil {
+			return ""
+		}
+		out := render()
+		if !vmBusy() {
+			return out
+		}
+		if !time.Now().Before(deadline) {
+			return out
+		}
+		time.Sleep(retryPause)
 	}
-	return ""
 }
 
 // lastOutput returns the most recent goa.output message.
