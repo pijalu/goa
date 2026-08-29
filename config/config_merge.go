@@ -194,8 +194,17 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	// AutoHealToolCalls is the /config "Tool call fixing" toggle. Copied
 	// unconditionally like its sibling bools: it has no meaningful "unset"
 	// state, and skipping it here silently dropped every persisted change on
-	// the next load (bugs.md /config tool fixes not saved).
+	// the next load (bugs.md /config tool fixes not saved). Because any layer
+	// explicitly carrying the key wins, the /config toggle persists it to the
+	// project layer (.goa/config.yaml) so a project pin cannot shadow it.
 	dst.AutoHealToolCalls = src.AutoHealToolCalls
+	// LoopAutoResume is a plain bool: any layer explicitly stating it wins.
+	// (Same semantics as AutoHealToolCalls — no meaningful unset state.)
+	dst.LoopAutoResume = src.LoopAutoResume
+	if src.LoopAutoResumeMessage != "" {
+		dst.LoopAutoResumeMessage = src.LoopAutoResumeMessage
+	}
+	mergeIntIfSet(&dst.LoopAutoResumeMax, src.LoopAutoResumeMax)
 	mergeIntIfSet(&dst.MaxToolRepeatTotal, src.MaxToolRepeatTotal)
 	mergeIntIfSet(&dst.MaxToolRepeatConsecutive, src.MaxToolRepeatConsecutive)
 	mergeIntIfSet(&dst.MaxToolCalls, src.MaxToolCalls)

@@ -51,6 +51,20 @@ This detector catches repeated text in the assistant's streamed output, even whe
 
 Session-only override: `/config:temp:stream_loop_detection:on|off`.
 
+## Loop auto-resume
+
+By default, when a loop detector (thinking or tool) interrupts the turn, the agent stops and waits for the user. **Loop auto-resume** keeps the stop but automatically sends a follow-up message so the agent resumes instead of staying idle.
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `loop_auto_resume` | false | Send a follow-up message after a loop-detector stop so the agent resumes. |
+| `loop_auto_resume_message` | `loop detected and you were stopped - resume now` | The message injected as a user turn on auto-resume. |
+| `loop_auto_resume_max` | 3 | Maximum consecutive loop-triggered auto-resumes before giving up. Each genuine user turn resets the counter, so a stuck agent cannot resume forever. |
+
+The interactive path is `/config` → **Loop detection** → **Loop auto-resume**, which exposes the on/off toggle and the resume-message editor. The same values can be set with `/config:set:execution.loop_auto_resume:true` and `/config:set:execution.loop_auto_resume_message:<text>`.
+
+If you typed steering input while the looped turn was still running, that steering is delivered instead of the automated resume — your message takes precedence.
+
 ## Configuration examples
 
 ```yaml
@@ -64,6 +78,9 @@ execution:
   max_consecutive_tool_rounds: 15
   stream_loop_max_repeats: 5
   runaway_loop_max_repeats: 2
+  loop_auto_resume: false
+  loop_auto_resume_message: "loop detected and you were stopped - resume now"
+  loop_auto_resume_max: 3
 ```
 
 If a warning appears sooner than expected, identify which detector produced it. In particular, `max_tool_calls` controls duplicate calls in a rolling window; it does not control consecutive tool-call rounds.

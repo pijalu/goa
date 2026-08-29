@@ -103,6 +103,11 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 		// cannot overwrite it after we release.
 		pending := am.pendingSteering
 		am.pendingSteering = ""
+		// Capture any armed loop auto-resume. Steering takes precedence: a
+		// user who typed mid-turn wants their message delivered, not an
+		// automated resume on top of it.
+		resume := am.pendingLoopResume
+		am.pendingLoopResume = ""
 		am.mu.Unlock()
 
 		// Dispatch steering only after am.running is false, so the
@@ -110,6 +115,18 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 		if pending != "" {
 			am.emitSteeringInjected(pending)
 			_ = am.SendUserInput(pending)
+		} else if resume != "" {
+			// Loop auto-resume: inject the configured message as a user turn.
+			// Count it BEFORE dispatching so a genuine user turn that arrives
+			// concurrently still sees the incremented counter and does not
+			// reset it. loopResumeTurn marks the resumed turn so
+			// SendUserInputWithImages does not reset the counter on it.
+			am.mu.Lock()
+			am.loopResumeCount++
+			am.loopResumeTurn = true
+			am.mu.Unlock()
+			am.emitSteeringInjected(resume)
+			_ = am.SendUserInput(resume)
 		}
 
 		if turnEndedCleanly && am.postTurnHook != nil {

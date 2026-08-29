@@ -6,6 +6,7 @@ package commands
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -773,6 +774,7 @@ func (m *configMenu) settingLoopDetection() {
 		{Value: "stream_loop", Label: "Stream-loop detection", Description: loopDetectionStatusLabel(m.ctx.LoopDetector, "stream")},
 		{Value: "thinking_stall", Label: "Thinking-stall watchdog", Description: loopDetectionStatusLabel(m.ctx.LoopDetector, "stall")},
 		{Value: "thresholds", Label: "Threshold settings", Description: "warn/stop/repeat limits"},
+		{Value: "auto_resume", Label: "Loop auto-resume", Description: loopAutoResumeStatusLabel(m.ctx.Config)},
 	}
 	m.ctx.SelectOption("Loop detection settings:", items, "", func(selected string, ok bool) {
 		if !ok {
@@ -790,6 +792,57 @@ func (m *configMenu) settingLoopDetection() {
 			m.chooseLoopDetectionAction("stall")
 		case "thresholds":
 			m.open(m.settingLoopThresholds)
+		case "auto_resume":
+			m.open(m.settingLoopAutoResume)
+		}
+	})
+}
+
+// loopAutoResumeStatusLabel reports the effective on/off state of loop
+// auto-resume for the menu row.
+func loopAutoResumeStatusLabel(cfg *config.Config) string {
+	if cfg != nil && cfg.Execution.LoopAutoResume {
+		return "on"
+	}
+	return "off"
+}
+
+// settingLoopAutoResume is the /config → Loop detection → Loop auto-resume
+// sub-menu: toggle the feature and edit the resume message.
+func (m *configMenu) settingLoopAutoResume() {
+	m.current = m.settingLoopAutoResume
+	cfg := m.ctx.Config
+	enabled := cfg != nil && cfg.Execution.LoopAutoResume
+	msg := core.DefaultLoopAutoResumeMessage
+	if cfg != nil && strings.TrimSpace(cfg.Execution.LoopAutoResumeMessage) != "" {
+		msg = cfg.Execution.LoopAutoResumeMessage
+	}
+	toggleLabel := "Enable auto-resume"
+	if enabled {
+		toggleLabel = "Disable auto-resume"
+	}
+	items := []tui.SelectorItem{
+		{Value: "toggle", Label: toggleLabel, Description: "persist across sessions"},
+		{Value: "message", Label: "Resume message", Description: msg},
+	}
+	m.ctx.SelectOption("Loop auto-resume:", items, "", func(selected string, ok bool) {
+		if !ok {
+			m.settingLoopDetection()
+			return
+		}
+		switch selected {
+		case "toggle":
+			m.applySet("execution.loop_auto_resume", strconv.FormatBool(!enabled))
+			m.flash(fmt.Sprintf("Loop auto-resume %s (saved)", map[bool]string{true: "enabled", false: "disabled"}[!enabled]))
+			m.settingLoopAutoResume()
+		case "message":
+			m.ctx.ShowInput("Loop auto-resume message:", msg, func(value string, ok bool) {
+				if ok && strings.TrimSpace(value) != "" {
+					m.applySet("execution.loop_auto_resume_message", value)
+					m.flash("Loop auto-resume message updated (saved)")
+				}
+				m.settingLoopAutoResume()
+			})
 		}
 	})
 }

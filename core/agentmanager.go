@@ -113,6 +113,17 @@ type AgentManager struct {
 	// "Generation stopped by user." cancellation message.
 	loopStopReason string
 
+	// pendingLoopResume holds the auto-resume message to dispatch after a
+	// loop-detector stop, when loop_auto_resume is enabled. Armed by the
+	// loop-warning handlers and consumed by runAgentTurn's cleanup defer.
+	pendingLoopResume string
+	// loopResumeCount tracks consecutive loop-triggered auto-resumes so a
+	// stuck agent cannot resume forever; a genuine user turn resets it.
+	loopResumeCount int
+	// loopResumeTurn marks that the next SendUserInputWithImages is a
+	// loop-triggered auto-resume, so it must NOT reset loopResumeCount.
+	loopResumeTurn bool
+
 	// eventFwd decouples the streaming goroutine's event emission from the
 	// bounded app event bus (see eventForwarder). nil when eventsOut is nil.
 	eventFwd *eventForwarder
@@ -252,6 +263,14 @@ func (am *AgentManager) SendUserInputWithImages(input string, images []string) e
 	am.lastUserInput = input
 	agent := am.activeAgent
 	alreadyRunning := am.running
+	// A genuine user turn resets the consecutive loop auto-resume counter so
+	// the cap is per-stuck-episode, not lifetime. An auto-resume dispatch sets
+	// loopResumeTurn first and is excluded from the reset.
+	if am.loopResumeTurn {
+		am.loopResumeTurn = false
+	} else {
+		am.loopResumeCount = 0
+	}
 	am.mu.Unlock()
 
 	if orch := am.foregroundOrchestrator(); orch != nil {

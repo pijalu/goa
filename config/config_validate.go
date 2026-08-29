@@ -210,6 +210,11 @@ func (c *Config) validateRunawayLoopThreshold(ve *internal.ValidationError) {
 		ve.Add(fmt.Sprintf("execution.runaway_loop_max_repeats (%d) must be 0 (default 2) or >= 1",
 			c.Execution.RunawayLoopMaxRepeats))
 	}
+	// Loop auto-resume cap: 0 = default; a negative cap is never meaningful.
+	if c.Execution.LoopAutoResumeMax < 0 {
+		ve.Add(fmt.Sprintf("execution.loop_auto_resume_max (%d) must be 0 (default 3) or >= 1",
+			c.Execution.LoopAutoResumeMax))
+	}
 }
 
 func (c *Config) validateAgenticProviders(ve *internal.ValidationError) {

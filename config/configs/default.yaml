@@ -58,6 +58,14 @@ execution:
   # Auto-heal extracts and executes these malformed calls so the turn keeps
   # progressing.
   auto_heal_tool_calls: false
+  # Loop auto-resume: when a loop detector (thinking or tool) interrupts the
+  # turn, optionally send a follow-up message to resume the agent instead of
+  # staying stopped. Off by default. The resume message is configurable.
+  loop_auto_resume: false
+  loop_auto_resume_message: "loop detected and you were stopped - resume now"
+  # Maximum consecutive loop-triggered auto-resumes before giving up (each
+  # genuine user turn resets the counter).
+  loop_auto_resume_max: 3
   # Stream-loop guard: number of stream-loop detections after which the
   # turn is aborted. Code default is 3; the embedded default raises it to 5
   # to tolerate chatty local models.

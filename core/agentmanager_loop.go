@@ -84,10 +84,36 @@ func (am *AgentManager) handleLoopWarning(lvl LoopWarningLevel) {
 		am.Interrupt()
 	}
 }
+// DefaultLoopAutoResumeMessage is the message sent to resume the agent after
+// a loop-detector stop when execution.loop_auto_resume_message is unset.
+const DefaultLoopAutoResumeMessage = "loop detected and you were stopped - resume now"
+
+// defaultLoopAutoResumeMax caps consecutive loop-triggered auto-resumes when
+// execution.loop_auto_resume_max is unset (0).
+const defaultLoopAutoResumeMax = 3
+
 func (am *AgentManager) setLoopStopReason(reason string) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.loopStopReason = reason
+	if am.cfg == nil {
+		return
+	}
+	// Arm the optional auto-resume only when the feature is enabled and the
+	// consecutive-resume cap has not been reached. The counter resets on a
+	// genuine user turn (SendUserInputWithImages), so a runaway loop cannot
+	// resume forever.
+	maxResume := am.cfg.Execution.LoopAutoResumeMax
+	if maxResume <= 0 {
+		maxResume = defaultLoopAutoResumeMax
+	}
+	if am.cfg.Execution.LoopAutoResume && am.loopResumeCount < maxResume {
+		msg := strings.TrimSpace(am.cfg.Execution.LoopAutoResumeMessage)
+		if msg == "" {
+			msg = DefaultLoopAutoResumeMessage
+		}
+		am.pendingLoopResume = msg
+	}
 }
 func (am *AgentManager) logEventF(format string, args ...interface{}) {
 	am.mu.Lock()

@@ -106,6 +106,19 @@ type ExecutionConfig struct {
 	DisableThinkingLoopDetection *bool `yaml:"disable_thinking_loop_detection,omitempty"`
 	DisableToolLoopDetection     *bool `yaml:"disable_tool_loop_detection,omitempty"`
 	DisableStreamLoopDetection   *bool `yaml:"disable_stream_loop_detection,omitempty"`
+	// LoopAutoResume enables the optional auto-resume: when a loop detector
+	// (thinking or tool) interrupts the turn, the agent is automatically
+	// resumed with LoopAutoResumeMessage instead of staying stopped.
+	// Off by default; the stop still happens, only the follow-up is automated.
+	LoopAutoResume bool `yaml:"loop_auto_resume,omitempty"`
+	// LoopAutoResumeMessage is the user-style message sent after an
+	// auto-resume is triggered by a loop-detector stop. The default is
+	// "loop detected and you were stopped - resume now".
+	LoopAutoResumeMessage string `yaml:"loop_auto_resume_message,omitempty"`
+	// LoopAutoResumeMax caps the number of consecutive loop-triggered
+	// auto-resumes before the agent gives up and stays stopped. Each genuine
+	// user turn resets the counter. 0 = default 3.
+	LoopAutoResumeMax int `yaml:"loop_auto_resume_max,omitempty"`
 	// DisableThinkingStallDetection persistently disables the thinking-stall
 	// watchdog (the guard that stops the stream after an extended
 	// reasoning-only phase). This is NOT the stream loop detector: it never

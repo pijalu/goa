@@ -635,7 +635,7 @@ func TestConfigMenu_LoopDetectionToggle(t *testing.T) {
 	if sr.title != "Loop detection settings:" {
 		t.Fatalf("expected loop detection menu, got %q", sr.title)
 	}
-	assertMenuOptions(t, sr, []string{"think_loop", "tool_loop", "stream_loop", "thinking_stall", "thresholds"})
+	assertMenuOptions(t, sr, []string{"think_loop", "tool_loop", "stream_loop", "thinking_stall", "thresholds", "auto_resume"})
 
 	// Thinking-loop detection starts enabled.
 	if sr.options[0].Description != "on" {
@@ -688,6 +688,51 @@ func TestConfigMenu_LoopDetectionPersistToggle(t *testing.T) {
 	}
 	if sr.options[0].Description != "off (saved)" {
 		t.Errorf("thinking-loop after persist_off label = %q, want off (saved)", sr.options[0].Description)
+	}
+}
+
+// TestConfigMenu_LoopAutoResumeToggle verifies the Loop auto-resume submenu:
+// toggling persists execution.loop_auto_resume and editing the message
+// persists execution.loop_auto_resume_message.
+func TestConfigMenu_LoopAutoResumeToggle(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, ir, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("loop_detection", true)
+	sr.onSel("auto_resume", true)
+
+	if sr.title != "Loop auto-resume:" {
+		t.Fatalf("expected auto-resume submenu, got %q", sr.title)
+	}
+	assertMenuOptions(t, sr, []string{"toggle", "message"})
+	if sr.options[0].Label != "Enable auto-resume" {
+		t.Errorf("toggle label = %q, want Enable auto-resume", sr.options[0].Label)
+	}
+	// Default message shown on the message row.
+	if sr.options[1].Description != core.DefaultLoopAutoResumeMessage {
+		t.Errorf("message row = %q, want default %q", sr.options[1].Description, core.DefaultLoopAutoResumeMessage)
+	}
+
+	// Toggle ON.
+	sr.onSel("toggle", true)
+	if !cfg.Execution.LoopAutoResume {
+		t.Fatal("Execution.LoopAutoResume should be true after toggle")
+	}
+	// After toggling, submenu re-renders with Disable label.
+	if sr.options[0].Label != "Disable auto-resume" {
+		t.Errorf("toggle label after on = %q, want Disable auto-resume", sr.options[0].Label)
+	}
+
+	// Edit the message.
+	sr.onSel("message", true)
+	if ir.prompt != "Loop auto-resume message:" {
+		t.Fatalf("message prompt = %q", ir.prompt)
+	}
+	ir.onSub("custom loop resume", true)
+	if cfg.Execution.LoopAutoResumeMessage != "custom loop resume" {
+		t.Fatalf("LoopAutoResumeMessage = %q, want custom loop resume", cfg.Execution.LoopAutoResumeMessage)
 	}
 }
 
