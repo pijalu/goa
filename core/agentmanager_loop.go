@@ -84,6 +84,7 @@ func (am *AgentManager) handleLoopWarning(lvl LoopWarningLevel) {
 		am.Interrupt()
 	}
 }
+
 // DefaultLoopAutoResumeMessage is the message sent to resume the agent after
 // a loop-detector stop when execution.loop_auto_resume_message is unset.
 const DefaultLoopAutoResumeMessage = "loop detected and you were stopped - resume now"
@@ -107,7 +108,7 @@ func (am *AgentManager) setLoopStopReason(reason string) {
 	if maxResume <= 0 {
 		maxResume = defaultLoopAutoResumeMax
 	}
-	if am.cfg.Execution.LoopAutoResume && am.loopResumeCount < maxResume {
+	if am.cfg.Execution.LoopAutoResumeEnabled() && am.loopResumeCount < maxResume {
 		msg := strings.TrimSpace(am.cfg.Execution.LoopAutoResumeMessage)
 		if msg == "" {
 			msg = DefaultLoopAutoResumeMessage

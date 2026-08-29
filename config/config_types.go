@@ -110,7 +110,13 @@ type ExecutionConfig struct {
 	// (thinking or tool) interrupts the turn, the agent is automatically
 	// resumed with LoopAutoResumeMessage instead of staying stopped.
 	// Off by default; the stop still happens, only the follow-up is automated.
-	LoopAutoResume bool `yaml:"loop_auto_resume,omitempty"`
+	// Tri-state: nil = inherit the lower cascade layer (embedded default is
+	// false), true = on, false = explicit opt-out. A plain bool cannot
+	// distinguish "key absent" from "explicit false", so a higher layer that
+	// omits the key would silently clobber a lower layer's true on every load
+	// (bugs.md: loop auto-resume toggle not saved across sessions) — the same
+	// defect class as the Disable*LoopDetection switches above.
+	LoopAutoResume *bool `yaml:"loop_auto_resume,omitempty"`
 	// LoopAutoResumeMessage is the user-style message sent after an
 	// auto-resume is triggered by a loop-detector stop. The default is
 	// "loop detected and you were stopped - resume now".

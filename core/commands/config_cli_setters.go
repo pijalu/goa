@@ -91,7 +91,7 @@ var configSetters = map[string]configSetter{
 	"execution.stream_loop_max_strikes":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxStrikes }),
 	"execution.stream_loop_reset_after":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopResetAfter }),
 	"execution.runaway_loop_max_repeats":         setInt(func(cfg *config.Config) *int { return &cfg.Execution.RunawayLoopMaxRepeats }),
-	"execution.loop_auto_resume":                 setBool(func(cfg *config.Config) *bool { return &cfg.Execution.LoopAutoResume }),
+	"execution.loop_auto_resume":                 setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.LoopAutoResume }),
 	"execution.loop_auto_resume_message":         setString(func(cfg *config.Config) *string { return &cfg.Execution.LoopAutoResumeMessage }),
 	"execution.loop_auto_resume_max":             setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopAutoResumeMax }),
 	"execution.disable_tool_budget":              setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),

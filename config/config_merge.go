@@ -187,9 +187,7 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	// default (true) must survive configs written before the key existed —
 	// unconditional assignment used to flip every legacy install to false,
 	// silently disabling the per-project model pin (bugs.md).
-	if src.AutoSaveModel != nil {
-		dst.AutoSaveModel = src.AutoSaveModel
-	}
+	mergeBoolPtrIfSet(&dst.AutoSaveModel, src.AutoSaveModel)
 	dst.DisableToolBudget = src.DisableToolBudget
 	// AutoHealToolCalls is the /config "Tool call fixing" toggle. Copied
 	// unconditionally like its sibling bools: it has no meaningful "unset"
@@ -198,9 +196,13 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	// explicitly carrying the key wins, the /config toggle persists it to the
 	// project layer (.goa/config.yaml) so a project pin cannot shadow it.
 	dst.AutoHealToolCalls = src.AutoHealToolCalls
-	// LoopAutoResume is a plain bool: any layer explicitly stating it wins.
-	// (Same semantics as AutoHealToolCalls — no meaningful unset state.)
-	dst.LoopAutoResume = src.LoopAutoResume
+	// LoopAutoResume is tri-state (*bool): a layer that states the key wins;
+	// a layer that omits it preserves the lower layer's value. An
+	// unconditional copy used to let a higher cascade layer whose file simply
+	// OMITS the key (parsed as the zero value) clobber a lower layer's
+	// explicit true on every load — so the /config toggle never survived a
+	// restart (bugs.md: loop auto-resume not saved across sessions).
+	mergeBoolPtrIfSet(&dst.LoopAutoResume, src.LoopAutoResume)
 	if src.LoopAutoResumeMessage != "" {
 		dst.LoopAutoResumeMessage = src.LoopAutoResumeMessage
 	}
@@ -220,6 +222,16 @@ func mergeExecution(dst, src *ExecutionConfig) {
 // mergeIntIfSet copies src into dst when src is non-zero.
 func mergeIntIfSet(dst *int, src int) {
 	if src != 0 {
+		*dst = src
+	}
+}
+
+// mergeBoolPtrIfSet copies a tri-state *bool: a non-nil src (the layer states
+// the key) overwrites dst; a nil src (the layer omits the key) preserves the
+// lower layer's value. Plain bools cannot distinguish "absent" from
+// "explicit false", so tri-state fields route through here.
+func mergeBoolPtrIfSet(dst **bool, src *bool) {
+	if src != nil {
 		*dst = src
 	}
 }

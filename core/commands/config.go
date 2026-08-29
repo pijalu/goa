@@ -801,7 +801,7 @@ func (m *configMenu) settingLoopDetection() {
 // loopAutoResumeStatusLabel reports the effective on/off state of loop
 // auto-resume for the menu row.
 func loopAutoResumeStatusLabel(cfg *config.Config) string {
-	if cfg != nil && cfg.Execution.LoopAutoResume {
+	if cfg != nil && cfg.Execution.LoopAutoResumeEnabled() {
 		return "on"
 	}
 	return "off"
@@ -812,7 +812,7 @@ func loopAutoResumeStatusLabel(cfg *config.Config) string {
 func (m *configMenu) settingLoopAutoResume() {
 	m.current = m.settingLoopAutoResume
 	cfg := m.ctx.Config
-	enabled := cfg != nil && cfg.Execution.LoopAutoResume
+	enabled := cfg != nil && cfg.Execution.LoopAutoResumeEnabled()
 	msg := core.DefaultLoopAutoResumeMessage
 	if cfg != nil && strings.TrimSpace(cfg.Execution.LoopAutoResumeMessage) != "" {
 		msg = cfg.Execution.LoopAutoResumeMessage

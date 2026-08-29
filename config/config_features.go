@@ -120,6 +120,15 @@ func (e ExecutionConfig) AutoSaveModelEnabled() bool {
 	return e.AutoSaveModel == nil || *e.AutoSaveModel
 }
 
+// LoopAutoResumeEnabled reports whether a loop-detector stop auto-resumes the
+// agent with LoopAutoResumeMessage (default false). Tri-state: nil inherits
+// the lower cascade layer's value; the embedded default states false, so an
+// unset key resolves to off. An explicit execution.loop_auto_resume:false at
+// any layer is a deliberate opt-out that wins over lower layers.
+func (e ExecutionConfig) LoopAutoResumeEnabled() bool {
+	return e.LoopAutoResume != nil && *e.LoopAutoResume
+}
+
 // VerifyTimeoutOr parses goals.verify_timeout, returning fallback when the
 // value is empty or invalid.
 func (g GoalsConfig) VerifyTimeoutOr(fallback time.Duration) time.Duration {

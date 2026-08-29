@@ -717,8 +717,8 @@ func TestConfigMenu_LoopAutoResumeToggle(t *testing.T) {
 
 	// Toggle ON.
 	sr.onSel("toggle", true)
-	if !cfg.Execution.LoopAutoResume {
-		t.Fatal("Execution.LoopAutoResume should be true after toggle")
+	if !cfg.Execution.LoopAutoResumeEnabled() {
+		t.Fatal("Execution.LoopAutoResumeEnabled() should be true after toggle")
 	}
 	// After toggling, submenu re-renders with Disable label.
 	if sr.options[0].Label != "Disable auto-resume" {

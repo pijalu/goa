@@ -13,6 +13,9 @@ import (
 	"github.com/pijalu/goa/internal/event"
 )
 
+// loopResumeBoolPtr returns a *bool for the tri-state LoopAutoResume field.
+func loopResumeBoolPtr(b bool) *bool { return &b }
+
 // loopResumeRunner is a no-op agentRunner for auto-resume tests.
 type loopResumeRunner struct{}
 
@@ -26,7 +29,7 @@ func (r *loopResumeRunner) RunWithImages(ctx context.Context, input string, imag
 // is enabled.
 func TestLoopAutoResume_ArmsOnThinkingLoopStop(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Execution.LoopAutoResume = true
+	cfg.Execution.LoopAutoResume = loopResumeBoolPtr(true)
 	am := NewAgentManager(cfg, nil, NewLoopDetector(DefaultLoopDetectorConfig()), nil, event.MakeBus(10, 10, 10, 10), "")
 
 	am.handleThinkingLoopWarning(LoopInterrupt)
@@ -45,7 +48,7 @@ func TestLoopAutoResume_ArmsOnThinkingLoopStop(t *testing.T) {
 // default.
 func TestLoopAutoResume_CustomMessage(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Execution.LoopAutoResume = true
+	cfg.Execution.LoopAutoResume = loopResumeBoolPtr(true)
 	cfg.Execution.LoopAutoResumeMessage = "custom resume"
 	am := NewAgentManager(cfg, nil, NewLoopDetector(DefaultLoopDetectorConfig()), nil, event.MakeBus(10, 10, 10, 10), "")
 
@@ -77,7 +80,7 @@ func TestLoopAutoResume_DisabledByDefault(t *testing.T) {
 // prevents arming after the limit is reached.
 func TestLoopAutoResume_CapStopsArming(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Execution.LoopAutoResume = true
+	cfg.Execution.LoopAutoResume = loopResumeBoolPtr(true)
 	cfg.Execution.LoopAutoResumeMax = 2
 	am := NewAgentManager(cfg, nil, NewLoopDetector(DefaultLoopDetectorConfig()), nil, event.MakeBus(10, 10, 10, 10), "")
 
@@ -98,7 +101,7 @@ func TestLoopAutoResume_CapStopsArming(t *testing.T) {
 // dispatches the armed resume as a steering-injected user message.
 func TestLoopAutoResume_DispatchesAfterTurn(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Execution.LoopAutoResume = true
+	cfg.Execution.LoopAutoResume = loopResumeBoolPtr(true)
 	bus := event.MakeBus(10, 10, 10, 10)
 	am := NewAgentManager(cfg, nil, NewLoopDetector(DefaultLoopDetectorConfig()), nil, bus, "")
 	// Active agent required for SendUserInput to start a turn; use a stub via
@@ -134,7 +137,7 @@ func TestLoopAutoResume_DispatchesAfterTurn(t *testing.T) {
 // suppresses the auto-resume dispatch.
 func TestLoopAutoResume_SteeringTakesPrecedence(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Execution.LoopAutoResume = true
+	cfg.Execution.LoopAutoResume = loopResumeBoolPtr(true)
 	am := NewAgentManager(cfg, nil, NewLoopDetector(DefaultLoopDetectorConfig()), nil, event.MakeBus(10, 10, 10, 10), "")
 	am.mu.Lock()
 	am.pendingLoopResume = DefaultLoopAutoResumeMessage
