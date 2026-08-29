@@ -63,6 +63,31 @@ Session export: `.goa/exports/goa-export-20260829-202918.zip`. Every turn fails 
 
 **Implemented (2026-08-29).** Exactly the plan above. `protocol/openai_responses.go`: `applyResponsesSamplingFields` takes `isCodex` and gates the include behind the new `responsesWantsEncryptedContent` (explicit flag wins both directions; default = stateless only: `isCodex || opts.SessionID == ""`). `schema/variant.go`: `CompatFlags.SupportsEncryptedContent *bool` (tri-state, JSON `supports_encrypted_content`); `schema/resolver.go` `mergeCompat` carries it via `setIfNotNil`. The `muse-spark-` `api: openai-responses` overrides are untouched. Tests written RED first (`protocol/openai_responses_encrypted_test.go`, `schema/schema_test.go` `TestMergeProfiles_SupportsEncryptedContent`): the RED muse-shaped body reproduced the exact failing wire shape (`previous_response_id` + `include` + `store:false`); GREEN after. Existing pins kept green: stateless gpt-5 include, `TestOpenAIResponsesPromptCacheKey`, codex body pins (`openai_responses` WS/SSE suites). Validation: `go vet ./...` clean; `staticcheck ./...` clean; `gocognit -over 15` clean; `gocyclo -over 12` only the pre-existing unrelated `TestRetryConfigSetters` warning; `go test -count=1 -race -cover -timeout 240s ./...` PASS (87 packages ok, 0 FAILs).
 
+## BUG: CI/CD failure — plugins `TestQuota_ZaiEndpointWithPathStillHitsMonitorHost` fails: CN endpoint with path renders an empty quota segment; monitor-host fallback not applied (2026-08-29)
+
+**Observed:** full-gate run (`go test -count=1 -race -cover ./...`) fails in `github.com/pijalu/goa/plugins`:
+
+```
+--- FAIL: TestQuota_ZaiEndpointWithPathStillHitsMonitorHost (0.22s)
+    --- FAIL: TestQuota_ZaiEndpointWithPathStillHitsMonitorHost/CN_endpoint_with_path (0.07s)
+        quota_zai_test.go:59: segment should show quota via the monitor host open.bigmodel.cn: ""
+coverage: 82.1% of statements
+FAIL    github.com/pijalu/goa/plugins  12.296s
+```
+
+The same CI log carries `Warning: duplicate plugin id dup ... skipping stale copy` from `TestPluginLoader_DuplicateIDLoadsOnce` — expected warning output of a passing test, unrelated noise; the failing test is the zai quota one.
+
+**Expected:** a z.ai endpoint configured with a URL path (CN endpoint with path) must still resolve quota monitoring to the bare monitor host `open.bigmodel.cn`, and the quota segment must render the fetched quota data.
+
+**Root cause (harness renders once while the VM can be busy):** `plugins/bundled/provider-quota/plugin.js` primes its cache at load via `goa.setTimeout(…, 0)` — a scheduler goroutine whose logical VM frame stays ACTIVE across its HTTP hops (`enterVM` is not released by `runOutsideVMLock`, plugins/plugin.go). `buildSegmentRender` (plugins/bridge_extended_surface.go) skips rendering while any frame is live (`if vmBusy() { return "" }`) — by design "only delayed, never lost": the production drain re-renders on the prime tick's own `goa.ui.refreshSegment` signal. The harness `quotaTestEnv.renderSegment` (plugins/quota_harness_test.go) renders ONCE with no retry, so on a loaded CI machine the prime tick can still be in flight when the test renders → `""` → the assertion sees an empty segment. Locally the prime finishes in microseconds, which is why 20× `-race` runs pass. Not a production bug: the segment self-heals via the refresh signal; the test harness must mirror the production contract (deferred render, not lost).
+
+**Fix plan:**
+- Reproduce deterministically (RED): a harness test that holds a logical VM frame (`enterVM`) from a goroutine while rendering — `renderSegment` must return the segment text after the frame drains; today it returns `""` immediately.
+- `quotaTestEnv.renderSegment` (plugins/quota_harness_test.go): retry under a bounded deadline (~2s) — re-render while the VM is busy, return the first render made with a quiescent VM (a by-design empty render, e.g. `no_api_key`, is still returned as-is when the VM is idle).
+- Validation: the five gates (guideline §6, each run separately) + `go test -count=50 -race ./plugins -run TestQuota_ZaiEndpointWithPathStillHitsMonitorHost`.
+
+**Implemented (2026-08-30).** Exactly the plan above; commit `9683ba2`. RED first: `plugins/quota_harness_render_test.go` `TestQuotaHarnessRenderSegmentWaitsForVMIdle` holds an `enterVM` frame across the render call and failed with `""` before the fix (returned in 0.00s without draining); `TestQuotaHarnessRenderSegmentIdleIsEmpty` pins the other contract half — a by-design empty render with an idle VM returns immediately without waiting out the retry budget. Fix: `quotaTestEnv.renderSegment` now mirrors the app render loop's FINAL state — while `vmBusy()` it re-renders under a 2s budget (5ms pauses) and returns the first render made with a quiescent VM; idle renders return as-is. The monitor-host resolution asserted by the test was already correct — only the harness observation was transient. Validation: the five gates each run separately (`go vet ./...` clean; `staticcheck ./...` clean; `gocognit -over 15 .` clean; `gocyclo -over 12 .` only the pre-existing unrelated `TestRetryConfigSetters` warning; `go test -count=1 -race -cover ./...` all packages ok, 0 FAILs) plus `go test -count=50 -race ./plugins -run TestQuota_ZaiEndpointWithPathStillHitsMonitorHost` ok (4.8s) and the full plugins package `-race` ok.
+
 ## BUG: loop auto-resume toggle is not saved across sessions — plain-bool merge lets a higher cascade layer that OMITS the key clobber a lower layer's `true` (2026-08-29)
 
 **Observed:** enable the feature via `/config → Loop detection → Loop auto-resume → Enable auto-resume` (flash: "Loop auto-resume enabled (saved)") or `/config:set execution.loop_auto_resume true`. The toggle works for the rest of the session and `~/.goa/config.yaml` correctly gains `execution.loop_auto_resume: true`. But the NEXT session boots with the feature OFF again — the menu row reads "off" and no auto-resume happens after a loop stop. Repro on the goa repo itself: home config states `loop_auto_resume: true`, yet a fresh goa in `/Users/muaddib/dev/goa` starts with it disabled.
