@@ -27,10 +27,3 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
-
-## Unclear cache miss: Real miss or switch of context
-Check /Users/muaddib/dev/creaves.project/.goa/exports/goa-export-20260830-132638.zip
-Plan: docs/plans/fix-cache-miss-shape-classification.2026-08-30.md
-RCA (2026-08-30): the captured bust is the intentional P7 no-tools collapse
-(tools dropped, tool_choice none, message prefix intact) — needs surfacing in
-the report as a distinct kind, not "unexpected".
