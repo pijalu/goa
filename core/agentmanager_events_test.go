@@ -78,3 +78,44 @@ func TestAgentManager_TokenStatsEventsBecomeCompletions(t *testing.T) {
 		t.Errorf("third completion turn = %d, want 2 (shared sequence)", comps[2].TurnNumber)
 	}
 }
+
+// TestAgentManager_TextOnlyCollapseEventMarksCompletion pins the event-layer
+// wiring of the cache-miss shape classification (bugs.md 2026-08-30): an
+// EventTokenStats carrying TextOnlyCollapse (the P7 no-tools round) makes its
+// OWN completion record carry TextOnlyCollapse — and no other completion.
+func TestAgentManager_TextOnlyCollapseEventMarksCompletion(t *testing.T) {
+	am := newEventsTestManager()
+	am.turnRecorder.ResetTurn(time.Now())
+
+	// Round 1: normal tools-present call with an established prefix.
+	am.handleTypedEvent(agentic.OutputEvent{
+		Type:    agentic.EventTokenStats,
+		Timings: &agentic.TokenTimings{PromptN: 80768, CacheReadTokens: 80768},
+	})
+	// Round 2: the P7 text-only collapse (no tools, tool_choice none) —
+	// the by-design bust shape from the RCA export (read 80,768 → 0).
+	am.handleTypedEvent(agentic.OutputEvent{
+		Type:             agentic.EventTokenStats,
+		Timings:          &agentic.TokenTimings{PromptN: 80773},
+		TextOnlyCollapse: true,
+	})
+	// Round 3: a later normal call.
+	am.handleTypedEvent(agentic.OutputEvent{
+		Type:    agentic.EventTokenStats,
+		Timings: &agentic.TokenTimings{PromptN: 10, CacheReadTokens: 500},
+	})
+
+	comps := am.CompletionHistory()
+	if len(comps) != 3 {
+		t.Fatalf("completions = %d, want 3", len(comps))
+	}
+	if comps[0].TextOnlyCollapse || comps[2].TextOnlyCollapse {
+		t.Error("normal rounds must not carry TextOnlyCollapse")
+	}
+	if !comps[1].TextOnlyCollapse {
+		t.Error("collapse round's completion must carry TextOnlyCollapse")
+	}
+	if comps[1].ContextReset {
+		t.Error("a collapse is a request-shape change, not a context reset: ContextReset must stay false")
+	}
+}

@@ -212,6 +212,14 @@ func (am *AgentManager) handleTokenStatsEvent(event agentic.OutputEvent) {
 		0, // cost computed at display time
 		ctxEstimate, ctxMax,
 	)
+	// A P7 text-only collapse round (no tools, tool_choice "none") marks
+	// its own stats event: latch it so THIS completion carries
+	// TextOnlyCollapse and the /stats:cache miss scan classifies the
+	// round's by-design prefix bust as a "no-tools step", never an
+	// unexpected miss (bugs.md 2026-08-30).
+	if event.TextOnlyCollapse {
+		am.turnRecorder.MarkTextOnlyCollapse()
+	}
 	am.turnRecorder.RecordCompletion("main", am.currentGoalID(), usage, 0)
 	// Report cumulative token usage to the goal system.
 	if am.goalTokenRecorder != nil {

@@ -98,7 +98,12 @@ func (a *Agent) emitTextContent(msg Message) {
 func (a *Agent) emitStatelessEvents(msg Message) {
 	if msg.Timings != nil {
 		a.turnStatsEmitted = true
-		a.emitEvent(OutputEvent{Type: EventTokenStats, Timings: msg.Timings, Metadata: msg.Metadata})
+		a.emitEvent(OutputEvent{
+			Type:             EventTokenStats,
+			Timings:          msg.Timings,
+			Metadata:         msg.Metadata,
+			TextOnlyCollapse: a.takeCollapseStatsPending(),
+		})
 	}
 	if msg.PromptProgress != nil {
 		a.emitEvent(OutputEvent{Type: EventProgress, PromptProgress: msg.PromptProgress, Metadata: msg.Metadata})
@@ -115,4 +120,14 @@ func (a *Agent) EmitContextReset() {
 	// cold start would be reported as a bust against the old cache.
 	provider.ResetCacheForensicsBaseline()
 	a.emitEvent(OutputEvent{Type: EventContextReset})
+}
+
+// takeCollapseStatsPending returns and clears the pending P7 collapse-stats
+// latch: the caller is emitting the token-stats event of the round the latch
+// describes. Single-goroutine stream path (same discipline as
+// toolCollapseNextRound).
+func (a *Agent) takeCollapseStatsPending() bool {
+	pending := a.collapseStatsPending
+	a.collapseStatsPending = false
+	return pending
 }

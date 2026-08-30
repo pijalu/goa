@@ -186,6 +186,14 @@ type OutputEvent struct {
 	// pipeline (including the XML stream). Clients use this to store
 	// application-level tags such as category or visibility flags.
 	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// TextOnlyCollapse marks an EventTokenStats emitted for a stream round
+	// that ran with the P7 text-only collapse (request carried no tools and
+	// tool_choice "none"): the round's provider-prefix bust is an
+	// intentional request-shape change, so /stats:cache classifies it as a
+	// "no-tools step" instead of an unexpected miss (bugs.md 2026-08-30).
+	// Always false for every other event type.
+	TextOnlyCollapse bool
 }
 
 // OutputObserver receives output events from an Agent.

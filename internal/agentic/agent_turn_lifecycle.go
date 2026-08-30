@@ -301,6 +301,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.budgetToolCalls = make(map[string]string)
 	a.stopBatchAfterThis = false
 	a.toolCollapseNextRound = false
+	a.collapseStatsPending = false
 	a.providerUsage = nil
 	a.recentToolCalls = nil
 	a.lastCallKey = ""

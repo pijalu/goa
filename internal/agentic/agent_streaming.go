@@ -196,9 +196,15 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		// round text-only — no tools, tool_choice none — so the model
 		// produces its summary instead of calling more tools. The flag is
 		// consumed here; the next round (or turn) restores the full set.
+		// The stats latch follows the collapse so THIS round's token stats
+		// carry TextOnlyCollapse (bugs.md 2026-08-30); a non-collapsed round
+		// clears any stale latch instead of leaking it forward.
 		if a.toolCollapseNextRound {
 			pCtx.NoTools = true
 			a.toolCollapseNextRound = false
+			a.collapseStatsPending = true
+		} else {
+			a.collapseStatsPending = false
 		}
 		return a.stream(model, pCtx, opts)
 	}
@@ -287,8 +293,11 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 		pCtx := a.buildProviderContext(ctx)
 		// Final-step collapse (P7): recovery rounds are the turn's last
 		// step — the model must answer with what it has gathered, so the
-		// request carries no tools and tool_choice none.
+		// request carries no tools and tool_choice none. The stats latch
+		// marks the recovery round's token stats as a no-tools step
+		// (bugs.md 2026-08-30).
 		pCtx.NoTools = true
+		a.collapseStatsPending = true
 		a.logProviderContext(pCtx, round)
 
 		recoveryStream, err := a.stream(model, pCtx, opts)

@@ -336,6 +336,17 @@ type Agent struct {
 	// builds the round's provider context.
 	toolCollapseNextRound bool
 
+	// collapseStatsPending latches that the CURRENT stream round runs with
+	// the P7 text-only collapse: the round's token-stats event carries
+	// TextOnlyCollapse so /stats:cache can classify the round's by-design
+	// provider-prefix bust as an intentional request-shape change, not an
+	// unexpected miss (bugs.md 2026-08-30). Set by startStreamRound /
+	// runRecoveryStream when the collapse is applied, cleared at each
+	// non-collapsed round start, and consumed by the round's EventTokenStats
+	// emission (single-goroutine stream path, same discipline as
+	// toolCollapseNextRound).
+	collapseStatsPending bool
+
 	// overflowRecoveryAttempted tracks whether an overflow-triggered
 	// context compression + stream retry has already been attempted in
 	// the current turn. Prevents infinite retry loops when compression

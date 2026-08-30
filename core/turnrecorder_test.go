@@ -199,6 +199,40 @@ func TestTurnRecorder_ContextResetMarker(t *testing.T) {
 	})
 }
 
+// TestTurnRecorder_TextOnlyCollapseMarker is the regression test for the
+// cache-miss shape classification (bugs.md 2026-08-30): MarkTextOnlyCollapse
+// latches the P7 no-tools collapse observed on an EventTokenStats and the
+// NEXT recorded completion carries TextOnlyCollapse exactly once, so
+// /stats:cache classifies that call's by-design prefix bust as a "no-tools
+// step" instead of an unexpected miss. The latch is per-call provenance and
+// never sets ContextReset.
+func TestTurnRecorder_TextOnlyCollapseMarker(t *testing.T) {
+	tr := NewTurnRecorder()
+	tr.ResetTurn(time.Now())
+	tr.RecordCompletion("main", "g1", TurnTokenUsage{CacheRead: 100}, 0)
+
+	tr.MarkTextOnlyCollapse() // P7 text-only collapse round (no tools, tool_choice none)
+	tr.RecordCompletion("main", "g1", TurnTokenUsage{CacheRead: 0}, 0)
+	tr.RecordCompletion("main", "g1", TurnTokenUsage{CacheRead: 40}, 0)
+
+	comps := tr.CompletionHistory()
+	if len(comps) != 3 {
+		t.Fatalf("completions = %d, want 3", len(comps))
+	}
+	if comps[0].TextOnlyCollapse {
+		t.Error("completion[0].TextOnlyCollapse = true, want false (no collapse before it)")
+	}
+	if !comps[1].TextOnlyCollapse {
+		t.Error("completion[1].TextOnlyCollapse = false, want true (first record after the collapse)")
+	}
+	if comps[1].ContextReset {
+		t.Error("completion[1].ContextReset = true, want false (a collapse is not a context reset)")
+	}
+	if comps[2].TextOnlyCollapse {
+		t.Error("completion[2].TextOnlyCollapse = true, want false (marker consumed once)")
+	}
+}
+
 // TestSummarizeCompactionEvent pins the EventCompact strategy classification
 // the reset marker depends on: the structured payload wins over the free-text
 // fallback, and ONLY the summarize strategy marks an intentional reset —

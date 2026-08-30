@@ -68,6 +68,7 @@ func (a *Agent) emitTurnStats() {
 					CacheWriteTokens:   pu.CacheCreationTokens,
 					PredictedPerSecond: a.fallbackOutputSpeed(pu.OutputTokens),
 				},
+				TextOnlyCollapse: a.takeCollapseStatsPending(),
 			})
 			stats := a.computeContextStats()
 			a.emitEvent(OutputEvent{Type: EventContextStats, ContextStats: &stats})
@@ -89,6 +90,7 @@ func (a *Agent) emitTurnStats() {
 			PredictedN:         predictedTokens,
 			PredictedPerSecond: a.fallbackOutputSpeed(predictedTokens),
 		},
+		TextOnlyCollapse: a.takeCollapseStatsPending(),
 	})
 
 	stats := a.computeContextStats()

@@ -31,6 +31,14 @@ type CompletionRecord struct {
 	// start, never as a cache miss (bugs.md 2026-08-30). Every other
 	// compaction is a cost and does NOT set it.
 	ContextReset bool
+	// TextOnlyCollapse marks a call whose request ran with the P7
+	// text-only collapse (no tools, tool_choice "none" — the turn's
+	// final summary round): dropping the tools changes the request
+	// shape, so the provider prefix busts BY DESIGN. The /stats:cache
+	// miss scan classifies the call's loss as a "no-tools step", never
+	// as an unexpected miss (bugs.md 2026-08-30). Per-call provenance:
+	// turn records carry no such flag.
+	TextOnlyCollapse bool
 }
 
 // TurnRecorder captures completed agent turns, including tool calls and results.
@@ -53,6 +61,12 @@ type TurnRecorder struct {
 	// so the /stats:cache miss scan treats that record as a conversation
 	// boundary instead of a cache miss.
 	pendingReset bool
+	// pendingCollapse latches a P7 text-only collapse (no tools +
+	// tool_choice "none") observed on an EventTokenStats; the completion
+	// recorded in the same event-handling step consumes it and carries
+	// TextOnlyCollapse so the /stats:cache miss scan classifies the call's
+	// by-design prefix bust as a "no-tools step" (bugs.md 2026-08-30).
+	pendingCollapse bool
 }
 
 // NewTurnRecorder creates an empty turn recorder.
@@ -218,6 +232,26 @@ func (tr *TurnRecorder) takeContextResetLocked() bool {
 	return pending
 }
 
+// MarkTextOnlyCollapse latches the P7 text-only collapse observed on an
+// EventTokenStats (the round's request carried no tools and tool_choice
+// "none" — the turn's final summary round). The completion recorded in the
+// same event-handling step consumes the latch and carries TextOnlyCollapse,
+// so the /stats:cache miss scan classifies the call's by-design prefix bust
+// as a "no-tools step" instead of an unexpected miss (bugs.md 2026-08-30).
+func (tr *TurnRecorder) MarkTextOnlyCollapse() {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	tr.pendingCollapse = true
+}
+
+// takeCollapseLocked returns and clears the pending collapse latch.
+// Callers must hold tr.mu.
+func (tr *TurnRecorder) takeCollapseLocked() bool {
+	pending := tr.pendingCollapse
+	tr.pendingCollapse = false
+	return pending
+}
+
 // RecordCompletion appends one LLM API call's usage to the session-scoped
 // completion log. Called for every EventTokenStats observed on the main agent
 // (one per streaming round) and for every sub-agent stats callback, so a
@@ -241,6 +275,10 @@ func (tr *TurnRecorder) RecordCompletion(role, goalID string, u TurnTokenUsage, 
 		AgentRole:    role,
 		GoalID:       goalID,
 		ContextReset: tr.takeContextResetLocked(),
+		// The collapse latch is marked in the same event-handling step
+		// (handleTokenStatsEvent) that records this completion, so the
+		// flag always lands on the call that ran text-only.
+		TextOnlyCollapse: tr.takeCollapseLocked(),
 	}
 	tr.completions = append(tr.completions, rec)
 	return rec
