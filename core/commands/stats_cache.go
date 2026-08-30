@@ -567,7 +567,14 @@ func writeCacheGlobalStatistics(b *strings.Builder, g cacheGroup) {
 			len(cacheTurnsOnActivity(series)))
 		return
 	}
-	writeSessionTotalLine(b, cacheTurnsOnActivity(series), "LLM calls")
+	// The count unit mirrors the series granularity: per-API-call entries
+	// are "LLM calls"; a legacy turn-series fallback aggregates flattened
+	// turns, so calling them calls would overstate the count.
+	unit := "LLM calls"
+	if len(g.completions) == 0 {
+		unit = "turns"
+	}
+	writeSessionTotalLine(b, cacheTurnsOnActivity(series), unit)
 	b.WriteString(missedTokensLine(totalMissedTokens(series)))
 }
 
@@ -654,11 +661,28 @@ func writeCacheDrops(b *strings.Builder, drops []cacheDrop) {
 	}
 }
 
-// runCacheStats backs /stats:cache: read the current session's turn history
-// and render the cache hit-rate evolution view, labeling goal sections with
-// their friendly aliases when a goal name source is wired.
-func (c *StatsCommand) runCacheStats(ctx core.Context, _ []string) error {
+// runCacheStatsView backs /stats:cache and /stats:cache:short: dispatch on
+// the requested view kind, reading the current session's turn history and
+// rendering either the full evolution view or the single session-wide
+// Global statistics block, labeling goal sections with their friendly
+// aliases when a goal name source is wired.
+func (c *StatsCommand) runCacheStatsView(ctx core.Context, args []string) error {
+	if c.cacheShortRequested(args) {
+		return showCacheStatsShort(ctx, ctx, c.goalAliases())
+	}
 	return showCacheStats(ctx, ctx, c.goalAliases())
+}
+
+// cacheShortRequested classifies the stats sub-args for the cache view kind.
+// The router splits user input on EVERY colon (core/router.go Parse), so
+// "/stats:cache:short" arrives as ["cache" "short"] — the sub-command and
+// its modifier are separate args, never one joined token. The joined
+// "cache:short" form is accepted for programmatic callers and tests.
+func (c *StatsCommand) cacheShortRequested(args []string) bool {
+	if len(args) == 1 && (args[0] == "cache:short" || args[0] == ":cache:short") {
+		return true
+	}
+	return len(args) == 2 && (args[0] == "cache" || args[0] == ":cache") && args[1] == "short"
 }
 
 // showCacheStats renders the session cache view from any SessionRecorder
@@ -675,6 +699,33 @@ func showCacheStats(w core.OutputWriter, rec core.SessionRecorder, names map[str
 	turns := cacheTurnsFromHistory(history, current)
 	var b strings.Builder
 	writeCacheView(&b, turns, cacheCompletionsFromHistory(completions), names)
+	writeFmt(w, "%s", b.String())
+	return nil
+}
+
+// showCacheStatsShort renders the short cache view from any SessionRecorder
+// source: every group of the session folds into ONE combined cacheGroup and
+// flows through writeCacheGlobalStatistics only — the token-weighted session
+// total plus the missed-tokens headline, with no per-group headers and no
+// detail tables (bugs.md 2026-08-30). The combined group reads the same
+// authoritative series as the full view (per-call log when present, else
+// turns), so its figures always agree with the per-group blocks. names is
+// accepted for signature symmetry with showCacheStats; the combined block
+// carries no group label, so aliases never surface here.
+func showCacheStatsShort(w core.OutputWriter, rec core.SessionRecorder, _ map[string]string) error {
+	history := rec.TurnHistory()
+	current := rec.CurrentTurn()
+	completions := rec.CompletionHistory()
+	if len(history) == 0 && current == nil && len(completions) == 0 {
+		writeStr(w, "No turn history available. Send a message first.\n")
+		return nil
+	}
+	combined := cacheGroup{
+		turns:       cacheTurnsFromHistory(history, current),
+		completions: cacheCompletionsFromHistory(completions),
+	}
+	var b strings.Builder
+	writeCacheGlobalStatistics(&b, combined)
 	writeFmt(w, "%s", b.String())
 	return nil
 }

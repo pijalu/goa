@@ -335,7 +335,7 @@ func TestStatsCommand_CompleteArgsProposesSubcommands(t *testing.T) {
 	for _, c := range all {
 		got = append(got, c.Value)
 	}
-	for _, want := range []string{"session", "project"} {
+	for _, want := range []string{"session", "project", "cache:short"} {
 		found := false
 		for _, v := range got {
 			if v == want {

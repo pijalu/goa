@@ -236,6 +236,7 @@ func (c *StatsCommand) CompleteArgs(_ core.Context, prefix string) []core.ArgCom
 		{Value: "project", Description: "project-level totals (provider, model, cache)"},
 		{Value: "verbose", Description: "all projects, each split by provider and model"},
 		{Value: "cache", Description: "cache hit-rate evolution chart + drop table (this session)"},
+		{Value: "cache:short", Description: "session-wide cache totals only (one Global statistics block)"},
 	}
 	var out []core.ArgCompletion
 	for _, cand := range candidates {
@@ -269,8 +270,8 @@ func (c *StatsCommand) Run(ctx core.Context, args []string) error {
 		return c.usageView().Run(ctx, []string{"here"})
 	case "verbose", ":verbose":
 		return c.usageView().Run(ctx, []string{"verbose"})
-	case "cache", ":cache":
-		return c.runCacheStats(ctx, args[1:])
+	case "cache", ":cache", "cache:short", ":cache:short":
+		return c.runCacheStatsView(ctx, args)
 	default:
 		if isNumeric(args[0]) {
 			return showStats(ctx, ctx, args)

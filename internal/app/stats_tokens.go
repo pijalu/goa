@@ -162,19 +162,31 @@ func (a *App) applyTokenTimingsLocked(timings *agentic.TokenTimings) {
 // foldCacheHitGlobalLocked folds one cache-active round into the
 // token-weighted session-wide cache-hit level — the 1st value of the footer's
 // CH segment. Per the report: newLevel = (level·W + rate·w) / (W + w), then
-// W += w, so rounds weigh by cached-token volume, not by count.
+// W += w, so rounds weigh by the token volume their rate was computed over,
+// not by count.
 //
-// The per-round weight w is the volume that went through the cache pipeline:
-// CacheRead + CacheWrite. goa normalizes PromptN to EXCLUDE cached tokens
-// (computePromptN in the OpenAI completions parser strips them; Anthropic
-// reports input_tokens without cache parts), so a round with no cache reads
-// AND no writes still carries its uncached prompt size as weight — that is
-// exactly the report's example (10k miss at 0% + 5k full hit at 100% →
-// 33.3%, not 50%). Requires a.statsMu to be held.
+// The per-round weight w is the round's CacheHitPct DENOMINATOR — the volume
+// behind the rate being folded:
+//   - write > 0 (Anthropic-style): read+write, the cache-operation volume;
+//   - write == 0 (OpenAI-style): read+prompt — goa normalizes PromptN to
+//     EXCLUDE cached tokens (computePromptN in the OpenAI completions parser
+//     strips them; Anthropic reports input_tokens without cache parts), so
+//     the denominator is the cached prefix PLUS the uncached prompt it
+//     served. Weighting a bust round by its cached tokens alone would count
+//     137 of 2800 prompt-side tokens and inflate the session level (the
+//     live footer showed 72.6% where the honest token-weighted rate was
+//     41.88%).
+//
+// A round with no cache reads AND no writes still carries its uncached
+// prompt size as weight (read+prompt = prompt) — that is exactly the
+// report's example (10k miss at 0% + 5k full hit at 100% → 33.3%, not 50%).
+// Requires a.statsMu to be held.
 func (a *App) foldCacheHitGlobalLocked(timings *agentic.TokenTimings) {
-	weight := int64(timings.CacheReadTokens + timings.CacheWriteTokens)
-	if weight == 0 {
-		weight = int64(timings.PromptN)
+	var weight int64
+	if timings.CacheWriteTokens > 0 {
+		weight = int64(timings.CacheReadTokens + timings.CacheWriteTokens)
+	} else {
+		weight = int64(timings.CacheReadTokens + timings.PromptN)
 	}
 	if weight <= 0 {
 		return // nothing to weight this round by

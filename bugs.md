@@ -27,3 +27,22 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
+## Cache-miss classification: context resets are not full cache misses
+
+Request: on context reset (new goals and summarize/compaction) the cache
+prefix is legitimately invalidated — do NOT increment the "full cache miss"
+counter for that round. The "full" miss category should become "unexpected":
+a miss only counts when the prefix was still valid and the provider failed
+to serve it. Unexpected misses include micro-compactions that lead to a
+cache miss (those DO count as unexpected).
+
+Observed: the miss scan (`missScan.Full` in core/commands/stats_cache.go)
+and the footer's `CM:<full>-<partial>` counters flag every 0-read round
+after cache activity as a "full" miss, including the round immediately
+following an intentional context reset (starting a new goal, running
+/summarize) where the prefix was deliberately replaced — intentional resets
+are reported as faults.
+
+Expected: intentional resets (new goals, summarize/compaction) are excluded
+from full-miss counting; the remaining misses are reported as "unexpected",
+and micro-compacts that lead to a cache miss count as unexpected.

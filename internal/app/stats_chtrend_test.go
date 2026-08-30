@@ -158,6 +158,27 @@ func TestCacheHitTrend_WeightedGlobal_Lifecycle(t *testing.T) {
 	}
 }
 
+// TestFoldCacheHitGlobal_OpenAIDenominatorWeight pins bugs.md 2026-08-30
+// (token-size weighting): an OpenAI-style round (write==0) must weight by
+// its FULL CacheHitPct denominator — the cached prefix PLUS the uncached
+// prompt it was computed over — not by the cached tokens alone. A bust
+// round reading only 500 of 10500 prompt-side tokens otherwise counts
+// ~20x too light and inflates the session-wide level (the live footer
+// showed 72.6% where the honest token-weighted rate was 41.88%).
+func TestFoldCacheHitGlobal_OpenAIDenominatorWeight(t *testing.T) {
+	a := New(testSubsystems())
+	feedCacheRound(a, 0, 300, 100)   // anthropic-style: 75%, w = 300+100 = 400
+	feedCacheRound(a, 10000, 500, 0) // openai-style: 500/10500, w = 500+10000 = 10500
+	// The fold must equal Σread / Σdenominator = (300+500)/(400+10500).
+	want := 800.0 / 10900.0 * 100
+	if diff := absDiff(a.lastCacheHit.GlobalPct, want); diff > 1e-9 {
+		t.Errorf("GlobalPct = %.4f, want %.4f (Σread/Σdenominator)", a.lastCacheHit.GlobalPct, want)
+	}
+	if a.cacheHitGlobalWeight != 10900 {
+		t.Errorf("weight = %d, want 10900 (400 + read+prompt of the openai-style round)", a.cacheHitGlobalWeight)
+	}
+}
+
 // absDiff returns |a-b| for float comparisons without importing math for a
 // single helper in each test binary.
 func absDiff(a, b float64) float64 {
