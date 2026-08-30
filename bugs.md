@@ -28,10 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## /stats:cache
-The report should draw a horizontal rule between each goal section and include blank lines between sections to make it easier to read.
-Plan: docs/plans/fix-stats-cache-separators.2026-08-30.md
-
 ## Unclear cache miss: Real miss or switch of context
 Check /Users/muaddib/dev/creaves.project/.goa/exports/goa-export-20260830-132638.zip
 Plan: docs/plans/fix-cache-miss-shape-classification.2026-08-30.md

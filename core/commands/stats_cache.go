@@ -283,8 +283,11 @@ func cacheGroupSeries(g cacheGroup) []cacheTurn {
 func writeCacheView(b *strings.Builder, turns, completions []cacheTurn, names map[string]string) {
 	groups := groupCacheTurns(turns, completions, names)
 	multi := len(groups) > 1
-	for _, g := range groups {
+	for i, g := range groups {
 		if multi {
+			if i > 0 {
+				b.WriteString("\n---\n\n")
+			}
 			fmt.Fprintf(b, "# %s\n", g.key)
 		}
 		writeCacheGroupSections(b, g)
@@ -293,13 +296,18 @@ func writeCacheView(b *strings.Builder, turns, completions []cacheTurn, names ma
 
 // writeCacheGroupSections renders the report layout for one group: the two
 // user-facing sections first, then the supporting detail tables. Every miss/
-// drop/rate surface reads the same authoritative series.
+// drop/rate surface reads the same authoritative series. A blank line
+// separates consecutive sections (bugs.md 2026-08-30).
 func writeCacheGroupSections(b *strings.Builder, g cacheGroup) {
 	series := cacheGroupSeries(g)
 	writeCacheHitLast10(b, series)
+	b.WriteString("\n")
 	writeCacheGlobalStatistics(b, g)
+	b.WriteString("\n")
 	writeCacheAvgPerTurn(b, g.turns, g.completions)
+	b.WriteString("\n")
 	writeCacheMissList(b, series)
+	b.WriteString("\n")
 	writeCacheDrops(b, detectCacheDrops(series, cacheDropThresholdPts))
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/internal/ansi"
 	tui "github.com/pijalu/goa/tui"
 )
 
@@ -916,5 +917,100 @@ func TestStatsCommand_CacheView_NoCacheTraffic(t *testing.T) {
 	}
 	if strings.Contains(out, "Session total:") {
 		t.Errorf("a 0.00%% rate over cache-less calls is noise; the explicit line replaces it:\n%s", out)
+	}
+}
+
+// --- Section separators: --- rules between goal groups + blank lines -------
+// between report sections (bugs.md 2026-08-30) -------------------------------
+
+// assertBlankLineBeforeSections verifies every ## section header that follows
+// a previous section is preceded by a blank line, so sections never abut.
+// (The first section sits under the group header or opens the report.)
+func assertBlankLineBeforeSections(t *testing.T, out string) {
+	t.Helper()
+	for _, h := range []string{
+		"## Global statistics",
+		"## Cache usage per turn",
+		"## Cache misses",
+		"## Cache drops",
+	} {
+		if !strings.Contains(out, "\n\n"+h+"\n") {
+			t.Errorf("%q not preceded by a blank line:\n%s", h, out)
+		}
+	}
+}
+
+// TestWriteCacheView_MultiGroupSeparators pins the multi-group layout: a
+// `---` horizontal rule exactly once between the two goal groups (never
+// leading, never trailing) plus a blank line before every ## section header.
+func TestWriteCacheView_MultiGroupSeparators(t *testing.T) {
+	turns := cacheTurns([3]int{10, 300, 100})
+	turns[0].AgentRole, turns[0].GoalID = "main", "g1"
+	comps := cacheCalls([4]int{1, 10, 300, 100})
+	comps[0].AgentRole, comps[0].GoalID = "main", "g1"
+	turns2 := append(turns, core.TurnRecord{
+		Number: 2, AgentRole: "companion",
+		TokenUsage: core.TurnTokenUsage{PromptN: 5, CacheRead: 40, CacheWrite: 10},
+	})
+	comps2 := append(comps, core.CompletionRecord{
+		TurnNumber: 2, AgentRole: "companion", PromptN: 5, CacheRead: 40, CacheWrite: 10,
+	})
+	var b strings.Builder
+	writeCacheView(&b, cacheTurnsFromHistory(turns2, nil), cacheCompletionsFromHistory(comps2),
+		map[string]string{"g1": "tidy.falcon"})
+	out := b.String()
+
+	if got := strings.Count(out, "\n---\n"); got != 1 {
+		t.Fatalf("want exactly one --- rule between groups, found %d:\n%s", got, out)
+	}
+	first := strings.Index(out, "# main · tidy.falcon\n")
+	rule := strings.Index(out, "\n---\n")
+	second := strings.Index(out, "# companion\n")
+	if rule <= first || rule >= second {
+		t.Fatalf("rule at %d must sit strictly between the group headers (%d < rule < %d):\n%s",
+			rule, first, second, out)
+	}
+	assertBlankLineBeforeSections(t, out)
+}
+
+// TestWriteCacheView_SingleGroupSeparators: the header-less solo report gains
+// the inter-section blank lines but never a rule.
+func TestWriteCacheView_SingleGroupSeparators(t *testing.T) {
+	var b strings.Builder
+	writeCacheView(&b,
+		cacheTurnsFromHistory(cacheTurns([3]int{10, 300, 100}), nil),
+		cacheCompletionsFromHistory(cacheCalls([4]int{1, 10, 300, 100})),
+		nil,
+	)
+	out := b.String()
+	if strings.Contains(out, "\n---\n") {
+		t.Fatalf("single-group report must not contain a --- rule:\n%s", out)
+	}
+	assertBlankLineBeforeSections(t, out)
+}
+
+// TestWriteCacheView_RuleRendersThroughMarkdownPipeline feeds a multi-group
+// report through the real MD renderer: the --- rule must surface as the
+// full-width faint rule line (────) between the goal sections, not as raw
+// dashes or a mis-parsed heading.
+func TestWriteCacheView_RuleRendersThroughMarkdownPipeline(t *testing.T) {
+	turns := cacheTurns([3]int{10, 300, 100})
+	turns[0].AgentRole, turns[0].GoalID = "main", "g1"
+	comps := cacheCalls([4]int{1, 10, 300, 100})
+	comps[0].AgentRole, comps[0].GoalID = "main", "g1"
+	turns2 := append(turns, core.TurnRecord{
+		Number: 2, AgentRole: "companion",
+		TokenUsage: core.TurnTokenUsage{PromptN: 5, CacheRead: 40, CacheWrite: 10},
+	})
+	comps2 := append(comps, core.CompletionRecord{
+		TurnNumber: 2, AgentRole: "companion", PromptN: 5, CacheRead: 40, CacheWrite: 10,
+	})
+	var b strings.Builder
+	writeCacheView(&b, cacheTurnsFromHistory(turns2, nil), cacheCompletionsFromHistory(comps2),
+		map[string]string{"g1": "tidy.falcon"})
+	r := tui.NewMDStreamRenderer(80, tui.DarkTheme())
+	rendered := ansi.Strip(strings.Join(r.Render(b.String()), "\n"))
+	if !strings.Contains(rendered, "────") {
+		t.Fatalf("rendered output lacks the horizontal rule line:\n%s", rendered)
 	}
 }
