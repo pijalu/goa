@@ -60,8 +60,8 @@ func TestHandleTokenStats_DuplicateRoundStatsDeduped(t *testing.T) {
 		feed(a, 1500, 120, 140000, 0) // establishes cache
 		feed(a, 138000, 299, 0, 0)    // bust: cache_read 140000 -> 0 (miss 1)
 		feed(a, 138000, 299, 0, 0)    // duplicate of the bust emission (still miss 1)
-		if a.tokenCacheFullMisses != 1 {
-			t.Errorf("tokenCacheFullMisses = %d, want 1 (duplicate bust emission must not recount)", a.tokenCacheFullMisses)
+		if a.tokenCacheUnexpectedMisses != 1 {
+			t.Errorf("tokenCacheUnexpectedMisses = %d, want 1 (duplicate bust emission must not recount)", a.tokenCacheUnexpectedMisses)
 		}
 		if a.tokenCacheMissedTokens != 140000 {
 			t.Errorf("tokenCacheMissedTokens = %d, want 140000 (missed tokens must not recount either)", a.tokenCacheMissedTokens)

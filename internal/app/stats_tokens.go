@@ -118,34 +118,40 @@ func (a *App) applyTokenTimingsLocked(timings *agentic.TokenTimings) {
 	// example). Rounds with no volume at all are no-ops.
 	a.foldCacheHitGlobalLocked(timings)
 	// Count cache busts two ways:
-	//  1. Zero cache reads AFTER the cache was established (provider TTL
-	//     expiry reports 0). The first request(s) of a session — or of a
-	//     fresh-context conversation (EventContextReset re-arms
+	//  1. Zero cache reads while the prefix was still valid (provider TTL
+	//     expiry reports 0) — an UNEXPECTED miss. The first request(s) of a
+	//     session — or of an intentional reset's fresh conversation
+	//     (EventContextReset for a fresh-context goal, EventCompact strategy
+	//     summarize for a summarize pass, both re-arming
 	//     cacheReadEstablished) — are cold by nature and not counted; a
 	//     provider reporting no cache stats never establishes, so the
-	//     counter stays hidden there. Establishment is tracked in
-	//     cacheReadEstablished rather than tokenCacheReadTotal because
-	//     the total is a session-level CH figure that must survive
-	//     mid-session context resets.
+	//     counter stays hidden there.
+	//     Establishment is tracked in cacheReadEstablished rather than
+	//     tokenCacheReadTotal because the total is a session-level CH figure
+	//     that must survive mid-session context resets.
 	//  2. A significant DROP in cache reads: in an append-only
 	//     conversation the cached prefix grows monotonically, so a
 	//     collapse means the prefix was invalidated — e.g. in-place
 	//     history mutation (micro compaction) leaves a PARTIAL hit
 	//     (5,376 of ~113k tokens in the 2026-08-02 session export),
 	//     which the zero-read rule never catches. A tolerance absorbs
-	//     block-quantization wobble in provider reporting.
+	//     block-quantization wobble in provider reporting. Every
+	//     non-summarize compaction stays counted (bugs.md 2026-08-30: those
+	//     passes are costs, not intentional resets — only summarize exempts
+	//     the round that follows).
 	if timings.CacheReadTokens > 0 {
 		a.cacheReadEstablished = true
 	}
 	// The two failure modes carry different token damage:
-	//   - full miss (zero read after establishment): the ENTIRE previous
-	//     prefix was recomputed — missed = prevCacheRead.
+	//   - unexpected miss (zero read while the prefix was still valid):
+	//     the ENTIRE previous prefix was recomputed — missed =
+	//     prevCacheRead.
 	//   - partial miss (drop beyond tolerance): only a SUFFIX was
 	//     recomputed — missed = prevCacheRead - cacheRead.
 	// The zero-read rule takes precedence so a miss is never double-counted.
 	switch {
 	case timings.CacheReadTokens == 0 && a.cacheReadEstablished:
-		a.tokenCacheFullMisses++
+		a.tokenCacheUnexpectedMisses++
 		a.tokenCacheMissedTokens += int64(prevCacheRead)
 	case prevCacheRead > 0 && timings.CacheReadTokens+cacheBustDropToleranceTokens < prevCacheRead:
 		a.tokenCachePartialMisses++
@@ -266,7 +272,7 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 	applyPricing(&st, a.subs.cfg, a.subs.cfg.ActiveModel)
 	st.MicroCompacts = a.microCompacts
 	st.Compacts = a.compacts
-	st.CacheMissesFull = a.tokenCacheFullMisses
+	st.CacheMissesUnexpected = a.tokenCacheUnexpectedMisses
 	st.CacheMissesPartial = a.tokenCachePartialMisses
 	st.CacheMissedTokens = a.tokenCacheMissedTokens
 	st.LastCacheHit = a.lastCacheHit

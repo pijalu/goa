@@ -197,9 +197,9 @@ func assertCacheViewSkeleton(t *testing.T, plain string) {
 			t.Errorf("table missing expected row %q:\n%s", want, plain)
 		}
 	}
-	// Misses table carries the full-miss token figure.
-	if !strings.Contains(plain, "full") || !strings.Contains(plain, "400") {
-		t.Errorf("misses table lacks the full-miss token figure:\n%s", plain)
+	// Misses table carries the unexpected-miss token figure.
+	if !strings.Contains(plain, "unexpected") || !strings.Contains(plain, "400") {
+		t.Errorf("misses table lacks the unexpected-miss token figure:\n%s", plain)
 	}
 }
 
@@ -373,14 +373,14 @@ func TestWriteCacheAvgPerTurn_MissCounters(t *testing.T) {
 	var b strings.Builder
 	writeCacheAvgPerTurn(&b, cacheTurnsFromHistory(cacheTurns(
 		[3]int{0, 800, 200}, // T1: warm, 80%
-		[3]int{500, 0, 0},   // T2: full miss (500 tokens recomputed)
+		[3]int{500, 0, 0},   // T2: unexpected miss (500 tokens recomputed)
 	), nil), nil)
 	out := b.String()
 	if !strings.Contains(out, "| T1 | 000001.0 | 0-0 |") {
 		t.Errorf("T1 must show clean counters:\n%s", out)
 	}
 	if !strings.Contains(out, "| T2 | 000000.5 | 1-0 |") {
-		t.Errorf("T2 full miss must bump the cumulative full counter:\n%s", out)
+		t.Errorf("T2 unexpected miss must bump the cumulative unexpected counter:\n%s", out)
 	}
 }
 
@@ -405,12 +405,12 @@ func TestWriteCacheMissList(t *testing.T) {
 	var b strings.Builder
 	writeCacheMissList(&b, cacheTurnsFromHistory(cacheTurns(
 		[3]int{0, 8000, 2000},
-		[3]int{2000, 0, 0}, // full miss: 8000 tokens recomputed
+		[3]int{2000, 0, 0}, // unexpected miss: 8000 tokens recomputed
 	), nil))
 	out := b.String()
 	for _, want := range []string{
 		"| Turn | Kind | % of prefix | Tokens recomputed |",
-		"| T2 | full | 100.0% | 8,000 |",
+		"| T2 | unexpected | 100.0% | 8,000 |",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("misses table missing %q:\n%s", want, out)
@@ -530,8 +530,9 @@ func TestWriteCacheView_FriendlyGoalHeaders(t *testing.T) {
 
 // TestScanMissesSemantics locks the shared per-call miss classification used
 // by the Lost column and the global totals: perfect caching contributes zero;
-// a full bust loses the entire previous prefix; narrow falls under the
-// tolerance are not misses; growth never loses.
+// a bust on a still-valid prefix (unexpected) loses the entire previous
+// prefix; narrow falls under the tolerance are not misses; growth never
+// loses.
 func TestScanMissesSemantics(t *testing.T) {
 	series := []cacheTurn{
 		{Num: 1, PromptN: 10, CacheRead: 0},    // cold: nothing established
@@ -539,23 +540,23 @@ func TestScanMissesSemantics(t *testing.T) {
 		{Num: 3, PromptN: 10, CacheRead: 8010}, // grew → no loss
 		{Num: 4, PromptN: 10, CacheRead: 7900}, // wobble <1024 → tolerated
 		{Num: 5, PromptN: 10, CacheRead: 6200}, // partial −1700
-		{Num: 6, PromptN: 10, CacheRead: 0},    // full bust → whole prev prefix
+		{Num: 6, PromptN: 10, CacheRead: 0},    // unexpected bust → whole prev prefix
 	}
 	scans := scanMisses(series)
 	if len(scans) != len(series) {
 		t.Fatalf("scan length %d, want %d", len(scans), len(series))
 	}
 	type expect struct {
-		missed int
-		full   bool
+		missed     int
+		unexpected bool
 	}
 	want := []expect{{0, false}, {0, false}, {0, false}, {0, false}, {1700, false}, {6200, true}}
 	for i, e := range want {
 		if scans[i].Missed != e.missed {
 			t.Errorf("step %d missed = %d, want %d", i+1, scans[i].Missed, e.missed)
 		}
-		if scans[i].Full() != e.full {
-			t.Errorf("step %d full = %v (scan %+v)", i+1, scans[i].Full(), scans[i])
+		if scans[i].Unexpected() != e.unexpected {
+			t.Errorf("step %d unexpected = %v (scan %+v)", i+1, scans[i].Unexpected(), scans[i])
 		}
 	}
 	// Perfect chain: identical warm reads every call.
@@ -579,23 +580,101 @@ func TestTotalMissedTokens(t *testing.T) {
 		{"perfect cache is zero loss", []cacheTurn{
 			{Num: 1, CacheRead: 4000}, {Num: 2, CacheRead: 4400},
 		}, missTotals{}},
-		{"full bust costs the previous interaction's size", []cacheTurn{
+		{"unexpected bust costs the previous interaction's size", []cacheTurn{
 			{Num: 1, CacheRead: 9000}, {Num: 2, PromptN: 1, CacheRead: 0},
-		}, missTotals{Tokens: 9000, Events: 1, Full: 1}},
+		}, missTotals{Tokens: 9000, Events: 1, Unexpected: 1}},
 		{"partial narrows by the vanished portion", []cacheTurn{
 			{Num: 1, CacheRead: 7000}, {Num: 2, CacheRead: 6500},
 		}, missTotals{}}, // 500 < 1024 tolerance → not a miss event
 		{"multi-call turn accumulates calls", []cacheTurn{
 			{Num: 1, CacheRead: 8000},
-			{Num: 1, CacheRead: 0},    // full: 8,000
+			{Num: 1, CacheRead: 0},    // unexpected: 8,000
 			{Num: 1, CacheRead: 2000}, // recovery vs 0
 			{Num: 1, CacheRead: 900},  // partial: −1100
-		}, missTotals{Tokens: 9100, Events: 2, Full: 1, Partial: 1}},
+		}, missTotals{Tokens: 9100, Events: 2, Unexpected: 1, Partial: 1}},
 	}
 	for _, tc := range cases {
 		if got := totalMissedTokens(tc.series); got != tc.tot {
 			t.Errorf("%s: totals = %+v, want %+v", tc.name, got, tc.tot)
 		}
+	}
+}
+
+// TestScanMissesResetBoundary is the regression test for the cache-miss
+// classification rework (bugs.md 2026-08-30): a Reset-marked entry (an
+// intentional context reset — fresh-context goal begin, summarize pass)
+// starts a new conversation for the scan, so the boundary round itself and
+// the collapse from the pre-reset prefix classify as NOTHING; the new
+// conversation's later busts classify normally. Non-summarize compaction
+// busts carry no marker and keep counting — they are costs.
+func TestScanMissesResetBoundary(t *testing.T) {
+	t.Run("summarize boundary is not a miss and restarts the baseline", func(t *testing.T) {
+		series := []cacheTurn{
+			{Num: 1, PromptN: 10, CacheRead: 150000}, // hot prefix
+			{Num: 2, PromptN: 10, CacheRead: 0, Reset: true}, // summarize: cold by design
+			{Num: 3, PromptN: 10, CacheRead: 0},      // still warming — no prev, no miss
+			{Num: 4, PromptN: 10, CacheRead: 12000},  // new prefix established
+			{Num: 5, PromptN: 10, CacheRead: 0},      // TTL bust inside the new conversation
+		}
+		scans := scanMisses(series)
+		for i, want := range []int{0, 0, 0, 0, 12000} {
+			if scans[i].Missed != want {
+				t.Errorf("step %d missed = %d, want %d", i+1, scans[i].Missed, want)
+			}
+		}
+		if !scans[4].Unexpected() {
+			t.Errorf("step 5 must classify unexpected (real bust inside the new conversation): %+v", scans[4])
+		}
+		if tot := totalMissedTokens(series); tot != (missTotals{Tokens: 12000, Events: 1, Unexpected: 1}) {
+			t.Errorf("totals = %+v, want one 12000-token unexpected miss", tot)
+		}
+	})
+
+	t.Run("collapse across a summarize boundary is not a partial miss", func(t *testing.T) {
+		series := []cacheTurn{
+			{Num: 1, PromptN: 10, CacheRead: 150000},
+			{Num: 2, PromptN: 10, CacheRead: 8192, Reset: true}, // reads only the shared head
+		}
+		if tot := totalMissedTokens(series); tot.Tokens != 0 {
+			t.Errorf("totals = %+v, want zero (intentional boundary, not a cost)", tot)
+		}
+	})
+
+	t.Run("non-summarize compaction bust has no marker and counts", func(t *testing.T) {
+		series := []cacheTurn{
+			{Num: 1, PromptN: 10, CacheRead: 150000},
+			{Num: 2, PromptN: 10, CacheRead: 0}, // micro/elision/truncation bust — a cost
+		}
+		if tot := totalMissedTokens(series); tot != (missTotals{Tokens: 150000, Events: 1, Unexpected: 1}) {
+			t.Errorf("totals = %+v, want one 150000-token unexpected miss", tot)
+		}
+	})
+}
+
+// TestWriteCacheMissListUnexpectedKind verifies the misses table renders the
+// reclassified kind ("unexpected") end-to-end, and that a reset-marked
+// boundary produces no miss row at all.
+func TestWriteCacheMissListUnexpectedKind(t *testing.T) {
+	var b strings.Builder
+	writeCacheMissList(&b, []cacheTurn{
+		{Num: 1, PromptN: 10, CacheRead: 9000},
+		{Num: 2, PromptN: 10, CacheRead: 0}, // unexpected bust
+	})
+	out := b.String()
+	if !strings.Contains(out, "| T2 | unexpected | 100.0% | 9,000 |") {
+		t.Errorf("miss list missing the unexpected kind row:\n%s", out)
+	}
+	if strings.Contains(out, "| full |") || strings.Contains(out, " full ") {
+		t.Errorf("miss list must not render the retired 'full' kind:\n%s", out)
+	}
+
+	b.Reset()
+	writeCacheMissList(&b, []cacheTurn{
+		{Num: 1, PromptN: 10, CacheRead: 150000},
+		{Num: 2, PromptN: 10, CacheRead: 0, Reset: true}, // summarize boundary
+	})
+	if !strings.Contains(b.String(), "No cache misses detected.") {
+		t.Errorf("reset boundary must render no miss row:\n%s", b.String())
 	}
 }
 
@@ -623,12 +702,12 @@ func TestWriteCacheGlobalStatistics(t *testing.T) {
 	if !strings.Contains(out, "Missed cache tokens: 0") || !strings.Contains(out, "perfect cache") {
 		t.Errorf("perfect session must report zero loss:\n%s", out)
 	}
-	// Bust chain: full-miss totals in red with counts.
+	// Bust chain: unexpected-miss totals in red with counts.
 	g.completions = []cacheTurn{{Num: 1, CacheRead: 8000}, {Num: 2, PromptN: 1, CacheRead: 0}}
 	b.Reset()
 	writeCacheGlobalStatistics(&b, g)
 	out = b.String()
-	if !strings.Contains(out, "Missed cache tokens: 8,000 across 1 exchange(s) (1 full, 0 partial)") ||
+	if !strings.Contains(out, "Missed cache tokens: 8,000 across 1 exchange(s) (1 unexpected, 0 partial)") ||
 		!strings.Contains(out, "\x1b[38;2;248;81;73m") {
 		t.Errorf("bust totals line wrong:\n%q", out)
 	}
@@ -704,7 +783,7 @@ func TestStatsCommand_CacheView_MultiCallBustConsistency(t *testing.T) {
 	}
 	out := w.Text()
 	// The headline (already completion-based) reports the partial miss…
-	if !strings.Contains(out, "Missed cache tokens: 7,900 across 1 exchange(s) (0 full, 1 partial)") {
+	if !strings.Contains(out, "Missed cache tokens: 7,900 across 1 exchange(s) (0 unexpected, 1 partial)") {
 		t.Errorf("headline must report the intra-turn partial miss:\n%s", out)
 	}
 	// …and every other surface must agree with it.
@@ -792,7 +871,7 @@ func TestWriteCacheGlobalStatistics_WeightedOverCalls(t *testing.T) {
 	if !strings.Contains(out, "token-weighted over 2 LLM calls") {
 		t.Errorf("total must be labeled over LLM calls:\n%s", out)
 	}
-	if !strings.Contains(out, "Missed cache tokens: 9,000 across 1 exchange(s) (1 full, 0 partial)") {
+	if !strings.Contains(out, "Missed cache tokens: 9,000 across 1 exchange(s) (1 unexpected, 0 partial)") {
 		t.Errorf("headline wrong:\n%s", out)
 	}
 }

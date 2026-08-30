@@ -54,21 +54,27 @@ type App struct {
 	tokenCacheReadTotal  int
 	tokenCacheWriteTotal int
 	// Cache-miss tracking (CM footer part), split by failure mode:
-	// full misses are zero cache-reads after establishment (the entire
-	// prefix was recomputed), partial misses are cache-read drops beyond
-	// the tolerance (a suffix of the prefix was recomputed).
+	// unexpected misses are zero cache-reads while the prefix was still
+	// valid (the entire prefix was recomputed — TTL expiry, provider
+	// eviction; micro-compaction busts count here too), partial misses are
+	// cache-read drops beyond the tolerance (a suffix of the prefix was
+	// recomputed). Intentional context resets (fresh-context goal begin,
+	// summarize/compaction) re-arm the detector instead — bugs.md
+	// 2026-08-30 reclassified the old "full" category as "unexpected".
 	// tokenCacheMissedTokens sums the exact token damage of every counted
-	// miss: prevCacheRead for full misses, prevCacheRead-cacheRead for
-	// partial ones.
-	tokenCacheFullMisses    int
-	tokenCachePartialMisses int
-	tokenCacheMissedTokens  int64
+	// miss: prevCacheRead for unexpected misses, prevCacheRead-cacheRead
+	// for partial ones.
+	tokenCacheUnexpectedMisses int
+	tokenCachePartialMisses    int
+	tokenCacheMissedTokens     int64
 	// cacheReadEstablished tracks whether the CURRENT conversation has proven
 	// a warm provider cache (any positive cache read). Unlike
 	// tokenCacheReadTotal — a session total feeding the CH display that must
 	// survive mid-session context resets — this flag re-arms on
-	// EventContextReset so a fresh-context goal's cold start is not counted
-	// as a cache bust.
+	// EventContextReset (fresh-context goal begin) and on EventCompact with
+	// the summarize strategy (a deliberate context gain) so an intentional
+	// reset's cold start is not counted as a cache bust. All other
+	// compaction strategies are costs and leave the detector armed.
 	cacheReadEstablished  bool
 	tokenSessionMax       int
 	tokenSessionEstimate  int

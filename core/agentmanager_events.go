@@ -117,9 +117,39 @@ func (am *AgentManager) handleTypedEvent(event agentic.OutputEvent) {
 		am.handleTokenStatsEvent(event)
 	case agentic.EventContextStats:
 		am.handleContextStatsEvent(event)
+	case agentic.EventContextReset:
+		// Fresh-context goal begin: the live history was replaced by design,
+		// so the next record starts a new conversation. The /stats:cache miss
+		// scan treats that boundary as a cold start, never a cache miss
+		// (bugs.md 2026-08-30).
+		am.turnRecorder.MarkContextReset()
+	case agentic.EventCompact:
+		// ONLY a summarize pass is an intentional reset: it distills the
+		// history into a summary (a deliberate context gain), so the next
+		// record starts a new conversation for the miss scan. Every other
+		// compaction (micro, elision, selective, truncation, overflow, …)
+		// is a cost — its cache misses still count, so it must not mark the
+		// boundary.
+		if summarizeCompactionEvent(event) {
+			am.turnRecorder.MarkContextReset()
+		}
 	case agentic.EventEnd:
 		am.finalizeTurn()
 	}
+}
+
+// summarizeCompactionEvent reports whether an EventCompact carries the
+// summarize strategy — the only compaction marked as an intentional context
+// reset (bugs.md 2026-08-30). The structured Compaction payload wins; the
+// free-text strategy label is the fallback for events emitted by paths that
+// predate the payload (mirrors the app layer's compactionStrategy
+// extraction).
+func summarizeCompactionEvent(ev agentic.OutputEvent) bool {
+	strategy := ev.Text
+	if ev.Compaction != nil && ev.Compaction.Strategy != "" {
+		strategy = ev.Compaction.Strategy
+	}
+	return strategy == string(agentic.CompressionSummarize)
 }
 
 func (am *AgentManager) handleToolCallEvent(event agentic.OutputEvent) {

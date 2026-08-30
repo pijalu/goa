@@ -55,6 +55,16 @@ func (a *App) handleAgentStatsEvent(ev *agentic.OutputEvent) {
 		a.resetCacheBustBaseline()
 	case agentic.EventCompact:
 		a.recordCompact(ev)
+		// Only a summarize pass is an intentional reset (bugs.md
+		// 2026-08-30): it replaces the history with a distilled summary —
+		// a deliberate context GAIN, so the round that follows is a
+		// legitimate cold start and the detector re-arms exactly like a
+		// fresh-context goal reset. Every OTHER compaction (micro, elision,
+		// selective, truncation, overflow, …) is a cost: it shrinks the
+		// prefix without a context gain, so its cache misses still count.
+		if isSummarizeCompaction(compactionStrategy(ev)) {
+			a.resetCacheBustBaseline()
+		}
 		a.showCompactionBubble(ev)
 	default:
 		a.handleTokenStats(ev)
@@ -76,6 +86,17 @@ func compactionStrategy(ev *agentic.OutputEvent) string {
 // full-compact bucket.
 func isMicroCompaction(strategy string) bool {
 	return strategy == string(agentic.CompressionMicro)
+}
+
+// isSummarizeCompaction reports whether a compression pass is the summarize
+// strategy — the ONLY compaction treated as an intentional context reset for
+// cache-miss classification (bugs.md 2026-08-30): it distills the history
+// into a summary (a deliberate context gain), so the round that follows is a
+// cold start, not a cost. Every other strategy (micro, tool_elision,
+// selective, hybrid, fresh_window, truncation, overflow, …) shrinks the
+// prefix without that gain — its cache misses count as unexpected.
+func isSummarizeCompaction(strategy string) bool {
+	return strategy == string(agentic.CompressionSummarize)
 }
 
 // recordCompact counts one completed compression pass and appends its
@@ -159,7 +180,7 @@ func (a *App) clearStats() {
 	a.tokenPredictedTotal = 0
 	a.tokenCacheReadTotal = 0
 	a.tokenCacheWriteTotal = 0
-	a.tokenCacheFullMisses = 0
+	a.tokenCacheUnexpectedMisses = 0
 	a.tokenCachePartialMisses = 0
 	a.tokenCacheMissedTokens = 0
 	a.cacheReadEstablished = false
@@ -184,8 +205,11 @@ func (a *App) clearStats() {
 }
 
 // resetCacheBustBaseline re-arms the cache-bust detector after an in-place
-// context reset (EventContextReset — a fresh-context goal begin): subsequent
-// token stats belong to a NEW conversation on a fresh provider cache key,
-// whose cold start (zero or tiny cache reads) is not a bust. Unlike
-// clearStats (user /clear), session totals (CH/CW) and the CM counter itself
-// survive — only the per-conversation detector baseline resets.
+// context reset — a fresh-context goal begin (EventContextReset) or a
+// summarize pass (EventCompact strategy summarize): subsequent token stats
+// belong to a NEW conversation — fresh provider cache key or a deliberately
+// replaced (summarized) prefix — whose cold start is not a bust (bugs.md
+// 2026-08-30). Every other compaction strategy is a cost and does NOT
+// re-arm: its busts count as unexpected. Unlike clearStats (user /clear),
+// session totals (CH/CW) and the CM counter itself survive — only the
+// per-conversation detector baseline resets.

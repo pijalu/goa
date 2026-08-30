@@ -144,6 +144,128 @@ func TestTurnRecorder_RecordCompletion(t *testing.T) {
 	}
 }
 
+// TestTurnRecorder_ContextResetMarker is the regression test for the
+// cache-miss classification rework (bugs.md 2026-08-30): MarkContextReset
+// latches an intentional reset and the NEXT recorded completion carries
+// ContextReset exactly once, so the /stats:cache miss scan treats it as a
+// conversation boundary. The turn record consumes the latch only when no
+// completion took it first.
+func TestTurnRecorder_ContextResetMarker(t *testing.T) {
+	t.Run("completion after reset carries the marker once", func(t *testing.T) {
+		tr := NewTurnRecorder()
+		tr.ResetTurn(time.Now())
+		tr.RecordCompletion("main", "g1", TurnTokenUsage{CacheRead: 100}, 0)
+
+		tr.MarkContextReset() // summarize/compaction or fresh-context goal
+		tr.RecordCompletion("main", "g1", TurnTokenUsage{CacheRead: 0}, 0)
+		tr.RecordCompletion("main", "g1", TurnTokenUsage{CacheRead: 40}, 0)
+
+		comps := tr.CompletionHistory()
+		if len(comps) != 3 {
+			t.Fatalf("completions = %d, want 3", len(comps))
+		}
+		if comps[0].ContextReset {
+			t.Error("completion[0].ContextReset = true, want false (no reset before it)")
+		}
+		if !comps[1].ContextReset {
+			t.Error("completion[1].ContextReset = false, want true (first record after the reset)")
+		}
+		if comps[2].ContextReset {
+			t.Error("completion[2].ContextReset = true, want false (marker consumed once)")
+		}
+	})
+
+	t.Run("turn record consumes the latch when no completion follows", func(t *testing.T) {
+		tr := NewTurnRecorder()
+		tr.ResetTurn(time.Now())
+		tr.RecordTokenStats(100, 10, 90, 10, 0, 0, 0, 0)
+		first := tr.FinalizeTurn(nil, "g1")
+		if first.ContextReset {
+			t.Error("first.ContextReset = true, want false")
+		}
+
+		tr.MarkContextReset()
+		tr.ResetTurn(time.Now())
+		second := tr.FinalizeTurn(nil, "g1")
+		if !second.ContextReset {
+			t.Error("second.ContextReset = false, want true (reset latched before finalize)")
+		}
+
+		tr.ResetTurn(time.Now())
+		third := tr.FinalizeTurn(nil, "g1")
+		if third.ContextReset {
+			t.Error("third.ContextReset = true, want false (latch cleared)")
+		}
+	})
+}
+
+// TestSummarizeCompactionEvent pins the EventCompact strategy classification
+// the reset marker depends on: the structured payload wins over the free-text
+// fallback, and ONLY the summarize strategy marks an intentional reset —
+// every other compaction is a cost whose busts count as unexpected
+// (bugs.md 2026-08-30, per the cost/gain rule: summarize trades tokens for a
+// distilled summary, the others just drop content).
+func TestSummarizeCompactionEvent(t *testing.T) {
+	tests := []struct {
+		name string
+		ev   agentic.OutputEvent
+		want bool
+	}{
+		{
+			name: "summarize via structured payload",
+			ev:   agentic.OutputEvent{Type: agentic.EventCompact, Compaction: &agentic.CompactionInfo{Strategy: "summarize"}},
+			want: true,
+		},
+		{
+			name: "summarize via text fallback",
+			ev:   agentic.OutputEvent{Type: agentic.EventCompact, Text: "summarize"},
+			want: true,
+		},
+		{
+			name: "micro is a cost, not an intentional reset",
+			ev:   agentic.OutputEvent{Type: agentic.EventCompact, Compaction: &agentic.CompactionInfo{Strategy: "micro"}},
+			want: false,
+		},
+		{
+			name: "tool_elision is a cost, not an intentional reset",
+			ev:   agentic.OutputEvent{Type: agentic.EventCompact, Compaction: &agentic.CompactionInfo{Strategy: "tool_elision"}},
+			want: false,
+		},
+		{
+			name: "selective is a cost, not an intentional reset",
+			ev:   agentic.OutputEvent{Type: agentic.EventCompact, Compaction: &agentic.CompactionInfo{Strategy: "selective"}},
+			want: false,
+		},
+		{
+			name: "truncation is a cost, not an intentional reset",
+			ev:   agentic.OutputEvent{Type: agentic.EventCompact, Compaction: &agentic.CompactionInfo{Strategy: "truncation"}},
+			want: false,
+		},
+		{
+			name: "fresh_window is a cost, not an intentional reset",
+			ev:   agentic.OutputEvent{Type: agentic.EventCompact, Compaction: &agentic.CompactionInfo{Strategy: "fresh_window"}},
+			want: false,
+		},
+		{
+			name: "payload wins over stale text",
+			ev:   agentic.OutputEvent{Type: agentic.EventCompact, Text: "summarize", Compaction: &agentic.CompactionInfo{Strategy: "micro"}},
+			want: false,
+		},
+		{
+			name: "no strategy at all is not a summarize reset",
+			ev:   agentic.OutputEvent{Type: agentic.EventCompact},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summarizeCompactionEvent(tc.ev); got != tc.want {
+				t.Errorf("summarizeCompactionEvent = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTurnRecorder_RecordsToolCallsAndResults(t *testing.T) {
 	tr := NewTurnRecorder()
 	tr.ResetTurn(time.Now())

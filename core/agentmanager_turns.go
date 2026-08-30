@@ -45,6 +45,12 @@ type TurnRecord struct {
 	// GoalID is the active goal at finalize time ("" = no goal), so the
 	// cache view can group turns per goal as well as per agent.
 	GoalID string
+	// ContextReset marks an intentional context reset immediately before
+	// this record — a fresh-context goal begin or a summarize pass. The
+	// /stats:cache miss scan treats the boundary as a new conversation
+	// start, never as a cache miss (bugs.md 2026-08-30); every other
+	// compaction is a cost and does NOT set it.
+	ContextReset bool
 }
 
 // TurnToolCall records a tool call made during a turn.

@@ -60,14 +60,27 @@ type cacheTurn struct {
 	PromptN    int
 	AgentRole  string // ""/"main" for the primary agent, else the multiagent role
 	GoalID     string // active goal at turn time ("" = none)
+	// Reset marks an intentional context reset immediately BEFORE this
+	// entry (fresh-context goal begin, summarize pass): the cached prefix
+	// was deliberately replaced for a context gain, so the miss scan
+	// restarts its baseline here instead of reporting the new
+	// conversation's cold start as a miss (bugs.md 2026-08-30). Every
+	// other compaction (micro, elision, selective, …) is a cost and does
+	// NOT set it — its busts count as unexpected.
+	Reset bool
 }
 
 const cacheMissDropTolerance = 1024
 
 type cacheMissTurn struct {
-	num, full, partial int
-	missed             int
-	prev               int // cache-read of the previous turn (the prefix the miss is measured against)
+	// unexpected counts an UNEXPECTED miss: the prefix was still valid and
+	// the provider served none of it (the whole prefix recomputed).
+	// Intentional context resets never land here — the scan treats them as
+	// conversation boundaries (bugs.md 2026-08-30 renamed "full" to
+	// "unexpected").
+	num, unexpected, partial int
+	missed                   int
+	prev                     int // cache-read of the previous turn (the prefix the miss is measured against)
 }
 
 // cacheDrop is one detected cache-rate fall between consecutive completions.
@@ -95,6 +108,7 @@ func cacheTurnsFromHistory(history []core.TurnRecord, current *core.TurnRecord) 
 			PromptN:    t.TokenUsage.PromptN,
 			AgentRole:  t.AgentRole,
 			GoalID:     t.GoalID,
+			Reset:      t.ContextReset,
 		})
 	}
 	return out
@@ -113,6 +127,7 @@ func cacheCompletionsFromHistory(comps []core.CompletionRecord) []cacheTurn {
 			PromptN:    c.PromptN,
 			AgentRole:  c.AgentRole,
 			GoalID:     c.GoalID,
+			Reset:      c.ContextReset,
 		})
 	}
 	return out
@@ -296,9 +311,14 @@ type missScan struct {
 	Missed int
 }
 
-// Full reports a full cache miss: every previously-cached token stopped
-// being served (the whole prefix must be recomputed from scratch).
-func (s missScan) Full() bool { return s.Missed > 0 && s.Missed == s.Prev }
+// Unexpected reports an UNEXPECTED cache miss: the prefix was still valid
+// (no intentional reset since the last call) and every previously-cached
+// token stopped being served — the whole prefix must be recomputed from
+// scratch. Intentional context resets (fresh-context goal, summarize pass)
+// restart the scan baseline instead, so their cold starts are
+// never classified here (bugs.md 2026-08-30 reclassified the old "full"
+// category).
+func (s missScan) Unexpected() bool { return s.Missed > 0 && s.Missed == s.Prev }
 
 // Partial reports a partial miss: part of the previous prefix vanished.
 func (s missScan) Partial() bool { return s.Missed > 0 && s.Missed != s.Prev }
@@ -309,8 +329,15 @@ func (s missScan) Partial() bool { return s.Missed > 0 && s.Missed != s.Prev }
 // Lost columns and global totals can never disagree:
 //
 //   - no loss until a prefix is established;
-//   - read falling to zero after establishment = FULL miss worth the entire
-//     previous prefix ("complete size from the previous interaction");
+//   - a Reset entry (intentional context reset immediately before it —
+//     fresh-context goal begin, summarize pass) starts a NEW conversation:
+//     no miss is classified for it and the baseline restarts, so later
+//     entries compare inside the new conversation only (bugs.md
+//     2026-08-30);
+//   - read falling to zero while the prefix was still valid = UNEXPECTED
+//     miss worth the entire previous prefix (every non-summarize
+//     compaction's busts land here — they carry no Reset marker: those
+//     passes are costs);
 //   - reads shrinking by more than the tolerance = PARTIAL miss worth the
 //     vanished remainder;
 //   - growth and sub-tolerance wobble cost nothing → perfect caches total 0.
@@ -318,6 +345,12 @@ func scanMisses(series []cacheTurn) []missScan {
 	out := make([]missScan, len(series))
 	prev, established := 0, false
 	for i, t := range series {
+		if t.Reset {
+			// Intentional context reset: the prefix was deliberately
+			// replaced — the round is a cold start by design and the new
+			// conversation classifies from zero.
+			prev, established = 0, false
+		}
 		if t.CacheRead > 0 {
 			established = true
 		}
@@ -341,8 +374,8 @@ func cacheMisses(turns []cacheTurn) []cacheMissTurn {
 	out := make([]cacheMissTurn, len(turns))
 	for i, sc := range scans {
 		m := cacheMissTurn{num: sc.Num, missed: sc.Missed, prev: sc.Prev}
-		if sc.Full() {
-			m.full = 1
+		if sc.Unexpected() {
+			m.unexpected = 1
 		} else if sc.Partial() {
 			m.partial = 1
 		}
@@ -475,15 +508,15 @@ func cacheTurnTokensK(t cacheTurn) float64 {
 }
 
 // cacheMissCounters folds the per-turn miss detection into CUMULATIVE
-// full/partial counters keyed by turn number — the same semantics as the
-// footer's CM:<full>-<partial> display, so the two surfaces agree.
+// unexpected/partial counters keyed by turn number — the same semantics as
+// the footer's CM:<unexpected>-<partial> display, so the two surfaces agree.
 func cacheMissCounters(turns []cacheTurn) map[int][2]int {
 	out := make(map[int][2]int, len(turns))
-	var cumFull, cumPartial int
+	var cumUnexpected, cumPartial int
 	for _, m := range cacheMisses(turns) {
-		cumFull += m.full
+		cumUnexpected += m.unexpected
 		cumPartial += m.partial
-		out[m.num] = [2]int{cumFull, cumPartial}
+		out[m.num] = [2]int{cumUnexpected, cumPartial}
 	}
 	return out
 }
@@ -506,15 +539,16 @@ func writeSessionTotalLine(b *strings.Builder, active []cacheTurn, unit string) 
 // missTotals aggregates one chain's missed-cache-token accounting for the
 // Global statistics headline.
 type missTotals struct {
-	Tokens                int // total tokens recomputed against previous content
-	Events, Full, Partial int // miss counts by kind
+	Tokens                      int // total tokens recomputed against previous content
+	Events, Unexpected, Partial int // miss counts by kind (unexpected = a still-valid prefix was lost)
 }
 
 // totalMissedTokens folds a chain's per-call (falling back to per-turn when
 // no call log exists) miss detection into headline figures. Semantics fixed
-// by requirement: a perfect chain totals ZERO tokens; a full bust totals the
-// complete size of the previous interaction's prefix; partials only the
-// vanished portion beyond the shared tolerance.
+// by requirement: a perfect chain totals ZERO tokens; an unexpected miss
+// totals the complete size of the previous interaction's prefix; partials
+// only the vanished portion beyond the shared tolerance. Intentional resets
+// (fresh-context goal, summarize) are boundaries, never figures here.
 func totalMissedTokens(series []cacheTurn) missTotals {
 	var tot missTotals
 	for _, sc := range scanMisses(series) {
@@ -523,8 +557,8 @@ func totalMissedTokens(series []cacheTurn) missTotals {
 		}
 		tot.Tokens += sc.Missed
 		tot.Events++
-		if sc.Full() {
-			tot.Full++
+		if sc.Unexpected() {
+			tot.Unexpected++
 		} else {
 			tot.Partial++
 		}
@@ -533,20 +567,21 @@ func totalMissedTokens(series []cacheTurn) missTotals {
 }
 
 // missedTokensLine renders the headline figures color-banded: green zero
-// (perfect), red when any full bust occurred, orange otherwise.
+// (perfect), red when any unexpected miss occurred (a still-valid prefix was
+// lost — intentional resets never land here), orange otherwise.
 func missedTokensLine(tot missTotals) string {
 	label := fmt.Sprintf("Missed cache tokens: %s", groupThousands(int64(tot.Tokens)))
 	color := cacheColorOrange
 	if tot.Tokens == 0 {
 		color = cacheColorGreen
-	} else if tot.Full > 0 {
+	} else if tot.Unexpected > 0 {
 		color = cacheColorRed
 	}
 	if tot.Tokens == 0 {
 		return fmt.Sprintf("%s%s — perfect cache%s\n", ansi.Fg(color), label, ansi.Reset)
 	}
-	return fmt.Sprintf("%s%s across %d exchange(s) (%d full, %d partial)%s\n",
-		ansi.Fg(color), label, tot.Events, tot.Full, tot.Partial, ansi.Reset)
+	return fmt.Sprintf("%s%s across %d exchange(s) (%d unexpected, %d partial)%s\n",
+		ansi.Fg(color), label, tot.Events, tot.Unexpected, tot.Partial, ansi.Reset)
 }
 
 // writeCacheGlobalStatistics renders the "Global statistics" section: the
@@ -590,14 +625,15 @@ func seriesHasCacheTokens(series []cacheTurn) bool {
 }
 
 // writeCacheMissList renders section 4: an MD table with one row per cache
-// miss — turn number, kind (full/partial), share of the previously-cached
-// prefix, and the recomputed token volume (full miss = 100% of the prefix).
+// miss — turn number, kind (unexpected/partial), share of the
+// previously-cached prefix, and the recomputed token volume (unexpected miss
+// = 100% of the prefix — the whole still-valid prefix was recomputed).
 func writeCacheMissList(b *strings.Builder, turns []cacheTurn) {
 	b.WriteString("## Cache misses\n")
 	misses := cacheMisses(turns)
 	var any bool
 	for _, m := range misses {
-		if m.full == 0 && m.partial == 0 {
+		if m.unexpected == 0 && m.partial == 0 {
 			continue
 		}
 		if !any {
@@ -605,8 +641,8 @@ func writeCacheMissList(b *strings.Builder, turns []cacheTurn) {
 			any = true
 		}
 		kind := "partial"
-		if m.full != 0 {
-			kind = "full"
+		if m.unexpected != 0 {
+			kind = "unexpected"
 		}
 		pct := 100.0
 		if m.partial != 0 && m.prev > 0 {

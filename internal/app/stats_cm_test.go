@@ -26,16 +26,16 @@ func TestHandleTokenStats_CacheMissCounter(t *testing.T) {
 		a := New(testSubsystems())
 		feed(a, 100) // establishes the cache
 		feed(a, 80)  // normal hit — no miss
-		feed(a, 0)   // bust 1 (full)
+		feed(a, 0)   // bust 1 (unexpected)
 		// Bust 2 arrives in a NEW turn (turnCount advanced): the per-turn
 		// duplicate-stats dedupe (stats_dedup_test.go) otherwise collapses two
 		// byte-identical all-zero emissions into one, which is the re-emission
 		// artifact that guard exists to remove. Distinct-turn busts still count.
 		a.turnCount++
-		feed(a, 0)  // bust 2 (full, new turn)
+		feed(a, 0)  // bust 2 (unexpected, new turn)
 		feed(a, 60) // cache back — no miss
-		if a.tokenCacheFullMisses != 2 {
-			t.Errorf("tokenCacheFullMisses = %d, want 2", a.tokenCacheFullMisses)
+		if a.tokenCacheUnexpectedMisses != 2 {
+			t.Errorf("tokenCacheUnexpectedMisses = %d, want 2", a.tokenCacheUnexpectedMisses)
 		}
 		if a.tokenCachePartialMisses != 0 {
 			t.Errorf("tokenCachePartialMisses = %d, want 0", a.tokenCachePartialMisses)
@@ -50,9 +50,9 @@ func TestHandleTokenStats_CacheMissCounter(t *testing.T) {
 		a := New(testSubsystems())
 		feed(a, 0) // first request, cache not yet established
 		feed(a, 0)
-		if a.tokenCacheFullMisses != 0 || a.tokenCachePartialMisses != 0 {
+		if a.tokenCacheUnexpectedMisses != 0 || a.tokenCachePartialMisses != 0 {
 			t.Errorf("full=%d partial=%d, want 0|0 (cold start is not a bust)",
-				a.tokenCacheFullMisses, a.tokenCachePartialMisses)
+				a.tokenCacheUnexpectedMisses, a.tokenCachePartialMisses)
 		}
 	})
 
@@ -61,9 +61,9 @@ func TestHandleTokenStats_CacheMissCounter(t *testing.T) {
 		for i := 0; i < 5; i++ {
 			feed(a, 0) // provider never reports cache tokens
 		}
-		if a.tokenCacheFullMisses != 0 || a.tokenCachePartialMisses != 0 {
+		if a.tokenCacheUnexpectedMisses != 0 || a.tokenCachePartialMisses != 0 {
 			t.Errorf("full=%d partial=%d, want 0|0 (no cache stats reported)",
-				a.tokenCacheFullMisses, a.tokenCachePartialMisses)
+				a.tokenCacheUnexpectedMisses, a.tokenCachePartialMisses)
 		}
 	})
 }
@@ -71,8 +71,8 @@ func TestHandleTokenStats_CacheMissCounter(t *testing.T) {
 // assertCMCounts checks the three CM accumulators in one call.
 func assertCMCounts(t *testing.T, a *App, wantFull, wantPartial int, wantMissed int64) {
 	t.Helper()
-	if a.tokenCacheFullMisses != wantFull {
-		t.Errorf("tokenCacheFullMisses = %d, want %d", a.tokenCacheFullMisses, wantFull)
+	if a.tokenCacheUnexpectedMisses != wantFull {
+		t.Errorf("tokenCacheUnexpectedMisses = %d, want %d", a.tokenCacheUnexpectedMisses, wantFull)
 	}
 	if a.tokenCachePartialMisses != wantPartial {
 		t.Errorf("tokenCachePartialMisses = %d, want %d", a.tokenCachePartialMisses, wantPartial)
@@ -93,9 +93,10 @@ func feedCacheRead(a *App, turn, cacheRead int) {
 }
 
 // TestHandleTokenStats_CacheMissDetection is the table-driven spec for the
-// full/partial branch: zero-read after establishment → full (missed = prev),
-// drop beyond tolerance → partial (missed = prev - cacheRead), and the
-// zero-read rule takes precedence so a miss never double-counts.
+// unexpected/partial branch: zero-read on a still-valid prefix → unexpected
+// (missed = prev), drop beyond tolerance → partial (missed = prev -
+// cacheRead), and the zero-read rule takes precedence so a miss never
+// double-counts.
 func TestHandleTokenStats_CacheMissDetection(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -119,7 +120,7 @@ func TestHandleTokenStats_CacheMissDetection(t *testing.T) {
 			wantMissed:  0,
 		},
 		{
-			name:        "zero read after establishment is a full miss costing prev",
+			name:        "zero read on a valid prefix is an unexpected miss costing prev",
 			series:      []int{83421, 0},
 			wantFull:    1,
 			wantPartial: 0,
@@ -147,7 +148,7 @@ func TestHandleTokenStats_CacheMissDetection(t *testing.T) {
 			wantMissed:  100,
 		},
 		{
-			name:        "full then partial accumulate independently",
+			name:        "unexpected then partial accumulate independently",
 			series:      []int{100000, 0, 90000, 1000},
 			wantFull:    1, // 100000 -> 0 (missed 100000)
 			wantPartial: 1, // 90000 -> 1000 (missed 89000)
@@ -195,15 +196,15 @@ func TestHandleTokenStats_CacheMissPartialBust(t *testing.T) {
 		feed(a, 5376)   // bust 1: compaction truncated the prefix (partial hit)
 		feed(a, 56320)  // re-warm at shrunk size — no miss
 		feed(a, 68096)  // growth — no miss
-		feed(a, 0)      // bust 2: provider TTL expiry after idle gap (full)
+		feed(a, 0)      // bust 2: provider TTL expiry after idle gap (unexpected)
 		feed(a, 70144)  // re-warm — no miss
 		if a.tokenCachePartialMisses != 1 {
 			t.Errorf("tokenCachePartialMisses = %d, want 1 (compaction partial bust)", a.tokenCachePartialMisses)
 		}
-		if a.tokenCacheFullMisses != 1 {
-			t.Errorf("tokenCacheFullMisses = %d, want 1 (TTL expiry full bust)", a.tokenCacheFullMisses)
+		if a.tokenCacheUnexpectedMisses != 1 {
+			t.Errorf("tokenCacheUnexpectedMisses = %d, want 1 (TTL expiry full bust)", a.tokenCacheUnexpectedMisses)
 		}
-		// Missed tokens: partial bust lost 113408-5376, full bust lost 68096.
+		// Missed tokens: partial bust lost 113408-5376, unexpected bust lost 68096.
 		want := int64(113408-5376) + 68096
 		if a.tokenCacheMissedTokens != want {
 			t.Errorf("tokenCacheMissedTokens = %d, want %d", a.tokenCacheMissedTokens, want)
@@ -215,9 +216,9 @@ func TestHandleTokenStats_CacheMissPartialBust(t *testing.T) {
 		feed(a, 113408)
 		feed(a, 112500) // dip of 908 tokens < tolerance — quantization wobble
 		feed(a, 113900) // growth resumes
-		if a.tokenCacheFullMisses != 0 || a.tokenCachePartialMisses != 0 {
+		if a.tokenCacheUnexpectedMisses != 0 || a.tokenCachePartialMisses != 0 {
 			t.Errorf("full=%d partial=%d, want 0|0 (dip within tolerance)",
-				a.tokenCacheFullMisses, a.tokenCachePartialMisses)
+				a.tokenCacheUnexpectedMisses, a.tokenCachePartialMisses)
 		}
 	})
 }
@@ -254,11 +255,11 @@ func TestHandleTokenStats_CMReplaySessionExport(t *testing.T) {
 			Timings: &agentic.TokenTimings{CacheReadTokens: v},
 		})
 	}
-	if got := a.tokenCacheFullMisses + a.tokenCachePartialMisses; got != 13 {
+	if got := a.tokenCacheUnexpectedMisses + a.tokenCachePartialMisses; got != 13 {
 		t.Errorf("total misses = %d, want exactly 13 (the session export's CM count)", got)
 	}
-	if a.tokenCacheFullMisses != 0 {
-		t.Errorf("tokenCacheFullMisses = %d, want 0 (every replayed bust kept a partial hit)", a.tokenCacheFullMisses)
+	if a.tokenCacheUnexpectedMisses != 0 {
+		t.Errorf("tokenCacheUnexpectedMisses = %d, want 0 (every replayed bust kept a partial hit)", a.tokenCacheUnexpectedMisses)
 	}
 	if a.tokenCachePartialMisses != 13 {
 		t.Errorf("tokenCachePartialMisses = %d, want 13", a.tokenCachePartialMisses)
@@ -293,9 +294,9 @@ func TestHandleTokenStats_CacheMissFreshContextReset(t *testing.T) {
 		feed(a, 0)      // provider cache still warming on the new key
 		feed(a, 12000)  // system prompt + objective prefix now cached — establishes
 		feed(a, 13000)  // normal growth — no miss
-		if a.tokenCacheFullMisses != 0 || a.tokenCachePartialMisses != 0 {
+		if a.tokenCacheUnexpectedMisses != 0 || a.tokenCachePartialMisses != 0 {
 			t.Errorf("full=%d partial=%d, want 0|0 (fresh-context cold start is not a bust)",
-				a.tokenCacheFullMisses, a.tokenCachePartialMisses)
+				a.tokenCacheUnexpectedMisses, a.tokenCachePartialMisses)
 		}
 	})
 
@@ -305,9 +306,9 @@ func TestHandleTokenStats_CacheMissFreshContextReset(t *testing.T) {
 		reset(a)
 		feed(a, 8192) // first fresh request hits only the shared system-prompt prefix:
 		// a collapse vs the prior turn's 150k read, but a cold start, not a bust
-		if a.tokenCacheFullMisses != 0 || a.tokenCachePartialMisses != 0 {
+		if a.tokenCacheUnexpectedMisses != 0 || a.tokenCachePartialMisses != 0 {
 			t.Errorf("full=%d partial=%d, want 0|0 (drop across the reset boundary is not a bust)",
-				a.tokenCacheFullMisses, a.tokenCachePartialMisses)
+				a.tokenCacheUnexpectedMisses, a.tokenCachePartialMisses)
 		}
 	})
 
@@ -317,27 +318,133 @@ func TestHandleTokenStats_CacheMissFreshContextReset(t *testing.T) {
 		reset(a)
 		feed(a, 12000) // establishes the fresh conversation's cache
 		feed(a, 12500)
-		feed(a, 0) // real bust (provider TTL expiry) — must count as full
-		if a.tokenCacheFullMisses != 1 {
-			t.Errorf("tokenCacheFullMisses = %d, want 1 (real bust after fresh re-establishment)", a.tokenCacheFullMisses)
+		feed(a, 0) // real bust (provider TTL expiry) — must count as unexpected
+		if a.tokenCacheUnexpectedMisses != 1 {
+			t.Errorf("tokenCacheUnexpectedMisses = %d, want 1 (real bust after fresh re-establishment)", a.tokenCacheUnexpectedMisses)
 		}
 	})
 
 	t.Run("reset keeps session totals and CM count", func(t *testing.T) {
 		a := New(testSubsystems())
 		feed(a, 100)
-		feed(a, 0) // one real full bust before the reset
-		if a.tokenCacheFullMisses != 1 {
-			t.Fatalf("precondition: tokenCacheFullMisses = %d, want 1", a.tokenCacheFullMisses)
+		feed(a, 0) // one real unexpected bust before the reset
+		if a.tokenCacheUnexpectedMisses != 1 {
+			t.Fatalf("precondition: tokenCacheUnexpectedMisses = %d, want 1", a.tokenCacheUnexpectedMisses)
 		}
 		reset(a)
 		feed(a, 0) // cold start of the fresh conversation — not a miss
-		if a.tokenCacheFullMisses != 1 {
-			t.Errorf("tokenCacheFullMisses = %d, want 1 (reset must not wipe the CM counter)", a.tokenCacheFullMisses)
+		if a.tokenCacheUnexpectedMisses != 1 {
+			t.Errorf("tokenCacheUnexpectedMisses = %d, want 1 (reset must not wipe the CM counter)", a.tokenCacheUnexpectedMisses)
 		}
 		if a.tokenCacheReadTotal != 100 {
 			t.Errorf("tokenCacheReadTotal = %d, want 100 (session totals survive the reset)", a.tokenCacheReadTotal)
 		}
+	})
+}
+
+// TestHandleTokenStats_CacheMissCompactionExemption is the regression test
+// for the cache-miss classification rework (bugs.md 2026-08-30): intentional
+// context resets must not count as cache misses. ONLY a summarize pass
+// (EventCompact, strategy summarize) qualifies — it distills the history
+// into a summary, a deliberate context gain, so the round that follows is a
+// legitimate cold start: neither a zero-read bust nor a big collapse to a
+// partial hit may count. EVERY OTHER compaction (micro, selective, elision,
+// truncation, …) is a cost: its busts still count as unexpected (full-shaped)
+// or partial. A real bust after the post-compaction cache re-establishes
+// still counts.
+func TestHandleTokenStats_CacheMissCompactionExemption(t *testing.T) {
+	feed := func(a *App, cacheRead int) {
+		a.handleTokenStats(&agentic.OutputEvent{
+			Timings: &agentic.TokenTimings{CacheReadTokens: cacheRead},
+		})
+	}
+	compact := func(a *App, strategy string) {
+		a.handleAgentOutputEvent(&agentic.OutputEvent{
+			Type:       agentic.EventCompact,
+			Compaction: &agentic.CompactionInfo{Strategy: strategy},
+		})
+	}
+
+	t.Run("summarize reset: zero-read round after it is not a miss", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 150000) // hot cache before the compaction
+		feed(a, 151000)
+		compact(a, "summarize") // history deliberately replaced
+		feed(a, 0)              // first post-compaction round: cold by nature
+		feed(a, 0)              // still warming the new prefix
+		feed(a, 20000)          // new prefix established
+		assertCMCounts(t, a, 0, 0, 0)
+	})
+
+	t.Run("summarize reset: collapse to a partial read is not a partial miss", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 150000)
+		compact(a, "summarize")
+		feed(a, 8192) // reads only the shared head of the replaced prefix
+		assertCMCounts(t, a, 0, 0, 0)
+	})
+
+	t.Run("summarize reset keeps prior counted misses and totals", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 100000)
+		feed(a, 0) // one real unexpected bust before the compaction
+		if a.tokenCacheUnexpectedMisses != 1 {
+			t.Fatalf("precondition: tokenCacheUnexpectedMisses = %d, want 1", a.tokenCacheUnexpectedMisses)
+		}
+		compact(a, "summarize")
+		feed(a, 0) // cold start of the replaced conversation — not a miss
+		if a.tokenCacheUnexpectedMisses != 1 {
+			t.Errorf("tokenCacheUnexpectedMisses = %d, want 1 (exemption must not wipe the counter)", a.tokenCacheUnexpectedMisses)
+		}
+		if a.tokenCacheReadTotal != 100000 {
+			t.Errorf("tokenCacheReadTotal = %d, want 100000 (session totals survive the reset)", a.tokenCacheReadTotal)
+		}
+		if a.compacts != 1 || a.microCompacts != 0 {
+			t.Errorf("compacts=%d micro=%d, want 1|0 (compaction still recorded)", a.compacts, a.microCompacts)
+		}
+	})
+
+	t.Run("micro compaction bust counts as unexpected", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 150000)
+		feed(a, 151000)
+		compact(a, "micro") // in-place truncation — NOT an intentional exemption
+		feed(a, 0)          // micro-compact led to a full-shaped bust
+		assertCMCounts(t, a, 1, 0, 151000)
+	})
+
+	t.Run("selective compaction bust counts as unexpected (a cost)", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 150000)
+		compact(a, "selective") // drops old messages — no summary gain
+		feed(a, 0)              // the cost shows up as an unexpected miss
+		assertCMCounts(t, a, 1, 0, 150000)
+	})
+
+	t.Run("truncation overflow bust counts as unexpected (a cost)", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 90000)
+		compact(a, "truncation")
+		feed(a, 2000) // partial hit of the truncated prefix
+		assertCMCounts(t, a, 0, 1, 88000)
+	})
+
+	t.Run("micro compaction partial drop still counts as partial", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 113408)
+		compact(a, "micro")
+		feed(a, 5376) // partial hit of the mutated prefix
+		assertCMCounts(t, a, 0, 1, 113408-5376)
+	})
+
+	t.Run("real bust after summarize re-establishment still counts", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 150000)
+		compact(a, "summarize")
+		feed(a, 12000) // establishes the replaced conversation's cache
+		feed(a, 12500)
+		feed(a, 0) // provider TTL expiry — a genuine unexpected miss
+		assertCMCounts(t, a, 1, 0, 12500)
 	})
 }
 
@@ -354,17 +461,17 @@ func TestClearStats_ResetsCacheMissCounters(t *testing.T) {
 	a.turnCount++
 	feed(1000) // partial bust → partial=1, missed=4000
 	a.turnCount++
-	feed(0) // full bust → full=1, missed += 1000
-	if a.tokenCacheFullMisses != 1 || a.tokenCachePartialMisses != 1 || a.tokenCacheMissedTokens != 5000 {
-		t.Fatalf("precondition: full=%d partial=%d missed=%d, want 1|1|5000",
-			a.tokenCacheFullMisses, a.tokenCachePartialMisses, a.tokenCacheMissedTokens)
+	feed(0) // unexpected bust → unexpected=1, missed += 1000
+	if a.tokenCacheUnexpectedMisses != 1 || a.tokenCachePartialMisses != 1 || a.tokenCacheMissedTokens != 5000 {
+		t.Fatalf("precondition: unexpected=%d partial=%d missed=%d, want 1|1|5000",
+			a.tokenCacheUnexpectedMisses, a.tokenCachePartialMisses, a.tokenCacheMissedTokens)
 	}
 
 	a.clearStats()
 
-	if a.tokenCacheFullMisses != 0 || a.tokenCachePartialMisses != 0 || a.tokenCacheMissedTokens != 0 {
-		t.Errorf("after /clear: full=%d partial=%d missed=%d, want 0|0|0",
-			a.tokenCacheFullMisses, a.tokenCachePartialMisses, a.tokenCacheMissedTokens)
+	if a.tokenCacheUnexpectedMisses != 0 || a.tokenCachePartialMisses != 0 || a.tokenCacheMissedTokens != 0 {
+		t.Errorf("after /clear: unexpected=%d partial=%d missed=%d, want 0|0|0",
+			a.tokenCacheUnexpectedMisses, a.tokenCachePartialMisses, a.tokenCacheMissedTokens)
 	}
 	if a.cacheReadEstablished {
 		t.Error("after /clear: cacheReadEstablished must re-arm (next cold start is not a bust)")
@@ -378,7 +485,7 @@ func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
 		LastCacheHit: cacheHitTrendFromTotals(900, 100, 100)}
 
 	withMisses := base
-	withMisses.CacheMissesFull = 2
+	withMisses.CacheMissesUnexpected = 2
 	withMisses.CacheMissesPartial = 1
 	withMisses.CacheMissedTokens = 45213
 	joined := ansi.Strip(strings.Join(buildFooterStatParts(withMisses), " "))
@@ -405,51 +512,51 @@ func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
 
 // TestFormatCacheMissPart is the golden-ANSI spec for the CM part: the
 // "CM:" label and "|" separator stay in the default footer color, only the
-// counts are colored (full in red, partial in warning orange), and a zero
-// kind is omitted separator included (CM:3 partial-only, not CM:|3). The
+// counts are colored (unexpected in red, partial in warning orange), and a zero
+// kind is omitted, separator included (CM:3 partial-only, not CM:|3). The
 // footer shows counts only — token damage lives in /stats:cache (bugs.md:
 // CM:1·71,424 must render as CM:1).
 func TestFormatCacheMissPart(t *testing.T) {
-	red := ansi.Fg(cacheMissFullColor)
+	red := ansi.Fg(cacheMissUnexpectedColor)
 	orange := ansi.Fg(cacheMissPartialColor)
 
 	tests := []struct {
-		name    string
-		full    int
-		partial int
-		want    string
+		name       string
+		unexpected int
+		partial    int
+		want       string
 	}{
 		{
-			name:    "both kinds",
-			full:    2,
-			partial: 3,
-			want:    "CM:" + red + "2" + ansi.Reset + "|" + orange + "3" + ansi.Reset,
+			name:       "both kinds",
+			unexpected: 2,
+			partial:    3,
+			want:       "CM:" + red + "2" + ansi.Reset + "|" + orange + "3" + ansi.Reset,
 		},
 		{
-			name:    "full only omits the partial segment",
-			full:    1,
-			partial: 0,
-			want:    "CM:" + red + "1" + ansi.Reset,
+			name:       "unexpected only omits the partial segment",
+			unexpected: 1,
+			partial:    0,
+			want:       "CM:" + red + "1" + ansi.Reset,
 		},
 		{
-			name:    "partial only omits the full count and the separator",
-			full:    0,
-			partial: 4,
-			want:    "CM:" + orange + "4" + ansi.Reset,
+			name:       "partial only omits the unexpected count and the separator",
+			unexpected: 0,
+			partial:    4,
+			want:       "CM:" + orange + "4" + ansi.Reset,
 		},
 		{
-			name:    "both zero still renders the bare label (caller hides it)",
-			full:    0,
-			partial: 0,
-			want:    "CM:",
+			name:       "both zero still renders the bare label (caller hides it)",
+			unexpected: 0,
+			partial:    0,
+			want:       "CM:",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := formatCacheMissPart(tc.full, tc.partial); got != tc.want {
+			if got := formatCacheMissPart(tc.unexpected, tc.partial); got != tc.want {
 				t.Errorf("formatCacheMissPart(%d, %d):\n got %q\nwant %q",
-					tc.full, tc.partial, got, tc.want)
+					tc.unexpected, tc.partial, got, tc.want)
 			}
 		})
 	}
@@ -458,7 +565,7 @@ func TestFormatCacheMissPart(t *testing.T) {
 // TestSessionStats_CacheMissJSONKeys pins the persisted session-summary keys
 // so downstream session exports keep a stable schema.
 func TestSessionStats_CacheMissJSONKeys(t *testing.T) {
-	st := sessionStats{CacheMissesFull: 2, CacheMissesPartial: 3, CacheMissedTokens: 145312}
+	st := sessionStats{CacheMissesUnexpected: 2, CacheMissesPartial: 3, CacheMissedTokens: 145312}
 	raw, err := json.Marshal(st)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -467,12 +574,12 @@ func TestSessionStats_CacheMissJSONKeys(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, key := range []string{"cm_full", "cm_partial", "cm_tokens"} {
+	for _, key := range []string{"cm_unexpected", "cm_partial", "cm_tokens"} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("marshalled sessionStats missing key %q: %s", key, raw)
 		}
 	}
-	if got["cm_full"] != float64(2) || got["cm_partial"] != float64(3) || got["cm_tokens"] != float64(145312) {
+	if got["cm_unexpected"] != float64(2) || got["cm_partial"] != float64(3) || got["cm_tokens"] != float64(145312) {
 		t.Errorf("unexpected values: %s", raw)
 	}
 

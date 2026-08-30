@@ -18,6 +18,8 @@ Configuration (environment):
   MOCK_CONTEXT_LENGTH   advertised context   (default 32768)
   MOCK_FILLER_KB        filler size in KB    (default 30)
   MOCK_LLM_LOG          request log path     (default: no logging)
+  MOCK_ZERO_AT          comma-separated request ordinals (1-based) that
+                        report cached_tokens=0 (hard cache miss)
 
 Cache simulation (deterministic, for /stats:cache validation): each request's
 usage reports a simulated prefix cache. The prompt grows per request; the
@@ -45,6 +47,7 @@ CONTEXT_LENGTH = int(os.environ.get("MOCK_CONTEXT_LENGTH", "32768"))
 FILLER_KB = int(os.environ.get("MOCK_FILLER_KB", "30"))
 LOG_PATH = os.environ.get("MOCK_LLM_LOG", "")
 BUST_EVERY = int(os.environ.get("MOCK_BUST_EVERY", "4"))
+ZERO_AT = {int(x) for x in os.environ.get("MOCK_ZERO_AT", "").split(",") if x.strip()}
 
 # Simulated prompt-cache state: the request counter drives deterministic
 # prompt growth and the every-Nth-request bust (see module docstring).
@@ -73,6 +76,15 @@ def simulated_usage():
         cached = 137  # cache bust: prefix invalidated
     else:
         cached = int(prev_prompt * 0.95)
+    if n in ZERO_AT:
+        cached = 0  # hard cache miss: prefix invalidated, zero reuse
+    if LOG_PATH:
+        try:
+            with open(LOG_PATH, "a") as f:
+                f.write("%s REQ n=%d prompt=%d cached=%d\n"
+                        % (time.strftime("%H:%M:%S"), n, prompt, cached))
+        except OSError:
+            pass
     completion = 64
     return {
         "prompt_tokens": prompt,

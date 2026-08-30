@@ -25,6 +25,12 @@ type CompletionRecord struct {
 	CacheWrite int    // cache-write tokens of this call
 	AgentRole  string // ""/"main" for the primary agent, else the multiagent role
 	GoalID     string // active goal at call time ("" = none)
+	// ContextReset marks an intentional context reset immediately before
+	// this call (fresh-context goal begin, summarize pass): the
+	// /stats:cache miss scan treats the call as a new-conversation cold
+	// start, never as a cache miss (bugs.md 2026-08-30). Every other
+	// compaction is a cost and does NOT set it.
+	ContextReset bool
 }
 
 // TurnRecorder captures completed agent turns, including tool calls and results.
@@ -41,6 +47,12 @@ type TurnRecorder struct {
 	turnThinking         strings.Builder
 	turnResponses        strings.Builder
 	curRole, curGoal     string // identity of the in-progress turn's calls
+	// pendingReset latches an intentional context reset (fresh-context goal
+	// begin, summarize pass) observed between records; the next
+	// RecordCompletion / FinalizeTurn consumes it and carries ContextReset,
+	// so the /stats:cache miss scan treats that record as a conversation
+	// boundary instead of a cache miss.
+	pendingReset bool
 }
 
 // NewTurnRecorder creates an empty turn recorder.
@@ -166,6 +178,7 @@ func (tr *TurnRecorder) FinalizeTurn(agent *agentic.Agent, goalID string) TurnRe
 		AssistantResponses: responses,
 		AgentRole:          "main",
 		GoalID:             goalID,
+		ContextReset:       tr.takeContextResetLocked(),
 	}
 	tr.turnHistory = append(tr.turnHistory, record)
 	tr.turnToolCallsAccum = nil
@@ -184,6 +197,27 @@ func (tr *TurnRecorder) currentTurnNumberLocked() int {
 	return len(tr.turnHistory) + 1
 }
 
+// MarkContextReset latches an intentional context reset (EventContextReset —
+// fresh-context goal begin; EventCompact with the summarize strategy).
+// The next recorded completion or finalized turn carries ContextReset so the
+// /stats:cache miss scan restarts its baseline there instead of reporting the
+// new conversation's cold start as a cache miss (bugs.md 2026-08-30). Every
+// other compaction is a cost and must NOT mark: its busts count as
+// unexpected.
+func (tr *TurnRecorder) MarkContextReset() {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	tr.pendingReset = true
+}
+
+// takeContextResetLocked returns and clears the pending reset latch.
+// Callers must hold tr.mu.
+func (tr *TurnRecorder) takeContextResetLocked() bool {
+	pending := tr.pendingReset
+	tr.pendingReset = false
+	return pending
+}
+
 // RecordCompletion appends one LLM API call's usage to the session-scoped
 // completion log. Called for every EventTokenStats observed on the main agent
 // (one per streaming round) and for every sub-agent stats callback, so a
@@ -200,12 +234,13 @@ func (tr *TurnRecorder) RecordCompletion(role, goalID string, u TurnTokenUsage, 
 		tr.curRole, tr.curGoal = role, goalID
 	}
 	rec := CompletionRecord{
-		TurnNumber: turnNumber,
-		PromptN:    u.PromptN,
-		CacheRead:  u.CacheRead,
-		CacheWrite: u.CacheWrite,
-		AgentRole:  role,
-		GoalID:     goalID,
+		TurnNumber:   turnNumber,
+		PromptN:      u.PromptN,
+		CacheRead:    u.CacheRead,
+		CacheWrite:   u.CacheWrite,
+		AgentRole:    role,
+		GoalID:       goalID,
+		ContextReset: tr.takeContextResetLocked(),
 	}
 	tr.completions = append(tr.completions, rec)
 	return rec

@@ -110,24 +110,29 @@ type sessionStats struct {
 	CacheReadTotal  int
 	CacheWriteTotal int
 	// Cache-miss counters, split by failure mode (CM footer part and the
-	// persisted session summary): full = zero cache-read after establishment
-	// (entire prefix recomputed), partial = cache-read drop beyond tolerance
-	// (a suffix recomputed). CacheMissedTokens is the exact token damage
-	// summed over the counted misses (missed = prevCacheRead for full,
+	// persisted session summary): unexpected = zero cache-read while the
+	// prefix was still valid (entire prefix recomputed — TTL expiry,
+	// provider eviction, micro-compaction busts), partial = cache-read
+	// drop beyond tolerance (a suffix recomputed). Intentional resets
+	// (fresh-context goal, a summarize pass) never count — every other
+	// compaction is a cost whose misses still count — bugs.md 2026-08-30
+	// renamed the old "full" category to "unexpected".
+	// CacheMissedTokens is the exact token damage summed over the counted
+	// misses (missed = prevCacheRead for unexpected,
 	// prevCacheRead-cacheRead for partial).
-	CacheMissesFull    int     `json:"cm_full,omitempty"`
-	CacheMissesPartial int     `json:"cm_partial,omitempty"`
-	CacheMissedTokens  int64   `json:"cm_tokens,omitempty"`
-	SpeedTokPerSec     float64 // last turn output tok/s
-	ContextEstimate    int
-	ContextProjected   int
-	ContextMax         int
-	CostUSD            float64
-	ShowCost           bool
-	ToolCalls          int
-	ToolCallLevel      ToolCallLevel // 0=normal, 1=warning, 2=stopped
-	MicroCompacts      int
-	Compacts           int
+	CacheMissesUnexpected int     `json:"cm_unexpected,omitempty"`
+	CacheMissesPartial    int     `json:"cm_partial,omitempty"`
+	CacheMissedTokens     int64   `json:"cm_tokens,omitempty"`
+	SpeedTokPerSec        float64 // last turn output tok/s
+	ContextEstimate       int
+	ContextProjected      int
+	ContextMax            int
+	CostUSD               float64
+	ShowCost              bool
+	ToolCalls             int
+	ToolCallLevel         ToolCallLevel // 0=normal, 1=warning, 2=stopped
+	MicroCompacts         int
+	Compacts              int
 	// LastCacheHit is the most recent completion's cache-hit trend —
 	// rendered as CH:<avg>%▸<last>% where <avg> is the rolling average
 	// of the last 10 observations and <last> is the most recent rate.

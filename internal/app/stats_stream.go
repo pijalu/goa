@@ -413,7 +413,7 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 	tokenTotalPredicted := a.tokenPredictedTotal
 	tokenCacheRead := a.tokenCacheReadTotal
 	tokenCacheWrite := a.tokenCacheWriteTotal
-	cacheMissesFull := a.tokenCacheFullMisses
+	cacheMissesUnexpected := a.tokenCacheUnexpectedMisses
 	cacheMissesPartial := a.tokenCachePartialMisses
 	statsSeen := a.turnStatsSeen
 	a.turnStatsSeen = false // next turn starts with no stats observed
@@ -431,8 +431,8 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 
 	line := fmt.Sprintf("[stats] turn %d: in=%d out=%d speed=%.1f ctx=%.1f%%/%d",
 		turn, promptN, predictedN, speed, ctxPct, ctxMax)
-	if cacheMissesFull > 0 || cacheMissesPartial > 0 {
-		line += fmt.Sprintf(" cm=%d|%d", cacheMissesFull, cacheMissesPartial)
+	if cacheMissesUnexpected > 0 || cacheMissesPartial > 0 {
+		line += fmt.Sprintf(" cm=%d|%d", cacheMissesUnexpected, cacheMissesPartial)
 	}
 
 	if modelCfg != nil && modelCfg.Pricing != nil {

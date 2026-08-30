@@ -186,40 +186,41 @@ func cacheHitColorFor(pct, prevPct float64, hasPrev bool) string {
 // file/theme: the red is the cache-hit drop / token_critical red, the
 // orange is the historical CM warning color.
 const (
-	cacheMissFullColor    = "#f85149"
-	cacheMissPartialColor = "#d29922"
+	cacheMissUnexpectedColor = "#f85149"
+	cacheMissPartialColor    = "#d29922"
 )
 
 // formatCacheMissPartIfAny renders the CM part, or "" when both miss kinds
 // are zero (a clean session keeps the part hidden).
 func formatCacheMissPartIfAny(s sessionStats) string {
-	if s.CacheMissesFull == 0 && s.CacheMissesPartial == 0 {
+	if s.CacheMissesUnexpected == 0 && s.CacheMissesPartial == 0 {
 		return ""
 	}
-	return formatCacheMissPart(s.CacheMissesFull, s.CacheMissesPartial)
+	return formatCacheMissPart(s.CacheMissesUnexpected, s.CacheMissesPartial)
 }
 
 // formatCacheMissPart renders the cache-miss counter split by failure mode:
-// CM:X|Y where X counts FULL misses (red — the entire prefix was recomputed)
-// and Y counts PARTIAL misses (warning orange — a suffix was recomputed).
+// CM:X|Y where X counts UNEXPECTED misses (red — the entire still-valid
+// prefix was recomputed; intentional resets never land here) and Y counts
+// PARTIAL misses (warning orange — a suffix was recomputed).
 // Only the counts carry color — the "CM:" label and the "|" separator stay
 // in the default footer color. A zero count is omitted per kind, separator
-// included (CM:2 full-only, CM:3 partial-only); the caller hides the whole
+// included (CM:2 unexpected-only, CM:3 partial-only); the caller hides the whole
 // part when both are zero. The footer shows counts only — the exact token
 // damage lives in /stats:cache and the session export (cm_tokens), keeping
 // the segment compact (CM:1, not CM:1·71,424).
-func formatCacheMissPart(full, partial int) string {
+func formatCacheMissPart(unexpected, partial int) string {
 	var b strings.Builder
 	b.WriteString("CM:")
-	if full > 0 {
-		b.WriteString(ansi.Fg(cacheMissFullColor))
-		fmt.Fprintf(&b, "%d", full)
+	if unexpected > 0 {
+		b.WriteString(ansi.Fg(cacheMissUnexpectedColor))
+		fmt.Fprintf(&b, "%d", unexpected)
 		b.WriteString(ansi.Reset)
 	}
 	if partial > 0 {
 		// The separator only exists to split two rendered counts — a
 		// partial-only display reads CM:3, not CM:|3.
-		if full > 0 {
+		if unexpected > 0 {
 			b.WriteString("|")
 		}
 		b.WriteString(ansi.Fg(cacheMissPartialColor))
