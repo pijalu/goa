@@ -274,16 +274,23 @@ func toggleCacheGateValue(v string) string {
 
 // ceilingPercentItems builds the ceiling picker: 0 (disabled) plus 5..100
 // in 5% steps. withInherit prepends the per-model "inherit (clear)" row.
+// Every row sets PreserveOrder: the ladder is inherently ordered, and the
+// selector's default alphabetical Label sort interleaves the single-digit
+// entry after the two-digit ones (45%, 5%, 50%) and 100% after 10% — the
+// picker must read in ascending numeric order (bugs.md). Values stay
+// unpadded: they are the persisted config keys and the ✓ marker matches on
+// them.
 func ceilingPercentItems(withInherit bool) []tui.SelectorItem {
 	items := make([]tui.SelectorItem, 0, 21)
 	if withInherit {
-		items = append(items, tui.SelectorItem{Value: "", Label: "inherit (clear)", Description: "use the global threshold"})
+		items = append(items, tui.SelectorItem{Value: "", Label: "inherit (clear)", Description: "use the global threshold", PreserveOrder: true})
 	}
-	items = append(items, tui.SelectorItem{Value: "0", Label: "0% (disabled)", Description: "layer off"})
+	items = append(items, tui.SelectorItem{Value: "0", Label: "0% (disabled)", Description: "layer off", PreserveOrder: true})
 	for pct := 5; pct <= 100; pct += 5 {
 		items = append(items, tui.SelectorItem{
-			Value: fmt.Sprintf("%d", pct),
-			Label: fmt.Sprintf("%d%%", pct),
+			Value:         fmt.Sprintf("%d", pct),
+			Label:         fmt.Sprintf("%d%%", pct),
+			PreserveOrder: true,
 		})
 	}
 	return items
