@@ -40,6 +40,29 @@ func TestTurnRecorder_FinalizeTurnTagsIdentity(t *testing.T) {
 	}
 }
 
+// TestTurnRecorder_CurrentTurnCarriesIdentity pins that the in-progress turn
+// snapshot is tagged with the agent role and goal of its calls (bugs.md
+// 2026-08-30: an untagged snapshot grouped under the wrong /stats:cache
+// section — "main" instead of "main · goal" — while its per-call entries
+// grouped correctly).
+func TestTurnRecorder_CurrentTurnCarriesIdentity(t *testing.T) {
+	tr := NewTurnRecorder()
+	tr.ResetTurn(time.Now())
+	tr.RecordCompletion("main", "goal-42", TurnTokenUsage{PromptN: 10, CacheRead: 90}, 0)
+	cur := tr.CurrentTurn()
+	if cur == nil {
+		t.Fatal("no current turn snapshot")
+	}
+	if cur.AgentRole != "main" || cur.GoalID != "goal-42" {
+		t.Errorf("current turn identity = (%q, %q), want (main, goal-42)", cur.AgentRole, cur.GoalID)
+	}
+	// Finalizing the turn clears the snapshot identity with it.
+	tr.FinalizeTurn(nil, "goal-42")
+	if got := tr.CurrentTurn(); got != nil {
+		t.Errorf("current turn after finalize = %+v, want nil", got)
+	}
+}
+
 // TestTurnRecorder_RecordSubAgentTurn covers the sub-agent ingestion path:
 // a companion/stage agent's final token stats land as a completed,
 // identity-tagged turn continuing the shared numbering.

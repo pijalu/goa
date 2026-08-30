@@ -254,7 +254,7 @@ func TestWriteCacheHitLast10(t *testing.T) {
 	if rows != 10 {
 		t.Errorf("table must cap at 10 data rows, got %d:\n%s", rows, out)
 	}
-	if !strings.HasPrefix(out, "# Last 10 exchanges\n| Turn | Call | CH % | Lost |\n|---|---|---|---|\n") {
+	if !strings.HasPrefix(out, "## Last 10 exchanges\n| Turn | Call | CH % | Lost |\n|---|---|---|---|\n") {
 		t.Errorf("missing heading or table skeleton:\n%s", out)
 	}
 	// Oldest first, newest last: first data row is T3, last is T12.
@@ -322,8 +322,8 @@ func TestWriteCacheHitLast10_GroupsPerAgentGoal(t *testing.T) {
 	// Two sections, each carrying only its own completions: main keeps its
 	// two per-call rows, companion its one.
 	for _, want := range []string{
-		"## main\n",
-		"## companion\n",
+		"# main\n",
+		"# companion\n",
 		"| T1 | #1 | 75.0% | 0 |",
 		"| T1 | #2 | 90.0% | 0 |",
 		"| T2 | #1 | 80.0% | 0 |",
@@ -343,14 +343,14 @@ func TestWriteCacheHitLast10_Empty(t *testing.T) {
 	}
 }
 
-// TestWriteCacheAvgPerTurn verifies the per-turn MD table shape: turn,
-// padded kT volume, CM counters, hit rate.
+// TestWriteCacheAvgPerTurn verifies the per-turn MD table shape (legacy
+// turns-only series): turn, padded kT volume, CM counters, hit rate.
 func TestWriteCacheAvgPerTurn(t *testing.T) {
 	var b strings.Builder
 	writeCacheAvgPerTurn(&b, cacheTurnsFromHistory(cacheTurns(
 		[3]int{0, 90, 10},  // 90%, 100 tokens total → 000000.1kT
 		[3]int{0, 960, 40}, // 96%, 1000 tokens → 000001.0kT
-	), nil))
+	), nil), nil)
 	out := b.String()
 	for _, want := range []string{
 		"| Turn | Tokens kT | CM | CH % |",
@@ -374,7 +374,7 @@ func TestWriteCacheAvgPerTurn_MissCounters(t *testing.T) {
 	writeCacheAvgPerTurn(&b, cacheTurnsFromHistory(cacheTurns(
 		[3]int{0, 800, 200}, // T1: warm, 80%
 		[3]int{500, 0, 0},   // T2: full miss (500 tokens recomputed)
-	), nil))
+	), nil), nil)
 	out := b.String()
 	if !strings.Contains(out, "| T1 | 000001.0 | 0-0 |") {
 		t.Errorf("T1 must show clean counters:\n%s", out)
@@ -384,13 +384,15 @@ func TestWriteCacheAvgPerTurn_MissCounters(t *testing.T) {
 	}
 }
 
-// TestWriteCacheSessionTotal verifies the token-weighted session percentage.
+// TestWriteCacheSessionTotal verifies the token-weighted session percentage
+// over the legacy turns-only series (the per-call path is pinned by
+// TestWriteCacheGlobalStatistics_WeightedOverCalls).
 func TestWriteCacheSessionTotal(t *testing.T) {
 	var b strings.Builder
-	writeCacheSessionTotal(&b, cacheTurnsFromHistory(cacheTurns(
+	writeSessionTotalLine(&b, cacheTurnsOnActivity(cacheTurnsFromHistory(cacheTurns(
 		[3]int{100, 50, 50},
 		[3]int{100, 810, 90},
-	), nil))
+	), nil)), "turns")
 	out := b.String()
 	if !strings.Contains(out, "Session total:") || !strings.Contains(out, "weighted over 2 turns") {
 		t.Errorf("weighted total line missing:\n%s", out)
@@ -521,7 +523,7 @@ func TestWriteCacheView_FriendlyGoalHeaders(t *testing.T) {
 	writeCacheView(&b, cacheTurnsFromHistory(turns2, nil), cacheCompletionsFromHistory(comps2),
 		map[string]string{"g1": "tidy.falcon"})
 	out := b.String()
-	if !strings.Contains(out, "## main · tidy.falcon\n") || !strings.Contains(out, "## companion\n") {
+	if !strings.Contains(out, "# main · tidy.falcon\n") || !strings.Contains(out, "# companion\n") {
 		t.Errorf("friendly main header and unlabeled unnamed-goal fallback missing:\n%s", out)
 	}
 }
@@ -614,8 +616,8 @@ func TestWriteCacheGlobalStatistics(t *testing.T) {
 	var b strings.Builder
 	writeCacheGlobalStatistics(&b, g)
 	out := b.String()
-	if !strings.Contains(out, "# Global statistics\n") ||
-		!strings.Contains(out, "Session total:") || !strings.Contains(out, "weighted over 2 turns") {
+	if !strings.Contains(out, "## Global statistics\n") ||
+		!strings.Contains(out, "Session total:") || !strings.Contains(out, "weighted over 2 LLM calls") {
 		t.Fatalf("global statistics skeleton missing:\n%s", out)
 	}
 	if !strings.Contains(out, "Missed cache tokens: 0") || !strings.Contains(out, "perfect cache") {
@@ -656,7 +658,7 @@ func TestShowCacheStats_UsesFriendlyNames(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	out := w.Text()
-	if !strings.Contains(out, "## main · tidy.falcon\n") || !strings.Contains(out, "## companion\n") {
+	if !strings.Contains(out, "# main · tidy.falcon\n") || !strings.Contains(out, "# companion\n") {
 		t.Errorf("expected friendly main header and unnamed companion fallback:\n%s", out)
 	}
 }
@@ -670,5 +672,170 @@ func TestStatsCommand_GoalNameSourceInjection(t *testing.T) {
 	c.GoalNames = fakeGoalNamer{names: map[string]string{"g": "happy.fox"}}
 	if names := c.goalAliases(); len(names) != 1 || names["g"] != "happy.fox" {
 		t.Errorf("injected source bypassed: %v", names)
+	}
+}
+
+// --- /stats:cache report accuracy (bugs.md 2026-08-30) ---------------------
+
+// TestStatsCommand_CacheView_MultiCallBustConsistency reproduces the reported
+// contradiction: a goal turn whose per-call log holds a mid-turn cache bust
+// must report it on EVERY surface — the global headline, the misses table,
+// the CM counters, the drops table and the per-turn row — because all of them
+// scan the same per-call series. The turn record only snapshots the LAST call
+// (RecordTokenStats' last-call-wins), so turn-based scans hid the bust while
+// the completion-based headline reported it ("3,713 missed" vs "No cache
+// misses detected.").
+func TestStatsCommand_CacheView_MultiCallBustConsistency(t *testing.T) {
+	// One goal-tagged turn (T2) whose TurnRecord snapshot holds only the last
+	// (recovered) call — exactly what the last-call-wins accumulation leaves.
+	history := []core.TurnRecord{{
+		Number: 2, AgentRole: "main", GoalID: "g1",
+		TokenUsage: core.TurnTokenUsage{CacheRead: 8000},
+	}}
+	comps := []core.CompletionRecord{
+		{TurnNumber: 2, AgentRole: "main", GoalID: "g1", CacheRead: 8000},                  // warm: 100%
+		{TurnNumber: 2, AgentRole: "main", GoalID: "g1", PromptN: 232163, CacheRead: 100},  // bust: −7,900
+		{TurnNumber: 2, AgentRole: "main", GoalID: "g1", CacheRead: 8000},                  // recovery
+	}
+	rec := &fakeSessionRecorder{history: history, completions: comps}
+	w := newWriter()
+	if err := showCacheStats(w, rec, map[string]string{"g1": "sunny.toad"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	out := w.Text()
+	// The headline (already completion-based) reports the partial miss…
+	if !strings.Contains(out, "Missed cache tokens: 7,900 across 1 exchange(s) (0 full, 1 partial)") {
+		t.Errorf("headline must report the intra-turn partial miss:\n%s", out)
+	}
+	// …and every other surface must agree with it.
+	if !strings.Contains(out, "| T2 | partial | 98.8% | 7,900 |") {
+		t.Errorf("misses table must list the intra-turn partial miss:\n%s", out)
+	}
+	if !strings.Contains(out, "0-1 |") {
+		t.Errorf("CM counters must show the cumulative partial miss:\n%s", out)
+	}
+	if strings.Contains(out, "No cache misses detected.") || strings.Contains(out, "No cache drops detected.") {
+		t.Errorf("no-miss/drop lines contradict the reported miss:\n%s", out)
+	}
+	// The 100% → 0% rate collapse lands in the drops table.
+	if !strings.Contains(out, "| T2 | 100.0% | 0.0% | 100.0 | 7,900 |") {
+		t.Errorf("drops table must show the mid-turn collapse:\n%s", out)
+	}
+	// The per-turn row aggregates the turn's OWN calls (248.3kT over 3 calls,
+	// weighted 6.5%), not the last-call snapshot (8kT at 100%).
+	if !strings.Contains(out, "| T2 | 000248.3 | 0-1 | 6.5% |") {
+		t.Errorf("per-turn row must aggregate the turn's own calls:\n%s", out)
+	}
+	// The session total is token-weighted over the group's LLM calls — bust
+	// rounds dilute it (16,100 reads / 248,263 prompt-side tokens = 6.49%) —
+	// never a lone last-call snapshot presented as the whole session.
+	if !strings.Contains(out, "6.49%") || !strings.Contains(out, "(token-weighted over 3 LLM calls)") {
+		t.Errorf("session total must be weighted over all LLM calls:\n%s", out)
+	}
+}
+
+// TestStatsCommand_CacheView_HeadingHierarchy pins the corrected heading
+// levels: the agent/goal group header outranks its sections (# group, ##
+// sections) and the drops section is always headed like the misses one.
+func TestStatsCommand_CacheView_HeadingHierarchy(t *testing.T) {
+	turns := []core.TurnRecord{
+		{Number: 1, AgentRole: "main", GoalID: "g1", TokenUsage: core.TurnTokenUsage{PromptN: 10, CacheRead: 300, CacheWrite: 100}},
+		{Number: 2, AgentRole: "companion", TokenUsage: core.TurnTokenUsage{PromptN: 5}},
+	}
+	comps := []core.CompletionRecord{
+		{TurnNumber: 1, AgentRole: "main", GoalID: "g1", PromptN: 10, CacheRead: 300, CacheWrite: 100},
+		{TurnNumber: 2, AgentRole: "companion", PromptN: 5},
+	}
+	var b strings.Builder
+	writeCacheView(&b, cacheTurnsFromHistory(turns, nil), cacheCompletionsFromHistory(comps),
+		map[string]string{"g1": "tidy.falcon"})
+	out := b.String()
+	for _, want := range []string{
+		"# main · tidy.falcon\n",
+		"# companion\n",
+		"## Last 10 exchanges\n",
+		"## Global statistics\n",
+		"## Cache usage per turn\n",
+		"## Cache misses\n",
+		"## Cache drops\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("heading hierarchy missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "## main ·") || strings.Contains(out, "## companion") {
+		t.Errorf("group headers must not render below their sections:\n%s", out)
+	}
+}
+
+// TestWriteCacheGlobalStatistics_WeightedOverCalls pins the session-total
+// contract: token-weighted over the group's LLM calls — bust rounds dilute
+// the rate exactly like the footer's global fold — never over last-call-wins
+// turn snapshots, and never silent for a group the completion log knows.
+func TestWriteCacheGlobalStatistics_WeightedOverCalls(t *testing.T) {
+	g := cacheGroup{
+		key: "main",
+		turns: cacheTurnsFromHistory(cacheTurns(
+			[3]int{10000, 0, 0}, // last-call snapshot: the bust at 0%
+		), nil),
+		completions: []cacheTurn{
+			{Num: 1, CacheRead: 9000},              // warm call: 100%
+			{Num: 2, PromptN: 10000, CacheRead: 0}, // bust: 0% — 9,000-token prefix lost
+		},
+	}
+	var b strings.Builder
+	writeCacheGlobalStatistics(&b, g)
+	out := b.String()
+	if !strings.Contains(out, "47.37%") {
+		t.Errorf("weighted total must include the bust round (9000/19000 = 47.37%%):\n%s", out)
+	}
+	if !strings.Contains(out, "token-weighted over 2 LLM calls") {
+		t.Errorf("total must be labeled over LLM calls:\n%s", out)
+	}
+	if !strings.Contains(out, "Missed cache tokens: 9,000 across 1 exchange(s) (1 full, 0 partial)") {
+		t.Errorf("headline wrong:\n%s", out)
+	}
+}
+
+// TestStatsCommand_CacheView_CompletionsOnlyGroup: a group known only through
+// the per-call log (the turn series is empty, e.g. after a history reset)
+// must still render its Global statistics instead of falling silent.
+func TestStatsCommand_CacheView_CompletionsOnlyGroup(t *testing.T) {
+	rec := &fakeSessionRecorder{
+		completions: cacheCalls(
+			[4]int{1, 0, 8000, 0},
+			[4]int{2, 500, 0, 0},
+		),
+	}
+	w := newWriter()
+	if err := showCacheStats(w, rec, nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	out := w.Text()
+	if !strings.Contains(out, "Session total:") || !strings.Contains(out, "Missed cache tokens: 8,000") {
+		t.Errorf("completion-only group lost its Global statistics:\n%s", out)
+	}
+}
+
+// TestStatsCommand_CacheView_NoCacheTraffic: LLM traffic with zero cache
+// tokens (provider without prompt caching) must say so explicitly instead of
+// an empty Global statistics section that reads like a healthy cache.
+func TestStatsCommand_CacheView_NoCacheTraffic(t *testing.T) {
+	rec := &fakeSessionRecorder{
+		completions: cacheCalls(
+			[4]int{1, 12000, 0, 0},
+			[4]int{2, 15500, 0, 0},
+		),
+	}
+	w := newWriter()
+	if err := showCacheStats(w, rec, nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	out := w.Text()
+	if !strings.Contains(out, "No prompt-cache activity") {
+		t.Errorf("cache-less traffic must be called out explicitly:\n%s", out)
+	}
+	if strings.Contains(out, "Session total:") {
+		t.Errorf("a 0.00%% rate over cache-less calls is noise; the explicit line replaces it:\n%s", out)
 	}
 }

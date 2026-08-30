@@ -19,6 +19,13 @@ Configuration (environment):
   MOCK_FILLER_KB        filler size in KB    (default 30)
   MOCK_LLM_LOG          request log path     (default: no logging)
 
+Cache simulation (deterministic, for /stats:cache validation): each request's
+usage reports a simulated prefix cache. The prompt grows per request; the
+reported cached_tokens normally re-serves the previous prompt's size (~95%),
+and every MOCK_BUST_EVERY-th request busts the cache (cached_tokens drops to
+a small residual), so miss/drop surfaces have real signal. Disable with
+MOCK_BUST_EVERY=0.
+
 Usage:
   MOCK_LLM_PORT=8017 python3 e2e/mockllm/server.py &
   # or via e2e/lib.sh: start_mock_llm /tmp/goa-mock.log
@@ -27,6 +34,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -36,6 +44,42 @@ MODEL_ID = os.environ.get("MOCK_MODEL_ID", "mock-gen")
 CONTEXT_LENGTH = int(os.environ.get("MOCK_CONTEXT_LENGTH", "32768"))
 FILLER_KB = int(os.environ.get("MOCK_FILLER_KB", "30"))
 LOG_PATH = os.environ.get("MOCK_LLM_LOG", "")
+BUST_EVERY = int(os.environ.get("MOCK_BUST_EVERY", "4"))
+
+# Simulated prompt-cache state: the request counter drives deterministic
+# prompt growth and the every-Nth-request bust (see module docstring).
+_req_lock = threading.Lock()
+_req_count = 0
+
+
+def simulated_usage():
+    """Deterministic per-request usage with a simulated prefix cache.
+
+    Request n: prompt = 1200 + 400·n tokens; cached = the previous prompt's
+    size (≈95% prefix reuse) except on every BUST_EVERY-th request, where the
+    cache busts and only a 137-token residual is served (goa's OpenAI parser
+    reads prompt_tokens_details.cached_tokens as CacheReadTokens and nets the
+    rest out of prompt_n).
+    """
+    global _req_count
+    with _req_lock:
+        _req_count += 1
+        n = _req_count
+    prompt = 1200 + 400 * n
+    prev_prompt = 1200 + 400 * (n - 1)
+    if n == 1:
+        cached = 128  # cold start: tiny residual read, like local servers
+    elif BUST_EVERY > 0 and n % BUST_EVERY == 0:
+        cached = 137  # cache bust: prefix invalidated
+    else:
+        cached = int(prev_prompt * 0.95)
+    completion = 64
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "prompt_tokens_details": {"cached_tokens": cached},
+    }
 
 
 def build_filler(kb):
@@ -151,14 +195,14 @@ class Handler(BaseHTTPRequestHandler):
         text = SUMMARY if is_summarize else FILLER
 
         if not payload.get("stream"):
+            usage = simulated_usage()
             self._send_json(200, {
                 "id": "chatcmpl-mock", "object": "chat.completion",
                 "created": int(time.time()), "model": MODEL_ID,
                 "choices": [{"index": 0,
                              "message": {"role": "assistant", "content": text},
                              "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 100, "completion_tokens": len(text) // 4,
-                          "total_tokens": 100 + len(text) // 4},
+                "usage": usage,
             })
             return
 
@@ -171,7 +215,12 @@ class Handler(BaseHTTPRequestHandler):
             data = ("data: " + json.dumps(ev) + "\n\n").encode()
             self.wfile.write(("%x\r\n" % len(data)).encode() + data + b"\r\n")
             self.wfile.flush()
-        tail = b"data: [DONE]\n\n"
+        # Terminal usage chunk (empty choices): the OpenAI-compatible signal
+        # goa's parser reads for token/cache stats.
+        tail_event = {"id": "chatcmpl-mock", "object": "chat.completion.chunk",
+                      "created": int(time.time()), "model": MODEL_ID,
+                      "choices": [], "usage": simulated_usage()}
+        tail = ("data: " + json.dumps(tail_event) + "\n\ndata: [DONE]\n\n").encode()
         self.wfile.write(("%x\r\n" % len(tail)).encode() + tail + b"\r\n")
         self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()

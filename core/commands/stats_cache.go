@@ -28,6 +28,16 @@ import (
 //	                          complete size of the previously-cached prefix.
 //	+ supporting detail tables (per-turn usage, misses, drops).
 //
+// Heading levels: the agent/goal group header is "#" and every section
+// inside it is "##" — children never outrank their parent.
+//
+// ALL cache surfaces of a group (rates, CM counters, misses, drops, totals)
+// scan ONE authoritative series — cacheGroupSeries: the per-API-call
+// completion log when it exists, else the turn series (legacy sessions).
+// Turn records flatten a multi-call turn to its LAST call, so scanning them
+// for misses/drops hid intra-turn busts while the completion-based headline
+// reported them (bugs.md 2026-08-30).
+//
 // Derived from the current session's turn history (all agent calls in this
 // session) — not from the persistent cross-session usage store.
 //
@@ -238,6 +248,18 @@ func groupCacheTurns(turns []cacheTurn, completions []cacheTurn, names map[strin
 	return groups
 }
 
+// cacheGroupSeries returns the group's authoritative chronological series for
+// every cache surface: the per-API-call completion log when it exists (it
+// keeps every LLM call — turn records flatten multi-call turns to their last
+// call), falling back to the turn series for legacy sessions without a
+// completion log.
+func cacheGroupSeries(g cacheGroup) []cacheTurn {
+	if len(g.completions) > 0 {
+		return g.completions
+	}
+	return g.turns
+}
+
 // writeCacheView renders the /stats:cache output: per agent/goal group
 // (friendly goal aliases in the headers), the last-10 exchanges table, the
 // global statistics block (weighted total + missed-cache-token headline),
@@ -248,20 +270,22 @@ func writeCacheView(b *strings.Builder, turns, completions []cacheTurn, names ma
 	multi := len(groups) > 1
 	for _, g := range groups {
 		if multi {
-			fmt.Fprintf(b, "## %s\n", g.key)
+			fmt.Fprintf(b, "# %s\n", g.key)
 		}
 		writeCacheGroupSections(b, g)
 	}
 }
 
 // writeCacheGroupSections renders the report layout for one group: the two
-// user-facing sections first, then the supporting detail tables.
+// user-facing sections first, then the supporting detail tables. Every miss/
+// drop/rate surface reads the same authoritative series.
 func writeCacheGroupSections(b *strings.Builder, g cacheGroup) {
-	writeCacheHitLast10(b, g.completions)
+	series := cacheGroupSeries(g)
+	writeCacheHitLast10(b, series)
 	writeCacheGlobalStatistics(b, g)
-	writeCacheAvgPerTurn(b, g.turns)
-	writeCacheMissList(b, g.turns)
-	writeCacheDrops(b, detectCacheDrops(g.turns, cacheDropThresholdPts))
+	writeCacheAvgPerTurn(b, g.turns, g.completions)
+	writeCacheMissList(b, series)
+	writeCacheDrops(b, detectCacheDrops(series, cacheDropThresholdPts))
 }
 
 // missScan is one index-aligned step of the shared cache-miss scan: Prev is
@@ -336,7 +360,7 @@ func cacheMisses(turns []cacheTurn) []cacheMissTurn {
 // call that dropped the rate would defeat the per-call window. Rendered on
 // screen through the MD pipeline.
 func writeCacheHitLast10(b *strings.Builder, completions []cacheTurn) {
-	b.WriteString("# Last 10 exchanges\n")
+	b.WriteString("## Last 10 exchanges\n")
 	scans := scanMisses(completions) // index-aligned with completions
 	type exchangeRow struct {
 		turn cacheTurn
@@ -376,17 +400,6 @@ func cacheCallActive(t cacheTurn) bool {
 	return t.PromptN > 0 || t.CacheRead > 0 || t.CacheWrite > 0
 }
 
-// cacheActiveTurns filters to turns with any cache activity (read or write).
-func cacheActiveTurns(turns []cacheTurn) []cacheTurn {
-	out := make([]cacheTurn, 0, len(turns))
-	for _, t := range turns {
-		if t.CacheRead > 0 || t.CacheWrite > 0 {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
 // cacheTurnsOnActivity filters to turns that actually called the LLM
 // (any prompt-side volume). Unlike cacheActiveTurns this KEEPS bust rounds
 // (zero reads after establishment): their 0% line and bumped CM counters are
@@ -401,22 +414,58 @@ func cacheTurnsOnActivity(turns []cacheTurn) []cacheTurn {
 	return out
 }
 
-// writeCacheAvgPerTurn renders section 2: an MD table with one row per
-// cache-active turn — turn number, full prompt-side token volume (kT),
-// cumulative cache-miss counters, per-turn hit rate.
-func writeCacheAvgPerTurn(b *strings.Builder, turns []cacheTurn) {
-	b.WriteString("# Cache usage per turn\n")
-	active := cacheTurnsOnActivity(turns)
+// writeCacheAvgPerTurn renders the per-turn MD table: one row per cache-active
+// turn — aggregated prompt-side token volume (kT), cumulative cache-miss
+// counters, per-turn hit rate. When the per-call log exists it aggregates
+// each turn's OWN calls (a turn record flattens multi-call turns to their
+// last call, which mislabeled whole turns with one call's rate); the turn
+// series is the legacy fallback. The CM counters always scan the same
+// unified series as the misses table and the global headline.
+func writeCacheAvgPerTurn(b *strings.Builder, turns, completions []cacheTurn) {
+	b.WriteString("## Cache usage per turn\n")
+	var active []cacheTurn
+	if len(completions) > 0 {
+		active = aggregateTurnsFromCalls(completions)
+	} else {
+		active = cacheTurnsOnActivity(turns)
+	}
 	if len(active) == 0 {
 		return
 	}
-	missByTurn := cacheMissCounters(turns)
+	missByTurn := cacheMissCounters(cacheGroupSeries(cacheGroup{turns: turns, completions: completions}))
 	b.WriteString("| Turn | Tokens kT | CM | CH % |\n|---|---|---|---|\n")
 	for _, t := range active {
 		cm := missByTurn[t.Num]
 		fmt.Fprintf(b, "| T%d | %08.1f | %d-%d | %.1f%% |\n",
 			t.Num, cacheTurnTokensK(t), cm[0], cm[1], cacheTurnRate(t))
 	}
+}
+
+// aggregateTurnsFromCalls folds the per-call log into one cacheTurn per turn
+// number for the per-turn table: prompt-side counters are summed across the
+// turn's calls, so kT is the volume the turn actually processed and CH% the
+// token-weighted rate of all its calls (first-appearance order, chronological
+// in the log).
+func aggregateTurnsFromCalls(calls []cacheTurn) []cacheTurn {
+	index := make(map[int]int, len(calls))
+	out := make([]cacheTurn, 0, len(calls))
+	for _, c := range calls {
+		if !cacheCallActive(c) {
+			continue
+		}
+		if i, ok := index[c.Num]; ok {
+			out[i].PromptN += c.PromptN
+			out[i].CacheRead += c.CacheRead
+			out[i].CacheWrite += c.CacheWrite
+			continue
+		}
+		index[c.Num] = len(out)
+		out = append(out, cacheTurn{
+			Num: c.Num, PromptN: c.PromptN, CacheRead: c.CacheRead, CacheWrite: c.CacheWrite,
+			AgentRole: c.AgentRole, GoalID: c.GoalID,
+		})
+	}
+	return out
 }
 
 // cacheTurnTokensK returns the turn's full prompt-side volume (uncached input
@@ -439,19 +488,10 @@ func cacheMissCounters(turns []cacheTurn) map[int][2]int {
 	return out
 }
 
-// writeCacheSessionTotal renders the token-weighted cache-hit percentage
-// line (kept as a wrapper; it now lives inside Global statistics).
-func writeCacheSessionTotal(b *strings.Builder, turns []cacheTurn) {
-	active := cacheActiveTurns(turns)
-	if len(active) == 0 {
-		return
-	}
-	writeSessionTotalLine(b, active)
-}
-
 // writeSessionTotalLine emits the weighted-percentage headline over an
-// already-filtered cache-active series.
-func writeSessionTotalLine(b *strings.Builder, active []cacheTurn) {
+// already-filtered LLM-active series. unit names the series granularity
+// ("LLM calls" for the per-call log, "turns" for the legacy fallback).
+func writeSessionTotalLine(b *strings.Builder, active []cacheTurn, unit string) {
 	var read, write, prompt int
 	for _, t := range active {
 		read += t.CacheRead
@@ -459,8 +499,8 @@ func writeSessionTotalLine(b *strings.Builder, active []cacheTurn) {
 		prompt += t.PromptN
 	}
 	total := metrics.CacheHitPct(read, write, prompt)
-	fmt.Fprintf(b, "Session total: %s%.2f%%%s cache hit (token-weighted over %d turns)\n",
-		cacheLevelColor(total), total, ansi.Reset, len(active))
+	fmt.Fprintf(b, "Session total: %s%.2f%%%s cache hit (token-weighted over %d %s)\n",
+		cacheLevelColor(total), total, ansi.Reset, len(active), unit)
 }
 
 // missTotals aggregates one chain's missed-cache-token accounting for the
@@ -509,29 +549,44 @@ func missedTokensLine(tot missTotals) string {
 		ansi.Fg(color), label, tot.Events, tot.Full, tot.Partial, ansi.Reset)
 }
 
-// writeCacheGlobalStatistics renders report section 2 "Global statistics":
-// the token-weighted session hit rate plus the clear missed-cache-token
-// totals measured against previous content. Silent when the group never
-// called the LLM (matching the legacy session-total renderer).
+// writeCacheGlobalStatistics renders the "Global statistics" section: the
+// token-weighted session hit rate plus the missed-cache-token totals,
+// computed from the group's authoritative series (the per-call log — turn
+// snapshots only mirror its last call). LLM-active calls feed the weighted
+// rate, so bust rounds dilute it exactly like the footer's global fold. A
+// group whose provider never reported cache tokens says so explicitly
+// instead of a silent (or meaningless 0.00%) section.
 func writeCacheGlobalStatistics(b *strings.Builder, g cacheGroup) {
-	active := cacheActiveTurns(g.turns)
-	if len(active) == 0 {
+	series := cacheGroupSeries(g)
+	if len(series) == 0 {
 		return
 	}
-	b.WriteString("# Global statistics\n")
-	writeSessionTotalLine(b, active)
-	series := g.completions
-	if len(series) == 0 {
-		series = g.turns // legacy sessions without a per-call log
+	b.WriteString("## Global statistics\n")
+	if !seriesHasCacheTokens(series) {
+		fmt.Fprintf(b, "No prompt-cache activity: the provider reported 0 cached tokens across %d LLM call(s).\n",
+			len(cacheTurnsOnActivity(series)))
+		return
 	}
+	writeSessionTotalLine(b, cacheTurnsOnActivity(series), "LLM calls")
 	b.WriteString(missedTokensLine(totalMissedTokens(series)))
+}
+
+// seriesHasCacheTokens reports whether any entry of the series carried cache
+// reads or writes — the provider engaged prompt caching at least once.
+func seriesHasCacheTokens(series []cacheTurn) bool {
+	for _, t := range series {
+		if t.CacheRead > 0 || t.CacheWrite > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // writeCacheMissList renders section 4: an MD table with one row per cache
 // miss — turn number, kind (full/partial), share of the previously-cached
 // prefix, and the recomputed token volume (full miss = 100% of the prefix).
 func writeCacheMissList(b *strings.Builder, turns []cacheTurn) {
-	b.WriteString("# Cache misses\n")
+	b.WriteString("## Cache misses\n")
 	misses := cacheMisses(turns)
 	var any bool
 	for _, m := range misses {
@@ -587,11 +642,11 @@ func groupThousands(n int64) string {
 // before/after rates, the fall in points, and the cached-but-lost token
 // delta (grouped like the misses table's token figure).
 func writeCacheDrops(b *strings.Builder, drops []cacheDrop) {
+	b.WriteString("## Cache drops\n")
 	if len(drops) == 0 {
 		b.WriteString("No cache drops detected.\n")
 		return
 	}
-	b.WriteString("# Cache drops\n")
 	b.WriteString("| Turn | Before | After | Δ | Lost tokens |\n|---|---|---|---|---|\n")
 	for _, d := range drops {
 		fmt.Fprintf(b, "| T%d | %.1f%% | %.1f%% | %.1f | %s |\n",

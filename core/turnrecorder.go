@@ -40,6 +40,7 @@ type TurnRecorder struct {
 	turnUserInput        string
 	turnThinking         strings.Builder
 	turnResponses        strings.Builder
+	curRole, curGoal     string // identity of the in-progress turn's calls
 }
 
 // NewTurnRecorder creates an empty turn recorder.
@@ -58,6 +59,7 @@ func (tr *TurnRecorder) ResetTurn(start time.Time) {
 	tr.turnUserInput = ""
 	tr.turnThinking.Reset()
 	tr.turnResponses.Reset()
+	tr.curRole, tr.curGoal = "", ""
 }
 
 // RecordUserInput captures the user message that started this turn.
@@ -170,6 +172,7 @@ func (tr *TurnRecorder) FinalizeTurn(agent *agentic.Agent, goalID string) TurnRe
 	tr.turnToolResultsAccum = nil
 	tr.turnTokenUsage = TurnTokenUsage{}
 	tr.turnUserInput = ""
+	tr.curRole, tr.curGoal = "", ""
 	tr.turnStartTime = time.Time{} // mark no active turn
 	tr.mu.Unlock()
 	return record
@@ -185,12 +188,16 @@ func (tr *TurnRecorder) currentTurnNumberLocked() int {
 // completion log. Called for every EventTokenStats observed on the main agent
 // (one per streaming round) and for every sub-agent stats callback, so a
 // multi-call turn keeps its per-call granularity. turnNumber of 0 resolves to
-// the current in-progress turn number.
+// the current in-progress turn number, whose (role, goal) identity the
+// recorder remembers so CurrentTurn snapshots carry the same tags as the
+// call log (an untagged snapshot grouped under the wrong /stats:cache
+// section).
 func (tr *TurnRecorder) RecordCompletion(role, goalID string, u TurnTokenUsage, turnNumber int) CompletionRecord {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	if turnNumber <= 0 {
 		turnNumber = tr.currentTurnNumberLocked()
+		tr.curRole, tr.curGoal = role, goalID
 	}
 	rec := CompletionRecord{
 		TurnNumber: turnNumber,
@@ -267,8 +274,9 @@ func (tr *TurnRecorder) LastTurn() *TurnRecord {
 }
 
 // CurrentTurn returns a snapshot of the in-progress turn, or nil if no turn
-// is active. The returned record has Number set to len(history)+1 and Timing
-// computed from the turn start time.
+// is active. The returned record has Number set to len(history)+1, Timing
+// computed from the turn start time, and the agent/goal identity of the
+// turn's calls (see RecordCompletion).
 func (tr *TurnRecorder) CurrentTurn() *TurnRecord {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
@@ -286,6 +294,8 @@ func (tr *TurnRecorder) CurrentTurn() *TurnRecord {
 		UserInput:          tr.turnUserInput,
 		Thinking:           splitNonEmpty(tr.turnThinking.String()),
 		AssistantResponses: splitNonEmpty(tr.turnResponses.String()),
+		AgentRole:          tr.curRole,
+		GoalID:             tr.curGoal,
 	}
 }
 
