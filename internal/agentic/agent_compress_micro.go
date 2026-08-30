@@ -25,6 +25,14 @@ func (a *Agent) applyMicroLocked(cfg MicroCompactionConfig) compactionResult {
 // summarizeHistory runs the compaction summarize call and returns the
 // summary text plus the provider-reported usage of the summarize request
 // (nil when the provider emitted none — CX4 compaction_summary.usage).
+//
+// Transient failures retry through the SAME provider retry/backoff path the
+// conversation turns use (resolveRetryPlan → shouldRetryStreamError →
+// scheduleRetryAttempt): a 429 rate limit during summarize must send the
+// compaction into retries, not fail it (bugs.md summarize-429). The budget
+// and backoff come from the same policy resolution as the turn path.
+// Context-overflow errors are deliberately excluded from this loop:
+// compactOrdered owns the once-only shrink-and-retry recovery for them.
 func (a *Agent) summarizeHistory(ctx context.Context) (string, *provider.Usage, error) {
 	// Diagnosability: elided tool calls in the history used to reach the
 	// provider verbatim and 400 the summarize request (invalid JSON
@@ -37,6 +45,52 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, *provider.Usage, 
 		a.cfg.Logger.Log(Info, "summarizeHistory: snapshot carries %d elided tool-call block(s), serialized as text notes", elidedCount)
 	}
 
+	model := a.cfg.Model
+	opts := a.cfg.StreamOptions
+	if opts.APIKey == "" && a.cfg.APIKey != "" {
+		opts.APIKey = a.cfg.APIKey
+	}
+	// P13 (CA2/CA3): mark the summarize call as compaction so DeepSeek-compat
+	// routes carry x-goa-compact: 1, letting hosts separate compaction
+	// traffic from conversation requests (dsh GenerateOptions.purpose).
+	opts.Purpose = provider.PurposeCompaction
+
+	plan := resolveRetryPlan(opts)
+	summary, usage, err := a.summarizeStreamOnce(ctx, model, opts)
+	for retry := 0; err != nil; retry++ {
+		if isContextLengthError(err) {
+			break
+		}
+		// Same classification as conversation turns: 429/5xx/transport retry,
+		// non-retryable 4xx and a dead parent context (user cancel) surface
+		// immediately. Terminal episode: classified, no retry scheduled.
+		if !shouldRetryStreamError(ctx, err, plan.policy) {
+			a.emitRateLimit(model, err, 0, false, 0)
+			break
+		}
+		if !plan.always && retry >= plan.maxRetries {
+			// Terminal episode: the retry budget is exhausted.
+			a.emitRateLimit(model, err, 0, false, 0)
+			break
+		}
+		// Shared per-retry step: agent-log + EventRateLimit + progress bubble,
+		// then the Retry-After-aware backoff wait (false when canceled).
+		if !a.scheduleRetryAttempt(ctx, err, model, plan, retry) {
+			break
+		}
+		summary, usage, err = a.summarizeStreamOnce(ctx, model, opts)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	return summary, usage, nil
+}
+
+// summarizeStreamOnce performs ONE summarize attempt: it rebuilds the
+// provider context from the live history (parity with the conversation retry
+// path — executeRetryAttempt rebuilds per attempt too), opens the stream, and
+// drains it into the summary text.
+func (a *Agent) summarizeStreamOnce(ctx context.Context, model provider.Model, opts provider.StreamOptions) (string, *provider.Usage, error) {
 	// Build the request from the SAME prefix the conversation turns use —
 	// cfg.SystemPrompt, registered tool schemas, and buildProviderHistory's
 	// migration (leading-system skip, elision notes, orphan-result pairing) —
@@ -54,16 +108,6 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, *provider.Usage, 
 			{Type: provider.ContentBlockText, Text: compactSummaryInstruction},
 		},
 	})
-
-	model := a.cfg.Model
-	opts := a.cfg.StreamOptions
-	if opts.APIKey == "" && a.cfg.APIKey != "" {
-		opts.APIKey = a.cfg.APIKey
-	}
-	// P13 (CA2/CA3): mark the summarize call as compaction so DeepSeek-compat
-	// routes carry x-goa-compact: 1, letting hosts separate compaction
-	// traffic from conversation requests (dsh GenerateOptions.purpose).
-	opts.Purpose = provider.PurposeCompaction
 
 	stream, err := a.stream(model, pCtx, opts)
 	if err != nil {
@@ -106,7 +150,11 @@ func consumeSummarizeStream(ctx context.Context, stream *provider.AssistantMessa
 			summary.WriteString(event.Delta)
 		}
 		if event.Type == provider.EventError {
-			return "", fmt.Errorf("summarization error: %v", event.Error)
+			// %w keeps the *hooks.ProviderError chain intact: the retry loop
+			// in summarizeHistory classifies mid-stream failures (429 rate
+			// limit, 5xx) through errors.As — a %v wrap would strand them as
+			// unclassifiable text and skip the retry.
+			return "", fmt.Errorf("summarization error: %w", event.Error)
 		}
 	}
 

@@ -289,13 +289,26 @@ func TestMaybeCompress_DefaultHardCeilingRunsSummarizeNotCeiling(t *testing.T) {
 // still protects the window. This keeps the safety net while demoting it
 // below summarize.
 func TestPreparePath_CeilingOnlyWhenSummarizeCannotRun(t *testing.T) {
-	p := registerTestProvider("summarize-hard-fail", []provider.AssistantMessageEvent{
+	// EveryRound: summarize retries transient failures through the provider
+	// retry/backoff path (bugs.md summarize-429), so the fallback contract
+	// needs a summarize that fails on EVERY attempt, not just the first.
+	p := registerTestProviderEveryRound("summarize-hard-fail", []provider.AssistantMessageEvent{
 		{Type: provider.EventError, Error: context.DeadlineExceeded},
 	})
 	a := NewAgent(Config{
 		Model:        testModel(p.API()),
 		SystemPrompt: "sys",
 		Logger:       NewLogger(Error),
+		StreamOptions: provider.StreamOptions{
+			MaxRetries: 1,
+			RetryPolicy: &provider.RetryPolicy{
+				Backoff: provider.RetryBackoff{
+					InitialDelay: time.Millisecond,
+					MaxDelay:     5 * time.Millisecond,
+					Jitter:       0,
+				},
+			},
+		},
 	})
 	// Tiny window; the history sits ≈134% so the default hard tier fires and
 	// (when summarize fails) the ceiling enforcer has real work to do.
