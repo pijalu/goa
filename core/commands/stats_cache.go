@@ -68,6 +68,14 @@ type cacheTurn struct {
 	// other compaction (micro, elision, selective, …) is a cost and does
 	// NOT set it — its busts count as unexpected.
 	Reset bool
+	// TextOnlyCollapse marks a call that ran with the P7 text-only
+	// collapse (no tools, tool_choice "none" — the turn's final summary
+	// round): the request-shape change busts the provider prefix BY
+	// DESIGN, so the miss scan classifies the call's loss as a "no-tools
+	// step", never unexpected (bugs.md 2026-08-30). Per-call provenance
+	// from the completion log; the legacy turn series (turn records
+	// flatten multi-call turns) carries no such flag and stays false.
+	TextOnlyCollapse bool
 }
 
 const cacheMissDropTolerance = 1024
@@ -77,10 +85,14 @@ type cacheMissTurn struct {
 	// the provider served none of it (the whole prefix recomputed).
 	// Intentional context resets never land here — the scan treats them as
 	// conversation boundaries (bugs.md 2026-08-30 renamed "full" to
-	// "unexpected").
+	// "unexpected"). No-tools collapse calls classify under noTools.
 	num, unexpected, partial int
-	missed                   int
-	prev                     int // cache-read of the previous turn (the prefix the miss is measured against)
+	// noTools counts a "no-tools step": the call ran with the P7
+	// text-only collapse and its request-shape change busted the prefix
+	// by design (bugs.md 2026-08-30).
+	noTools int
+	missed  int
+	prev    int // cache-read of the previous turn (the prefix the miss is measured against)
 }
 
 // cacheDrop is one detected cache-rate fall between consecutive completions.
@@ -121,13 +133,14 @@ func cacheCompletionsFromHistory(comps []core.CompletionRecord) []cacheTurn {
 	out := make([]cacheTurn, 0, len(comps))
 	for _, c := range comps {
 		out = append(out, cacheTurn{
-			Num:        c.TurnNumber,
-			CacheRead:  c.CacheRead,
-			CacheWrite: c.CacheWrite,
-			PromptN:    c.PromptN,
-			AgentRole:  c.AgentRole,
-			GoalID:     c.GoalID,
-			Reset:      c.ContextReset,
+			Num:              c.TurnNumber,
+			CacheRead:        c.CacheRead,
+			CacheWrite:       c.CacheWrite,
+			PromptN:          c.PromptN,
+			AgentRole:        c.AgentRole,
+			GoalID:           c.GoalID,
+			Reset:            c.ContextReset,
+			TextOnlyCollapse: c.TextOnlyCollapse,
 		})
 	}
 	return out
@@ -317,19 +330,31 @@ type missScan struct {
 	Num    int
 	Prev   int
 	Missed int
+	// TextOnlyCollapse mirrors the scanned entry's no-tools collapse flag
+	// (P7): the loss on such a call is an intentional request-shape
+	// change, classified as a "no-tools step" rather than unexpected.
+	TextOnlyCollapse bool
 }
 
 // Unexpected reports an UNEXPECTED cache miss: the prefix was still valid
 // (no intentional reset since the last call) and every previously-cached
 // token stopped being served — the whole prefix must be recomputed from
 // scratch. Intentional context resets (fresh-context goal, summarize pass)
-// restart the scan baseline instead, so their cold starts are
-// never classified here (bugs.md 2026-08-30 reclassified the old "full"
-// category).
-func (s missScan) Unexpected() bool { return s.Missed > 0 && s.Missed == s.Prev }
+// restart the scan baseline instead, so their cold starts are never
+// classified here, and a P7 no-tools collapse call is its own kind
+// (NoToolsStep) — its bust is by design (bugs.md 2026-08-30).
+func (s missScan) Unexpected() bool { return !s.TextOnlyCollapse && s.Missed > 0 && s.Missed == s.Prev }
 
-// Partial reports a partial miss: part of the previous prefix vanished.
-func (s missScan) Partial() bool { return s.Missed > 0 && s.Missed != s.Prev }
+// Partial reports a partial miss: part of the previous prefix vanished
+// (collapse calls classify under NoToolsStep instead).
+func (s missScan) Partial() bool { return !s.TextOnlyCollapse && s.Missed > 0 && s.Missed != s.Prev }
+
+// NoToolsStep reports a loss caused by the P7 text-only collapse: the call's
+// request dropped the tools and forced tool_choice "none", so the prefix
+// bust was intentional — a known request-shape change, not an unexpected
+// miss (bugs.md 2026-08-30). The recomputed tokens stay visible in the
+// report; only the "unexpected" charge is waived.
+func (s missScan) NoToolsStep() bool { return s.TextOnlyCollapse && s.Missed > 0 }
 
 // scanMisses walks ANY chronological series (per-turn or per-API-call) and
 // classifies each entry against the previous interaction's cached content —
@@ -342,6 +367,11 @@ func (s missScan) Partial() bool { return s.Missed > 0 && s.Missed != s.Prev }
 //     no miss is classified for it and the baseline restarts, so later
 //     entries compare inside the new conversation only (bugs.md
 //     2026-08-30);
+//   - a TextOnlyCollapse entry (the P7 no-tools step: request dropped the
+//     tools, tool_choice "none") that loses cached content classifies as
+//     a "no-tools step" — an intentional request-shape change; the loss
+//     stays visible but is never charged to the unexpected counters
+//     (bugs.md 2026-08-30);
 //   - read falling to zero while the prefix was still valid = UNEXPECTED
 //     miss worth the entire previous prefix (every non-summarize
 //     compaction's busts land here — they carry no Reset marker: those
@@ -362,7 +392,7 @@ func scanMisses(series []cacheTurn) []missScan {
 		if t.CacheRead > 0 {
 			established = true
 		}
-		s := missScan{Num: t.Num, Prev: prev}
+		s := missScan{Num: t.Num, Prev: prev, TextOnlyCollapse: t.TextOnlyCollapse}
 		switch {
 		case established && t.CacheRead == 0 && prev > 0:
 			s.Missed = prev
@@ -382,9 +412,12 @@ func cacheMisses(turns []cacheTurn) []cacheMissTurn {
 	out := make([]cacheMissTurn, len(turns))
 	for i, sc := range scans {
 		m := cacheMissTurn{num: sc.Num, missed: sc.Missed, prev: sc.Prev}
-		if sc.Unexpected() {
+		switch {
+		case sc.NoToolsStep():
+			m.noTools = 1
+		case sc.Unexpected():
 			m.unexpected = 1
-		} else if sc.Partial() {
+		case sc.Partial():
 			m.partial = 1
 		}
 		out[i] = m
@@ -547,8 +580,11 @@ func writeSessionTotalLine(b *strings.Builder, active []cacheTurn, unit string) 
 // missTotals aggregates one chain's missed-cache-token accounting for the
 // Global statistics headline.
 type missTotals struct {
-	Tokens                      int // total tokens recomputed against previous content
-	Events, Unexpected, Partial int // miss counts by kind (unexpected = a still-valid prefix was lost)
+	Tokens     int // total tokens recomputed against previous content
+	Events     int // miss counts by kind (unexpected = a still-valid prefix was lost)
+	Unexpected int
+	Partial    int
+	NoTools    int // P7 no-tools collapse busts: intentional, never charged to unexpected
 }
 
 // totalMissedTokens folds a chain's per-call (falling back to per-turn when
@@ -556,7 +592,10 @@ type missTotals struct {
 // by requirement: a perfect chain totals ZERO tokens; an unexpected miss
 // totals the complete size of the previous interaction's prefix; partials
 // only the vanished portion beyond the shared tolerance. Intentional resets
-// (fresh-context goal, summarize) are boundaries, never figures here.
+// (fresh-context goal, summarize) are boundaries, never figures here. A P7
+// no-tools collapse bust keeps its recomputed tokens in the total (the cost
+// is real) but counts under NoTools — never charged to the unexpected
+// counters (bugs.md 2026-08-30).
 func totalMissedTokens(series []cacheTurn) missTotals {
 	var tot missTotals
 	for _, sc := range scanMisses(series) {
@@ -565,9 +604,12 @@ func totalMissedTokens(series []cacheTurn) missTotals {
 		}
 		tot.Tokens += sc.Missed
 		tot.Events++
-		if sc.Unexpected() {
+		switch {
+		case sc.NoToolsStep():
+			tot.NoTools++
+		case sc.Unexpected():
 			tot.Unexpected++
-		} else {
+		default:
 			tot.Partial++
 		}
 	}
@@ -576,7 +618,9 @@ func totalMissedTokens(series []cacheTurn) missTotals {
 
 // missedTokensLine renders the headline figures color-banded: green zero
 // (perfect), red when any unexpected miss occurred (a still-valid prefix was
-// lost — intentional resets never land here), orange otherwise.
+// lost — intentional resets never land here), orange otherwise. No-tools
+// collapse events (intentional shape changes) are named in their own
+// segment; sessions without them keep the established format untouched.
 func missedTokensLine(tot missTotals) string {
 	label := fmt.Sprintf("Missed cache tokens: %s", groupThousands(int64(tot.Tokens)))
 	color := cacheColorOrange
@@ -588,8 +632,13 @@ func missedTokensLine(tot missTotals) string {
 	if tot.Tokens == 0 {
 		return fmt.Sprintf("%s%s — perfect cache%s\n", ansi.Fg(color), label, ansi.Reset)
 	}
-	return fmt.Sprintf("%s%s across %d exchange(s) (%d unexpected, %d partial)%s\n",
-		ansi.Fg(color), label, tot.Events, tot.Unexpected, tot.Partial, ansi.Reset)
+	counts := fmt.Sprintf("(%d unexpected, %d partial", tot.Unexpected, tot.Partial)
+	if tot.NoTools > 0 {
+		counts += fmt.Sprintf(", %d no-tools", tot.NoTools)
+	}
+	counts += ")"
+	return fmt.Sprintf("%s%s across %d exchange(s) %s%s\n",
+		ansi.Fg(color), label, tot.Events, counts, ansi.Reset)
 }
 
 // writeCacheGlobalStatistics renders the "Global statistics" section: the
@@ -633,15 +682,17 @@ func seriesHasCacheTokens(series []cacheTurn) bool {
 }
 
 // writeCacheMissList renders section 4: an MD table with one row per cache
-// miss — turn number, kind (unexpected/partial), share of the
-// previously-cached prefix, and the recomputed token volume (unexpected miss
-// = 100% of the prefix — the whole still-valid prefix was recomputed).
+// miss — turn number, kind (unexpected / partial / no-tools step), share of
+// the previously-cached prefix, and the recomputed token volume (unexpected
+// miss = 100% of the prefix — the whole still-valid prefix was recomputed).
+// A "no-tools step" row answers the report's core question at a glance: the
+// bust was the intentional P7 text-only collapse, not a lost prefix.
 func writeCacheMissList(b *strings.Builder, turns []cacheTurn) {
 	b.WriteString("## Cache misses\n")
 	misses := cacheMisses(turns)
 	var any bool
 	for _, m := range misses {
-		if m.unexpected == 0 && m.partial == 0 {
+		if m.unexpected == 0 && m.partial == 0 && m.noTools == 0 {
 			continue
 		}
 		if !any {
@@ -652,8 +703,11 @@ func writeCacheMissList(b *strings.Builder, turns []cacheTurn) {
 		if m.unexpected != 0 {
 			kind = "unexpected"
 		}
+		if m.noTools != 0 {
+			kind = "no-tools step"
+		}
 		pct := 100.0
-		if m.partial != 0 && m.prev > 0 {
+		if m.prev > 0 && m.missed != m.prev {
 			pct = float64(m.missed) / float64(m.prev) * 100
 		}
 		fmt.Fprintf(b, "| T%d | %s | %.1f%% | %s |\n",
