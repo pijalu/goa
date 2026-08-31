@@ -509,6 +509,27 @@ func (c *Config) sanitizeDanglingActiveTeam() {
 	c.Teams.Active = ""
 }
 
+// sanitizeDanglingCompressionModels drops context_compression.per_model
+// entries whose model ID is no longer in the model catalog. Overrides persist
+// in whichever layer set them while models can be deleted from another layer,
+// via the model picker, or by hand; the stale entry then hard-failed startup
+// validation ("no model with id %q is configured"). A dangling override is
+// inert at runtime — nothing resolves it — so dropping it with a warning is
+// equivalent to never having configured it, under the same
+// heal-before-validate contract as sanitizeDanglingActiveTeam. Validate()
+// deliberately keeps rejecting unknown model IDs so interactive edits
+// (/config set on a per_model.<id>.* key) still catch typos. Runs before
+// validation, and after model repair so repaired-in models are kept.
+func (c *Config) sanitizeDanglingCompressionModels() {
+	for id := range c.ContextCompression.PerModel {
+		if c.GetModelByID(id) != nil {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "Warning: context_compression.per_model %q references an unconfigured model — dropping stale override (model deleted?)\n", id)
+		delete(c.ContextCompression.PerModel, id)
+	}
+}
+
 // migrateLegacyMode converts old config fields to the new mode system.
 // Specifically: execution.mode → mode.defaults.<active_profile>
 // Called after all cascade layers are loaded but before validation.

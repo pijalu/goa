@@ -407,6 +407,12 @@ func removeModelFromConfig(cfg *config.Config, id string, saver config.ConfigSav
 		if cfg.ActiveModel == id {
 			cfg.ActiveModel = ""
 		}
+		// Drop the per-model compression override: it is keyed by model ID
+		// and would otherwise persist as a dangling entry that fails startup
+		// validation ("no model with id %q is configured"). The loader also
+		// heals stale entries from configs written before this cleanup
+		// existed (sanitizeDanglingCompressionModels).
+		delete(cfg.ContextCompression.PerModel, id)
 		if err := persistModelCatalogChange(host, cfg, saver); err != nil {
 			host.Flash("Failed to save: " + err.Error())
 			return

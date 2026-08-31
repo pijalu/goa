@@ -188,6 +188,11 @@ func (cl *CascadeLoader) Load() (*Config, error) {
 	// instead of failing validation and refusing to start.
 	cfg.sanitizeDanglingActiveTeam()
 
+	// Drop stale context_compression.per_model overrides (model deleted after
+	// the override was persisted). A dangling override is inert at runtime,
+	// so heal instead of failing validation and refusing to start.
+	cfg.sanitizeDanglingCompressionModels()
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

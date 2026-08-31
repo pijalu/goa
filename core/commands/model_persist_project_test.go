@@ -373,3 +373,35 @@ func TestRemoveActiveModel_ClearsProjectPin(t *testing.T) {
 		t.Fatalf("removed model resurrected from pin: %q", reloaded.ActiveModel)
 	}
 }
+
+// TestRemoveModel_DropsCompressionOverride is the stale-override regression:
+// removing a model must drop its context_compression.per_model override in
+// the same persist. The override is keyed by model ID, so leaving it behind
+// hard-failed the next startup ("no model with id %q is configured"). The
+// loader also heals stale entries from configs written before this cleanup
+// existed; this test pins the source-side cleanup.
+func TestRemoveModel_DropsCompressionOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GOA_HOME", home)
+	project := t.TempDir()
+
+	cfg := twoProviderConfig(t)
+	cfg.ContextCompression.PerModel = map[string]config.ModelCompressionOverride{
+		"ox-alpha": {Strategy: "summarize"}, // removed with the model
+		"ghost":    {Strategy: "micro"},     // already dangling: loader's job
+	}
+	ctx, _ := newPickerTestContextWithProject(t, cfg, project)
+
+	removeModelFromConfig(cfg, "ox-alpha", ctx.ConfigSaver, *ctx)
+
+	if _, ok := cfg.ContextCompression.PerModel["ox-alpha"]; ok {
+		t.Errorf("ox-alpha override survived model removal: %v", cfg.ContextCompression.PerModel)
+	}
+	// Out of scope for the removal path: an entry that was already dangling
+	// before the deletion is healed by the loader, not here.
+	if _, ok := cfg.ContextCompression.PerModel["ghost"]; !ok {
+		t.Errorf("ghost override must be untouched by removal: %v", cfg.ContextCompression.PerModel)
+	}
+}
