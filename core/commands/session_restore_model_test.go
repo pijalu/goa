@@ -152,6 +152,59 @@ func markersIn(t *testing.T, f *restoreFixture) []agentic.OutputEvent {
 	return out
 }
 
+// waitForSessionMarkers polls the session file until at least minCount
+// model_selected markers are durably appended AND the last one resolves to
+// wantProvider/wantModel, returning the markers on success. SessionStore
+// persists asynchronously (a background goroutine batches events to disk so
+// the streaming hot path never blocks on I/O), so a marker written by
+// restoreSession may not be on disk when restoreSession returns — under a
+// loaded scheduler the writer goroutine can lag well past the return (the CI
+// shape: "expected seed start marker + adoption switch marker, got 1").
+// Mirrors waitForFlashContaining: it returns the MOMENT the expected state is
+// observed and only fails the test after the full deadline passes.
+func waitForSessionMarkers(t *testing.T, f *restoreFixture, minCount int, wantProvider, wantModel string, d time.Duration) []agentic.OutputEvent {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	var markers []agentic.OutputEvent
+	for {
+		markers = markersIn(t, f)
+		if len(markers) >= minCount {
+			if lastP, lastM, ok := core.SessionModelFromEvents(markers); ok && lastP == wantProvider && lastM == wantModel {
+				return markers
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("markers (>= %d, last %s/%s) not observed within %s; seen %d markers", minCount, wantProvider, wantModel, d, len(markers))
+			return markers
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestWaitForSessionMarkers_SlowWriter: an adoption marker appended to the
+// session file after a >400ms writer-goroutine lag (the loaded-box shape) is
+// still collected — a single synchronous read after restoreSession returns
+// would see only the seed and fail (bugs.md FLAKE 2026-08-26, marker half).
+func TestWaitForSessionMarkers_SlowWriter(t *testing.T) {
+	f := newRestoreFixture(t, []agentic.OutputEvent{
+		plainContentEvent(),
+		core.ModelSelectedMarker(core.ModelMarkerSourceStart, "p1", "m1"),
+	})
+	go func() {
+		time.Sleep(400 * time.Millisecond) // simulated writer-goroutine lag
+		late := core.NewSessionStore(f.dir)
+		late.StartSessionWithID(restoreModelSessionName)
+		late.WriteEvent(core.ModelSelectedMarker(core.ModelMarkerSourceSwitch, "p1", "m1"))
+		if err := late.Close(); err != nil {
+			t.Errorf("late append close: %v", err)
+		}
+	}()
+	markers := waitForSessionMarkers(t, f, 2, "p1", "m1", 5*time.Second)
+	if len(markers) != 2 {
+		t.Fatalf("got %d markers, want 2 (seed start + late switch)", len(markers))
+	}
+}
+
 // TestRestoreSession_AdoptsRecordedModel is the end-to-end RED test for the
 // bugs.md entry "session restore does not bind the session's provider/model":
 // restoring s1 (last binding m1 @ p1) while the global selection says p2/m2
@@ -202,10 +255,13 @@ func assertAdoptedBindingP1(t *testing.T, f *restoreFixture) {
 }
 
 // assertAdoptionMarkerP1 pins re-bind durability: a fresh switch marker lands
-// in the restored file on top of the seed start marker.
+// in the restored file on top of the seed start marker. Polled, not read
+// once: the marker is persisted by the async session writer (see
+// waitForSessionMarkers), so a synchronous read after restoreSession returns
+// races the writer goroutine under box load.
 func assertAdoptionMarkerP1(t *testing.T, f *restoreFixture) {
 	t.Helper()
-	markers := markersIn(t, f)
+	markers := waitForSessionMarkers(t, f, 2, "p1", "m1", 5*time.Second)
 	if len(markers) < 2 {
 		t.Fatalf("expected seed start marker + adoption switch marker, got %d", len(markers))
 	}
