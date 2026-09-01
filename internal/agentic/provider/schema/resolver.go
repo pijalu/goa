@@ -282,6 +282,14 @@ func mergeAuth(a *AuthConfig, o AuthConfig) {
 	if len(o.OAuthIdentity) > 0 {
 		a.OAuthIdentity = o.OAuthIdentity
 	}
+	if len(o.PerAPI) > 0 {
+		if a.PerAPI == nil {
+			a.PerAPI = map[string]APIAuth{}
+		}
+		for k, v := range o.PerAPI {
+			a.PerAPI[k] = v
+		}
+	}
 }
 
 func mergeCachePolicy(c *CachePolicy, o CachePolicy) {

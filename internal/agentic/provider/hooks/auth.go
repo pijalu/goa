@@ -48,19 +48,21 @@ func (h *AuthHook) ApplyRequest(ctx *RequestContext) error {
 
 	// If options provide an explicit API key, use it. The key is validated
 	// before first use; the config entry point is the explicit option.
+	auth := h.authFor(ctx.Model.Api)
+
 	if ctx.Options.APIKey != "" {
 		key, err := schema.ValidateAPIKey("options.api_key", ctx.Options.APIKey)
 		if err != nil {
 			return err
 		}
-		injectAuth(ctx.Headers, h.profile.Auth, key)
+		injectAuth(ctx.Headers, auth, key)
 		h.applyProviderHeaders(ctx)
 		return nil
 	}
 
 	// If Authorization header is already present, treat key as unused.
 	if hasHeader(ctx.Headers, "Authorization") || hasHeader(ctx.Headers, "Cf-Aig-Authorization") {
-		injectAuth(ctx.Headers, h.profile.Auth, "unused")
+		injectAuth(ctx.Headers, auth, "unused")
 		h.applyProviderHeaders(ctx)
 		return nil
 	}
@@ -70,14 +72,14 @@ func (h *AuthHook) ApplyRequest(ctx *RequestContext) error {
 	// naming the variable; a silent lookup is a checked-but-unset source and
 	// is listed if the provider requires a credential.
 	checked := []string{"options.api_key"}
-	for _, env := range h.profile.Auth.EnvVars {
+	for _, env := range auth.EnvVars {
 		checked = append(checked, env)
 		if raw := os.Getenv(env); raw != "" {
 			key, err := schema.ValidateAPIKey(env, raw)
 			if err != nil {
 				return err
 			}
-			injectAuth(ctx.Headers, h.profile.Auth, key)
+			injectAuth(ctx.Headers, auth, key)
 			h.applyProviderHeaders(ctx)
 			return nil
 		}
@@ -157,6 +159,29 @@ func injectAuth(headers map[string]string, auth schema.AuthConfig, token string)
 		prefix = "Bearer "
 	}
 	headers[auth.Header] = prefix + token
+}
+
+// authFor returns the effective AuthConfig for the given wire API. The base
+// profile auth is used unless the profile declares a per-API override
+// (AuthConfig.PerAPI) for that API — e.g. opencode zen serves anthropic
+// /messages (x-api-key) alongside chat/responses (Bearer) under one
+// provider identity.
+func (h *AuthHook) authFor(api schema.Api) schema.AuthConfig {
+	base := h.profile.Auth
+	if len(base.PerAPI) == 0 {
+		return base
+	}
+	ov, ok := base.PerAPI[string(api)]
+	if !ok {
+		return base
+	}
+	if ov.Header != "" {
+		base.Header = ov.Header
+		// When the header changes, the override's prefix wins (possibly
+		// empty); injectAuth re-derives "Bearer " for Authorization.
+		base.Prefix = ov.Prefix
+	}
+	return base
 }
 
 func hasHeader(headers map[string]string, name string) bool {

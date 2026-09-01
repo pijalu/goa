@@ -25,7 +25,10 @@ func TestModelEndpointURL(t *testing.T) {
 		{"responses-idempotent", agenticprovider.ApiOpenAIResponses, "https://opencode.ai/zen/v1/responses", "https://opencode.ai/zen/v1/responses"},
 		{"azure-responses-suffixed", agenticprovider.ApiAzureOpenAIResponses, "https://res.openai.azure.com/openai/v1", "https://res.openai.azure.com/openai/v1/responses"},
 		{"codex-owned-at-runtime", agenticprovider.ApiOpenAICodexResponses, "https://chatgpt.com/backend-api", "https://chatgpt.com/backend-api"},
-		{"anthropic-owned", agenticprovider.ApiAnthropicMessages, "https://api.anthropic.com", "https://api.anthropic.com"},
+		{"anthropic-bare-host", agenticprovider.ApiAnthropicMessages, "https://api.anthropic.com", "https://api.anthropic.com/v1/messages"},
+		{"anthropic-zen-versioned", agenticprovider.ApiAnthropicMessages, "https://opencode.ai/zen/v1", "https://opencode.ai/zen/v1/messages"},
+		{"anthropic-zen-go-versioned", agenticprovider.ApiAnthropicMessages, "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1/messages"},
+		{"anthropic-idempotent", agenticprovider.ApiAnthropicMessages, "https://opencode.ai/zen/v1/messages", "https://opencode.ai/zen/v1/messages"},
 		{"google-owned", agenticprovider.ApiGoogleGenerativeAI, "https://generativelanguage.googleapis.com/v1beta", "https://generativelanguage.googleapis.com/v1beta"},
 		{"empty-endpoint", agenticprovider.ApiOpenAIResponses, "", ""},
 	}

@@ -764,9 +764,110 @@ models:
   # the opencode provider entries declare (bugs.md 2026-08-30). Prefix ID so
   # every family member is covered (muse-spark-1.2, -contributor-free,
   # -contributor); all other fields inherit from the models.dev entry.
+  # base_url must carry the /responses path: goa posts to model.BaseURL
+  # verbatim (no per-API path append), so a bare .../v1 would 404/500.
   - id: "muse-spark-"
     provider: opencode
     api: openai-responses
+    base_url: "https://opencode.ai/zen/v1/responses"
   - id: "muse-spark-"
     provider: opencode-go
     api: openai-responses
+    base_url: "https://opencode.ai/zen/go/v1/responses"
+
+  # ---------------------------------------------------------------------
+  # OpenCode Zen per-model wire formats (verified against
+  # https://opencode.ai/docs/zen endpoint table + live probes, 2026).
+  #
+  # Zen is NOT a protocol converter: packages/console/.../handler.ts:198
+  # throws a generic Error ("Zen provider format must match request
+  # format") -> HTTP 500 when the request wire format differs from the
+  # model's provider format, and the request-body format converter
+  # (provider.ts createBodyConverter) is dead code. The models.dev catalog
+  # marks the whole opencode provider @ai-sdk/openai-compatible
+  # (chat-completions), which is correct only for the oa-compat families
+  # (deepseek/minimax/glm/kimi/mimo/ling/nemotron/laguna/longcat/hy3/
+  # big-pickle and every *-free model). The families below are served on
+  # other formats and would 500 under the chat-completions default:
+  #
+  #   anthropic-messages ({base}/messages):  claude-*, qwen3.5/3.6/3.7/3.8
+  #                                          plus|max (NOT the *-free ones,
+  #                                          which are oa-compat)
+  #   openai-responses   ({base}/responses): gpt-*, grok-*, muse-spark-*
+  #
+  # Every override also pins the full base_url (path included) because goa
+  # posts to model.BaseURL verbatim. Prefix IDs (trailing "-") keep the
+  # family covered as upstream adds versions; exact per-model entries are
+  # unnecessary since no member of these prefixes uses a different format.
+  #
+  # NOTE: the qwen3.6- prefix would also catch qwen3.6-plus-free (an
+  # oa-compat FREE model, chat/completions). Exact-ID overrides run AFTER
+  # prefix overrides (last-write-wins), so the free straggler is carved out
+  # explicitly below to keep it on the oa-compat surface.
+  # ---------------------------------------------------------------------
+
+  # Anthropic-format families on zen full tier.
+  - id: "claude-"
+    provider: opencode
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/v1/messages"
+  - id: "qwen3.5-"
+    provider: opencode
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/v1/messages"
+  - id: "qwen3.6-"
+    provider: opencode
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/v1/messages"
+  # Carve-out: qwen3.6-plus-free is oa-compat (chat/completions), NOT
+  # anthropic — the qwen3.6- prefix above would otherwise misroute it.
+  - id: "qwen3.6-plus-free"
+    provider: opencode
+    api: openai-completions
+    base_url: "https://opencode.ai/zen/v1/chat/completions"
+  - id: "qwen3.7-"
+    provider: opencode
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/v1/messages"
+  - id: "qwen3.8-"
+    provider: opencode
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/v1/messages"
+
+  # Anthropic-format families on zen Go tier (lite list; no claude here).
+  - id: "qwen3.5-"
+    provider: opencode-go
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/go/v1/messages"
+  - id: "qwen3.6-"
+    provider: opencode-go
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/go/v1/messages"
+  - id: "qwen3.7-"
+    provider: opencode-go
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/go/v1/messages"
+  - id: "qwen3.8-"
+    provider: opencode-go
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/go/v1/messages"
+
+  # OpenAI Responses-format families on zen full tier (gpt + grok).
+  - id: "gpt-"
+    provider: opencode
+    api: openai-responses
+    base_url: "https://opencode.ai/zen/v1/responses"
+  - id: "grok-"
+    provider: opencode
+    api: openai-responses
+    base_url: "https://opencode.ai/zen/v1/responses"
+
+  # OpenAI Responses-format families on zen Go tier.
+  - id: "gpt-"
+    provider: opencode-go
+    api: openai-responses
+    base_url: "https://opencode.ai/zen/go/v1/responses"
+  - id: "grok-"
+    provider: opencode-go
+    api: openai-responses
+    base_url: "https://opencode.ai/zen/go/v1/responses"

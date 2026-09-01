@@ -221,12 +221,40 @@ func ResponsesEndpoint(endpoint string) string {
 	return u.String()
 }
 
+// MessagesEndpoint ensures the endpoint URL points to the Anthropic Messages
+// route. Three input shapes are handled:
+//   - bare host (https://api.anthropic.com)      → {host}/v1/messages
+//   - versioned base (https://opencode.ai/zen/v1) → {base}/messages
+//   - already-suffixed ({base}/messages)          → unchanged (idempotent)
+//
+// Gateway providers that serve anthropic-format models through a shared
+// versioned base URL (OpenCode Zen/Go serve claude-* and qwen3.x-plus|max at
+// {base}/messages) need the route appended the same way the OpenAI surfaces
+// do; the anthropic transport otherwise POSTs the bare base URL.
+func MessagesEndpoint(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return endpoint // fallback
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	if strings.HasSuffix(u.Path, "/messages") {
+		return u.String()
+	}
+	// Bare host (no version prefix): insert the canonical /v1 before /messages.
+	if u.Path == "" {
+		u.Path = "/v1/messages"
+		return u.String()
+	}
+	u.Path += "/messages"
+	return u.String()
+}
+
 // modelEndpointURL adapts a configured provider endpoint to the wire URL for
 // an API: /chat/completions for the OpenAI-compatible surface, /responses for
-// the OpenAI Responses surfaces (the generic protocol runtime POSTs the URL
-// verbatim, so the full route must be in the model's BaseURL), the endpoint
-// itself when the protocol owns its path (Anthropic, Google, Bedrock, Mistral;
-// Codex normalization happens at request time).
+// the OpenAI Responses surfaces, /messages for the Anthropic Messages surface
+// (the generic protocol runtime POSTs the URL verbatim, so the full route must
+// be in the model's BaseURL). Google, Bedrock, and Mistral own their paths;
+// Codex normalization happens at request time.
 func modelEndpointURL(api agenticprovider.Api, endpoint string) string {
 	if endpoint == "" {
 		return ""
@@ -236,6 +264,8 @@ func modelEndpointURL(api agenticprovider.Api, endpoint string) string {
 		return ChatCompletionsEndpoint(endpoint)
 	case agenticprovider.ApiOpenAIResponses, agenticprovider.ApiAzureOpenAIResponses:
 		return ResponsesEndpoint(endpoint)
+	case agenticprovider.ApiAnthropicMessages:
+		return MessagesEndpoint(endpoint)
 	default:
 		return endpoint
 	}
