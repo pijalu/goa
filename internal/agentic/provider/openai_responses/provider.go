@@ -226,15 +226,13 @@ func buildResponsesBody(model provider.Model, ctx provider.Context, opts provide
 	if cacheKey == "" {
 		cacheKey = opts.SessionID
 	}
-	if opts.SessionID != "" || cacheKey != "" {
-		// Codex carries session affinity via prompt_cache_key only; the SSE
-		// backend rejects previous_response_id (HTTP 400). Other responses
-		// flavors chain turns via previous_response_id.
-		if isCodex {
-			body["prompt_cache_key"] = cacheKey
-		} else if opts.SessionID != "" {
-			body["previous_response_id"] = opts.SessionID
-		}
+	// Session affinity rides prompt_cache_key on every responses flavor
+	// (opencode parity): previous_response_id must reference a server-issued
+	// resp_* object, and the Goa session ID there is a hard HTTP 400 on
+	// strict upstreams (opencode Zen, 2026-09-02 — the same rejection class
+	// the codex carve-out above already handled).
+	if cacheKey != "" {
+		body["prompt_cache_key"] = cacheKey
 	}
 	return body
 }

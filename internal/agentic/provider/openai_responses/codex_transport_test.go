@@ -138,8 +138,10 @@ func TestBuildResponsesBodyCodexPromptCacheKeyPrecedence(t *testing.T) {
 	}
 }
 
-// TestBuildResponsesBodyPlainSession ensures non-codex responses flavors still
-// chain turns via previous_response_id (the codex carve-out did not regress).
+// TestBuildResponsesBodyPlainSession pins that non-codex responses flavors
+// carry session affinity via prompt_cache_key only: previous_response_id must
+// reference a server-issued resp_* object, and sending the Goa session ID
+// there is a hard HTTP 400 on strict upstreams (opencode Zen, 2026-09-02).
 func TestBuildResponsesBodyPlainSession(t *testing.T) {
 	model := provider.Model{ID: "gpt-5"}
 	ctx := provider.Context{
@@ -148,11 +150,11 @@ func TestBuildResponsesBodyPlainSession(t *testing.T) {
 		},
 	}
 	body := buildResponsesBody(model, ctx, provider.StreamOptions{SessionID: "s-1"}, "")
-	if got := body["previous_response_id"]; got != "s-1" {
-		t.Errorf("previous_response_id = %v, want s-1", got)
+	if _, hasPrev := body["previous_response_id"]; hasPrev {
+		t.Errorf("plain responses body must not send the session ID as previous_response_id")
 	}
-	if _, hasCache := body["prompt_cache_key"]; hasCache {
-		t.Errorf("plain responses body must not send prompt_cache_key here")
+	if got := body["prompt_cache_key"]; got != "s-1" {
+		t.Errorf("prompt_cache_key = %v, want s-1 (session affinity rides the cache key)", got)
 	}
 }
 

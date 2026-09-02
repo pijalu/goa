@@ -178,7 +178,8 @@ func TestOpenAIResponsesPromptCacheKey(t *testing.T) {
 	require.NoError(t, err)
 	var req map[string]any
 	require.NoError(t, json.Unmarshal(body, &req))
-	assert.Equal(t, "session-123", req["previous_response_id"])
+	assert.NotContains(t, req, "previous_response_id",
+		"SSE never sends the session ID as previous_response_id (strict upstreams 400)")
 	assert.Equal(t, "session-123", req["prompt_cache_key"])
 
 	body, err = p.BuildRequest(
@@ -190,7 +191,7 @@ func TestOpenAIResponsesPromptCacheKey(t *testing.T) {
 	require.NoError(t, err)
 	req = map[string]any{}
 	require.NoError(t, json.Unmarshal(body, &req))
-	assert.Equal(t, "session-123", req["previous_response_id"])
+	assert.NotContains(t, req, "previous_response_id")
 	assert.NotContains(t, req, "prompt_cache_key")
 
 	// Azure OpenAI Responses: sends prompt_cache_key whenever a session ID is present.
@@ -205,7 +206,7 @@ func TestOpenAIResponsesPromptCacheKey(t *testing.T) {
 	require.NoError(t, err)
 	req = map[string]any{}
 	require.NoError(t, json.Unmarshal(body, &req))
-	assert.Equal(t, "azure-session", req["previous_response_id"])
+	assert.NotContains(t, req, "previous_response_id")
 	assert.Equal(t, "azure-session", req["prompt_cache_key"])
 
 	// Codex Responses: sends prompt_cache_key whenever a session ID is present,

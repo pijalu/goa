@@ -62,9 +62,11 @@ type CompatFlags struct {
 	// include:["reasoning.encrypted_content"] request on the Responses APIs.
 	// Some backends (e.g. muse-spark behind the OpenCode gateways) do not
 	// support encrypted reasoning replay and reject it with HTTP 400. Nil
-	// means standard behavior: the include rides only on stateless requests —
-	// a previous_response_id-chained request keeps the reasoning server-side,
-	// making the include redundant there (and forbidden on strict upstreams).
+	// means standard behavior: every Goa Responses request is stateless
+	// (full-history replay; nothing chains server-side via
+	// previous_response_id), so the include rides all flavors by default —
+	// matching what the Codex flavor already pinned and what opencode sends
+	// for reasoning models.
 	SupportsEncryptedContent *bool `json:"supports_encrypted_content,omitempty"`
 	// RemoteCompaction is the provider/model-scoped server-side compaction
 	// capability: "" / "none" (default) = not supported, "v1" or "v2" = the

@@ -97,7 +97,7 @@ func buildResponsesBody(model schema.Model, ctx schema.Context, opts schema.Stre
 		applyCodexBodyFields(body, ctx)
 	}
 	applyResponsesToolFields(body, ctx)
-	applyResponsesSessionFields(body, model, opts, isCodex)
+	applyResponsesSessionFields(body, model, opts)
 	applyResponsesSamplingFields(body, model, opts, profile, isCodex)
 	if store := profile.Compat.SupportsStore; store != nil {
 		body["store"] = *store
@@ -134,20 +134,14 @@ func applyResponsesToolFields(body map[string]any, ctx schema.Context) {
 }
 
 // applyResponsesSessionFields wires session continuation and prompt caching.
-// Plain and Azure Responses send previous_response_id + prompt_cache_key when
-// a session ID is present. The ChatGPT Codex subscription transport is
-// different: it rejects previous_response_id outright over SSE (HTTP 400
-// "Unsupported parameter: previous_response_id") and carries session affinity
-// solely via prompt_cache_key — matching Pi's buildRequestBody and opencode,
-// where previous_response_id only appears on the WebSocket continuation path
-// (which Goa does not use; Goa is SSE-only).
-func applyResponsesSessionFields(body map[string]any, model schema.Model, opts schema.StreamOptions, isCodex bool) {
-	if opts.SessionID == "" {
-		return
-	}
-	if !isCodex {
-		body["previous_response_id"] = opts.SessionID
-	}
+// Session affinity rides prompt_cache_key on every Responses flavor —
+// matching opencode, which never sends previous_response_id over SSE. The
+// previous_response_id field must reference a server-issued response object
+// ("resp_*"); Goa replays its full history every turn, and sending the
+// client-side session ID there is a hard HTTP 400 on strict upstreams
+// (opencode Zen: "previous_response_id must start with resp_", 2026-09-02 —
+// the same rejection class the Codex flavor already carved out).
+func applyResponsesSessionFields(body map[string]any, model schema.Model, opts schema.StreamOptions) {
 	if shouldSendOpenAIResponsesPromptCacheKey(model, opts) {
 		body["prompt_cache_key"] = ClampOpenAIPromptCacheKey(promptCacheIdentity(opts))
 		if opts.CacheRetention == schema.CacheRetentionLong {
@@ -169,7 +163,7 @@ func applyResponsesSamplingFields(body map[string]any, model schema.Model, opts 
 		body["top_p"] = *opts.TopP
 	}
 	if model.Reasoning || profile.Compat.ThinkingFormat != "" {
-		if responsesWantsEncryptedContent(opts, profile, isCodex) {
+		if responsesWantsEncryptedContent(profile) {
 			body["include"] = []string{"reasoning.encrypted_content"}
 		}
 		body["text"] = map[string]any{"verbosity": "low"}
@@ -180,24 +174,25 @@ func applyResponsesSamplingFields(body map[string]any, model schema.Model, opts 
 // responsesWantsEncryptedContent decides whether the request asks for
 // reasoning.encrypted_content. Encrypted reasoning content exists so a
 // STATELESS client replaying its full history can carry reasoning items
-// itself; a previous_response_id-chained request keeps the reasoning
-// server-side, so the include is redundant there — and a hard HTTP 400 on
-// strict upstreams (muse-spark via the OpenCode gateways rejects the pair,
-// bugs.md 2026-08-29). The Codex flavor never chains (prompt_cache_key-only
-// affinity), so it keeps the include its request shape pins. An explicit
-// CompatFlags.SupportsEncryptedContent overrides the default rule in both
+// itself — and every Goa Responses request is stateless now that no flavor
+// chains server-side via previous_response_id (strict upstreams demand a
+// server-issued resp_* id there; opencode Zen 400s on a session ID,
+// 2026-09-02). The include therefore rides all flavors by default, matching
+// what the Codex flavor already pinned and what opencode sends for reasoning
+// models. CompatFlags.SupportsEncryptedContent overrides the default in both
 // directions (escape hatch for backends that reject encrypted content
-// outright, e.g. session-less sub-agent requests).
-func responsesWantsEncryptedContent(opts schema.StreamOptions, profile schema.VariantProfile, isCodex bool) bool {
+// outright).
+func responsesWantsEncryptedContent(profile schema.VariantProfile) bool {
 	if profile.Compat.SupportsEncryptedContent != nil {
 		return *profile.Compat.SupportsEncryptedContent
 	}
-	return isCodex || opts.SessionID == ""
+	return true
 }
 
 // shouldSendOpenAIResponsesPromptCacheKey mirrors Pi's behavior: Azure and Codex
-// Responses send prompt_cache_key whenever a session ID is present, while plain
-// OpenAI Responses only send it when prompt caching is not explicitly disabled.
+// Responses send prompt_cache_key whenever a cache identity is present, while
+// plain OpenAI Responses only sends it when prompt caching is not explicitly
+// disabled.
 func shouldSendOpenAIResponsesPromptCacheKey(model schema.Model, opts schema.StreamOptions) bool {
 	if promptCacheIdentity(opts) == "" {
 		return false

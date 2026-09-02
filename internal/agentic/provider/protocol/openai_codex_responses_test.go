@@ -84,11 +84,12 @@ func TestCodexBodyOmitsPreviousResponseID(t *testing.T) {
 	assert.Equal(t, false, m["store"], "codex subscription requires store=false")
 }
 
-// TestOpenAIResponsesSendsPreviousResponseID ensures the plain OpenAI
-// Responses flavor still chains turns via previous_response_id (only the
-// codex flavor omits it), so the codex carve-out did not regress other
-// responses providers.
-func TestOpenAIResponsesSendsPreviousResponseID(t *testing.T) {
+// TestOpenAIResponsesOmitsPreviousResponseID pins that the plain OpenAI
+// Responses flavor also sends no previous_response_id over SSE: the field
+// must reference a server-issued resp_* object, and a Goa session ID there is
+// a hard HTTP 400 on strict upstreams (opencode Zen, 2026-09-02). Session
+// affinity rides prompt_cache_key on every flavor.
+func TestOpenAIResponsesOmitsPreviousResponseID(t *testing.T) {
 	model := schema.Model{ID: "gpt-5", Api: schema.ApiOpenAIResponses, Provider: schema.ProviderOpenAI}
 	ctx := schema.Context{
 		Messages: []schema.Message{
@@ -102,7 +103,10 @@ func TestOpenAIResponsesSendsPreviousResponseID(t *testing.T) {
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(body, &m))
 
-	assert.Equal(t, "session-xyz", m["previous_response_id"], "plain responses flavor keeps previous_response_id chaining")
+	assert.NotContains(t, m, "previous_response_id",
+		"plain responses flavor must not send the Goa session ID as previous_response_id")
+	assert.Equal(t, "session-xyz", m["prompt_cache_key"],
+		"plain responses session affinity goes to prompt_cache_key")
 }
 
 // TestCodexBodyNoToolsCollapse ensures the final-step text-only collapse

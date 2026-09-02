@@ -22,7 +22,7 @@ Everything about a "cache miss" depends on which of these the provider uses.
 | | **Auto prefix cache (content-keyed)** | **Keyed cache (ID-keyed)** |
 |---|---|---|
 | Providers | Z.AI, DeepSeek | OpenAI Completions/Responses, Azure, Codex, local LM Studio / Ollama / llama.cpp |
-| Cache key | the prompt **content itself** (longest matching token prefix) | `SessionID` → `prompt_cache_key` / `previous_response_id` / `X-Session-ID` |
+| Cache key | the prompt **content itself** (longest matching token prefix) | `SessionID` → `prompt_cache_key` / `X-Session-ID` |
 | Goa sends an ID? | **No** — `promptCacheKey()` returns `""` | Yes |
 | A "miss" means | the new prompt **diverged** from the previous one | the cache entry for that ID was evicted / never written / key changed |
 | Conversation-ID stability matters? | **No** (ID never sent) | **Yes — central** |
@@ -220,10 +220,11 @@ cost feature, not a nicety**:
   **intended** (new conversation) — but scope it so a *resumable* same-context
   path stays warm. Do not rotate on resume.
 - **Keyed-cache providers:** the ID should be **as stable as the content**.
-  Because `SessionID` doubles as `previous_response_id` (Responses API
-  conversation chain), a content-hash-only ID is **not** a drop-in there — the
-  chain must stay intact. Any "content-linked ID" rework must key the *cache*
-  fields while leaving the response-chain semantics correct.
+  Session affinity on the Responses APIs rides `prompt_cache_key` only —
+  `previous_response_id` is never sent over SSE (it must reference a
+  server-issued `resp_*` object; a Goa session ID there is a hard HTTP 400 on
+  strict upstreams, e.g. opencode Zen 2026-09-02). Any "content-linked ID"
+  rework keys the *cache* fields without touching request chaining.
 - **Auto-cache providers (Z.AI/DeepSeek):** nothing to key — minimize suffix
   divergence (§7) instead.
 
@@ -251,7 +252,8 @@ bundle `logs/cache_miss_requests.json`; notices via `TakeCacheMissNotices()`.
 - `internal/agentic/agent_streaming.go` — `persistGoalReminder`,
   `buildSystemPrompt`, `persistStickyInstructions`.
 - `internal/agentic/provider/protocol/openai_completions.go` — `promptCacheKey`,
-  `isLocalProvider`; `.../openai_responses.go` — `previous_response_id`.
+  `isLocalProvider`; `.../openai_responses.go` — `prompt_cache_key` session
+  affinity (no `previous_response_id` over SSE).
 - `core/goal/injection.go` — reminder builders; `tools/goal/goal.go` —
   `handleList`/`handleGet`; `core/goal/serialize.go` — `ForModel`.
 - `core/goal_driver.go` + `internal/app/subsystems.go` — fresh vs reuse routing.

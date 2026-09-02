@@ -612,7 +612,7 @@ func (r *Runner) newSubAgent(skillName, systemPrompt string, subTools []agentic.
 	// skill sub-agent starts a NEW, divergent context (skill instructions,
 	// fresh history) and must not inherit the parent's SessionID — the
 	// SessionID drives the provider cache key (prompt_cache_key /
-	// previous_response_id / session-affinity), so sharing it with a
+	// session-affinity), so sharing it with a
 	// non-append context silently evicts the parent conversation's cache
 	// (observed as an unexplained cache miss after an interleaved sub-agent
 	// request). Derive a dedicated, per-execution id instead. An empty parent
