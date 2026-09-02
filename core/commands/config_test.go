@@ -63,40 +63,49 @@ func (f *fakeConfigSaver) DeleteProjectField(path []string) error { return nil }
 func (f *fakeConfigSaver) DeleteHomeField(path []string) error    { return nil }
 func (f *fakeConfigSaver) Reload() (*config.Config, error)        { return f.savedCfg, nil }
 
+// TestRetryConfigSetters verifies that retry-related fields can be set via
+// setConfigField and land on the expected config fields. Split into a
+// table-driven success test plus an invalid-value test so each function stays
+// under the cyclomatic-complexity budget.
 func TestRetryConfigSetters(t *testing.T) {
 	cfg := &config.Config{Providers: []config.ProviderConfig{{ID: "local"}}}
-	if err := setConfigField(cfg, []string{"execution", "retries"}, "5"); err != nil {
-		t.Fatalf("set execution.retries: %v", err)
+
+	cases := []struct {
+		name  string
+		path  []string
+		value string
+		want  any
+		get   func() any
+	}{
+		{"execution retries", []string{"execution", "retries"}, "5", 5,
+			func() any { return cfg.Execution.Retries }},
+		{"provider max_retry_delay", []string{"providers", "local", "max_retry_delay"}, "5m", "5m",
+			func() any { return cfg.Providers[0].MaxRetryDelay }},
+		{"provider idle_timeout", []string{"providers", "local", "idle_timeout"}, "10m", "10m",
+			func() any { return cfg.Providers[0].IdleTimeout }},
+		{"provider max retries", []string{"providers", "local", "retry_policy", "max_retries"}, "7", 7,
+			func() any { return cfg.Providers[0].RetryPolicy.MaxRetries }},
+		{"provider max ms", []string{"providers", "local", "retry_policy", "backoff", "max_ms"}, "300000", 300000,
+			func() any { return cfg.Providers[0].RetryPolicy.Backoff.MaxMS }},
 	}
-	if cfg.Execution.Retries != 5 {
-		t.Fatalf("retries = %d, want 5", cfg.Execution.Retries)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := setConfigField(cfg, tc.path, tc.value); err != nil {
+				t.Fatalf("set %s: %v", strings.Join(tc.path, "."), err)
+			}
+			if got := tc.get(); got != tc.want {
+				t.Errorf("%s = %v, want %v", strings.Join(tc.path, "."), got, tc.want)
+			}
+		})
 	}
-	if err := setConfigField(cfg, []string{"providers", "local", "max_retry_delay"}, "5m"); err != nil {
-		t.Fatalf("set provider max_retry_delay: %v", err)
-	}
-	if cfg.Providers[0].MaxRetryDelay != "5m" {
-		t.Fatalf("max retry delay = %q, want 5m", cfg.Providers[0].MaxRetryDelay)
-	}
-	if err := setConfigField(cfg, []string{"providers", "local", "idle_timeout"}, "10m"); err != nil {
-		t.Fatalf("set provider idle_timeout: %v", err)
-	}
-	if cfg.Providers[0].IdleTimeout != "10m" {
-		t.Fatalf("idle timeout = %q, want 10m", cfg.Providers[0].IdleTimeout)
-	}
-	if err := setConfigField(cfg, []string{"providers", "local", "retry_policy", "max_retries"}, "7"); err != nil {
-		t.Fatalf("set provider max retries: %v", err)
-	}
-	if cfg.Providers[0].RetryPolicy == nil || cfg.Providers[0].RetryPolicy.MaxRetries != 7 {
-		t.Fatalf("provider max retries not set: %#v", cfg.Providers[0].RetryPolicy)
-	}
-	if err := setConfigField(cfg, []string{"providers", "local", "retry_policy", "backoff", "max_ms"}, "300000"); err != nil {
-		t.Fatalf("set provider max ms: %v", err)
-	}
-	if cfg.Providers[0].RetryPolicy.Backoff.MaxMS != 300000 {
-		t.Fatalf("provider max ms = %d", cfg.Providers[0].RetryPolicy.Backoff.MaxMS)
-	}
+}
+
+// TestRetryConfigSetters_InvalidValue verifies that an unparseable retry
+// delay is rejected rather than silently stored.
+func TestRetryConfigSetters_InvalidValue(t *testing.T) {
+	cfg := &config.Config{Providers: []config.ProviderConfig{{ID: "local"}}}
 	if err := setConfigField(cfg, []string{"providers", "local", "max_retry_delay"}, "invalid"); err == nil {
-		t.Fatal("invalid retry delay accepted")
+		t.Error("invalid retry delay accepted")
 	}
 }
 
