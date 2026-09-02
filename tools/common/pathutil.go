@@ -23,6 +23,9 @@ func IsProtectedPath(path string) bool {
 
 // ResolveToolPath resolves a user-provided path through the WorktreeManager.
 // If worktree is active, relative paths are resolved to the worktree directory.
+// A leading "~" (optionally followed by a path separator) is expanded to the
+// current user's home directory before worktree resolution, so tools accept
+// paths like "~/dev/project/file.go" the same way a shell would.
 // Path protection (.goa/.git and project-root containment) is intentionally
 // NOT enforced here; it is the responsibility of the autonomy/policy layer
 // (e.g. SoloGuard for SOLO mode). This lets YOLO mode access any path and
@@ -33,7 +36,7 @@ func ResolveToolPath(wm *internal.WorktreeManager, userPath string) (string, err
 		worktreePath = wm.CurrentWorktree()
 	}
 
-	resolved := wm.ResolvePath(worktreePath, userPath)
+	resolved := wm.ResolvePath(worktreePath, ExpandHome(userPath))
 
 	// Ensure the resolved path is absolute for consistent handling
 	if !filepath.IsAbs(resolved) {
@@ -93,6 +96,24 @@ func FuzzyFindFile(projectDir, target string) (string, float64) {
 	})
 
 	return best, bestScore
+}
+
+// ExpandHome replaces a leading "~" (alone or followed by a path separator)
+// with the current user's home directory. A "~" in any other position, or a
+// "~user" prefix (other-user homes), is left untouched. If the home directory
+// cannot be determined the input is returned unchanged.
+func ExpandHome(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~"+string(filepath.Separator)) && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, path[2:])
 }
 
 func scoreFile(targetLower, baseLower string) float64 {
