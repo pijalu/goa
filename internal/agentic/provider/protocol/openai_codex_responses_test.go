@@ -110,7 +110,10 @@ func TestOpenAIResponsesOmitsPreviousResponseID(t *testing.T) {
 }
 
 // TestCodexBodyNoToolsCollapse ensures the final-step text-only collapse
-// overrides codex's tool_choice:auto and drops parallel_tool_calls.
+// clears codex's tool_choice:auto and drops parallel_tool_calls. The collapse
+// must omit tool_choice entirely — a request carrying no tools cannot yield
+// tool calls, and strict Responses upstreams (opencode Zen, 2026-09-02)
+// hard-400 on tool_choice "none".
 func TestCodexBodyNoToolsCollapse(t *testing.T) {
 	model := schema.Model{ID: "gpt-5.6-luna", Api: schema.ApiOpenAICodexResponses, Provider: schema.ProviderOpenAICodex}
 	ctx := schema.Context{SystemPrompt: "s", NoTools: true}
@@ -121,7 +124,8 @@ func TestCodexBodyNoToolsCollapse(t *testing.T) {
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(body, &m))
 
-	assert.Equal(t, "none", m["tool_choice"])
+	_, hasChoice := m["tool_choice"]
+	assert.False(t, hasChoice, "NoTools collapse must omit tool_choice (strict upstreams 400 on \"none\")")
 	_, hasParallel := m["parallel_tool_calls"]
 	assert.False(t, hasParallel, "NoTools collapse must drop parallel_tool_calls")
 }

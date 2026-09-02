@@ -122,11 +122,14 @@ func applyCodexBodyFields(body map[string]any, ctx schema.Context) {
 }
 
 // applyResponsesToolFields wires the tool list, honoring the final-step
-// text-only collapse (P7): NoTools forces tool_choice "none" and drops the
-// parallel-tool flag so the model answers text-only.
+// text-only collapse (P7): NoTools omits the tools array and the tool_choice
+// key entirely — a request carrying no tools cannot yield tool calls, so
+// "none" is redundant, and strict Responses upstreams (opencode Zen,
+// 2026-09-02) hard-400 on any tool_choice other than "auto". The
+// parallel-tool flag is dropped so the model answers text-only.
 func applyResponsesToolFields(body map[string]any, ctx schema.Context) {
 	if ctx.NoTools {
-		body["tool_choice"] = "none"
+		delete(body, "tool_choice")
 		delete(body, "parallel_tool_calls")
 		return
 	}

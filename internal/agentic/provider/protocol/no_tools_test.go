@@ -84,8 +84,10 @@ func TestNoTools_CollapseMistral(t *testing.T) {
 	assert.Equal(t, "none", req["tool_choice"])
 }
 
-// TestNoTools_CollapseResponses verifies the Responses builder omits tools
-// and sets tool_choice none.
+// TestNoTools_CollapseResponses verifies the Responses builder omits both
+// the tools array and the tool_choice key: a request carrying no tools cannot
+// yield tool calls, so "none" is redundant — and strict Responses upstreams
+// (opencode Zen, 2026-09-02) hard-400 on any tool_choice other than "auto".
 func TestNoTools_CollapseResponses(t *testing.T) {
 	model := schema.Model{
 		ID: "resp-test", Name: "resp-test", Api: schema.ApiOpenAIResponses,
@@ -102,7 +104,8 @@ func TestNoTools_CollapseResponses(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &req))
 	_, hasTools := req["tools"]
 	assert.False(t, hasTools, "NoTools request must omit the tools array")
-	assert.Equal(t, "none", req["tool_choice"])
+	_, hasChoice := req["tool_choice"]
+	assert.False(t, hasChoice, "NoTools request must omit tool_choice (strict upstreams 400 on \"none\")")
 }
 
 // TestNoTools_CollapseAnthropic verifies the Anthropic builder omits tools
