@@ -338,6 +338,11 @@ type responsesEventContext struct {
 	ended      bool
 	decodeErr  error
 	stream     *schema.AssistantMessageEventStream
+	// thinkingBuf accumulates reasoning summary text; thinkingOpen tracks
+	// whether a thinking block has been opened (and not yet closed) so
+	// deltas emit start/end exactly once per summary part.
+	thinkingBuf  strings.Builder
+	thinkingOpen bool
 	// toolCalls tracks in-flight function_call items by output_index so
 	// streamed argument deltas accumulate onto the right call.
 	toolCalls map[int]*responsesToolCall
@@ -354,20 +359,7 @@ func parseResponsesSSE(body io.Reader, stream *schema.AssistantMessageEventStrea
 			ctx.decodeErr = fmt.Errorf("decode responses event chunk: %w", err)
 			return false
 		}
-		switch event.Type {
-		case "response.output_text.delta":
-			handleResponsesTextDelta(ctx, ev.Data)
-		case "response.output_item.added":
-			handleResponsesOutputItemAdded(ctx, ev.Data)
-		case "response.function_call_arguments.delta":
-			handleResponsesFuncArgsDelta(ctx, ev.Data)
-		case "response.function_call_arguments.done":
-			handleResponsesFuncArgsDone(ctx, ev.Data)
-		case "response.output_item.done":
-			handleResponsesOutputItemDone(ctx, ev.Data)
-		case "response.completed":
-			handleResponsesCompleted(ctx, ev.Data)
-		}
+		dispatchResponsesEvent(ctx, event.Type, ev.Data)
 		return true
 	}); err != nil {
 		stream.CloseWithError(fmt.Errorf("sse stream read failed: %w", err))
@@ -378,15 +370,42 @@ func parseResponsesSSE(body io.Reader, stream *schema.AssistantMessageEventStrea
 		return
 	}
 	if !ctx.ended {
-		// Stream terminated without a completed event: flush any pending tool
-		// calls that never saw output_item.done, then end with buffered text.
+		// Stream terminated without a completed event: close any open thinking
+		// block, flush any pending tool calls that never saw output_item.done,
+		// then end with the buffered content.
+		closeThinkingBlock(ctx)
 		flushPendingToolCalls(ctx)
 		var blocks []schema.ContentBlock
+		blocks = append(blocks, thinkingBlock(ctx)...)
 		if ctx.contentBuf != "" {
 			blocks = append(blocks, schema.ContentBlock{Type: schema.ContentBlockText, Text: ctx.contentBuf})
 		}
 		blocks = append(blocks, toolCallBlocks(ctx)...)
 		stream.End(&schema.AssistantMessage{Content: blocks, StopReason: schema.StopReasonEndTurn})
+	}
+}
+
+// dispatchResponsesEvent routes one SSE event to its handler by type.
+// Unknown event types are ignored (e.g. response.created, output indexes,
+// part markers with no payload of interest).
+func dispatchResponsesEvent(ctx *responsesEventContext, eventType, data string) {
+	switch eventType {
+	case "response.output_text.delta":
+		handleResponsesTextDelta(ctx, data)
+	case "response.output_item.added":
+		handleResponsesOutputItemAdded(ctx, data)
+	case "response.function_call_arguments.delta":
+		handleResponsesFuncArgsDelta(ctx, data)
+	case "response.function_call_arguments.done":
+		handleResponsesFuncArgsDone(ctx, data)
+	case "response.output_item.done":
+		handleResponsesOutputItemDone(ctx, data)
+	case "response.reasoning_summary_text.delta":
+		handleResponsesReasoningSummaryDelta(ctx, data)
+	case "response.reasoning_summary_part.done":
+		handleResponsesReasoningSummaryPartDone(ctx, data)
+	case "response.completed":
+		handleResponsesCompleted(ctx, data)
 	}
 }
 
@@ -428,6 +447,70 @@ func flushPendingToolCalls(ctx *responsesEventContext) {
 	for _, idx := range indices {
 		emitToolCall(ctx, ctx.toolCalls[idx])
 	}
+}
+
+// handleResponsesReasoningSummaryDelta streams one reasoning summary
+// fragment as thinking. opencode Zen reasoning models (muse-spark) deliver
+// reasoning as summary parts; the summary text is the only user-visible
+// thinking content on the Responses surface (bugs.md export 2026-09-02).
+func handleResponsesReasoningSummaryDelta(ctx *responsesEventContext, chunk string) {
+	var ev struct {
+		Delta string `json:"delta"`
+	}
+	if err := json.Unmarshal([]byte(chunk), &ev); err != nil {
+		ctx.decodeErr = fmt.Errorf("decode reasoning_summary_text.delta chunk: %w", err)
+		return
+	}
+	if ev.Delta == "" {
+		return
+	}
+	if !ctx.started {
+		ctx.started = true
+		ctx.stream.Push(schema.AssistantMessageEvent{Type: schema.EventStart, Partial: &schema.AssistantMessage{}})
+	}
+	if !ctx.thinkingOpen {
+		ctx.thinkingOpen = true
+		ctx.stream.Push(schema.AssistantMessageEvent{Type: schema.EventThinkingStart, ContentIndex: 0})
+	}
+	ctx.thinkingBuf.WriteString(ev.Delta)
+	ctx.stream.Push(schema.AssistantMessageEvent{Type: schema.EventThinkingDelta, ContentIndex: 0, Delta: ev.Delta})
+}
+
+// handleResponsesReasoningSummaryPartDone closes the thinking block when
+// the summary part carrying it completes and separates the just-finished
+// part from the next one in the accumulated thinking text.
+func handleResponsesReasoningSummaryPartDone(ctx *responsesEventContext, chunk string) {
+	closeThinkingBlock(ctx)
+	if ctx.thinkingBuf.Len() > 0 {
+		ctx.thinkingBuf.WriteString("\n")
+	}
+}
+
+// closeThinkingBlock emits thinking_end when a thinking block is open.
+func closeThinkingBlock(ctx *responsesEventContext) {
+	if !ctx.thinkingOpen {
+		return
+	}
+	ctx.thinkingOpen = false
+	ctx.stream.Push(schema.AssistantMessageEvent{
+		Type:         schema.EventThinkingEnd,
+		ContentIndex: 0,
+		Content:      strings.TrimRight(ctx.thinkingBuf.String(), "\n"),
+	})
+}
+
+// thinkingBlock materializes the accumulated reasoning summary text as one
+// thinking content block. Nil when nothing was summarized (e.g. tool-call
+// turns, whose reasoning items carry empty summaries upstream).
+func thinkingBlock(ctx *responsesEventContext) []schema.ContentBlock {
+	text := strings.TrimRight(ctx.thinkingBuf.String(), "\n")
+	if text == "" {
+		return nil
+	}
+	return []schema.ContentBlock{{
+		Type:     schema.ContentBlockThinking,
+		Thinking: text,
+	}}
 }
 
 func handleResponsesTextDelta(ctx *responsesEventContext, chunk string) {
@@ -574,7 +657,9 @@ func handleResponsesCompleted(ctx *responsesEventContext, chunk string) {
 		ctx.decodeErr = fmt.Errorf("decode response.completed chunk: %w", err)
 		return
 	}
+	closeThinkingBlock(ctx)
 	var blocks []schema.ContentBlock
+	blocks = append(blocks, thinkingBlock(ctx)...)
 	if ctx.contentBuf != "" {
 		blocks = append(blocks, schema.ContentBlock{Type: schema.ContentBlockText, Text: ctx.contentBuf})
 	}
