@@ -121,6 +121,15 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 	if result.Usage != nil && !a.turnStatsEmitted {
 		a.providerUsage = result.Usage
 	}
+	// A round whose reasoning exists only as opaque encrypted_content streams
+	// no visible thinking deltas (pi/opencode: encrypted thinking is not
+	// shown), yet the model did reason — the provider reports it via
+	// output_tokens_details.reasoning_tokens. Count that as turn reasoning so
+	// the consecutive-tool-round streak does not march a reasoning model
+	// toward the forced-answer limit (bugs.md 2026-09-02: "no thinking").
+	if result.Usage != nil && result.Usage.ReasoningTokens > 0 {
+		a.turnSawThinking = true
+	}
 	if result.Usage != nil {
 		if result.Usage.CacheReadTokens > 0 {
 			// Direct evidence the provider prefix cache is hot: expires the

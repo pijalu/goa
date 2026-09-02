@@ -653,6 +653,14 @@ func handleResponsesCompleted(ctx *responsesEventContext, chunk string) {
 					CachedTokens     int `json:"cached_tokens"`
 					CacheWriteTokens int `json:"cache_write_tokens"`
 				} `json:"input_tokens_details"`
+				// OutputTokensDetails carries reasoning_tokens: the count of
+				// reasoning tokens the model burned. On opencode Zen muse-spark
+				// tool-call turns this is > 0 while the visible summary is empty
+				// (reasoning exists only as encrypted_content), so it is the
+				// reliable signal that invisible reasoning happened this round.
+				OutputTokensDetails struct {
+					ReasoningTokens int `json:"reasoning_tokens"`
+				} `json:"output_tokens_details"`
 			} `json:"usage"`
 		} `json:"response"`
 	}
@@ -691,6 +699,10 @@ func handleResponsesCompleted(ctx *responsesEventContext, chunk string) {
 			OutputTokens:        usage.OutputTokens,
 			CacheReadTokens:     cachedTokens,
 			CacheCreationTokens: cacheWriteTokens,
+			// ReasoningTokens surfaces invisible reasoning (empty summary, only
+			// encrypted_content) so the agent's consecutive-tool-round streak
+			// counts the round as reasoning without rendering a placeholder.
+			ReasoningTokens: usage.OutputTokensDetails.ReasoningTokens,
 		},
 	})
 	ctx.ended = true
