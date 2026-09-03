@@ -66,6 +66,12 @@ type GoalTool struct {
 	// by the done-gate, so the confirming call knows verification is about
 	// to run and can announce it (command + timeout) to the user.
 	challenged bool
+	// unblockSpawns counts consecutive auto-unblock spawns with no goal
+	// completion or explicit resume in between. It is the belt-and-braces
+	// loop cap behind the kind guard (maxConsecutiveUnblockSpawns): once the
+	// cap is hit a justified block falls back to a plain block asking for
+	// user input. Reset on CompleteClosed and on resume-to-active.
+	unblockSpawns int
 }
 
 // GoalQueue is the subset of the durable goal queue the tool needs. It is
@@ -764,6 +770,9 @@ func (t *GoalTool) updateActive(args goalArgs) (agentic.ToolResult, error) {
 	if _, err := t.Mode.ResumeGoal(goal.GoalReasonInput{Reason: optionalReason(args)}, goal.GoalActorModel); err != nil {
 		return agentic.ToolResult{}, err
 	}
+	// An explicit resume is a fresh start: the consecutive-spawn cap for the
+	// auto-unblock flow measures spawns WITHOUT user intervention in between.
+	t.unblockSpawns = 0
 	return agentic.ToolResult{Output: "Goal resumed."}, nil
 }
 
@@ -803,67 +812,134 @@ func (t *GoalTool) updateBlocked(args goalArgs) (agentic.ToolResult, error) {
 		return agentic.ToolResult{Output: "No active goal to block."}, nil
 	}
 
-	// Auto-unblock: when the model supplies a justification (reason +
-	// expectation), the framework enqueues an investigation goal IN FRONT of
-	// the blocked goal, forcing the search for a solution before the user is
-	// asked for guidance. Falls back to plain blocking when no queue is wired.
-	if out, ok := t.enqueueUnblockGoal(*blocked, reason, expectation); ok {
-		return out, nil
+	// An unblocking INVESTIGATION that blocks has finished its job: it either
+	// found nothing autonomous or chose to escalate. Plain block. Re-running
+	// the auto-unblock flow here is the ping-pong bug (review finding F1):
+	// the failed investigation would be re-queued in front of the real goal,
+	// re-run the same investigation, re-block, and the real goal would never
+	// resume. The investigation's findings reach the user via its terminal
+	// reason; the next move is the user's.
+	if blocked.Kind == goal.GoalKindUnblock {
+		return agentic.ToolResult{
+			Output: fmt.Sprintf("Investigation goal blocked: %s. Waiting for: %s. No successor investigation is spawned — report the findings to the user and tell them what you need; when their reply supplies it, resume with goal action \"update\", status \"active\".", reason, expectation),
+			StopTurn: true,
+		}, nil
 	}
 
-	return agentic.ToolResult{
-		Output:   fmt.Sprintf("Goal marked blocked: %s. Waiting for: %s. Tell the user what you need; when their reply supplies it or asks to continue, resume with goal action \"update\", status \"active\".", reason, expectation),
-		StopTurn: true,
-	}, nil
+	// Standard goal with a justification → auto-unblock: enqueue an
+	// investigation goal IN FRONT of the blocked goal, forcing the search for
+	// a solution before the user is asked for guidance.
+	spawned, output, spawnErr := t.enqueueUnblockGoal(*blocked, reason, expectation)
+	if spawned {
+		return agentic.ToolResult{Output: output}, nil
+	}
+
+	fallback := fmt.Sprintf("Goal marked blocked: %s. Waiting for: %s. Tell the user what you need; when their reply supplies it or asks to continue, resume with goal action \"update\", status \"active\".", reason, expectation)
+	if spawnErr != nil {
+		// A failed spawn must never be silent: the model believes an
+		// investigation is running when it is not (review finding F5 — the
+		// trace dead-ended on exactly this).
+		fallback += fmt.Sprintf(" [auto-unblock failed (%v) — no investigation is running; this goal needs your input]", spawnErr)
+	}
+	return agentic.ToolResult{Output: fallback, StopTurn: true}, nil
 }
 
-// enqueueUnblockGoal demotes the just-blocked goal A back onto the front of
-// the queue, then activates an "unblocking" investigation goal U in front of
-// it. U's objective embeds A's blocker and the investigate→execute-or-block
-// contract: find a solution and push an execution goal in front, or — only
-// when no solution exists — block U itself and ask the user for guidance.
-// Returns (result, true) on success; (_, false) when auto-unblock is disabled
-// or no queue is available.
-func (t *GoalTool) enqueueUnblockGoal(blocked goal.GoalSnapshot, reason, expectation string) (agentic.ToolResult, bool) {
+// maxConsecutiveUnblockSpawns caps auto-unblock spawns with no goal
+// completion or explicit resume in between. The kind guard makes the
+// investigation chain terminal; this cap covers the remaining cycle where a
+// STANDARD goal re-blocks on the same external blocker after each user
+// resume. Two strikes, then the flow stops and asks the user.
+const maxConsecutiveUnblockSpawns = 2
+
+// unblockCompletionCriterion is the done-condition recorded on every
+// auto-spawned investigation goal (review finding F2): without it the
+// done-gate is unarmed and an investigation can "complete" on prose advice
+// that no execution goal and no resumed goal ever receives. Var (not const):
+// the spawn path stores a pointer to it in the goal input.
+var unblockCompletionCriterion = "An execution goal implementing the identified solution has been created (goal action \"create\", priority \"front\") and its objective is cited in the completion reason — OR the investigation proved no autonomous solution exists and the goal was blocked with reason + expectation instead. Completing on prose advice without a created follow-up goal is invalid."
+
+// Excerpt caps for the auto-unblock composition. The goal reminder injects
+// only ExcerptObjectiveLen (400) runes of the objective, so a longer
+// composition is pure storage weight — and an oversized objective breaks the
+// re-queue path later: queue inserts enforce MaxObjectiveLength while
+// mode.CreateGoal deliberately does not (internal transitions), so a goal
+// stored oversized can never be re-queued (review finding F4).
+const (
+	unblockExcerptObjective = 1200
+	unblockExcerptField     = 700
+)
+
+// enqueueUnblockGoal demotes the just-blocked standard goal A back onto the
+// front of the queue, then activates an "unblocking" investigation goal U in
+// front of it. U's objective embeds A's blocker and the
+// investigate→execute-or-block contract; its recorded completion criterion
+// arms the done-gate so prose-only completions are challenged. A's re-queue
+// carries the block context (reason + expectation) as its handover, so the
+// promotion reminder tells the resumed turn why the goal stopped — the old
+// code claimed this rode along in the objective but passed the objective
+// unchanged (review finding F3).
+// Returns (true, output, nil) on a successful spawn; (false, "", nil) when
+// the spawn is intentionally skipped (no queue, auto-unblock disabled, or
+// spawn cap hit); (false, "", err) when a spawn step failed.
+func (t *GoalTool) enqueueUnblockGoal(blocked goal.GoalSnapshot, reason, expectation string) (bool, string, error) {
 	if t.Queue == nil || (t.AutoUnblock != nil && !t.AutoUnblock()) {
-		return agentic.ToolResult{}, false
+		return false, "", nil
+	}
+	if t.unblockSpawns >= maxConsecutiveUnblockSpawns {
+		return false, "", nil
 	}
 	// Re-queue A at the FRONT so it resumes right after the unblocking goal
-	// completes. Its block context rides along in the objective so the
-	// eventual resume turn sees why it stopped.
-	requeueObjective := blocked.Objective
-	if requeueObjective == "" {
-		requeueObjective = "(resume blocked goal)"
+	// (or the execution goal the investigation creates) completes.
+	requeue := blocked.Objective
+	if requeue == "" {
+		requeue = "(resume blocked goal)"
 	}
 	if _, err := t.Queue.PrependGoal(goal.UpcomingGoalInput{
-		Objective:           requeueObjective,
+		Objective:           requeue,
 		CompletionCriterion: blocked.CompletionCriterion,
 		VerifyCommand:       blocked.VerifyCommand,
+		Handoff:             buildBlockHandoff(reason, expectation),
 	}); err != nil {
-		return agentic.ToolResult{}, false
+		return false, "", fmt.Errorf("re-queue the blocked goal: %w", err)
 	}
 	// Clear A from active so U can start. Runtime actor: this is a framework
 	// transition, not a user cancellation.
 	if _, err := t.Mode.CancelGoal(goal.GoalActorRuntime); err != nil {
-		return agentic.ToolResult{}, false
+		return false, "", fmt.Errorf("clear the blocked goal: %w", err)
 	}
-	// Activate the unblocking investigation goal.
-	uObjective := buildUnblockObjective(requeueObjective, reason, expectation)
+	// Activate the unblocking investigation goal, marked as such (kind) and
+	// armed with its completion criterion (done-gate).
+	uObjective := buildUnblockObjective(requeue, reason, expectation)
 	if _, err := t.Mode.CreateGoal(goal.CreateGoalInput{
-		Objective: uObjective,
+		Objective:           uObjective,
+		CompletionCriterion: &unblockCompletionCriterion,
+		Kind:                goal.GoalKindUnblock,
 	}, goal.GoalActorRuntime); err != nil {
-		return agentic.ToolResult{}, false
+		return false, "", fmt.Errorf("activate the unblocking investigation goal: %w", err)
 	}
-	return agentic.ToolResult{
-		Output: fmt.Sprintf("Goal blocked: %s. An unblocking goal was started to investigate solutions before asking you for input.", reason),
-	}, true
+	t.unblockSpawns++
+	return true, fmt.Sprintf("Goal blocked: %s. An unblocking goal was started to investigate solutions before asking you for input.", reason), nil
 }
 
-// buildUnblockObjective composes the investigation goal's objective. It forces
-// the model to search for a way forward and encodes the two allowed outcomes:
-// (1) solution found → create an execution goal with priority "front" and
-// complete this goal; (2) no solution → block THIS goal with reason +
-// expectation to ask the user for guidance.
+// buildBlockHandoff composes the handover stored with the re-queued blocked
+// goal. On promotion it is injected into the resumed goal's reminder as an
+// <untrusted_handover> block, so the resumed turn knows why the goal stopped
+// and what it was waiting for. Inputs are model-supplied → treated as
+// untrusted data and excerpted.
+func buildBlockHandoff(reason, expectation string) *string {
+	text := fmt.Sprintf("This goal was auto-blocked (a framework investigation goal looked for an autonomous solution). Blocker: %s. Waiting for: %s. On resume, first check whether the waiting-for condition is now satisfied before retrying.",
+		goal.Excerpt(reason, unblockExcerptField), goal.Excerpt(expectation, unblockExcerptField))
+	return &text
+}
+
+// buildUnblockObjective composes the investigation goal's objective. It
+// forces the model to search for a way forward and encodes the two allowed
+// outcomes: (1) solution found → create an execution goal with priority
+// "front" and complete this goal citing it; (2) no solution → block THIS
+// goal with reason + expectation to ask the user for guidance (which never
+// spawns a successor investigation — see updateBlocked). All embedded inputs
+// are excerpted: the composition must stay re-queueable under
+// MaxObjectiveLength and the reminder only surfaces 400 runes anyway.
 func buildUnblockObjective(blockedObjective, reason, expectation string) string {
 	return fmt.Sprintf(`UNBLOCKING INVESTIGATION — find a solution for a blocked goal.
 
@@ -872,9 +948,9 @@ It was waiting for: %s
 
 Your ONLY job is to determine whether this blocker can be solved without user input:
 1. INVESTIGATE the blocker. Read code, run commands, search, experiment — do real work to find a concrete path forward.
-2. If you find a viable solution: create a new EXECUTION goal that implements it, using goal action "create" with priority "front" (so it runs before the blocked goal resumes), then mark THIS investigation goal complete with the solution as evidence.
-3. ONLY if no solution is possible without the user: mark THIS goal blocked with "reason" (why it cannot be solved autonomously) and "expectation" (exactly what you need from the user). Do NOT block prematurely — exhaust autonomous options first.`,
-		blockedObjective, reason, expectation)
+2. If you find a viable solution: create a new EXECUTION goal that implements it, using goal action "create" with priority "front" (so it runs before the blocked goal resumes), then mark THIS investigation goal complete, citing the created goal's objective as completion evidence.
+3. ONLY if no solution is possible without the user: mark THIS goal blocked with "reason" (why it cannot be solved autonomously) and "expectation" (exactly what you need from the user). Do NOT block prematurely — exhaust autonomous options first. A blocked investigation is final: the framework reports it to the user instead of spawning another investigation.`,
+		goal.Excerpt(blockedObjective, unblockExcerptObjective), goal.Excerpt(reason, unblockExcerptField), goal.Excerpt(expectation, unblockExcerptField))
 }
 
 // updateComplete closes the goal through the done-gate (goals.done_gate),
@@ -908,6 +984,9 @@ func (t *GoalTool) updateComplete(ctx context.Context, args goalArgs) (agentic.T
 		return agentic.ToolResult{Output: goal.BuildVerifyFailureMessage(result), StopTurn: result.Failure != nil && result.Failure.Escalated}, nil
 	case goal.CompleteClosed:
 		t.challenged = false
+		// A completion is progress: the consecutive-spawn cap for the
+		// auto-unblock flow only measures spawns with no completion between.
+		t.unblockSpawns = 0
 		return agentic.ToolResult{Output: "Goal marked complete." + formatVerifyEvidence(result.Verification) + formatOpenTodosReminder(result.Snapshot), StopTurn: true}, nil
 	default:
 		t.challenged = false

@@ -34,6 +34,26 @@ const (
 	GoalActorSystem  GoalActor = "system"
 )
 
+// GoalKind classifies WHY a goal exists. The empty value is a normal goal.
+// GoalKindUnblock marks the auto-spawned "unblocking investigation" goal
+// created when a justified block triggers auto-unblock: the framework uses
+// the marker to give the investigation a completion criterion and — decisively
+// — to refuse to spawn ANOTHER investigation when an investigation itself
+// blocks (the blocked investigation falls back to a plain block asking for
+// user input). Without the marker the block→investigate→block cycle
+// re-queued the failed investigation in front of the real goal and ping-ponged
+// forever (see the unblock ping-pong review, finding F1).
+type GoalKind string
+
+const (
+	// GoalKindStandard (empty) is a normal, user- or model-authored goal.
+	GoalKindStandard GoalKind = ""
+	// GoalKindUnblock is the framework-spawned unblocking investigation.
+	// Only the runtime actor can create goals of this kind; model- and
+	// user-supplied kinds are sanitized back to standard at creation.
+	GoalKindUnblock GoalKind = "unblock"
+)
+
 // GoalBudgetLimits defines optional hard limits on the goal.
 // All fields are optional (nil = unlimited).
 type GoalBudgetLimits struct {
@@ -59,8 +79,12 @@ type GoalSnapshot struct {
 	GoalID              string  `json:"goalId,omitempty"`
 	Name                string  `json:"name,omitempty"`      // friendly alias, e.g. "happy.fox"
 	ManagedBy           string  `json:"managedBy,omitempty"` // e.g. "orchestrator" or empty
-	Objective           string  `json:"objective"`
-	CompletionCriterion *string `json:"completionCriterion,omitempty"`
+	// Kind classifies the goal (GoalKind). Empty = standard goal; "unblock"
+	// marks the framework-spawned unblocking investigation, which must never
+	// itself spawn a successor investigation when it blocks.
+	Kind                GoalKind `json:"kind,omitempty"`
+	Objective           string   `json:"objective"`
+	CompletionCriterion *string  `json:"completionCriterion,omitempty"`
 	// VerifyCommand is an optional machine-checkable done-condition: when
 	// set, the done-gate executes it (exit 0 = verified) after the model
 	// confirms completion, instead of trusting the evidence prose alone.
@@ -190,6 +214,9 @@ type CreateGoalInput struct {
 	// evidence recorded at its completion), shown to the model as untrusted
 	// context in the goal reminder.
 	Handoff *string
+	// Kind classifies the goal (GoalKind). Only the runtime actor may set a
+	// non-standard kind; user/model inputs are sanitized to standard.
+	Kind GoalKind
 }
 
 // GoalReasonInput carries the justification for lifecycle changes. Reason is
@@ -206,6 +233,7 @@ type goalStage struct {
 	goalID              string
 	name                string
 	managedBy           string
+	kind                GoalKind
 	objective           string
 	completionCriterion *string
 	verifyCommand       *string
@@ -260,6 +288,9 @@ type GoalEventRecord struct {
 	Handoff             *string `json:"handover,omitempty"`
 	FreshContext        *bool   `json:"freshContext,omitempty"`
 	Team                *string `json:"team,omitempty"`
+	// Kind carries the goal classification (GoalKind) on goal.create records
+	// so a replayed session restores the unblocking-investigation marker.
+	Kind *GoalKind `json:"kind,omitempty"`
 
 	// goal.update fields (patches)
 	Status       *string           `json:"status,omitempty"`

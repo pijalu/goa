@@ -23,7 +23,7 @@ func (m *GoalMode) queuedGoalNames() map[string]bool {
 func (m *GoalMode) toSnapshot(state *goalStage) GoalSnapshot {
 	now := time.Now()
 	wall := LiveWallClockMs(*state, now)
-	return GoalSnapshot{GoalID: state.goalID, Name: state.name, ManagedBy: state.managedBy, Objective: state.objective, CompletionCriterion: state.completionCriterion, VerifyCommand: state.verifyCommand, FreshContext: state.freshContext, Team: state.team, PauseAfterComplete: state.pauseAfterComplete, Handoff: state.handoff, Todos: append([]GoalTodoItem(nil), state.todos...), Status: state.status, TurnsUsed: state.turnsUsed, TokensUsed: state.tokensUsed, WallClockMs: wall, Budget: ComputeBudgetReport(state.budgetLimits, state.turnsUsed, state.tokensUsed, wall), TerminalReason: state.terminalReason, TerminalExpectation: state.terminalExpectation}
+	return GoalSnapshot{GoalID: state.goalID, Name: state.name, ManagedBy: state.managedBy, Kind: state.kind, Objective: state.objective, CompletionCriterion: state.completionCriterion, VerifyCommand: state.verifyCommand, FreshContext: state.freshContext, Team: state.team, PauseAfterComplete: state.pauseAfterComplete, Handoff: state.handoff, Todos: append([]GoalTodoItem(nil), state.todos...), Status: state.status, TurnsUsed: state.turnsUsed, TokensUsed: state.tokensUsed, WallClockMs: wall, Budget: ComputeBudgetReport(state.budgetLimits, state.turnsUsed, state.tokensUsed, wall), TerminalReason: state.terminalReason, TerminalExpectation: state.terminalExpectation}
 }
 func (m *GoalMode) requireState() (*goalStage, error) {
 	if m.state == nil {

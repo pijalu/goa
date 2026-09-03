@@ -173,6 +173,9 @@ func (m *GoalMode) RestoreCreate(record GoalEventRecord) {
 	if record.GoalID != nil {
 		state.goalID = *record.GoalID
 	}
+	if record.Kind != nil && *record.Kind == GoalKindUnblock {
+		state.kind = GoalKindUnblock
+	}
 	if record.Name != nil {
 		state.name = *record.Name
 	}
@@ -293,6 +296,18 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 	if err != nil {
 		return GoalSnapshot{}, err
 	}
+	// Kind sanitize: only the runtime actor (framework transitions such as
+	// the auto-unblock spawn) may classify a goal. Model/user authors cannot
+	// mark their goals "unblock" — the marker gates whether a blocked goal
+	// may spawn a successor investigation, and that gate must not be
+	// model-settable.
+	kind := GoalKindStandard
+	if actor == GoalActorRuntime {
+		kind = input.Kind
+		if kind != GoalKindUnblock {
+			kind = GoalKindStandard
+		}
+	}
 	now := time.Now()
 	nowMs := now.UnixMilli()
 	name := strings.TrimSpace(input.Name)
@@ -308,6 +323,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		goalID:              generateGoalID(),
 		name:                name,
 		managedBy:           input.ManagedBy,
+		kind:                kind,
 		objective:           objective,
 		completionCriterion: completionCriterion,
 		verifyCommand:       verifyCommand,
@@ -336,6 +352,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		Handoff:             state.handoff,
 		FreshContext:        &state.freshContext,
 		Team:                &state.team,
+		Kind:                &state.kind,
 	})
 	m.telemetry.Track(TelemetryGoalCreated, map[string]any{
 		"actor":   string(actor),

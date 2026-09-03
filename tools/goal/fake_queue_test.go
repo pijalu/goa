@@ -9,6 +9,9 @@ import (
 type fakeQueue struct {
 	goals []coregoal.UpcomingGoal
 	n     int
+	// failPrepend, when non-nil, is returned by PrependGoal to simulate a
+	// rejected queue insert (e.g. the oversized-objective validation).
+	failPrepend error
 }
 
 func (q *fakeQueue) Read() ([]coregoal.UpcomingGoal, error) {
@@ -18,6 +21,9 @@ func (q *fakeQueue) AppendGoal(i coregoal.UpcomingGoalInput) ([]coregoal.Upcomin
 	return q.insert(i, false)
 }
 func (q *fakeQueue) PrependGoal(i coregoal.UpcomingGoalInput) ([]coregoal.UpcomingGoal, error) {
+	if q.failPrepend != nil {
+		return nil, q.failPrepend
+	}
 	return q.insert(i, true)
 }
 func (q *fakeQueue) insert(i coregoal.UpcomingGoalInput, front bool) ([]coregoal.UpcomingGoal, error) {

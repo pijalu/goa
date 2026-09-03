@@ -156,6 +156,15 @@ active always appends to the end.
 
 With `create` (append/front), `postpone`, `promote`, `reorder`, and `cancel` the model has full todo-list-style control over what runs when. `create` never fails because a goal already exists: behind an active, paused, or blocked goal it appends to the queue; and when the `action` field is omitted it is inferred from the fields present (e.g. `status` → `update`, `objective` → `create`).
 
+### Auto-unblock (goals.auto_unblock)
+
+When a goal blocks **with justification** (`reason` + `expectation`) and a queue is wired, the framework runs an "unblocking investigation": the blocked goal is re-queued at the **front** (keeping criterion, verify command, and a handoff note carrying the blocker + unblock condition), and an investigation goal starts in front of it. The investigation must either (a) create an execution goal implementing the solution (`priority: "front"`) and complete citing it, or (b) block itself with `reason` + `expectation` to ask the user. Its recorded completion criterion arms the done-gate, so a prose-only "here is what to do" completion is challenged.
+
+Two terminal guarantees keep the flow from ping-ponging (a failed investigation re-queued in front of the real goal used to re-run and re-block forever):
+
+- **Investigations are terminal.** A blocked investigation never spawns a successor investigation and is never re-queued — it parks and asks the user. The kind marker (runtime-only, restored on replay) drives this.
+- **Spawn cap.** At most 2 consecutive auto-unblock spawns without an intervening goal completion or explicit resume; after that a justified block falls back to a plain block. A failed spawn (e.g. queue insert rejected) is surfaced in the block output instead of silently implying an investigation is running.
+
 ## Budgets
 
 The model can set hard limits with `goal` action `set_budget`:

@@ -591,3 +591,55 @@ func TestCreateGoalAcceptsOversizedObjective(t *testing.T) {
 		t.Errorf("objective len = %d, want %d", len(snap.Objective), len(big))
 	}
 }
+
+// TestCreateGoal_KindSanitizeByActor pins the kind gate: only the runtime
+// actor may classify a goal. Model- and user-created goals are sanitized to
+// standard even when they pass Kind=unblock — the marker decides whether a
+// blocked goal may spawn a successor investigation, and that gate must not
+// be model-settable.
+func TestCreateGoal_KindSanitizeByActor(t *testing.T) {
+	mode := NewGoalMode(nil, nil, nil, nil)
+
+	if _, err := mode.CreateGoal(CreateGoalInput{Objective: "sneaky", Kind: GoalKindUnblock}, GoalActorModel); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g.Kind != GoalKindStandard {
+		t.Errorf("model-created goal kind = %q, want standard", g.Kind)
+	}
+
+	if _, err := mode.CreateGoal(CreateGoalInput{Objective: "user", Kind: GoalKindUnblock, Replace: true}, GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g.Kind != GoalKindStandard {
+		t.Errorf("user-created goal kind = %q, want standard", g.Kind)
+	}
+
+	if _, err := mode.CreateGoal(CreateGoalInput{Objective: "framework", Kind: GoalKindUnblock, Replace: true}, GoalActorRuntime); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g.Kind != GoalKindUnblock {
+		t.Errorf("runtime-created goal kind = %q, want unblock", g.Kind)
+	}
+}
+
+// TestRestoreCreate_Kind pins replay fidelity: a goal.create record with the
+// unblock kind restores the marker (a session restart must not disarm the
+// no-successor-investigation guard for an in-flight investigation), and a
+// legacy record without a kind restores standard.
+func TestRestoreCreate_Kind(t *testing.T) {
+	mode := NewGoalMode(nil, nil, nil, nil)
+	kind := GoalKindUnblock
+	objective := "UNBLOCKING INVESTIGATION — find a solution."
+	mode.RestoreCreate(GoalEventRecord{Type: GoalEventCreate, Objective: &objective, Kind: &kind})
+	g := mode.GetGoal().Goal
+	if g == nil || g.Kind != GoalKindUnblock {
+		t.Fatalf("replayed goal kind = %+v, want unblock", g)
+	}
+
+	legacy := NewGoalMode(nil, nil, nil, nil)
+	legacy.RestoreCreate(GoalEventRecord{Type: GoalEventCreate, Objective: &objective})
+	g2 := legacy.GetGoal().Goal
+	if g2 == nil || g2.Kind != GoalKindStandard {
+		t.Fatalf("legacy replay kind = %+v, want standard", g2)
+	}
+}

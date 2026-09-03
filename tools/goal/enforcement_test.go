@@ -5,6 +5,7 @@
 package goal
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -212,6 +213,187 @@ func TestBlocked_AutoEnqueuesUnblockingGoal(t *testing.T) {
 	// The tool must report the auto-unblock, not the plain "waiting for user".
 	if !strings.Contains(res.Output, "unblocking goal") {
 		t.Errorf("output must report the auto-unblock flow: %q", res.Output)
+	}
+}
+
+// TestBlocked_InvestigationGoal_DoesNotSpawnSuccessor is the ping-pong F1
+// regression (goa-export-20260903-183525): a blocked UNBLOCKING INVESTIGATION
+// goal must terminate the auto-unblock flow — no successor investigation,
+// no re-queue of the failed investigation in front of the real goal. The old
+// behavior prepended the investigation itself (queue [U, A]) and re-spawned,
+// so the real goal never resumed and the same root-cause conclusion repeated
+// forever.
+func TestBlocked_InvestigationGoal_DoesNotSpawnSuccessor(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+
+	// Step 1: a standard goal blocks with justification → investigation U1
+	// spawns and A is re-queued in front-parked position.
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "implement ALTER TABLE"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"70 failures","expectation":"user decision"}`); err != nil {
+		t.Fatal(err)
+	}
+	u1 := mode.GetActiveGoal()
+	if u1 == nil || u1.Kind != goal.GoalKindUnblock {
+		t.Fatalf("expected active unblocking investigation, got %+v", u1)
+	}
+	if len(q.goals) != 1 {
+		t.Fatalf("step 1: queue = %d goals, want 1 (the re-queued standard goal): %+v", len(q.goals), q.goals)
+	}
+
+	// Step 2: the INVESTIGATION blocks (it found no autonomous solution).
+	res, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"fix is a multi-session port","expectation":"user approves scope"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The investigation must NOT be re-queued and NO successor investigation
+	// may spawn: the queue still holds exactly the original re-queued goal.
+	if len(q.goals) != 1 {
+		t.Errorf("investigation block changed the queue to %d goals (zombie re-queue + successor spawn): %+v", len(q.goals), q.goals)
+	}
+	if q.goals[0].Objective != "implement ALTER TABLE" {
+		t.Errorf("queue head = %q, want the original standard goal", q.goals[0].Objective)
+	}
+	if !strings.Contains(res.Output, "No successor investigation") {
+		t.Errorf("output must say no successor investigation is spawned: %q", res.Output)
+	}
+	if !res.StopTurn {
+		t.Error("investigation block must stop the turn (ask the user)")
+	}
+}
+
+// TestBlocked_InvestigationSpawn_CarriesCriterionAndKind pins F2: the
+// auto-spawned investigation must be created WITH its completion criterion
+// (arming the done-gate against prose-only completions) and the unblock kind.
+func TestBlocked_InvestigationSpawn_CarriesCriterionAndKind(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: &fakeQueue{}}
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "implement ALTER TABLE"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"70 failures","expectation":"user decision"}`); err != nil {
+		t.Fatal(err)
+	}
+	u := mode.GetActiveGoal()
+	if u == nil {
+		t.Fatal("no active goal after block")
+	}
+	if u.Kind != goal.GoalKindUnblock {
+		t.Errorf("investigation kind = %q, want %q", u.Kind, goal.GoalKindUnblock)
+	}
+	if u.CompletionCriterion == nil || !strings.Contains(*u.CompletionCriterion, "execution goal") {
+		t.Errorf("investigation criterion must demand a created follow-up goal, got %v", u.CompletionCriterion)
+	}
+}
+
+// TestBlocked_RequeuedGoalCarriesBlockHandoff pins F3: the re-queued blocked
+// goal must carry the block context (reason + expectation) as its handover,
+// so the promotion reminder tells the resumed turn why it stopped. The old
+// code dropped it despite a comment claiming the opposite.
+func TestBlocked_RequeuedGoalCarriesBlockHandoff(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "implement ALTER TABLE"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"70 failures need ALTER TABLE constraint preservation","expectation":"user decision on scope"}`); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.goals) != 1 {
+		t.Fatalf("queue = %d goals", len(q.goals))
+	}
+	h := q.goals[0].Handoff
+	if h == nil {
+		t.Fatal("re-queued goal has no handover — the resumed turn will not know why the goal blocked")
+	}
+	for _, want := range []string{"70 failures", "user decision on scope", "auto-blocked"} {
+		if !strings.Contains(*h, want) {
+			t.Errorf("handover missing %q: %s", want, *h)
+		}
+	}
+}
+
+// TestBlocked_SpawnFailureSurfaced pins the silent-failure half of F4/F5:
+// when the queue rejects the re-queue insert (e.g. oversized objective), the
+// block output must SAY the auto-unblock failed instead of implying an
+// investigation is running. The referenced export dead-ended on exactly
+// this silent fallback.
+func TestBlocked_SpawnFailureSurfaced(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{failPrepend: errors.New("goal objective cannot exceed 4000 characters")}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "implement ALTER TABLE"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"70 failures","expectation":"user decision"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "auto-unblock failed") {
+		t.Errorf("output must surface the spawn failure: %q", res.Output)
+	}
+	if !strings.Contains(res.Output, "no investigation is running") {
+		t.Errorf("output must clarify no investigation is running: %q", res.Output)
+	}
+	// The failed goal is still blocked (MarkBlocked already ran) and nothing
+	// was enqueued.
+	if len(q.goals) != 0 {
+		t.Errorf("failed prepend must not enqueue anything, queue = %+v", q.goals)
+	}
+}
+
+// TestBlocked_SpawnCapAndResumeReset pins the belt-and-braces cap (F6): two
+// consecutive auto-unblock spawns with NO completion or resume in between
+// stop the flow; an explicit resume resets the counter.
+func TestBlocked_SpawnCapAndResumeReset(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+
+	blockStandard := func(objective string) string {
+		t.Helper()
+		if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: objective, Replace: true}, goal.GoalActorUser); err != nil {
+			t.Fatal(err)
+		}
+		res, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"blocker","expectation":"input"}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Output
+	}
+
+	// Spawn #1 and #2 succeed (counter 1, 2).
+	for i, objective := range []string{"goal A", "goal B"} {
+		out := blockStandard(objective)
+		if !strings.Contains(out, "unblocking goal was started") {
+			t.Fatalf("spawn #%d: expected auto-unblock, got %q", i+1, out)
+		}
+	}
+	// Spawn #3 hits the cap: plain block, no new queue entry, no spawn.
+	out := blockStandard("goal C")
+	if strings.Contains(out, "unblocking goal was started") {
+		t.Errorf("spawn #3 must be capped, got %q", out)
+	}
+	if len(q.goals) != 2 {
+		t.Errorf("capped block must not touch the queue, queue = %d goals", len(q.goals))
+	}
+
+	// An explicit resume resets the counter: the next standard block spawns
+	// again (goal C is still the active-blocked goal; resume it, re-block).
+	if _, err := tool.ExecuteWithResult(`{"action":"update","status":"active"}`); err != nil {
+		t.Fatal(err)
+	}
+	out = blockStandard("goal C")
+	if !strings.Contains(out, "unblocking goal was started") {
+		t.Errorf("post-resume block must spawn again, got %q", out)
+	}
+	if len(q.goals) != 3 {
+		t.Errorf("post-resume spawn must re-queue the goal, queue = %d goals", len(q.goals))
 	}
 }
 
