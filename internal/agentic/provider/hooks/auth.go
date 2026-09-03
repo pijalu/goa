@@ -116,6 +116,10 @@ func (h *AuthHook) applyProviderHeaders(ctx *RequestContext) {
 		applyGitHubCopilotHeaders(ctx)
 	}
 
+	if isOpenCodeGateway(ctx.Model) {
+		applyOpenCodeHeaders(ctx)
+	}
+
 	if ctx.Model.Provider == schema.ProviderOpenAI && h.profile.Auth.Method == schema.AuthMethodOAuth {
 		ctx.Profile.Compat.SystemAsInstructions = true
 	}
@@ -147,6 +151,40 @@ func applyCodexHeaders(ctx *RequestContext) {
 	}
 	if !hasHeader(ctx.Headers, "accept") {
 		ctx.Headers["accept"] = "text/event-stream"
+	}
+}
+
+// isOpenCodeGateway reports whether the model's traffic terminates at an
+// OpenCode gateway: either a catalog opencode identity, or a custom/provider-
+// less config whose base URL matches the catalog opencode URL patterns
+// (MatchProviderByNameOrURL defers generic identities to the URL).
+func isOpenCodeGateway(model schema.Model) bool {
+	if model.Provider == schema.ProviderOpenCode || model.Provider == schema.ProviderOpenCodeGo {
+		return true
+	}
+	def := schema.MatchProviderByNameOrURL(model.Provider, model.BaseURL)
+	if def == nil {
+		return false
+	}
+	return def.Provider == schema.ProviderOpenCode || def.Provider == schema.ProviderOpenCodeGo
+}
+
+// applyOpenCodeHeaders tags requests to the OpenCode Zen/Go gateways with
+// the identity headers their handler reads (opencode
+// packages/console/app/src/routes/zen/util/handler.ts): x-opencode-session —
+// one stable id per conversation — drives the gateway's sticky-provider
+// routing (its fallback is workspace/IP) and is required by the gateway;
+// x-opencode-client identifies this client (opencode itself defaults it to
+// "cli" via OPENCODE_CLIENT). The session id mirrors the Codex session-id
+// source: StreamOptions.SessionID, the conversation id minted per context
+// and rotated by ResetConversationID (Rule 7). Headers the caller already
+// set (provider/model config) win, matching the codex guard behavior.
+func applyOpenCodeHeaders(ctx *RequestContext) {
+	if ctx.Options.SessionID != "" && !hasHeader(ctx.Headers, "x-opencode-session") {
+		ctx.Headers["x-opencode-session"] = ctx.Options.SessionID
+	}
+	if !hasHeader(ctx.Headers, "x-opencode-client") {
+		ctx.Headers["x-opencode-client"] = "goa"
 	}
 }
 

@@ -84,6 +84,132 @@ func TestAuthHookGitHubCopilotHeaders(t *testing.T) {
 	assert.Equal(t, "true", ctx.Headers["X-Vision-Preview"])
 }
 
+// TestAuthHookOpenCodeSessionHeaders pins the fix for the OpenCode Go
+// gateway notice: requests from the goa user-agent missing
+// x-opencode-session would start erroring. The hook must tag every request
+// to either opencode gateway (zen / go) with the conversation-scoped
+// SessionID and the client identity, mirroring the codex session-id source.
+func TestAuthHookOpenCodeSessionHeaders(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider schema.Provider
+	}{
+		{"zen gateway", schema.ProviderOpenCode},
+		{"go gateway", schema.ProviderOpenCodeGo},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &AuthHook{}
+			require.NoError(t, h.Init(schema.VariantProfile{
+				Auth: schema.AuthConfig{Header: "Authorization", Prefix: "Bearer "},
+			}))
+
+			ctx := &RequestContext{
+				Model:   schema.Model{Provider: tt.provider},
+				Options: schema.StreamOptions{APIKey: "sk-test", SessionID: "conv-123"},
+				Headers: make(map[string]string),
+			}
+			require.NoError(t, h.ApplyRequest(ctx))
+			assert.Equal(t, "conv-123", ctx.Headers["x-opencode-session"],
+				"opencode gateway requests must carry the conversation session id")
+			assert.Equal(t, "goa", ctx.Headers["x-opencode-client"])
+		})
+	}
+}
+
+// TestAuthHookOpenCodeSessionHeadersNoSession covers the no-session case:
+// without a conversation id no x-opencode-session header is emitted (an
+// empty header would be worse than none), while the client identity is
+// still sent.
+func TestAuthHookOpenCodeSessionHeadersNoSession(t *testing.T) {
+	h := &AuthHook{}
+	require.NoError(t, h.Init(schema.VariantProfile{
+		Auth: schema.AuthConfig{Header: "Authorization", Prefix: "Bearer "},
+	}))
+
+	ctx := &RequestContext{
+		Model:   schema.Model{Provider: schema.ProviderOpenCodeGo},
+		Options: schema.StreamOptions{APIKey: "sk-test"},
+		Headers: make(map[string]string),
+	}
+	require.NoError(t, h.ApplyRequest(ctx))
+	_, hasSession := ctx.Headers["x-opencode-session"]
+	assert.False(t, hasSession, "no conversation id must not emit an empty session header")
+	assert.Equal(t, "goa", ctx.Headers["x-opencode-client"])
+}
+
+// TestAuthHookOpenCodeSessionHeadersUserOverride ensures a caller-provided
+// x-opencode-session (provider or model config headers) is never clobbered.
+func TestAuthHookOpenCodeSessionHeadersUserOverride(t *testing.T) {
+	h := &AuthHook{}
+	require.NoError(t, h.Init(schema.VariantProfile{
+		Auth: schema.AuthConfig{Header: "Authorization", Prefix: "Bearer "},
+	}))
+
+	ctx := &RequestContext{
+		Model:   schema.Model{Provider: schema.ProviderOpenCode},
+		Options: schema.StreamOptions{APIKey: "sk-test", SessionID: "conv-123"},
+		Headers: map[string]string{"X-OpenCode-Session": "user-pinned", "X-OpenCode-Client": "custom"},
+	}
+	require.NoError(t, h.ApplyRequest(ctx))
+	assert.Equal(t, "user-pinned", ctx.Headers["X-OpenCode-Session"])
+	assert.Equal(t, "custom", ctx.Headers["X-OpenCode-Client"])
+}
+
+// TestAuthHookOpenCodeSessionHeadersCustomProvider covers the URL-fallback
+// path: a user-configured provider pointing at an opencode gateway endpoint
+// without a catalog identity (Provider custom/empty) must still emit the
+// session header — the gateway does not care which config entry sent it.
+func TestAuthHookOpenCodeSessionHeadersCustomProvider(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+	}{
+		{"go gateway URL", "https://opencode.ai/zen/go/v1"},
+		{"zen gateway URL", "https://opencode.ai/zen/v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &AuthHook{}
+			require.NoError(t, h.Init(schema.VariantProfile{
+				Auth: schema.AuthConfig{Header: "Authorization", Prefix: "Bearer "},
+			}))
+
+			ctx := &RequestContext{
+				Model: schema.Model{
+					Provider: schema.ProviderCustom,
+					BaseURL:  tt.baseURL,
+				},
+				Options: schema.StreamOptions{APIKey: "sk-test", SessionID: "conv-123"},
+				Headers: make(map[string]string),
+			}
+			require.NoError(t, h.ApplyRequest(ctx))
+			assert.Equal(t, "conv-123", ctx.Headers["x-opencode-session"])
+			assert.Equal(t, "goa", ctx.Headers["x-opencode-client"])
+		})
+	}
+}
+
+// TestAuthHookOpenCodeHeadersScopedToOpencode guards against leaking the
+// opencode identity headers onto unrelated providers.
+func TestAuthHookOpenCodeHeadersScopedToOpencode(t *testing.T) {
+	h := &AuthHook{}
+	require.NoError(t, h.Init(schema.VariantProfile{
+		Auth: schema.AuthConfig{Header: "Authorization", Prefix: "Bearer "},
+	}))
+
+	ctx := &RequestContext{
+		Model:   schema.Model{Provider: schema.ProviderOpenAI},
+		Options: schema.StreamOptions{APIKey: "sk-test", SessionID: "conv-123"},
+		Headers: make(map[string]string),
+	}
+	require.NoError(t, h.ApplyRequest(ctx))
+	_, hasSession := ctx.Headers["x-opencode-session"]
+	assert.False(t, hasSession)
+	_, hasClient := ctx.Headers["x-opencode-client"]
+	assert.False(t, hasClient)
+}
+
 func TestErrorHookClassifiesContextOverflow(t *testing.T) {
 	h := &ErrorHook{}
 	require.NoError(t, h.Init(schema.VariantProfile{}))
