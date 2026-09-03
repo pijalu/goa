@@ -176,9 +176,9 @@ func TestJS_RegisterSegmentAndHotkey(t *testing.T) {
 	}
 	// Render acquires the VM lock itself (app render loop calls it unlocked);
 	// do NOT wrap it in lockVM here — vmMu is not reentrant.
-	rendered := segs[0].Render()
-	if rendered != "5h:42%" {
-		t.Fatalf("Render = %q", rendered)
+	rendered, ok := segs[0].Render()
+	if !ok || rendered != "5h:42%" {
+		t.Fatalf("Render = %q (ok=%v)", rendered, ok)
 	}
 	defs := hk.Registered()
 	if len(defs) != 1 || defs[0].KeyName() != "ctrl+shift+q" {

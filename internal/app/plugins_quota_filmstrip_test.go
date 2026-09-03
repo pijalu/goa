@@ -123,6 +123,17 @@ func TestQuotaPlugin_ExtendedInfoInTUI_Filmstrip(t *testing.T) {
 // TestQuotaPlugin_SegmentShowsCompactWhileExtendedAvailable pins the pairing
 // the feature promises: once the cache holds data, the footer segment shows
 // the COMPACT status while the command output carries the EXTENDED breakdown.
+//
+// The poll (not a single-shot assert) mirrors the production contract, not a
+// timing assumption: a segment render that lands while the plugin VM is busy
+// (the setTimeout(0) cache-prime frame) is SKIPPED — buildSegmentRender
+// reports ok=false and pushPluginSegments keeps the previous text — and the
+// prime's own goa.ui.refreshSegment re-renders with data once the frame
+// drains. A single immediate push could therefore legally observe the stale
+// "[…]" pending render (CI: TestQuotaPlugin flake, 2026-09-03). What is
+// pinned: within a bounded window the compact marker ([∞] for the active
+// local provider, or a percent pair) MUST reach the footer — and the
+// extended table never does.
 func TestQuotaPlugin_SegmentShowsCompactWhileExtendedAvailable(t *testing.T) {
 	sc := newQuotaFilmstripScenario(t)
 	subs := sc.app.subs
@@ -131,18 +142,20 @@ func TestQuotaPlugin_SegmentShowsCompactWhileExtendedAvailable(t *testing.T) {
 		return strings.Contains(quotaCommandOutput(t, subs), "Provider Quotas")
 	}, "quota cache never primed")
 
-	sc.engine.ApplySync(func() { sc.app.pushPluginSegments(sc.engine) })
-	sc.engine.RenderNow()
-	frame := sc.engine.AgentFrame()
-	node := frame.FindNode("Footer")
-	if node == nil {
-		t.Fatal("Footer missing from frame")
+	footerHasCompact := func() bool {
+		sc.engine.ApplySync(func() { sc.app.pushPluginSegments(sc.engine) })
+		sc.engine.RenderNow()
+		frame := sc.engine.AgentFrame()
+		node := frame.FindNode("Footer")
+		if node == nil {
+			t.Fatal("Footer missing from frame")
+		}
+		// Compact segment: either the local "[∞]" marker or a percent pair —
+		// never the multi-line extended table.
+		return strings.Contains(node.Text, "[∞]") || strings.Contains(node.Text, "%")
 	}
-	// Compact segment: either the local "[∞]" marker or a percent pair —
-	// never the multi-line extended table.
-	if !strings.Contains(node.Text, "[∞]") && !strings.Contains(node.Text, "%") {
-		t.Fatalf("footer segment lacks compact quota status: %q", node.Text)
-	}
+	waitFor(t, sc.engine, 3*time.Second, footerHasCompact,
+		"footer segment never showed compact quota status after cache prime")
 }
 
 // compile-time guard: keeps the plugins import meaningful even if scenario

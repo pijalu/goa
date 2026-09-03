@@ -27,7 +27,7 @@ func TestFilmstrip_PluginSegmentVisibleInFooterAcrossTurn(t *testing.T) {
 	rt.ui.AddSegment(plugins.UISegmentDef{
 		ID:       "quota",
 		Priority: 10,
-		Render:   func() string { return "5h:42% / 5d:30%" },
+		Render:   func() (string, bool) { return "5h:42% / 5d:30%", true },
 	})
 	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
@@ -89,7 +89,7 @@ func TestFilmstrip_PluginSegmentRefreshUpdatesFooter(t *testing.T) {
 	rt.ui.AddSegment(plugins.UISegmentDef{
 		ID:       "quota",
 		Priority: 10,
-		Render:   func() string { return current },
+		Render:   func() (string, bool) { return current, true },
 	})
 	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
@@ -130,7 +130,7 @@ func TestFilmstrip_PluginSegmentSurvivesStatsUpdate(t *testing.T) {
 	rt.ui.AddSegment(plugins.UISegmentDef{
 		ID:       "quota",
 		Priority: 10,
-		Render:   func() string { return "5h:42%" },
+		Render:   func() (string, bool) { return "5h:42%", true },
 	})
 	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
@@ -145,6 +145,95 @@ func TestFilmstrip_PluginSegmentSurvivesStatsUpdate(t *testing.T) {
 	node := statsFrame.FindNode("Footer")
 	if node == nil || !strings.Contains(node.Text, "5h:42%") {
 		t.Fatalf("segment lost after stats updates: %v", node)
+	}
+}
+
+// TestFilmstrip_PluginSegmentSkippedRenderKeepsPrevious pins the skip
+// contract: when a segment render is SKIPPED (Render reports ok=false — the
+// plugin VM was busy with a parked command or timer frame), pushPluginSegments
+// must keep the previously rendered text instead of blanking the segment.
+//
+// Regression: buildSegmentRender used to return "" on skip, which
+// pushPluginSegments could not distinguish from a legitimate empty render
+// (quota hides itself for no_api_key), so a push landing inside the quota
+// plugin's cache-prime frame wiped the footer segment until the next refresh
+// tick — the 2026-09-03 CI flake in
+// TestQuotaPlugin_SegmentShowsCompactWhileExtendedAvailable.
+func TestFilmstrip_PluginSegmentSkippedRenderKeepsPrevious(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+
+	rt := newPluginRuntime(sc.app.subs)
+	// A segment whose plugin VM is busy from the second render onward: the
+	// activation-time push lands a good text, every later push is skipped
+	// (ok=false).
+	renders := 0
+	rt.ui.AddSegment(plugins.UISegmentDef{
+		ID:       "quota",
+		Priority: 10,
+		Render: func() (string, bool) {
+			renders++
+			if renders > 1 {
+				return "", false // skipped: VM busy with another frame
+			}
+			return "[∞]", true
+		},
+	})
+	sc.app.subs.setPluginRT(rt)
+	sc.app.activatePluginUI(sc.engine)
+
+	// The next push hits the skipped render: the last good text must survive
+	// instead of being blanked.
+	sc.engine.ApplySync(func() { sc.app.pushPluginSegments(sc.engine) })
+	sc.engine.RenderNow()
+	frame := sc.engine.AgentFrame()
+	node := frame.FindNode("Footer")
+	if node == nil || !strings.Contains(node.Text, "[∞]") {
+		t.Fatalf("skipped render blanked the segment; footer=%q", node.Text)
+	}
+
+	// And again — the skip must never accumulate into a blank.
+	sc.engine.ApplySync(func() { sc.app.pushPluginSegments(sc.engine) })
+	sc.engine.RenderNow()
+	frame = sc.engine.AgentFrame()
+	node = frame.FindNode("Footer")
+	if node == nil || !strings.Contains(node.Text, "[∞]") {
+		t.Fatalf("repeated skip blanked the segment; footer=%q", node.Text)
+	}
+}
+
+// TestFilmstrip_PluginSegmentExplicitEmptyClears pins the other half: a
+// render that RUNS and returns empty (ok=true) is an authoritative "hide
+// this segment" — the previous text must NOT be kept, or segments could
+// never disappear.
+func TestFilmstrip_PluginSegmentExplicitEmptyClears(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+
+	rt := newPluginRuntime(sc.app.subs)
+	renders := 0
+	rt.ui.AddSegment(plugins.UISegmentDef{
+		ID:       "quota",
+		Priority: 10,
+		Render: func() (string, bool) {
+			renders++
+			if renders > 1 {
+				return "", true // plugin hides the segment (e.g. no_api_key)
+			}
+			return "[∞]", true
+		},
+	})
+	sc.app.subs.setPluginRT(rt)
+	sc.app.activatePluginUI(sc.engine)
+
+	sc.engine.ApplySync(func() { sc.app.pushPluginSegments(sc.engine) })
+	sc.engine.ApplySync(func() { sc.app.pushPluginSegments(sc.engine) })
+	sc.engine.RenderNow()
+	frame := sc.engine.AgentFrame()
+	node := frame.FindNode("Footer")
+	if node == nil {
+		t.Fatal("Footer missing from frame")
+	}
+	if strings.Contains(node.Text, "[∞]") {
+		t.Fatalf("explicit empty render must clear the segment; footer=%q", node.Text)
 	}
 }
 
@@ -175,11 +264,11 @@ func TestFilmstrip_ProviderSwitchRefreshesSegment(t *testing.T) {
 	rt.ui.AddSegment(plugins.UISegmentDef{
 		ID:       "quota",
 		Priority: 10,
-		Render: func() string {
+		Render: func() (string, bool) {
 			if sc.app.subs.cfg.ActiveProvider == "lmstudio" {
-				return "[∞]"
+				return "[∞]", true
 			}
-			return "[9%|30%]"
+			return "[9%|30%]", true
 		},
 	})
 	sc.app.subs.setPluginRT(rt)

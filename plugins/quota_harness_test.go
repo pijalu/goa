@@ -352,7 +352,7 @@ func (e *quotaTestEnv) renderSegment() string {
 	)
 	deadline := time.Now().Add(retryBudget)
 	for {
-		var render func() string
+		var render func() (string, bool)
 		for _, s := range e.segments.Segments() {
 			if s.ID == "quota" && s.Render != nil {
 				render = s.Render
@@ -362,7 +362,7 @@ func (e *quotaTestEnv) renderSegment() string {
 		if render == nil {
 			return ""
 		}
-		out := render()
+		out, _ := render()
 		if !vmBusy() {
 			return out
 		}

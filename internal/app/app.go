@@ -351,17 +351,32 @@ func (a *App) activatePluginUI(engine *tui.TUI) {
 // pushPluginSegments evaluates every registered plugin segment on the plugin
 // VM and pushes the rendered, priority-ordered strings into the footer.
 // Rendering happens here (app layer) so the footer never calls into JS.
+//
+// A render can be SKIPPED (ok=false) when the plugin VM is busy with another
+// logical frame (parked command, timer callback). A skip carries no verdict
+// about the segment, so the previously rendered text is kept for that segment
+// ID — blanking here would race the real empty renders (a plugin hiding its
+// segment) with transient VM busy-ness, dropping the quota status until the
+// next refresh tick (the CI flake in TestQuotaPlugin_SegmentShowsCompactWhileExtendedAvailable).
 func (a *App) pushPluginSegments(engine *tui.TUI) {
 	rt := a.subs.getPluginRT()
 	if rt == nil || a.subs.footer == nil {
 		return
 	}
 	defs := rt.ui.Segments()
+	// Previous texts, keyed by segment ID, for skipped renders.
+	prevText := make(map[string]string, len(defs))
+	for _, p := range a.subs.footer.Data().PluginSegments {
+		prevText[p.ID] = p.Text
+	}
 	segs := make([]tui.PluginSegment, 0, len(defs))
 	for _, d := range defs {
-		text := ""
+		text, ok := "", false
 		if d.Render != nil {
-			text = d.Render() // acquires the VM lock inside the bridge
+			text, ok = d.Render() // acquires the VM lock inside the bridge
+		}
+		if !ok {
+			text = prevText[d.ID] // skipped: keep the last good render
 		}
 		segs = append(segs, tui.PluginSegment{ID: d.ID, Priority: d.Priority, Text: text})
 	}

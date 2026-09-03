@@ -20,7 +20,14 @@ type UIPaneDef struct {
 type UISegmentDef struct {
 	ID       string
 	Priority int
-	Render   func() string
+	// Render produces the segment text. ok reports whether a fresh render
+	// was produced: false means the render was SKIPPED (e.g. the plugin VM
+	// was busy with a parked command/timer frame) and carries no verdict
+	// about the segment — consumers must keep the previously rendered text.
+	// A skipped render is indistinguishable from data by design: plugins
+	// legitimately return empty text to hide a segment (quota's no_api_key),
+	// so the skip signal must be separate from the content.
+	Render func() (string, bool)
 }
 
 // UIDialogDef defines a modal dialog.

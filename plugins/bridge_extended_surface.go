@@ -63,20 +63,24 @@ func (b *JSBridge) setupUI(goaObj *goja.Object, ui *UIBridge) {
 //
 // Skip while another logical frame is live (a command parked on HTTP/confirm):
 // two frames on one runtime must never overlap (item E). The next refresh
-// re-renders, so skipping is safe — only delayed, never lost.
-func (b *JSBridge) buildSegmentRender(fn goja.Callable) func() string {
-	return func() string {
+// re-renders, so skipping only delays. The skip is reported as ok=false so
+// the caller keeps the LAST GOOD text — returning "" would be read as an
+// authoritative empty render and blank the segment (e.g. the quota segment
+// legitimately renders empty when unconfigured; a startup push landing
+// inside the cache-prime frame must not erase it until the next tick).
+func (b *JSBridge) buildSegmentRender(fn goja.Callable) func() (string, bool) {
+	return func() (string, bool) {
 		if vmBusy() {
-			return ""
+			return "", false
 		}
 		unlock := lockVM()
 		defer unlock()
 		defer func() { _ = recover() }()
 		res, err := fn(goja.Undefined())
 		if err != nil {
-			return ""
+			return "", true
 		}
-		return b.segmentText(res)
+		return b.segmentText(res), true
 	}
 }
 

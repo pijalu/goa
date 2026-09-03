@@ -45,7 +45,7 @@ func TestSegmentRender_SerializedWithScheduler(t *testing.T) {
 	_ = bridge
 
 	// Find the registered segment's render closure.
-	var render func() string
+	var render func() (string, bool)
 	for _, s := range ui.Segments() {
 		if s.ID == "quota" {
 			render = s.Render
@@ -64,9 +64,9 @@ func TestSegmentRender_SerializedWithScheduler(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 200; i++ {
-				out := render()
-				if !strings.HasPrefix(out, "tok:") {
-					t.Errorf("render = %q, want tok:N", out)
+				out, ok := render()
+				if !ok || !strings.HasPrefix(out, "tok:") {
+					t.Errorf("render = %q (ok=%v), want tok:N", out, ok)
 					return
 				}
 			}
@@ -96,14 +96,14 @@ func TestSegmentRender_JSPanicContained(t *testing.T) {
 		});
 	`)
 
-	byID := map[string]func() string{}
+	byID := map[string]func() (string, bool){}
 	for _, s := range ui.Segments() {
 		byID[s.ID] = s.Render
 	}
-	if got := byID["boom"](); got != "" {
+	if got, ok := byID["boom"](); ok && got != "" {
 		t.Fatalf("throwing render = %q, want empty", got)
 	}
-	if got := byID["ok"](); got != "fine" {
+	if got, ok := byID["ok"](); !ok || got != "fine" {
 		t.Fatalf("healthy render = %q, want fine", got)
 	}
 }
@@ -132,11 +132,11 @@ func TestSegmentRender_SemanticColor(t *testing.T) {
 		});
 	`)
 
-	byID := map[string]func() string{}
+	byID := map[string]func() (string, bool){}
 	for _, s := range ui.Segments() {
 		byID[s.ID] = s.Render
 	}
-	got := byID["quota"]()
+	got, _ := byID["quota"]()
 	if !strings.Contains(got, "[5h:7%]") {
 		t.Fatalf("colored segment missing text: %q", got)
 	}
@@ -144,7 +144,7 @@ func TestSegmentRender_SemanticColor(t *testing.T) {
 		t.Fatalf("colored segment missing ANSI fg: %q", got)
 	}
 	// Unknown color names fall back to unstyled text.
-	if got := byID["unknown-color"](); got != "plain" {
+	if got, _ := byID["unknown-color"](); got != "plain" {
 		t.Fatalf("unknown color = %q, want plain text", got)
 	}
 }
@@ -163,13 +163,13 @@ func TestSegmentRender_NoColorMapper(t *testing.T) {
 			render: function() { return { text: "[wk:21%]", color: "critical" }; }
 		});
 	`)
-	var render func() string
+	var render func() (string, bool)
 	for _, s := range ui.Segments() {
 		if s.ID == "quota" {
 			render = s.Render
 		}
 	}
-	if got := render(); got != "[wk:21%]" {
+	if got, ok := render(); !ok || got != "[wk:21%]" {
 		t.Fatalf("no mapper = %q, want unstyled [wk:21%%]", got)
 	}
 }

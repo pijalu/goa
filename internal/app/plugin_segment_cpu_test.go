@@ -21,7 +21,7 @@ func TestCPU_CarouselSteadyState(t *testing.T) {
 	n := 0
 	rt.ui.AddSegment(plugins.UISegmentDef{
 		ID: "quota", Priority: 10,
-		Render: func() string { n++; return "5h:" + string(rune('0'+n%10)) + "%" },
+		Render: func() (string, bool) { n++; return "5h:" + string(rune('0'+n%10)) + "%", true },
 	})
 	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
@@ -51,7 +51,7 @@ func TestCPU_CarouselSteadyState(t *testing.T) {
 func BenchmarkPushPluginSegments(b *testing.B) {
 	sc := newUIScenario(b, 100, 24)
 	rt := newPluginRuntime(sc.app.subs)
-	rt.ui.AddSegment(plugins.UISegmentDef{ID: "quota", Priority: 10, Render: func() string { return "5h:42% / 5d:30%" }})
+	rt.ui.AddSegment(plugins.UISegmentDef{ID: "quota", Priority: 10, Render: func() (string, bool) { return "5h:42% / 5d:30%", true }})
 	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
 
@@ -66,7 +66,7 @@ func BenchmarkPushPluginSegments(b *testing.B) {
 func BenchmarkFooterRenderWithSegment(b *testing.B) {
 	sc := newUIScenario(b, 100, 24)
 	rt := newPluginRuntime(sc.app.subs)
-	rt.ui.AddSegment(plugins.UISegmentDef{ID: "quota", Priority: 10, Render: func() string { return "5h:42% / 5d:30%" }})
+	rt.ui.AddSegment(plugins.UISegmentDef{ID: "quota", Priority: 10, Render: func() (string, bool) { return "5h:42% / 5d:30%", true }})
 	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
 	sc.app.pushPluginSegments(sc.engine)

@@ -25,11 +25,11 @@ func TestQuotaHarnessRenderSegmentWaitsForVMIdle(t *testing.T) {
 	e := newQuotaTestEnv(t)
 	e.segments.AddSegment(UISegmentDef{
 		ID: "quota",
-		Render: func() string {
+		Render: func() (string, bool) {
 			if vmBusy() {
-				return "" // mirrors buildSegmentRender's busy skip
+				return "", false // mirrors buildSegmentRender's busy skip
 			}
-			return "[38%]"
+			return "[38%]", true
 		},
 	})
 
@@ -55,7 +55,7 @@ func TestQuotaHarnessRenderSegmentIdleIsEmpty(t *testing.T) {
 	e := newQuotaTestEnv(t)
 	e.segments.AddSegment(UISegmentDef{
 		ID:     "quota",
-		Render: func() string { return "" }, // e.g. no_api_key with an idle VM
+		Render: func() (string, bool) { return "", true }, // e.g. no_api_key with an idle VM
 	})
 	start := time.Now()
 	if got := e.renderSegment(); got != "" {
