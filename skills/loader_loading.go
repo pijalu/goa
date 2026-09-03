@@ -358,8 +358,16 @@ func (r *SkillRegistry) hasAnySubSkill(name string) bool {
 // filePath is the location used in <available_skills> listings; pass an
 // empty string only when the location is genuinely unknown.
 func parseSkill(name, content, source, filePath string) *Skill {
+	// Invocation policy defaults to fully invocable (P16). The defaults are
+	// re-applied by SkillMeta.UnmarshalYAML when frontmatter parses (explicit
+	// false still wins); seeding them here keeps the invariant for SKILL.md
+	// files with NO frontmatter or malformed frontmatter, where UnmarshalYAML
+	// never runs — otherwise the skill loads but is invisible to both the
+	// model catalog and the /skills menu.
 	meta := SkillMeta{
-		Name: name,
+		Name:           name,
+		ModelInvocable: true,
+		UserInvocable:  true,
 	}
 	body := content
 

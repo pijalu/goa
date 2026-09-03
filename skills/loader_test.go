@@ -696,6 +696,64 @@ func TestParseSkillInvocationPolicy(t *testing.T) {
 	}
 }
 
+// TestParseSkillInvocationPolicyWithoutFrontmatter covers the P16 defaults
+// for SKILL.md files with NO frontmatter or MALFORMED frontmatter: the
+// invocation policy must still default to fully invocable. The defaults live
+// in SkillMeta.UnmarshalYAML, which only runs when frontmatter parses —
+// without this, a bare SKILL.md loads (counts in List) but is filtered from
+// the model catalog and the /skills menu (creaves agent-browser bug).
+func TestParseSkillInvocationPolicyWithoutFrontmatter(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"no frontmatter", "# Skill without frontmatter\n\nbody\n"},
+		{"malformed frontmatter", "---\n: :\n---\n\nbody\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skill := parseSkill("bare", tt.content, "file", "skills/bare/SKILL.md")
+			if skill == nil {
+				t.Fatal("parseSkill returned nil")
+			}
+			if !skill.Meta.ModelInvocable || !skill.Meta.UserInvocable {
+				t.Errorf("invocation policy = (model:%v user:%v), want both true — bare SKILL.md must stay invocable",
+					skill.Meta.ModelInvocable, skill.Meta.UserInvocable)
+			}
+		})
+	}
+}
+
+// TestSkillRegistryBareSkillInvocable is the end-to-end repro of the creaves
+// agent-browser bug: a project SKILL.md without frontmatter must load AND be
+// invocable on both surfaces (model catalog via List → RenderAvailableSkills,
+// TUI menu via IsUserInvocable) — not just be counted by List.
+func TestSkillRegistryBareSkillInvocable(t *testing.T) {
+	dir := t.TempDir()
+	sd := filepath.Join(dir, "agent-browser")
+	if err := os.MkdirAll(sd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# agent-browser validation\n\nUse `agent-browser` CLI for browser checks.\n"
+	if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	summaries := reg.List()
+	if len(summaries) != 1 {
+		t.Fatalf("List() = %d skills, want 1", len(summaries))
+	}
+	if !summaries[0].IsModelInvocable() {
+		t.Errorf("bare skill not model-invocable — it would vanish from <available_skills>: %+v", summaries[0])
+	}
+	if !summaries[0].IsUserInvocable() {
+		t.Errorf("bare skill not user-invocable — it would vanish from the /skills menu: %+v", summaries[0])
+	}
+}
+
 func assertInvocationPolicy(t *testing.T, frontmatter string, wantModel, wantUser bool) {
 	skill := parseSkill("s", "---\n"+frontmatter+"\n---\n\nbody", "embedded", "skills/s/SKILL.md")
 	if skill == nil {
