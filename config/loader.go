@@ -193,6 +193,12 @@ func (cl *CascadeLoader) Load() (*Config, error) {
 	// so heal instead of failing validation and refusing to start.
 	cfg.sanitizeDanglingCompressionModels()
 
+	// Clear dangling model references in team member definitions and
+	// orchestrator roles/pool (model deleted after the reference was
+	// persisted). An empty model falls back to the active model at activation
+	// time, so heal instead of failing validation and refusing to start.
+	cfg.sanitizeDanglingModelRefs()
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

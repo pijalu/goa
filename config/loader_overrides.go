@@ -530,6 +530,123 @@ func (c *Config) sanitizeDanglingCompressionModels() {
 	}
 }
 
+// sanitizeDanglingModelRefs heals the B-CfgStaleModel class: team member
+// models and orchestrator role models / pool caps that reference a model ID
+// no longer in the catalog. These references persist in whichever layer set
+// them while the model can be deleted from another layer, via the model
+// picker, or by hand; the stale reference then hard-failed startup validation
+// ("model %q not found in models list"), bricking the app until the YAML was
+// edited by hand. Member and role models are REBOUND to the resolved active
+// model (clearing to empty would itself fail the "model must be set"
+// validation), preserving the team/role intent; pool caps for the deleted
+// model are dropped (their bound no longer exists). Each heal emits a warning
+// so the user knows why the reference changed. Validate() deliberately keeps
+// rejecting unknown model IDs so interactive edits still catch typos. Runs
+// before validation, after model repair so repaired-in models are kept, and
+// skips entirely when no models are configured (the same "can't know what's
+// dangling" contract as the validation skipModelCheck).
+func (c *Config) sanitizeDanglingModelRefs() {
+	fallback, ok := c.modelRefFallback()
+	if !ok {
+		return
+	}
+	known := modelIDs(c.Models)
+	for name, def := range c.Teams.Definitions {
+		if healed, changed := def.healDanglingMemberModels(known, fallback, "teams.definitions."+name); changed {
+			c.Teams.Definitions[name] = healed
+		}
+	}
+	for name, role := range c.Orchestrator.Roles {
+		if role.Model == "" {
+			continue
+		}
+		if _, ok := known[role.Model]; ok {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "Warning: orchestrator.roles.%s.model %q references an unconfigured model — rebinding to active model %q (model deleted?)\n", name, role.Model, fallback)
+		role.Model = fallback
+		c.Orchestrator.Roles[name] = role
+	}
+	for id := range c.Orchestrator.Pool.MaxAgentsPerModel {
+		if _, ok := known[id]; ok {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "Warning: orchestrator.pool.max_agents_per_model %q references an unconfigured model — dropping stale cap (model deleted?)\n", id)
+		delete(c.Orchestrator.Pool.MaxAgentsPerModel, id)
+	}
+}
+
+// modelRefFallback resolves the model ID dangling references are rebound to:
+// the configured active model when valid, else the first configured model.
+// ok is false when no model is configured at all — in that case there is
+// nothing to rebind to and the heal is a no-op (mirrors the validation
+// skipModelCheck for an empty catalog).
+func (c *Config) modelRefFallback() (string, bool) {
+	if len(c.Models) == 0 {
+		return "", false
+	}
+	if c.ActiveModel != "" {
+		if m := c.GetModelByID(c.ActiveModel); m != nil {
+			return m.ID, true
+		}
+	}
+	return c.Models[0].ID, true
+}
+
+// healDanglingMemberModels returns a copy of the team definition with every
+// member model that names an unconfigured model rebound to fallback (emitting
+// a warning per heal), and whether anything changed. Main/Companion shorthand
+// and the canonical Members map are all covered.
+func (d TeamDefinition) healDanglingMemberModels(known map[string]struct{}, fallback, prefix string) (TeamDefinition, bool) {
+	healed := d
+	changed := false
+	if d.Main != nil {
+		if m := healTeamMemberModel(known, fallback, prefix+".main", *d.Main); m != nil {
+			healed.Main = m
+			changed = true
+		}
+	}
+	if d.Companion != nil {
+		if m := healTeamMemberModel(known, fallback, prefix+".companion", *d.Companion); m != nil {
+			healed.Companion = m
+			changed = true
+		}
+	}
+	if len(d.Members) == 0 {
+		return healed, changed
+	}
+	members := make(map[string]TeamMember, len(d.Members))
+	memberChanged := false
+	for memberName, member := range d.Members {
+		if m := healTeamMemberModel(known, fallback, prefix+".members."+memberName, member); m != nil {
+			member = *m
+			memberChanged = true
+		}
+		members[memberName] = member
+	}
+	if memberChanged {
+		healed.Members = members
+		changed = true
+	}
+	return healed, changed
+}
+
+// healTeamMemberModel returns a copy of member with its Model rebound to
+// fallback when it names an unconfigured model (emitting a warning), or nil
+// when the member is already valid and must be left untouched.
+func healTeamMemberModel(known map[string]struct{}, fallback, path string, member TeamMember) *TeamMember {
+	if member.Model == "" {
+		return nil
+	}
+	if _, ok := known[member.Model]; ok {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "Warning: %s.model %q references an unconfigured model — rebinding to active model %q (model deleted?)\n", path, member.Model, fallback)
+	healed := member
+	healed.Model = fallback
+	return &healed
+}
+
 // migrateLegacyMode converts old config fields to the new mode system.
 // Specifically: execution.mode → mode.defaults.<active_profile>
 // Called after all cascade layers are loaded but before validation.

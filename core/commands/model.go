@@ -404,15 +404,13 @@ func removeModelFromConfig(cfg *config.Config, id string, saver config.ConfigSav
 			continue
 		}
 		cfg.Models = append(cfg.Models[:i], cfg.Models[i+1:]...)
-		if cfg.ActiveModel == id {
-			cfg.ActiveModel = ""
-		}
-		// Drop the per-model compression override: it is keyed by model ID
-		// and would otherwise persist as a dangling entry that fails startup
-		// validation ("no model with id %q is configured"). The loader also
-		// heals stale entries from configs written before this cleanup
-		// existed (sanitizeDanglingCompressionModels).
-		delete(cfg.ContextCompression.PerModel, id)
+		// Clear every reference to the removed model (team member models,
+		// orchestrator role models / pool caps, per-model compression
+		// overrides, active_model) so no dangling reference survives to
+		// hard-fail the next startup validation (B-CfgStaleModel). The loader
+		// also heals stale references from configs written before this cleanup
+		// existed (sanitizeDanglingModelRefs).
+		cfg.ClearModelReferences(id)
 		if err := persistModelCatalogChange(host, cfg, saver); err != nil {
 			host.Flash("Failed to save: " + err.Error())
 			return

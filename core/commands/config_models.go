@@ -338,9 +338,11 @@ func (m *configMenu) doRemoveModel(id string) {
 			continue
 		}
 		cfg.Models = append(cfg.Models[:i], cfg.Models[i+1:]...)
-		if cfg.ActiveModel == id {
-			cfg.ActiveModel = ""
-		}
+		// Clear every reference to the removed model (team member models,
+		// orchestrator role models / pool caps, per-model compression
+		// overrides, active_model) so no dangling reference survives to
+		// hard-fail the next startup validation (B-CfgStaleModel).
+		cfg.ClearModelReferences(id)
 		m.saveProvidersAndModels()
 		m.flash(fmt.Sprintf("Model %q removed.", id))
 		m.settingModels()

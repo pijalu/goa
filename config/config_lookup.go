@@ -44,6 +44,71 @@ func (c *Config) GetModelByID(id string) *ModelConfig {
 	return nil
 }
 
+// ClearModelReferences removes every config reference to a model ID that is
+// being deleted: team member models, orchestrator role models, per-model pool
+// caps, per-model compression overrides, and active_model. It is the shared
+// delete-time cleanup called from both model-removal paths
+// (removeModelFromConfig and configMenu.doRemoveModel) so a deleted model
+// never leaves a dangling reference behind (B-CfgStaleModel). Member and role
+// models are cleared (not rebound): the deletion is explicit user intent, and
+// the user picks the next active model after removal — startup healing
+// (sanitizeDanglingModelRefs) covers references that predate this cleanup.
+// It does NOT remove the model from c.Models itself; the caller does that.
+func (c *Config) ClearModelReferences(id string) {
+	if c.ActiveModel == id {
+		c.ActiveModel = ""
+	}
+	delete(c.ContextCompression.PerModel, id)
+	delete(c.Orchestrator.Pool.MaxAgentsPerModel, id)
+	for name, def := range c.Teams.Definitions {
+		if healed, changed := def.clearMemberModel(id); changed {
+			c.Teams.Definitions[name] = healed
+		}
+	}
+	for name, role := range c.Orchestrator.Roles {
+		if role.Model == id {
+			role.Model = ""
+			c.Orchestrator.Roles[name] = role
+		}
+	}
+}
+
+// clearMemberModel returns a copy of the team definition with every member
+// whose model is the deleted id cleared, and whether anything changed. Covers
+// Main/Companion shorthand and the canonical Members map.
+func (d TeamDefinition) clearMemberModel(id string) (TeamDefinition, bool) {
+	healed := d
+	changed := false
+	if d.Main != nil && d.Main.Model == id {
+		main := *d.Main
+		main.Model = ""
+		healed.Main = &main
+		changed = true
+	}
+	if d.Companion != nil && d.Companion.Model == id {
+		comp := *d.Companion
+		comp.Model = ""
+		healed.Companion = &comp
+		changed = true
+	}
+	if len(d.Members) > 0 {
+		members := make(map[string]TeamMember, len(d.Members))
+		memberChanged := false
+		for memberName, member := range d.Members {
+			if member.Model == id {
+				member.Model = ""
+				memberChanged = true
+			}
+			members[memberName] = member
+		}
+		if memberChanged {
+			healed.Members = members
+			changed = true
+		}
+	}
+	return healed, changed
+}
+
 // PreferredProvider returns the first provider marked as preferred, or the first provider.
 func (c *Config) PreferredProvider() *ProviderConfig {
 	if len(c.Providers) == 0 {
