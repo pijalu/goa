@@ -7,6 +7,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -252,6 +253,8 @@ func FormatToolArgs(name string, argsJSON string) string {
 			cmd = cmd[:57] + "..."
 		}
 		return cmd
+	case "lsp":
+		return formatLSPArgs(argsJSON)
 	default:
 		fields := []string{"path", "command", "name", "pattern", "id"}
 		for _, f := range fields {
@@ -261,6 +264,44 @@ func FormatToolArgs(name string, argsJSON string) string {
 		}
 		return ""
 	}
+}
+
+// formatLSPArgs formats lsp arguments so the operation and its target are
+// visible in the call header (the default field probe would show only the
+// path, hiding the op and, for workspaceSymbol, the queried term):
+//
+//	symbols            → "symbols main.go"
+//	definition/hover/… → "definition main.go:12:4" (line/character are
+//	                     0-indexed in the args; shown 1-indexed)
+//	workspaceSymbol    → `workspaceSymbol "Foo"` (path is only a routing
+//	                     anchor for this op and would mislead)
+//	rename             → `rename main.go:12:4 → Bar`
+func formatLSPArgs(argsJSON string) string {
+	op := extractJSONField(argsJSON, "op")
+	path := extractJSONField(argsJSON, "path")
+	query := extractJSONField(argsJSON, "query")
+	newName := extractJSONField(argsJSON, "newName")
+	if op == "workspaceSymbol" && query != "" {
+		return fmt.Sprintf("%s %q", op, query)
+	}
+	target := path
+	if line, char := extractJSONIntField(argsJSON, "line"), extractJSONIntField(argsJSON, "character"); line != "" && char != "" {
+		target = fmt.Sprintf("%s:%s:%s", path, bumpIndex(line), bumpIndex(char))
+	}
+	if newName != "" {
+		target += " → " + newName
+	}
+	return strings.TrimSpace(op + " " + target)
+}
+
+// bumpIndex converts a 0-indexed LSP line/character string to its 1-indexed
+// display form, matching the path:line:col convention used by tool results.
+// Non-numeric input is returned unchanged.
+func bumpIndex(s string) string {
+	if n, err := strconv.Atoi(s); err == nil {
+		return strconv.Itoa(n + 1)
+	}
+	return s
 }
 
 // extractJSONField extracts a string field from a JSON string using proper JSON parsing.

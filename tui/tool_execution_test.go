@@ -51,6 +51,77 @@ func TestFormatToolArgs_ReadFile(t *testing.T) {
 	}
 }
 
+// TestFormatToolArgs_LSP is the regression test for B-LSPhdr: the lsp call
+// header previously fell through to the generic field probe and showed only
+// the path ("lsp cmd/goa/main.go"), hiding the operation and, for
+// workspaceSymbol, the searched term.
+func TestFormatToolArgs_LSP(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+		want string
+	}{
+		{
+			name: "symbols shows op and path",
+			args: `{"op":"symbols","path":"cmd/goa/main.go"}`,
+			want: "symbols cmd/goa/main.go",
+		},
+		{
+			name: "workspaceSymbol shows op and query term, not the anchor path",
+			args: `{"op":"workspaceSymbol","path":"cmd/goa/main.go","query":"AskUserQuestionTool"}`,
+			want: `workspaceSymbol "AskUserQuestionTool"`,
+		},
+		{
+			name: "position op shows 1-indexed line and character",
+			args: `{"op":"definition","path":"main.go","line":11,"character":3}`,
+			want: "definition main.go:12:4",
+		},
+		{
+			name: "hover zero position bumps to 1",
+			args: `{"op":"hover","path":"main.go","line":0,"character":0}`,
+			want: "hover main.go:1:1",
+		},
+		{
+			name: "rename shows position and new name",
+			args: `{"op":"rename","path":"main.go","line":11,"character":3,"newName":"NewName"}`,
+			want: "rename main.go:12:4 → NewName",
+		},
+		{
+			name: "references without position degrades to op and path",
+			args: `{"op":"references","path":"main.go"}`,
+			want: "references main.go",
+		},
+		{
+			name: "workspaceSymbol without query keeps op and path",
+			args: `{"op":"workspaceSymbol","path":"main.go"}`,
+			want: "workspaceSymbol main.go",
+		},
+		{
+			name: "missing op still shows path",
+			args: `{"path":"main.go"}`,
+			want: "main.go",
+		},
+		{
+			name: "missing path still shows op",
+			args: `{"op":"symbols"}`,
+			want: "symbols",
+		},
+		{
+			name: "malformed JSON yields empty summary",
+			args: `{"op":`,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FormatToolArgs("lsp", tc.args)
+			if got != tc.want {
+				t.Errorf("FormatToolArgs(%q) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToolExecution_ReadFile_CollapsedByDefault(t *testing.T) {
 	tc := NewToolExecution("read", "README.md")
 	tc.SetArgsJSON(`{"path":"README.md"}`)
