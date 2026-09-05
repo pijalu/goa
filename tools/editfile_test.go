@@ -693,9 +693,7 @@ func TestEditFileTool_InsertAfter_NewStringFallback(t *testing.T) {
 		t.Fatalf("insert_after with new_string fallback should succeed: %v", err)
 	}
 	data, _ := os.ReadFile(filePath)
-	// The write path normalizes away the trailing newline (splitLines drops
-	// the final empty line before Join); assert content, not the trailing \n.
-	if string(data) != "one\ninserted\ntwo\nthree" {
+	if string(data) != "one\ninserted\ntwo\nthree\n" {
 		t.Errorf("unexpected file content: %q", string(data))
 	}
 }
@@ -715,7 +713,7 @@ func TestEditFileTool_DeleteLines_NoContentRequired(t *testing.T) {
 		t.Fatalf("delete_lines without content should succeed: %v", err)
 	}
 	data, _ := os.ReadFile(filePath)
-	if string(data) != "a\nc" {
+	if string(data) != "a\nc\n" {
 		t.Errorf("unexpected file content: %q", string(data))
 	}
 }
