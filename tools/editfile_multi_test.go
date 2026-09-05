@@ -36,6 +36,26 @@ func TestEditFileTool_Schema_HasEditsProperty(t *testing.T) {
 	}
 }
 
+func TestEditFileTool_SingleLineOperationPreservesTrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("alpha\nbeta\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{ProjectDir: dir, AllowFuzz: true}
+	if _, err := tool.Execute(`{"path":"` + filePath + `","operation":"replace_lines","start_line":1,"end_line":1,"new_content":"ALPHA"}`); err != nil {
+		t.Fatalf("line edit should succeed: %v", err)
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ALPHA\nbeta\n" {
+		t.Errorf("file content = %q, want trailing newline preserved", string(data))
+	}
+}
+
 func TestEditFileTool_MultiEdit_AppliesAllEditsInOrder(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "test.txt")

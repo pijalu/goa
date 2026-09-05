@@ -210,7 +210,7 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		return "", errMissingParam()
 	}
 
-	lines, targetPath, fuzzyNote, _, err := t.readLines(resolvedPath, originalPath)
+	lines, targetPath, fuzzyNote, trailingNL, err := t.readLines(resolvedPath, originalPath)
 	if err != nil {
 		return "", err
 	}
@@ -242,7 +242,11 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		return "", wrapEditOpError(opErr, p.Path, string(op))
 	}
 
-	diagBlock, writeErr := t.writeEditResult(targetPath, p.Path, strings.Join(result, "\n"))
+	output := strings.Join(result, "\n")
+	if trailingNL && output != "" && !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+	diagBlock, writeErr := t.writeEditResult(targetPath, p.Path, output)
 	if writeErr != nil {
 		return "", writeErr
 	}
