@@ -15,7 +15,7 @@ import (
 func callKimiFetch(t *testing.T, ctxJSON string) string {
 	t.Helper()
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()

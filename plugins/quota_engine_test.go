@@ -12,7 +12,7 @@ import (
 // mocked env's httpDo installed, evaluating the given JS expression.
 func runEngineJS(t *testing.T, env *quotaTestEnv, expr string) string {
 	t.Helper()
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()

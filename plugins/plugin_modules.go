@@ -172,7 +172,7 @@ func throwError(vm *goja.Runtime, err error) {
 type PluginLoader struct {
 	dirs    []string
 	enabled []string // plugin IDs; ["*"] = all
-	bridges []*JSBridge
+	bridges []PluginBridge
 	// loaded tracks plugin ids already instantiated in this LoadAll pass so
 	// the same id found in a second scanned directory never loads twice.
 	loaded map[string]bool
@@ -187,8 +187,9 @@ func NewPluginLoader(dirs, enabled []string) *PluginLoader {
 	}
 }
 
-// LoadAll discovers and loads all enabled plugins.
-func (pl *PluginLoader) LoadAll(ctx PluginContext) ([]*JSBridge, error) {
+// LoadAll discovers and loads all enabled plugins, dispatching on the
+// manifest entry extension (.py -> Python bridge, otherwise JS).
+func (pl *PluginLoader) LoadAll(ctx PluginContext) ([]PluginBridge, error) {
 	allEnabled := pl.allEnabled()
 
 	for _, dir := range pl.dirs {
@@ -252,8 +253,17 @@ func (pl *PluginLoader) loadPlugin(dir, name string, ctx PluginContext, allEnabl
 	}
 	pl.loaded[def.ID] = true
 
-	bridge := NewJSBridge(*def, ctx)
 	entryPath := filepath.Join(dir, name, def.Entry)
+	if strings.HasSuffix(strings.ToLower(def.Entry), ".py") {
+		bridge := NewPythonBridge(*def, ctx)
+		if err := bridge.RunFile(entryPath); err != nil {
+			return fmt.Errorf("plugin %s: %w", def.ID, err)
+		}
+		pl.bridges = append(pl.bridges, bridge)
+		return nil
+	}
+
+	bridge := NewJSBridge(*def, ctx)
 	if err := bridge.RunFile(entryPath); err != nil {
 		return fmt.Errorf("plugin %s: %w", def.ID, err)
 	}
@@ -294,6 +304,7 @@ var knownPermissions = map[string]bool{
 	"oauth-token":   true,
 	"ui-confirm":    true,
 	"account-write": true,
+	"network":       true,
 }
 
 // validatePluginDef checks the semantic constraints of the M6 manifest

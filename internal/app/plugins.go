@@ -32,7 +32,7 @@ func pluginChatEvent(msg string) event.ChatEvent {
 // It is stored on subsystems so the two-phase load (bridges early, UI
 // activation after buildTUI) can find them.
 type pluginRuntime struct {
-	bridges   []*plugins.JSBridge
+	bridges   []plugins.PluginBridge
 	ui        *plugins.UIBridge
 	hotkeys   *plugins.HotkeyBridge
 	bus       *plugins.EventBus
@@ -539,12 +539,17 @@ func emitPluginChat(s *subsystems, msg string) {
 }
 
 // pluginToolWrapper adapts a plugin's JavaScript tool to agentic.Tool.
+// It is Deferred so tool_search withholds it from the default tool set and
+// serves it on keyword discovery + select: loading.
 type pluginToolWrapper struct {
 	agentic.BaseTool
 	name        string
 	description string
 	execute     func(map[string]any) (interface{}, error)
 }
+
+// Deferred marks plugin tools as deferred-load tools visible via tool_search.
+func (p *pluginToolWrapper) Deferred() bool { return true }
 
 func (p *pluginToolWrapper) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{

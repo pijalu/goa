@@ -592,7 +592,7 @@ func runPostJSONProbe(t *testing.T, status int, body, respErr string) postJSONPr
 	t.Helper()
 	env := newQuotaTestEnv(t)
 	env.respond("x.test", status, body)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(func(b *HTTPBridge, req HTTPRequest) HTTPResponse {
 		if respErr != "" {
@@ -677,7 +677,7 @@ func TestPostJSON_BodyOnTheWire(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.respond("x.test", 200, `{"ok":true}`)
 	cap := &httpCapture{}
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(func(b *HTTPBridge, req HTTPRequest) HTTPResponse {
 		cap.record(req)
@@ -714,7 +714,7 @@ func TestPostJSON_BodyOnTheWire(t *testing.T) {
 func TestGetJSON_LegacyErrorShapePreserved(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.respond("x.test", 503, `nope`)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()

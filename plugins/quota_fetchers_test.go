@@ -24,7 +24,7 @@ func readModuleSource(t *testing.T, modulePath string) string {
 
 func TestFormat_Tokens(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	unlock := lockVM()
 	defer unlock()
 	bridge.vm.RunString(formatJS + `
@@ -37,7 +37,7 @@ func TestFormat_Tokens(t *testing.T) {
 
 func TestFormat_Bar(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	unlock := lockVM()
 	defer unlock()
 	bridge.vm.RunString(formatJS + `
@@ -54,7 +54,7 @@ func TestFormat_Bar(t *testing.T) {
 
 func TestFormat_Pct(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	unlock := lockVM()
 	defer unlock()
 	bridge.vm.RunString(formatJS + `__r = [pct(42,100), pct(1,3), pct(10,0)].join(",");`)
@@ -65,7 +65,7 @@ func TestFormat_Pct(t *testing.T) {
 
 func TestFormat_Humanize(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	unlock := lockVM()
 	defer unlock()
 	bridge.vm.RunString(formatJS + `
@@ -81,7 +81,7 @@ func TestFormat_Humanize(t *testing.T) {
 
 func TestFetcherLocal_InfersFromSession(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()
@@ -113,7 +113,7 @@ func TestFetcherAnthropic_ParsesWindows(t *testing.T) {
 		"usage": {"session": {"used": 42, "limit": 100, "reset_at": "2099-01-01T00:00:00Z"},
 		          "weekly": {"used": 30, "limit": 200}}
 	}`)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()
@@ -137,7 +137,7 @@ func TestFetcherAnthropic_ParsesWindows(t *testing.T) {
 
 func TestFetcherAnthropic_NoAPIKey(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()
@@ -175,7 +175,7 @@ func TestFetcherOpencode_ParsesRealUsageShape(t *testing.T) {
 			"monthly": {"status":"ok","percent":85,"resetsAt":"2026-09-05T15:47:55.159Z"}
 		}
 	}`)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()
@@ -217,7 +217,7 @@ func TestFetcherOpencode_ZenBaseRewritesToGo(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	// Only the go URL is mocked: a fetch against zen/v1/usage would 404.
 	env.respond("opencode.ai/zen/go/v1/usage", 200, `{"usage":{"weekly":{"status":"ok","percent":7,"resetsAt":"2026-08-24T00:00:00.000Z"}}}`)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()
@@ -246,7 +246,7 @@ func TestFetcherOpencode_ParsesCredits(t *testing.T) {
 		"plan": "Pro",
 		"data": { "balance": 42.5, "used": 7.5, "limit": 50 }
 	}`)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()
@@ -271,7 +271,7 @@ func TestFetcherOpencode_ParsesCredits(t *testing.T) {
 
 func TestFetcherOpencode_NoAPIKey(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()
@@ -293,7 +293,7 @@ func TestFetcherOpencode_NoAPIKey(t *testing.T) {
 func TestFetcherOpencode_BalanceDerivation(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.respond("opencode.ai/zen/go/v1/usage", 200, `{"data":{"balance":40,"limit":50}}`)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()
@@ -324,7 +324,7 @@ func TestFetcherOpencode_BalanceDerivation(t *testing.T) {
 // "codex". This is preserve-on-ABSENT, not preserve-on-zero.
 func TestFetcherCodex_MergePreserveOnAbsent(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()
@@ -362,7 +362,7 @@ func TestFetcherCodex_MergePreserveOnAbsent(t *testing.T) {
 // triggers preservation.
 func TestFetcherCodex_MergeExplicitZeroReplaces(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()
@@ -395,7 +395,7 @@ func TestFetcherCodex_MergeExplicitZeroReplaces(t *testing.T) {
 // bucket, while an explicit limit_id is kept.
 func TestFetcherCodex_MergeLimitIDDefaultsToCodex(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()
@@ -424,7 +424,7 @@ func TestFetcherCodex_MergeLimitIDDefaultsToCodex(t *testing.T) {
 // between calls via a JS-side queue so each fetch returns a different payload.
 func TestFetcherCodex_FetchMergesAcrossCalls(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()
@@ -473,7 +473,7 @@ func TestOAuth_RefreshWithinSkew(t *testing.T) {
 	env.storage.Set("kimi.expires_at", "1000") // long past
 	env.respond("moonshot.ai/oauth/device/token", 200, `{"access_token":"new-tok","expires_in":3600}`)
 
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()
@@ -501,7 +501,7 @@ func TestOAuth_NoRefreshWhenFresh(t *testing.T) {
 	env.storage.Set("kimi.access_token", "good-tok")
 	// expires_at far future (year 2100 in ms).
 	env.storage.Set("kimi.expires_at", "4102444800000")
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()
@@ -522,7 +522,7 @@ func TestOAuth_NoRefreshWhenFresh(t *testing.T) {
 // the issuer origin, and edge inputs degrade safely.
 func TestOAuth_AbsolutizeURL(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	unlock := lockVM()
 	defer unlock()

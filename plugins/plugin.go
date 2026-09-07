@@ -107,6 +107,23 @@ type LoggerAPI struct {
 	Debug func(msg string)
 }
 
+// PluginKind identifies the runtime backing a loaded plugin bridge.
+type PluginKind string
+
+const (
+	// PluginKindJS is a goja-backed JavaScript plugin (plugin.js entry).
+	PluginKindJS PluginKind = "js"
+	// PluginKindPython is a gpython-backed Python plugin (plugin.py entry).
+	PluginKindPython PluginKind = "python"
+)
+
+// PluginBridge is the runtime-agnostic handle for a loaded plugin. Both
+// bridge types expose their kind so the loader and hosts can dispatch or
+// report without knowing the concrete runtime.
+type PluginBridge interface {
+	Kind() PluginKind
+}
+
 // JSBridge manages the Goja runtime for a single plugin, exposing
 // goa.* globals to JavaScript code.
 type JSBridge struct {
@@ -114,6 +131,9 @@ type JSBridge struct {
 	ctx PluginContext
 	def PluginDef
 }
+
+// Kind reports the JS runtime kind.
+func (b *JSBridge) Kind() PluginKind { return PluginKindJS }
 
 // hasPermission reports whether the bridge's manifest declares the named
 // permission (M6 §7 capability gating). Unknown permission names never reach

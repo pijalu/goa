@@ -27,3 +27,11 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
+
+## Provider 400: tool arguments must be valid JSON
+Observed: `Error: 400 - Error from provider (Console Go): Upstream request failed:
+[invalid_request_error] arguments must be valid JSON - /Users/muaddib/dev/goa/.goa/exports/goa-export-20260907-090335.zip`
+Expected: tool call arguments containing a filesystem path (zip export path) are sent as
+valid JSON (properly escaped/quoted); no provider 400. Investigate argument
+serialization for the tool call carrying the export path (likely missing JSON
+escaping or raw string interpolation) and add a regression test.

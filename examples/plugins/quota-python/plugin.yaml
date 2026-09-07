@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2026 Pierre Poissinger
+
+id: quota-python
+name: Quota Python Demo
+version: 0.1.0
+description: Python demo plugin mirroring the provider-quota /quota command — proves .py entries load through the shared PluginLoader (demo only, not packaged).
+entry: plugin.py
+goa_min_version: "0.1.0"
+permissions:
+  - network

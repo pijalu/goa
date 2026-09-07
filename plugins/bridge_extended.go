@@ -93,6 +93,11 @@ func (b *JSBridge) setupHTTP(goaObj *goja.Object, httpB *HTTPBridge) {
 	}
 	httpObj := b.vm.NewObject()
 	httpObj.Set("fetch", func(call goja.FunctionCall) goja.Value {
+		// M6 capability gating: without the "network" manifest permission
+		// the fetch fails closed and never reaches the HTTP hook.
+		if !b.hasPermission("network") {
+			return b.vm.ToValue(networkPermissionGatedFetchError())
+		}
 		req := b.buildHTTPRequest(call)
 		// The HTTP round-trip runs OUTSIDE the VM lock. A slow/hanging
 		// endpoint can block for the full request timeout; holding vmMu

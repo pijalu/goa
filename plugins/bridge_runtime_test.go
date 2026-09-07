@@ -52,7 +52,7 @@ func newExtendedContext(t *testing.T, dir string, httpB *HTTPBridge) PluginConte
 // global result value.
 func runJS(t *testing.T, ctx PluginContext, src string) *JSBridge {
 	t.Helper()
-	bridge := NewJSBridge(PluginDef{ID: "test", Entry: "plugin.js", Permissions: []string{"oauth-token"}}, ctx)
+	bridge := NewJSBridge(PluginDef{ID: "test", Entry: "plugin.js", Permissions: []string{"oauth-token", "network"}}, ctx)
 	unlock := lockVM()
 	defer unlock()
 	if _, err := bridge.vm.RunString(src); err != nil {
@@ -224,7 +224,7 @@ func TestJS_HTTPFetchReleasesVMLock(t *testing.T) {
 	defer restore()
 
 	ctx := newExtendedContext(t, t.TempDir(), NewHTTPBridge())
-	bridge := NewJSBridge(PluginDef{ID: "test"}, ctx)
+	bridge := NewJSBridge(PluginDef{ID: "test", Permissions: []string{"network"}}, ctx)
 
 	// Goroutine A: run JS that blocks inside goa.http.fetch (mirrors the
 	// quota prime firing on a scheduler timer).
