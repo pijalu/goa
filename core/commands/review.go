@@ -7,6 +7,8 @@ package commands
 import (
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
@@ -32,8 +34,14 @@ func (c *ReviewCommand) LongHelp() string  { return help.LongHelp(c.Name()) }
 // switches to filesystem paths via internal/filefind (@-like); values keep
 // the "file:" scope prefix so the popup expands to "/review:file:<path>".
 func (c *ReviewCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	if sub, rest, ok := splitGoalCompletionPrefix(prefix); ok && sub == "file" {
-		return c.fileCompletions(ctx, rest)
+	if sub, rest, ok := splitGoalCompletionPrefix(prefix); ok {
+		if sub == "file" {
+			return c.fileCompletions(ctx, rest)
+		}
+		// Nested level-2 expansion probes (e.g. "^1:", "v1.0:") issued by
+		// the TUI's expandArg for every level-1 value: /review has no nested
+		// scopes outside file:, so answer empty before touching git.
+		return nil
 	}
 	comps := reviewAncestryCompletions(prefix)
 	comps = append(comps, filterCompletions(reviewFileScopeCompletions, prefix)...)
@@ -58,14 +66,31 @@ func reviewAncestryCompletions(prefix string) []core.ArgCompletion {
 	return filterCompletions(ancestry, prefix)
 }
 
+// reviewRefCache memoizes RecentRefs per project dir: CompleteArgs runs on
+// every keystroke and each call used to spawn 2 git processes (IsGitRepo +
+// for-each-ref). Refs change rarely while typing, so a short TTL keeps the
+// popup fresh without blocking the TUI loop on subprocesses.
+var reviewRefCache = struct {
+	sync.Mutex
+	byDir map[string]reviewRefCacheEntry
+}{byDir: make(map[string]reviewRefCacheEntry)}
+
+type reviewRefCacheEntry struct {
+	refs   []review.RefInfo
+	at     time.Time
+	isRepo bool
+}
+
+const reviewRefCacheTTL = 15 * time.Second
+
 // reviewRefCompletions lists the most recent tags and branches as named
 // checkpoints. Outside a git repository it yields nothing.
 func reviewRefCompletions(projectDir, prefix string) []core.ArgCompletion {
-	if projectDir == "" || !review.IsGitRepo(projectDir) {
+	if projectDir == "" {
 		return nil
 	}
-	refs, err := review.RecentRefs(projectDir, 15)
-	if err != nil {
+	refs, ok := cachedReviewRefs(projectDir)
+	if !ok {
 		return nil
 	}
 	candidates := make([]core.ArgCompletion, 0, len(refs))
@@ -76,6 +101,38 @@ func reviewRefCompletions(projectDir, prefix string) []core.ArgCompletion {
 		})
 	}
 	return filterCompletions(candidates, prefix)
+}
+
+// cachedReviewRefs returns cached refs when fresh, otherwise queries git once
+// and stores the outcome — including the not-a-repo negative, so non-git
+// dirs don't respawn git on every keystroke either.
+func cachedReviewRefs(projectDir string) ([]review.RefInfo, bool) {
+	now := time.Now()
+	reviewRefCache.Lock()
+	if e, ok := reviewRefCache.byDir[projectDir]; ok && now.Sub(e.at) < reviewRefCacheTTL {
+		refs, isRepo := e.refs, e.isRepo
+		reviewRefCache.Unlock()
+		if !isRepo {
+			return nil, false
+		}
+		return refs, true
+	}
+	reviewRefCache.Unlock()
+
+	if !review.IsGitRepo(projectDir) {
+		reviewRefCache.Lock()
+		reviewRefCache.byDir[projectDir] = reviewRefCacheEntry{at: now}
+		reviewRefCache.Unlock()
+		return nil, false
+	}
+	refs, err := review.RecentRefs(projectDir, 15)
+	if err != nil {
+		return nil, false
+	}
+	reviewRefCache.Lock()
+	reviewRefCache.byDir[projectDir] = reviewRefCacheEntry{refs: refs, at: now, isRepo: true}
+	reviewRefCache.Unlock()
+	return refs, true
 }
 
 // filterCompletions keeps candidates whose value starts with prefix. An

@@ -274,6 +274,78 @@ func TestReviewCommand_CompleteArgs_NonGit(t *testing.T) {
 	}
 }
 
+// TestReviewCommand_CompleteArgs_NestedNonFileIsEmpty is the perf regression
+// test for slow /review typing: the TUI's expandArg re-queries CompleteArgs
+// with "<value>:" appended for every level-1 value (^1:, v1.0:, ...).
+// /review has no nested scopes outside file:, so those probes must answer
+// empty — and, critically, without spawning git (the old code ran IsGitRepo
+// + for-each-ref per probe, ~40 processes per keystroke while typing /review).
+// A fake git on PATH counts spawns; nested prefixes must produce zero.
+func TestReviewCommand_CompleteArgs_NestedNonFileIsEmpty(t *testing.T) {
+	dir := setupReviewExportRepo(t)
+	exec.Command("git", "-C", dir, "tag", "v1.0").Run()
+	log := installGitSpy(t)
+
+	cmd := &ReviewCommand{}
+	ctx := core.Context{ProjectDir: dir}
+
+	for _, prefix := range []string{"^1:", "^2:", "v1.0:", "file:x:"} {
+		if comps := cmd.CompleteArgs(ctx, prefix); len(comps) != 0 {
+			t.Errorf("CompleteArgs(%q) = %v, want empty (no nested scope)", prefix, comps)
+		}
+	}
+	if n := countGitSpawns(t, log); n != 0 {
+		t.Errorf("nested CompleteArgs spawned git %d times, want 0", n)
+	}
+
+	// file: scope still completes paths, not empty.
+	clearGitSpy(t, log)
+	if comps := cmd.CompleteArgs(ctx, "file:"); len(comps) == 0 {
+		t.Error("CompleteArgs(file:) should still propose file paths")
+	}
+}
+
+// installGitSpy shadows git with a logging shim that always fails, so any
+// subprocess spawn is recorded without needing a real repository. Returns
+// the path of the spawn log. Callers must set up real git state BEFORE
+// installing the spy.
+func installGitSpy(t *testing.T) string {
+	t.Helper()
+	shimDir := t.TempDir()
+	log := shimDir + "/spawns.log"
+	shim := "#!/bin/sh\necho \"$@\" >> \"" + log + "\"\nexit 1\n"
+	if err := os.WriteFile(shimDir+"/git", []byte(shim), 0755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+func countGitSpawns(t *testing.T, log string) int {
+	t.Helper()
+	data, err := os.ReadFile(log)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read spawn log: %v", err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func clearGitSpy(t *testing.T, log string) {
+	t.Helper()
+	if err := os.Remove(log); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("clear spawn log: %v", err)
+	}
+}
+
 func setupReviewExportRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
