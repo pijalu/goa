@@ -28,15 +28,20 @@ Batch edits (preferred when making several changes to the same file):
   either every edit succeeds and the file is written once, or one fails and
   nothing is written. Each edit sees the result of the previous ones, so line
   numbers in later edits refer to the already-edited content.
+  A batch targets exactly one file. If the top-level "path" is omitted it is
+  taken from the edits entries; entry paths that disagree are rejected.
 
 Legacy operations: replace_lines, replace_pattern, insert_after, insert_before, delete_lines
 Indent modes: preserve (default), normalize, as-is
 
 Troubleshooting search/replace errors:
-  • not_found: the old_string did not match the current file. Use 'read' to verify the
-    exact current content (the file may have changed since your last read). Ensure the
-    old_string includes correct indentation and blank lines. For deletions or large
-    multi-line changes, use operation: 'delete_lines' or 'replace_lines' with line numbers.
+  • not_found: the old_string did not match the current file. The error reports the
+    best CONTIGUOUS match (N/M lines, with the file line range) — an old_string whose
+    lines only match scattered across non-adjacent regions can never match as one
+    block; split it into one edit per region. Use 'read' to verify the exact current
+    content (the file may have changed since your last read). Ensure the old_string
+    includes correct indentation and blank lines. For deletions or large multi-line
+    changes, use operation: 'delete_lines' or 'replace_lines' with line numbers.
   • ambiguous_match: the old_string matches more than one location. Add more surrounding
     context to make it unique, or switch to 'replace_lines' with line numbers.
   • invalid_range: start_line/end_line are out of bounds. Use 'read' to confirm the file

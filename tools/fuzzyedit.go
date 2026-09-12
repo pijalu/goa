@@ -145,23 +145,92 @@ func fuzzyEdit(file, oldStr, newStr string, allowFuzz bool) (*EditResult, error)
 	return nil, ErrNotFound
 }
 
-// countMatchingLines reports how many of oldStr's non-empty lines appear
-// verbatim in content. It powers the "lines matched M/N" diagnostic attached to
-// edit not-found errors (models reconstruct large blocks from memory
-// and ~25% of lines drift, so a bare "not found" makes them think the tool is
-// broken and reach for bash; showing the real overlap steers them to re-read
-// and make a smaller, anchored edit instead).
-func countMatchingLines(content, oldStr string) (matched, total int) {
-	for _, l := range strings.Split(oldStr, "\n") {
-		if strings.TrimSpace(l) == "" {
-			continue
-		}
-		total++
-		if strings.Contains(content, l) {
-			matched++
+// blockMatch describes how oldStr's lines align with the current file
+// content. It powers the "lines matched" diagnostic attached to edit
+// not-found errors.
+type blockMatch struct {
+	total    int // non-empty lines in oldStr
+	run      int // longest run of CONSECUTIVE oldStr lines matching consecutive file lines
+	runStart int // 1-indexed file line where that run starts (0 when run == 0)
+	anywhere int // oldStr lines appearing verbatim somewhere in the file
+}
+
+// analyzeBlockMatch measures how well oldStr matches content AS A BLOCK.
+//
+// The diagnostic it powers exists because models reconstruct large blocks from
+// memory and lines drift; a bare "not found" makes them think the tool is
+// broken and reach for bash, while showing the real overlap steers them to
+// re-read and make a smaller, anchored edit instead.
+//
+// It deliberately distinguishes CONTIGUOUS overlap (run) from scattered
+// per-line presence (anywhere): the previous diagnostic counted any line
+// appearing anywhere via strings.Contains, so an old_string that glued two
+// non-adjacent regions together (e.g. skipping a whole function in between)
+// reported "22/22 lines matched" and the model concluded the file matched and
+// went hunting for invisible whitespace (session 1789212854, export
+// goa-export-20260912-135102). A block that is not contiguous can never match,
+// and the diagnostic must say so.
+func analyzeBlockMatch(content, oldStr string) blockMatch {
+	oldLines := nonEmptyLines(oldStr)
+	m := blockMatch{total: len(oldLines)}
+	if len(oldLines) == 0 {
+		return m
+	}
+	pos := linePositions(content)
+	m.run, m.runStart = longestLineRun(oldLines, pos)
+	for _, l := range oldLines {
+		if len(pos[l]) > 0 {
+			m.anywhere++
 		}
 	}
-	return matched, total
+	return m
+}
+
+// nonEmptyLines splits s into lines, normalizing CRLF and dropping blank
+// (whitespace-only) lines: they match trivially everywhere and would only
+// add noise to the block-overlap diagnostic.
+func nonEmptyLines(s string) []string {
+	s = strings.TrimSuffix(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// linePositions maps every distinct line of content to the ascending
+// 0-indexed line numbers where it occurs.
+func linePositions(content string) map[string][]int {
+	fileLines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	pos := make(map[string][]int)
+	for i, l := range fileLines {
+		pos[l] = append(pos[l], i)
+	}
+	return pos
+}
+
+// longestLineRun returns the length of the longest run of CONSECUTIVE old
+// lines matching consecutive file lines, and the 1-indexed file line where
+// that run starts (0 when nothing matches). Classic longest-common-substring
+// DP over lines, indexed so only file positions whose line equals the current
+// old line are visited: prev[f] = run length ending with the previous old
+// line at file line f.
+func longestLineRun(oldLines []string, pos map[string][]int) (run, runStart int) {
+	prev := make(map[int]int)
+	for _, l := range oldLines {
+		cur := make(map[int]int, len(pos[l]))
+		for _, j := range pos[l] {
+			cur[j] = prev[j-1] + 1
+			if cur[j] > run {
+				run = cur[j]
+				runStart = j - run + 2 // j is 0-indexed; run covers j-run+1..j
+			}
+		}
+		prev = cur
+	}
+	return run, runStart
 }
 
 // exactNormalize is the identity function: used for the exact-match

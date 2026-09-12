@@ -124,6 +124,7 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 								"type": "string",
 								"enum": []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
 							},
+							"path":          map[string]any{"type": "string"}, // optional; fallback when top-level path is omitted
 							"old_string":    map[string]any{"type": "string"},
 							"new_string":    map[string]any{"type": "string"},
 							"start_line":    map[string]any{"type": "integer"},
@@ -147,7 +148,9 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 
 // editFileParams holds the parsed input for EditFileTool. It describes both a
 // single edit (flat fields) and a batch of edits (Edits); a batch element uses
-// the same fields, minus Path and Edits (nested batches are not supported).
+// the same fields, minus Edits (nested batches are not supported). An entry's
+// Path is only a fallback for an omitted top-level path (see batchEntryPath)
+// and must agree with it (see checkEntryPaths).
 type editFileParams struct {
 	Path         string           `json:"path"`
 	Operation    string           `json:"operation"`
@@ -172,8 +175,20 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 			HintText: "Ensure your input is valid JSON with the required fields.",
 		}
 	}
+	// Models commonly nest "path" inside every edits[] element instead of
+	// repeating it top-level (session 1789212854, export
+	// goa-export-20260912-135102: two batches failed with missing_path while
+	// carrying the path in each entry). Fall back to the entry path rather
+	// than erroring on a technically-present path; a batch still targets
+	// exactly one file, so conflicting entries are rejected.
 	if p.Path == "" {
-		return "", errMissingPath()
+		p.Path = batchEntryPath(p.Edits)
+		if p.Path == "" {
+			return "", errMissingPath()
+		}
+	}
+	if err := checkEntryPaths(p.Path, p.Edits); err != nil {
+		return "", err
 	}
 
 	resolvedPath, originalPath, err := ResolveFileToolPath(t.WorktreeMgr, p.Path)
@@ -387,8 +402,8 @@ func (t *EditFileTool) wrapMultiEditError(err error, path string, idx, batchSize
 		errors.Is(err, ErrNoChange), errors.Is(err, ErrEmptyOldStr):
 		// fuzzyEdit sentinel errors get the same rich mapping as the
 		// single-edit path (line-match counts, drift hints).
-		matched, total := countMatchingLines(strings.Join(content, "\n"), e.OldString)
-		te = t.searchReplaceError(path, e.OldString, err, matched, total)
+		bm := analyzeBlockMatch(strings.Join(content, "\n"), e.OldString)
+		te = t.searchReplaceError(path, e.OldString, err, bm)
 	default:
 		if toolErr, ok := err.(*internal.ToolError); ok {
 			te = toolErr
@@ -539,7 +554,11 @@ func (t *EditFileTool) Access(input string) ToolAccess {
 	if err := json.Unmarshal([]byte(input), &p); err != nil {
 		return ToolAccess{}
 	}
-	return ToolAccess{WritePaths: []string{p.Path}}
+	path := p.Path
+	if path == "" {
+		path = batchEntryPath(p.Edits)
+	}
+	return ToolAccess{WritePaths: []string{path}}
 }
 
 // MutatesState reports that a successful edit changes file state. The loop
@@ -608,7 +627,34 @@ func (t *EditFileTool) readLines(resolvedPath, originalPath string) ([]string, s
 func errMissingPath() *internal.ToolError {
 	return &internal.ToolError{Tool: "edit", Type: "missing_path",
 		Detail:   "No 'path' provided",
-		HintText: "Provide the file path in the 'path' field."}
+		HintText: "Provide the file path in the top-level 'path' field (a batch may carry it inside its edits entries instead)."}
+}
+
+// batchEntryPath returns the file path carried by batch entries when the
+// top-level 'path' was omitted: models frequently nest "path" inside every
+// edits[] element (session 1789212854). Returns "" when no entry provides one.
+func batchEntryPath(edits []editFileParams) string {
+	for _, e := range edits {
+		if e.Path != "" {
+			return e.Path
+		}
+	}
+	return ""
+}
+
+// checkEntryPaths rejects batch entries whose nested path disagrees with the
+// resolved top-level path: one edit call edits exactly one file, so a
+// diverging entry is a model error that must surface instead of silently
+// editing a file the entry did not name.
+func checkEntryPaths(path string, edits []editFileParams) error {
+	for i, e := range edits {
+		if e.Path != "" && e.Path != path {
+			return &internal.ToolError{Tool: "edit", Type: "conflicting_path",
+				Detail:   fmt.Sprintf("edit %d/%d targets %q but this batch edits %q: one edit call edits exactly one file", i+1, len(edits), e.Path, path),
+				HintText: "Split the batch into one edit call per file, or drop the nested 'path' fields and keep the top-level one."}
+		}
+	}
+	return nil
 }
 
 func errMissingParam() *internal.ToolError {
@@ -648,8 +694,8 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 
 	result, err := fuzzyEdit(string(data), oldStr, newStr, allowFuzz)
 	if err != nil {
-		matched, total := countMatchingLines(string(data), oldStr)
-		return "", t.searchReplaceError(originalPath, oldStr, err, matched, total)
+		bm := analyzeBlockMatch(string(data), oldStr)
+		return "", t.searchReplaceError(originalPath, oldStr, err, bm)
 	}
 
 	diagBlock, writeErr := t.writeEditResult(targetPath, originalPath, result.NewContent)
@@ -671,7 +717,31 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 	return resultMsg, nil
 }
 
-func (t *EditFileTool) searchReplaceError(path, oldStr string, err error, matched, total int) *internal.ToolError {
+// blockMatchHint renders the drift diagnostic appended to not-found edit
+// errors. bm.run (contiguous overlap) is the number that predicts whether the
+// block can ever match; bm.anywhere (scattered per-line presence) is reported
+// alongside so the model can tell plain line drift apart from an old_string
+// that spans non-adjacent regions of the file — the latter must be split into
+// one edit per region, not retried with different whitespace.
+func blockMatchHint(bm blockMatch) string {
+	switch {
+	case bm.total == 0:
+		return ""
+	case bm.run == 0:
+		return fmt.Sprintf(" — 0/%d lines of old_string matched the current file", bm.total)
+	case bm.run == bm.total:
+		return fmt.Sprintf(" — all %d lines of old_string match contiguously at file lines %d-%d, yet no strategy matched: the block differs only in blank lines or whitespace",
+			bm.total, bm.runStart, bm.runStart+bm.run-1)
+	case bm.anywhere > bm.run:
+		return fmt.Sprintf(" — old_string is NOT one contiguous block: best contiguous match is %d/%d lines (file lines %d-%d); %d/%d lines of old_string matched the current file but scattered across non-adjacent regions — split old_string into one edit per region",
+			bm.run, bm.total, bm.runStart, bm.runStart+bm.run-1, bm.anywhere, bm.total)
+	default:
+		return fmt.Sprintf(" — %d/%d lines of old_string matched the current file as one contiguous block (file lines %d-%d); the remaining lines drifted — re-read the region",
+			bm.run, bm.total, bm.runStart, bm.runStart+bm.run-1)
+	}
+}
+
+func (t *EditFileTool) searchReplaceError(path, oldStr string, err error, bm blockMatch) *internal.ToolError {
 	switch {
 	case errors.Is(err, ErrAmbiguous):
 		return &internal.ToolError{Tool: "edit", Type: "ambiguous_match",
@@ -686,9 +756,7 @@ func (t *EditFileTool) searchReplaceError(path, oldStr string, err error, matche
 		// surface how much of the block actually matched so the model
 		// understands this is content drift (not a broken tool) and recovers by
 		// re-reading + making a smaller anchored edit, instead of switching to bash.
-		if total > 0 {
-			detail += fmt.Sprintf(" — %d/%d lines of old_string matched the current file", matched, total)
-		}
+		detail += blockMatchHint(bm)
 		return &internal.ToolError{Tool: "edit", Type: "not_found",
 			Detail:   detail,
 			HintText: "The file has drifted from your last read (see the line-match count above). Re-read the target region with 'read' first, then retry with a SMALLER edit: fewer lines and a tight unique anchor. For multi-line or drifted blocks prefer 'operation: replace_lines' or 'delete_lines' with start_line/end_line (immune to content drift). Do NOT use bash/node/python to edit the file — always use this edit tool."}
