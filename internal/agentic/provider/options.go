@@ -121,16 +121,24 @@ func ClampThinkingLevelWithMap(levelMap ThinkingLevelMap, reasoning bool, level 
 		return nearestThinkingLevel(levelMap, level)
 	}
 
-	// No map defined — pass through if the level is known.
+	// No map defined — pass through if the level is known. Every canonical
+	// level must survive the clamp: rewriting a configured level down to
+	// "medium" silently discards explicit user configuration and breaks
+	// endpoints that reject "medium" outright (InferX DeepSeek V4.1:
+	// 400 "reasoning_effort must be low, high, xhigh, max, or an integer
+	// within [1, 100]").
 	switch level {
-	case ThinkingLow, ThinkingMedium, ThinkingHigh:
+	case ThinkingMinimal, ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingXHigh, ThinkingMax:
 		return level
 	default:
 		return ThinkingMedium
 	}
 }
 
-// thinkingLevelOrder ranks thinking levels for clamp comparisons.
+// thinkingLevelOrder ranks thinking levels for clamp comparisons. ThinkingMax
+// must be ranked: without it thinkingLevelRank("max") is -1 and
+// nearestThinkingLevel downgrades a requested max to medium even when the
+// model's ThinkingLevelMap supports it.
 var thinkingLevelOrder = []ThinkingLevel{
 	ThinkingOff,
 	ThinkingMinimal,
@@ -138,6 +146,7 @@ var thinkingLevelOrder = []ThinkingLevel{
 	ThinkingMedium,
 	ThinkingHigh,
 	ThinkingXHigh,
+	ThinkingMax,
 }
 
 // thinkingLevelRank returns the numeric rank of a thinking level.

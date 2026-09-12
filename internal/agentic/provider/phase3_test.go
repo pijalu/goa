@@ -217,8 +217,42 @@ func TestClampThinkingLevel_NoMap(t *testing.T) {
 	if got := ClampThinkingLevel(model, ThinkingHigh); got != ThinkingHigh {
 		t.Errorf("expected high, got %q", got)
 	}
-	if got := ClampThinkingLevel(model, ThinkingXHigh); got != ThinkingMedium {
-		t.Errorf("expected default medium for unknown level, got %q", got)
+	// Canonical levels must pass through untouched: rewriting xhigh/max to
+	// "medium" silently discards the configured level and produces 400s on
+	// providers that reject "medium" (InferX DeepSeek V4.1 accepts only
+	// low/high/xhigh/max/1..100 — bugs-20260912-inferx-reasoning-effort).
+	if got := ClampThinkingLevel(model, ThinkingXHigh); got != ThinkingXHigh {
+		t.Errorf("expected xhigh passthrough, got %q", got)
+	}
+	if got := ClampThinkingLevel(model, ThinkingMax); got != ThinkingMax {
+		t.Errorf("expected max passthrough, got %q", got)
+	}
+	if got := ClampThinkingLevel(model, ThinkingMinimal); got != ThinkingMinimal {
+		t.Errorf("expected minimal passthrough, got %q", got)
+	}
+	// Non-canonical values still fall back to the safe default.
+	if got := ClampThinkingLevel(model, ThinkingLevel("bogus")); got != ThinkingMedium {
+		t.Errorf("expected medium for unknown level, got %q", got)
+	}
+}
+
+func TestNearestThinkingLevel_RanksMax(t *testing.T) {
+	// thinkingLevelOrder must rank max: with a map that supports max, a
+	// requested max resolves to max instead of falling back to medium.
+	model := Model{
+		Reasoning: true,
+		ThinkingLevelMap: ThinkingLevelMap{
+			ThinkingHigh: "high",
+			ThinkingMax:  "max",
+		},
+	}
+	if got := ClampThinkingLevel(model, ThinkingMax); got != ThinkingMax {
+		t.Errorf("expected max, got %q", got)
+	}
+	// Requested above the map's top → clamp down to the highest entry at or
+	// below the requested rank (xhigh ranks above high).
+	if got := ClampThinkingLevel(model, ThinkingXHigh); got != ThinkingHigh {
+		t.Errorf("expected high for xhigh over {high,max} map, got %q", got)
 	}
 }
 
