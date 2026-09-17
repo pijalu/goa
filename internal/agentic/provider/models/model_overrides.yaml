@@ -835,6 +835,15 @@ models:
     base_url: "https://opencode.ai/zen/v1/messages"
 
   # Anthropic-format families on zen Go tier (lite list; no claude here).
+  # union-alpha: exact ID, not a prefix — probed live 2026-09-17
+  # (export goa-export-20260917-085348): 500 on {base}/chat/completions and
+  # {base}/responses, 200 on {base}/messages. Sibling stealth model omen-alpha
+  # was probed the same day and is oa-compat (200 on chat/completions, 500 on
+  # /messages), so it must NOT get an anthropic override.
+  - id: "union-alpha"
+    provider: opencode-go
+    api: anthropic-messages
+    base_url: "https://opencode.ai/zen/go/v1/messages"
   - id: "qwen3.5-"
     provider: opencode-go
     api: anthropic-messages

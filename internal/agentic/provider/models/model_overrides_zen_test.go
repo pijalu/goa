@@ -47,10 +47,13 @@ func TestRegistry_ZenAnthropicFamilies(t *testing.T) {
 	}
 }
 
-// Anthropic-format families on zen Go tier (no claude there).
+// Anthropic-format families on zen Go tier (no claude there). union-alpha is
+// an exact-ID entry (no catalog membership): live probe 2026-09-17 — 500 on
+// chat/completions + responses, 200 on /messages. Its sibling omen-alpha is
+// oa-compat (opposite probe result) and must stay off this list.
 func TestRegistry_ZenGoAnthropicFamilies(t *testing.T) {
 	base := "https://opencode.ai/zen/go/v1/messages"
-	for _, id := range []string{"qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max", "qwen3.8-flash"} {
+	for _, id := range []string{"qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max", "qwen3.8-flash", "union-alpha"} {
 		requireZenAPI(t, provider.ProviderOpenCodeGo, id, "anthropic-messages", base)
 	}
 }
