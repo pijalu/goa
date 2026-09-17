@@ -207,3 +207,29 @@ func buildCompatFromYAML(flags map[string]bool) provider.OpenAICompletionsCompat
 func isPrefixID(id string) bool {
 	return strings.HasSuffix(id, "-") && len(id) > 1
 }
+
+// IsCuratedOverride reports whether the given (provider, model ID) pair is
+// covered by a hand-curated YAML override — an exact-ID entry, or a prefix
+// entry whose declared API/behaviour the model inherits. Catalog (models.dev)
+// entries are NOT curated: they carry provider-level defaults that are wrong
+// for whole families on multi-surface gateways (the zen 500 class), so the
+// wire-format probe may still reroute them. Used to mark Model.ApiSource.
+func IsCuratedOverride(prov provider.Provider, id string) bool {
+	p := string(prov)
+	lower := strings.ToLower(id)
+	ovs := loadOverrides()
+	// Exact-ID entries run AFTER prefix entries in the registry init
+	// (last-write-wins carve-outs like qwen3.6-plus-free), so an exact match
+	// decides the result before any prefix is consulted.
+	for _, ov := range ovs {
+		if ov.Provider == p && !isPrefixID(ov.ID) && strings.EqualFold(ov.ID, id) {
+			return true
+		}
+	}
+	for _, ov := range ovs {
+		if ov.Provider == p && isPrefixID(ov.ID) && strings.HasPrefix(lower, strings.ToLower(ov.ID)) {
+			return true
+		}
+	}
+	return false
+}

@@ -67,6 +67,17 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 
 	a.cfg.Logger.Log(Warn, "stream error, retrying: %v", streamErr)
 
+	// Wire-format auto-probe (Option B): on a classified SERVER failure from a
+	// multi-surface gateway with an unpinned model API, the configured surface
+	// may simply be the wrong one (a format mismatch 500s and never recovers
+	// on retry). Probe the gateway's other surfaces once per model; if one
+	// accepts the stream, reroute the session model and let the retry below
+	// target it. No-op (returns model unchanged) for pinned models, non-
+	// gateway providers, non-SERVER errors, and already-probed models.
+	if probedModel, rerouted := a.tryProbeWireFormat(ctx, streamErr, model, opts); rerouted {
+		model = probedModel
+	}
+
 	// Surface the failure as a system chat bubble so the user can see the
 	// retry in the conversation history, not just a transient status message.
 	// The message is NOT marked transient so the error history survives

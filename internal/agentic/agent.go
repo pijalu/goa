@@ -474,4 +474,9 @@ type Agent struct {
 	// skipped until the sticky set changes (skill enabled/disabled/edited)
 	// or a compression pass invalidates it via InvalidateStickyInstructions.
 	lastPersistedSticky string
+
+	// probedWireFormats records the model IDs already wire-format probed this
+	// session (positive or negative) so the lazy probe runs at most once per
+	// model. See tryProbeWireFormat. Guarded by mu.
+	probedWireFormats map[string]struct{}
 }

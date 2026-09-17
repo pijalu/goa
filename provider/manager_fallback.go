@@ -43,6 +43,22 @@ func stripKnownProviderPrefix(name string) string {
 	return name
 }
 
+// apiSource derives Model.ApiSource: an explicit model-config `api:` is a
+// user pin ("user"), a hand-curated YAML override covering this (provider,
+// model) is a curated pin ("curated"); anything else (catalog or fallback
+// default) stays "" so the wire-format probe may reroute it after a gateway
+// 500 (Option B). Catalog entries borrowed from another provider are not
+// pins — the check is scoped to the serving provider.
+func apiSource(mCfg config.ModelConfig, prov agenticprovider.Provider, modelName string) string {
+	if mCfg.API != "" {
+		return "user"
+	}
+	if models.IsCuratedOverride(prov, modelName) {
+		return "curated"
+	}
+	return ""
+}
+
 // mergeRegistryModel combines a built-in registry model's capabilities with
 // the active provider's identity and endpoint. The original modelName is kept
 // as the ID so the API receives the exact name the user configured.
@@ -63,6 +79,7 @@ func mergeRegistryModel(m agenticprovider.Model, pCfg config.ProviderConfig, mCf
 	}
 	mdl.Provider = prov
 	mdl.Api = api
+	mdl.ApiSource = apiSource(mCfg, prov, modelName)
 
 	mdl.BaseURL = modelEndpointURL(api, pCfg.Endpoint)
 	applyModelConfigCapabilities(&mdl, mCfg, api)
@@ -99,6 +116,7 @@ func buildFallbackModel(pCfg config.ProviderConfig, mCfg config.ModelConfig, mod
 	if mCfg.API != "" {
 		api = agenticprovider.Api(mCfg.API)
 	}
+	apiSrc := apiSource(mCfg, prov, modelName)
 
 	inputTypes := mCfg.InputTypes
 	if len(inputTypes) == 0 {
@@ -113,6 +131,7 @@ func buildFallbackModel(pCfg config.ProviderConfig, mCfg config.ModelConfig, mod
 		Provider:   prov,
 		BaseURL:    baseURL,
 		InputTypes: inputTypes,
+		ApiSource:  apiSrc,
 	}
 
 	applyModelConfigToFallback(&mdl, mCfg, api)

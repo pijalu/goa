@@ -175,6 +175,15 @@ type Model struct {
 	Provider Provider `json:"provider"`
 	BaseURL  string   `json:"base_url,omitempty"`
 
+	// ApiSource records who chose the wire API: "" when it came from a
+	// catalog/fallback default (probeable), "curated" when a hand-maintained
+	// override (model_overrides.yaml) pinned it, "user" when an explicit
+	// model-config `api:` pinned it. The wire-format probe (Option B) only
+	// reroutes models with an empty ApiSource — curated and user choices are
+	// authoritative and must never be second-guessed. Not serialized: it is
+	// derived at model-minting time and must never persist.
+	ApiSource string `json:"-"`
+
 	Reasoning bool `json:"reasoning,omitempty"`
 
 	InputTypes []string `json:"input_types,omitempty"`
