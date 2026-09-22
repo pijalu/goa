@@ -368,7 +368,60 @@ func TestHTTPRequestSummaryTracing(t *testing.T) {
 func TestSummarizeRequestBodyMalformed(t *testing.T) {
 	s := summarizeRequestBody([]byte("not json"))
 	assert.Equal(t, 0, s.MessageCount)
-	assert.Nil(t, requestSummaryPtr(nil))
+	ps, capture := requestAnalysis(nil)
+	assert.Nil(t, ps)
+	assert.Empty(t, capture)
+}
+
+// TestSummarizeRequestBodyCodexInput is the F3 regression test: codex
+// /responses payloads carry the conversation under "input" with role-less
+// items — without parsing them, every codex request traced as messageCount=0
+// and "was a tool result sent back?" could not be answered.
+func TestSummarizeRequestBodyCodexInput(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.6-luna",
+		"stream": true,
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "text", "text": "do it"}]},
+			{"type": "reasoning", "summary": []},
+			{"type": "function_call", "name": "read", "arguments": "{\"path\":\"a.go\"}", "call_id": "c1"},
+			{"type": "function_call_output", "call_id": "c1", "output": "file contents"}
+		],
+		"tools": [{"type": "function", "name": "read"}]
+	}`)
+	s := summarizeRequestBody(body)
+	assert.Equal(t, "gpt-5.6-luna", s.Model)
+	assert.True(t, s.Stream)
+	assert.Equal(t, 4, s.MessageCount)
+	assert.Equal(t, 1, s.ToolCallBlocks)
+	assert.Equal(t, 1, s.ToolResultBlocks)
+	assert.Equal(t, "tool", s.LastRole)
+	assert.True(t, s.LastIsToolResult, "codex function_call_output must count as tool result")
+	assert.Equal(t, []string{"user", "reasoning", "assistant", "tool"}, s.Roles)
+}
+
+// TestRequestAnalysisCapturesConversationRegion is the F3 regression test for
+// the body capture: the tail of the conversation region must be captured, not
+// the raw body tail — codex bodies end with tool schemas, crowding the recent
+// tool results out of the 2048-byte window.
+func TestRequestAnalysisCapturesConversationRegion(t *testing.T) {
+	body := []byte(`{
+		"input": [
+			{"type": "message", "role": "user", "content": "hi"},
+			{"type": "function_call_output", "call_id": "c1", "output": "MARKER-TOOL-RESULT"}
+		],
+		"tools": [{"name": "read", "schema": "SCHEMA-TAIL-CROWDER"}]
+	}`)
+	ps, capture := requestAnalysis(body)
+	require.NotNil(t, ps)
+	assert.Contains(t, capture, "MARKER-TOOL-RESULT")
+	assert.NotContains(t, capture, "SCHEMA-TAIL-CROWDER",
+		"conversation-region capture must exclude trailing tool schemas")
+
+	// Unknown shape falls back to the raw body tail.
+	ps, capture = requestAnalysis([]byte(`{"weird": "RAWTAIL"}`))
+	assert.Nil(t, ps)
+	assert.Contains(t, capture, "RAWTAIL")
 }
 
 func TestRollingTail(t *testing.T) {

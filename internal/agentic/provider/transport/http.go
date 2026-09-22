@@ -184,48 +184,117 @@ func (t *rollingTail) bytes() []byte {
 	return data
 }
 
-// summarizeRequestBody parses an LLM request body (OpenAI-completions shape)
-// into a redaction-safe summary. Unknown body shapes yield a partial summary.
-func summarizeRequestBody(body []byte) RequestSummary {
+// analyzeRequestBody parses an LLM request body once and returns a
+// redaction-safe summary plus the raw JSON of the conversation region:
+// raw["messages"] (OpenAI chat shape) or raw["input"] (codex /responses
+// shape). Unknown shapes yield a zero summary and a nil region. Decoding into
+// json.RawMessage keeps nested content unparsed until item classification.
+func analyzeRequestBody(body []byte) (RequestSummary, json.RawMessage) {
 	s := RequestSummary{}
-	var raw map[string]any
+	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return s
+		return s, nil
 	}
-	if m, ok := raw["model"].(string); ok {
-		s.Model = m
+	s.Model = rawJSONString(raw["model"])
+	s.Stream = rawJSONBool(raw["stream"])
+	region := raw["messages"]
+	if len(region) == 0 || string(region) == "null" {
+		region = raw["input"]
 	}
-	if st, ok := raw["stream"].(bool); ok {
-		s.Stream = st
+	s.summarizeItems(region)
+	return s, region
+}
+
+// rawJSONString decodes a single string scalar; missing or malformed keys
+// yield the zero value.
+func rawJSONString(raw json.RawMessage) string {
+	var out string
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
+// rawJSONBool decodes a single bool scalar; missing or malformed keys yield
+// the zero value.
+func rawJSONBool(raw json.RawMessage) bool {
+	var out bool
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
+// summarizeItems fills the message counters and role tail from a conversation
+// region (array of chat messages or codex input items).
+func (s *RequestSummary) summarizeItems(region json.RawMessage) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(region, &items); err != nil {
+		return
 	}
-	msgs, _ := raw["messages"].([]any)
-	s.MessageCount = len(msgs)
-	roles := make([]string, 0, len(msgs))
-	for _, mi := range msgs {
-		m, ok := mi.(map[string]any)
-		if !ok {
+	s.MessageCount = len(items)
+	roles := make([]string, 0, len(items))
+	for _, item := range items {
+		var m map[string]any
+		if err := json.Unmarshal(item, &m); err != nil {
 			continue
 		}
-		role, _ := m["role"].(string)
+		role, toolCall, toolResult := classifyRequestItem(m)
 		roles = append(roles, role)
-		switch role {
-		case "tool":
+		if toolResult {
 			s.ToolResultBlocks++
-		case "assistant":
-			if tcs, ok := m["tool_calls"].([]any); ok && len(tcs) > 0 {
-				s.ToolCallBlocks++
-			}
+		}
+		if toolCall {
+			s.ToolCallBlocks++
 		}
 	}
-	if len(roles) > 0 {
-		s.LastRole = roles[len(roles)-1]
-		s.LastIsToolResult = s.LastRole == "tool"
-		start := 0
-		if len(roles) > 16 {
-			start = len(roles) - 16
-		}
-		s.Roles = roles[start:]
+	s.finishRoles(roles)
+}
+
+// classifyRequestItem maps a chat-style message or codex /responses input item
+// to the role label and tool-call/tool-result counters used by the anomaly
+// detectors. Codex items carry no role: function_call is model output and
+// function_call_output is the executed tool result.
+func classifyRequestItem(m map[string]any) (role string, toolCall, toolResult bool) {
+	typ, _ := m["type"].(string)
+	switch typ {
+	case "function_call":
+		return "assistant", true, false
+	case "function_call_output":
+		return "tool", false, true
 	}
+	role, _ = m["role"].(string)
+	if role == "" {
+		if typ != "" {
+			return typ, false, false // e.g. codex "reasoning" items
+		}
+		return "unknown", false, false
+	}
+	if role == "tool" {
+		return role, false, true
+	}
+	if role == "assistant" {
+		if tcs, ok := m["tool_calls"].([]any); ok && len(tcs) > 0 {
+			return role, true, false
+		}
+	}
+	return role, false, false
+}
+
+// finishRoles records the tail of the role sequence on the summary.
+func (s *RequestSummary) finishRoles(roles []string) {
+	if len(roles) == 0 {
+		return
+	}
+	s.LastRole = roles[len(roles)-1]
+	s.LastIsToolResult = s.LastRole == "tool"
+	start := 0
+	if len(roles) > 16 {
+		start = len(roles) - 16
+	}
+	s.Roles = roles[start:]
+}
+
+// summarizeRequestBody parses an LLM request body into a redaction-safe
+// summary. Unknown body shapes yield a partial summary.
+func summarizeRequestBody(body []byte) RequestSummary {
+	s, _ := analyzeRequestBody(body)
 	return s
 }
 
@@ -289,6 +358,9 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 	// models; ResponseHeaderTimeout leaves body reads to the idle guard.
 	client = clientWithHeaderTimeout(client, req.Timeout)
 
+	// One parse serves both outcomes: summary + conversation-region capture.
+	reqSummary, reqBodyCapture := requestAnalysis(req.Body)
+
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		entry := HTTPLogEntry{
@@ -297,8 +369,8 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 			URL:            req.URL,
 			DurationMs:     time.Since(start).Milliseconds(),
 			Error:          err.Error(),
-			RequestSummary: requestSummaryPtr(req.Body),
-			RequestBody:    truncateTail(string(req.Body), HTTPLogRequestBytes),
+			RequestSummary: reqSummary,
+			RequestBody:    reqBodyCapture,
 		}
 		log := t.Log
 		if log == nil {
@@ -321,8 +393,8 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 		URL:             req.URL,
 		StatusCode:      httpResp.StatusCode,
 		ResponseHeaders: headers,
-		RequestSummary:  requestSummaryPtr(req.Body),
-		RequestBody:     truncateTail(string(req.Body), HTTPLogRequestBytes),
+		RequestSummary:  reqSummary,
+		RequestBody:     reqBodyCapture,
 	}
 
 	// Wrap the response body to capture the head and tail as bytes are read
@@ -426,17 +498,27 @@ func (b *logOnCloseBody) applyCapture() {
 	}
 }
 
-// requestSummaryPtr returns a pointer to the request summary for body, or nil
-// when the body cannot be summarized (non-JSON or empty).
-func requestSummaryPtr(body []byte) *RequestSummary {
-	if len(body) == 0 {
-		return nil
+// requestAnalysis computes the summary pointer (nil when the shape is not
+// understood, preserving the trace contract) and the captured request-body
+// diagnostics text in one parse.
+func requestAnalysis(body []byte) (*RequestSummary, string) {
+	s, region := analyzeRequestBody(body)
+	var ps *RequestSummary
+	if len(body) > 0 && s.MessageCount > 0 {
+		ps = &s
 	}
-	s := summarizeRequestBody(body)
-	if s.MessageCount == 0 {
-		return nil
+	return ps, requestBodyCapture(body, region)
+}
+
+// requestBodyCapture returns the tail of the conversation region so recent
+// tool results stay visible regardless of where the provider places tool
+// schemas in the body (codex puts them last, crowding out the raw tail).
+// Unknown shapes fall back to the raw body tail.
+func requestBodyCapture(body []byte, region json.RawMessage) string {
+	if len(region) > 0 {
+		return truncateTail(string(region), HTTPLogRequestBytes)
 	}
-	return &s
+	return truncateTail(string(body), HTTPLogRequestBytes)
 }
 
 // clientWithHeaderTimeout returns an *http.Client whose round trip fails when
