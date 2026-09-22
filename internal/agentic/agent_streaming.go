@@ -5,6 +5,7 @@ package agentic
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
@@ -356,9 +357,31 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 	})
 	defer watchdog.Stop()
 
+	// Quiet-provider notice (F5): after half the stall window of silence,
+	// tell the user the provider is quiet and when the watchdog will act —
+	// without this, a content→silence gap is just a dead spinner until the
+	// stall fires minutes later, which reads as "stuck".
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+	quietAfter := stallTimeout / 2
+	var quietWarn *time.Timer
+	if quietAfter > 0 {
+		quietWarn = time.AfterFunc(quietAfter, func() {
+			if time.Since(time.Unix(0, lastActivity.Load())) < quietAfter {
+				return // an event raced the timer; the loop re-arms it
+			}
+			a.emitQuietWarning(quietAfter, stallTimeout)
+		})
+		defer quietWarn.Stop()
+	}
+
 	for event := range stream.SeqCtx(ctx) {
 		// An event arrived — the provider is alive. Push the stall deadline out.
 		watchdog.Reset(stallTimeout)
+		lastActivity.Store(time.Now().UnixNano())
+		if quietWarn != nil {
+			quietWarn.Reset(quietAfter)
+		}
 
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -371,6 +394,17 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 	}
 
 	return a.finishStreamTurn(ctx, stream)
+}
+
+// emitQuietWarning surfaces provider silence as a progress event: how long it
+// has been quiet and when the stall watchdog will auto-retry. Guarded against
+// running past stream end by the caller's timer Stop, with a benign worst
+// case of one late informational notice.
+func (a *Agent) emitQuietWarning(quietAfter, stallTimeout time.Duration) {
+	msg := "provider quiet for " + quietAfter.Round(100*time.Millisecond).String() +
+		" — still waiting; will auto-retry after " + stallTimeout.Round(time.Second).String() + " of silence"
+	a.cfg.Logger.Log(Info, "%s", msg)
+	a.emitEvent(OutputEvent{Type: EventProgress, Text: msg})
 }
 
 // handleStreamEvent dispatches a single stream event. The returned done flag is
