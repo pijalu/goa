@@ -759,6 +759,32 @@ models:
       cache_read: 2.8e-06
       cache_write: 0.0
     input_types: [text]
+  # MiMo (Xiaomi) on the OpenCode gateways accepts only low/medium/high
+  # reasoning_effort — xhigh, max and minimal are rejected upstream with
+  # HTTP 400 "Invalid request parameters" (goa-export-20260922-074352,
+  # verified live against {base}/chat/completions 2026-09-22). The models.dev
+  # catalog entries carry no level map, so a configured thinking_level of
+  # xhigh passed straight through and failed the first request. The
+  # restricted map clamps xhigh/max -> high and minimal -> off. Prefix ID
+  # covers the whole family (mimo-v2.6-flash, mimo-v2-pro, mimo-v2.5-pro).
+  # thinking_format is provider-driven (opencode-go profile = deepseek), so
+  # only reasoning + the level map are pinned here.
+  - id: "mimo-"
+    provider: opencode
+    reasoning: true
+    thinking_level_map:
+      off: "off"
+      low: "low"
+      medium: "medium"
+      high: "high"
+  - id: "mimo-"
+    provider: opencode-go
+    reasoning: true
+    thinking_level_map:
+      off: "off"
+      low: "low"
+      medium: "medium"
+      high: "high"
   # Muse Spark is served by OpenCode through the OpenAI Responses API
   # ({base}/responses, npm @ai-sdk/openai), NOT the chat-completions surface
   # the opencode provider entries declare (bugs.md 2026-08-30). Prefix ID so
