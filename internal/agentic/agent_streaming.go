@@ -344,12 +344,13 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 
 	// Event-level stall watchdog: unlike the byte-level idle timeout in the
 	// HTTP reader — which is reset by every byte, including SSE keep-alive
-	// comments (": ping") and empty lines — this timer resets ONLY on actual
-	// stream events (text deltas, thinking deltas, tool calls, etc.). If the
-	// provider sends keep-alive bytes but never delivers a real event, the
-	// byte-level idle timeout never fires and the agent hangs indefinitely.
-	// The watchdog terminates the stream with a stall error, which is then
-	// handled by handleStreamFailure (transient, retryable).
+	// comments (": ping") and empty lines — this timer resets ONLY on events
+	// that have a registered handler (text/thinking deltas, tool calls, done,
+	// error). Unmapped event types are invisible to the user, so they must not
+	// re-arm the watchdog: a provider streaming pacing/keep-alive events would
+	// otherwise keep every guard alive forever while the agent appears frozen
+	// (F1b review finding). The watchdog terminates the stream with a stall
+	// error, which handleStreamFailure treats as transient and retries.
 	stallTimeout := a.effectiveEventStallTimeout(opts)
 	watchdog := time.AfterFunc(stallTimeout, func() {
 		a.cfg.Logger.Log(Warn, "Stream stalled: no events received for %v", stallTimeout)
@@ -375,12 +376,16 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 		defer quietWarn.Stop()
 	}
 
+	unmappedSeen := make(map[provider.EventType]bool)
 	for event := range stream.SeqCtx(ctx) {
-		// An event arrived — the provider is alive. Push the stall deadline out.
-		watchdog.Reset(stallTimeout)
-		lastActivity.Store(time.Now().UnixNano())
-		if quietWarn != nil {
-			quietWarn.Reset(quietAfter)
+		// Only events that produce real output push the stall deadline and the
+		// quiet-warning timer out (see noteStreamEventProgress).
+		if a.noteStreamEventProgress(event, unmappedSeen) {
+			watchdog.Reset(stallTimeout)
+			lastActivity.Store(time.Now().UnixNano())
+			if quietWarn != nil {
+				quietWarn.Reset(quietAfter)
+			}
 		}
 
 		if err := ctx.Err(); err != nil {
@@ -405,6 +410,23 @@ func (a *Agent) emitQuietWarning(quietAfter, stallTimeout time.Duration) {
 		" — still waiting; will auto-retry after " + stallTimeout.Round(time.Second).String() + " of silence"
 	a.cfg.Logger.Log(Info, "%s", msg)
 	a.emitEvent(OutputEvent{Type: EventProgress, Text: msg})
+}
+
+// noteStreamEventProgress reports whether the event counts as progress: types
+// with a registered handler produce visible output and re-arm the stall and
+// quiet guards. Unmapped types are logged once per stream and do NOT re-arm —
+// otherwise a provider streaming periodic unmapped keep-alive/pacing events
+// keeps every watchdog alive indefinitely while the user sees nothing, the
+// exact "healthy logs, frozen UI" hang (F1b review finding).
+func (a *Agent) noteStreamEventProgress(event provider.AssistantMessageEvent, unmapped map[provider.EventType]bool) bool {
+	if _, mapped := streamEventHandlers[event.Type]; mapped {
+		return true
+	}
+	if !unmapped[event.Type] {
+		unmapped[event.Type] = true
+		a.cfg.Logger.Log(Warn, "provider sent unmapped event type %q — not rendered; it does not re-arm the stall watchdog", event.Type)
+	}
+	return false
 }
 
 // handleStreamEvent dispatches a single stream event. The returned done flag is
