@@ -10,16 +10,26 @@ func (a *Agent) emitEvent(event OutputEvent) {
 	copy(entries, a.observers)
 	a.mu.Unlock()
 
+	// Delivery is deadline-bounded per observer (observerDelivery): a wedged
+	// observer is detached after observerDeliverTimeout instead of blocking
+	// this goroutine — which is the stream consumer, unreachable by the stall
+	// watchdogs when stuck here (F1a).
 	for _, entry := range entries {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Observer panicked; continue with remaining observers.
-				}
-			}()
-			entry.obs.OnEvent(event)
-		}()
+		if entry.del != nil {
+			entry.del.deliver(event, a.cfg.Logger)
+			continue
+		}
+		safeOnEvent(entry.obs, event)
 	}
+}
+
+// safeOnEvent calls OnEvent with a panic guard (legacy entries without
+// delivery state).
+func safeOnEvent(obs OutputObserver, event OutputEvent) {
+	defer func() {
+		_ = recover()
+	}()
+	obs.OnEvent(event)
 }
 
 func (a *Agent) emitMessage(msg Message) {

@@ -4,9 +4,81 @@
 
 package agentic
 
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// observerDeliverTimeout bounds a single OnEvent call. If an observer does not
+// return within it, the observer is considered wedged and detached — a
+// synchronous observer used to be able to block the stream-consumer goroutine
+// forever, beyond the reach of the stall watchdogs (F1a review finding: the
+// luna stuck-session hang class). Variable so tests can shrink it.
+var observerDeliverTimeout = 5 * time.Second
+
 type observerEntry struct {
 	obs OutputObserver
 	id  uint64
+	// del carries the per-registration delivery state (ordering + wedge
+	// flags). Held by pointer so entry copies in emitEvent never copy a mutex.
+	del *observerDelivery
+}
+
+// observerDelivery serializes events to one observer with a per-observer
+// ordering lock and runs OnEvent on a helper goroutine so the caller can
+// enforce a deadline. Healthy observers keep full synchronous semantics (the
+// event is fully processed before deliver returns); a wedged observer blocks
+// at most observerDeliverTimeout once and is then detached.
+type observerDelivery struct {
+	obs OutputObserver
+
+	mu      sync.Mutex // per-observer ordering
+	stopped atomic.Bool
+	stalled atomic.Bool
+}
+
+// newObserverDelivery creates the delivery state for one registration.
+func newObserverDelivery(obs OutputObserver) *observerDelivery {
+	return &observerDelivery{obs: obs}
+}
+
+// stop marks the registration dead (removal path). Safe from any goroutine,
+// including from inside OnEvent itself — it never takes the ordering lock.
+func (d *observerDelivery) stop() {
+	d.stopped.Store(true)
+}
+
+// deliver delivers one event: ordered behind earlier events for this
+// observer, bounded by observerDeliverTimeout. On timeout the observer is
+// detached (stalled) so all subsequent deliveries skip it instantly.
+func (d *observerDelivery) deliver(ev OutputEvent, lg *Logger) {
+	if d.stopped.Load() || d.stalled.Load() {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stopped.Load() || d.stalled.Load() {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			_ = recover() // observer panicked; keep delivering
+		}()
+		d.obs.OnEvent(ev)
+	}()
+	timer := time.NewTimer(observerDeliverTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		d.stalled.Store(true)
+		if lg != nil {
+			lg.Log(Warn, "observer %T wedged for %v in OnEvent; detaching it so the stream can continue", d.obs, observerDeliverTimeout)
+		}
+	}
 }
 
 // AddObserver registers an observer to receive output events and returns a
@@ -19,7 +91,7 @@ func (a *Agent) AddObserver(o OutputObserver) func() {
 	defer a.mu.Unlock()
 	a.observerCounter++
 	id := a.observerCounter
-	a.observers = append(a.observers, observerEntry{obs: o, id: id})
+	a.observers = append(a.observers, observerEntry{obs: o, id: id, del: newObserverDelivery(o)})
 	return func() { a.removeObserverByID(id) }
 }
 
@@ -34,6 +106,7 @@ func (a *Agent) RemoveObserver(o OutputObserver) {
 	defer a.mu.Unlock()
 	for i, entry := range a.observers {
 		if safeObserverEqual(entry.obs, o) {
+			entry.del.stop()
 			a.observers = append(a.observers[:i], a.observers[i+1:]...)
 			return
 		}
@@ -47,6 +120,7 @@ func (a *Agent) removeObserverByID(id uint64) {
 	defer a.mu.Unlock()
 	for i, entry := range a.observers {
 		if entry.id == id {
+			entry.del.stop()
 			a.observers = append(a.observers[:i], a.observers[i+1:]...)
 			return
 		}
