@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,4 +129,113 @@ func TestPacedStream_NoQuietProviderWarning(t *testing.T) {
 
 	assert.False(t, hasQuietWarning(obs),
 		"a stream with activity every 50ms must not be reported as quiet")
+}
+
+// slowToolProvider emits a single tool call then ends the stream, so the
+// agent enters tool execution. The paired slowTool sleeps longer than the
+// quiet/stall window, so — if the stall watchdog and quiet warning were still
+// armed during tool execution (the regression) — the user would see a
+// spurious "provider quiet" notice and the watchdog would trip a retry.
+type slowToolProvider struct {
+	api   provider.Api
+	calls atomic.Int32
+}
+
+func (p *slowToolProvider) API() provider.Api { return p.api }
+
+func (p *slowToolProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	n := p.calls.Add(1)
+	stream := provider.NewAssistantMessageEventStream(64)
+	go func() {
+		if n == 1 {
+			stream.Push(provider.AssistantMessageEvent{Type: provider.EventToolCallEnd, ToolCall: &provider.ContentBlock{
+				Type: provider.ContentBlockToolCall, ToolName: "slow", ToolArguments: `{}`, ToolCallID: "slow-1",
+			}})
+			stream.End(&provider.AssistantMessage{StopReason: provider.StopReasonEndTurn})
+			return
+		}
+		// Round 2: deliver a substantive final answer so the turn ends cleanly
+		// (a terse or empty reply after tool work is auto-continued as a
+		// premature stop, which would add provider calls unrelated to the stall
+		// guard under test).
+		stream.Push(provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "The slow command finished successfully."})
+		stream.End(&provider.AssistantMessage{
+			Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "The slow command finished successfully."}},
+			StopReason: provider.StopReasonEndTurn,
+		})
+	}()
+	return stream, nil
+}
+
+func (p *slowToolProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return p.Stream(model, ctx, provider.BuildSimpleOptions(model, opts))
+}
+
+// slowTool blocks longer than the quiet/stall window to simulate a
+// long-running command (e.g. `go test`).
+type slowTool struct {
+	name string
+	d    time.Duration
+}
+
+func (m slowTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        m.name,
+		Description: "sleeps to simulate a long-running command",
+		Schema:      map[string]interface{}{"type": "object"},
+	}
+}
+
+func (m slowTool) Execute(input string) (string, error) {
+	time.Sleep(m.d)
+	return "slow done", nil
+}
+
+func (m slowTool) IsRetryable(err error) bool { return false }
+
+// TestToolExecution_NoQuietWarningOrStallRetry is the regression test for the
+// report: while a tool runs, the provider is legitimately idle (the stream
+// already ended), so the quiet-provider notice must NOT fire and the stall
+// watchdog must NOT trip a retry. Before the fix, both timers stayed armed
+// through tool execution: a tool running longer than half the stall window
+// produced "provider quiet … will auto-retry" mid-tool, and crossing the full
+// stall window logged "Stream stalled" and CloseWithError'd the ended stream.
+func TestToolExecution_NoQuietWarningOrStallRetry(t *testing.T) {
+	p := &slowToolProvider{api: provider.Api(fmt.Sprintf("test-slow-tool-%d", testProviderCounter.Add(1)))}
+	provider.RegisterApiProvider(p)
+
+	const idle = 400 * time.Millisecond // stall window; quiet fires at 200ms
+	agent := NewAgent(Config{
+		Model: provider.Model{
+			ID:         "slow-tool-test",
+			Api:        p.API(),
+			Provider:   provider.ProviderCustom,
+			InputTypes: []string{"text"},
+		},
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+		Tools:        []Tool{slowTool{name: "slow", d: 1200 * time.Millisecond}}, // > 2x stall window
+		StreamOptions: provider.StreamOptions{
+			MaxRetries:  1,
+			IdleTimeout: idle,
+		},
+	})
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	runQuietTestTurn(t, agent)
+
+	assert.False(t, hasQuietWarning(obs),
+		"a running tool must not be reported as provider silence")
+
+	// The stall watchdog firing during tool execution would force a re-stream.
+	// The turn must complete in exactly 2 provider calls (the tool-call round
+	// plus the follow-up answer round); any extra call means a spurious retry
+	// fired while the tool was running.
+	assert.Equal(t, int32(2), p.calls.Load(),
+		"no stall-retry may fire while a tool is running (tool-call round + follow-up round only)")
 }

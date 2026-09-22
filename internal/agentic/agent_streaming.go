@@ -398,6 +398,20 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 		}
 	}
 
+	// The stream has ended: disarm the stall watchdog and quiet warning before
+	// finishStreamTurn runs buffered tool calls. Those timers only guard the
+	// streaming phase — once the loop exits, no further events can arrive to
+	// reset them, so during a long tool execution (which happens inside
+	// finishStreamTurn, before the deferred Stop calls run) they would fire
+	// spuriously: the quiet notice would falsely report the provider as silent
+	// while a tool is running, and the stall watchdog would CloseWithError an
+	// already-ended stream. Stopping them here, ahead of tool execution, keeps
+	// both guards scoped to the phase they actually protect.
+	watchdog.Stop()
+	if quietWarn != nil {
+		quietWarn.Stop()
+	}
+
 	return a.finishStreamTurn(ctx, stream)
 }
 
