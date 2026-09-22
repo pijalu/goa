@@ -434,3 +434,105 @@ func TestTruncateTail(t *testing.T) {
 	assert.Equal(t, "short", truncateTail("short", 10))
 	assert.Equal(t, "...56789", truncateTail("0123456789", 5))
 }
+
+// TestHTTPLogPendingLifecycle is the F2 regression test: an in-flight request
+// must be visible in snapshots while open (the diagnostics blind spot during a
+// stall) and move into the completed ring exactly once when finished.
+func TestHTTPLogPendingLifecycle(t *testing.T) {
+	log := NewHTTPLog(4)
+	pr := log.Begin(HTTPLogEntry{
+		Timestamp: time.Now().Format(time.RFC3339Nano),
+		Method:    "POST",
+		URL:       "https://example.test/responses",
+	})
+
+	pending := log.SnapshotPending()
+	require.Len(t, pending, 1, "in-flight request must be visible before it completes")
+	assert.True(t, pending[0].Pending)
+	assert.Empty(t, log.Snapshot(), "nothing finalized yet")
+
+	pr.Update(func(e *HTTPLogEntry) { e.StatusCode = 200 })
+	pending = log.SnapshotPending()
+	require.Len(t, pending, 1)
+	assert.Equal(t, 200, pending[0].StatusCode, "status must be visible while pending")
+
+	var secondRuns int
+	pr.Finish(func(e *HTTPLogEntry) { e.DurationMs = 1234 })
+	pr.Finish(func(e *HTTPLogEntry) { secondRuns++ })
+	assert.Zero(t, secondRuns, "Finish must be idempotent")
+
+	assert.Empty(t, log.SnapshotPending(), "finished request leaves the pending set")
+	done := log.Snapshot()
+	require.Len(t, done, 1)
+	assert.False(t, done[0].Pending)
+	assert.Equal(t, int64(1234), done[0].DurationMs)
+	assert.Equal(t, 200, done[0].StatusCode)
+}
+
+// TestHTTPLogSnapshotAllMergesChronologically verifies exports interleave
+// completed and in-flight entries oldest-first, so trace seq numbers stay a
+// faithful timeline.
+func TestHTTPLogSnapshotAllMergesChronologically(t *testing.T) {
+	log := NewHTTPLog(4)
+	log.Add(HTTPLogEntry{Timestamp: "2026-09-22T06:42:27.936+02:00", Method: "POST"})
+	pr := log.Begin(HTTPLogEntry{Timestamp: "2026-09-22T06:42:15.410076+02:00", Method: "POST"})
+	defer pr.Finish(func(*HTTPLogEntry) {})
+
+	all := log.SnapshotAll()
+	require.Len(t, all, 2)
+	assert.Equal(t, "2026-09-22T06:42:15.410076+02:00", all[0].Timestamp, "pending entry sorts first")
+	assert.True(t, all[0].Pending)
+	assert.False(t, all[1].Pending)
+}
+
+// TestHTTPLogPendingDuringStalledStream is THE luna stuck-session scenario:
+// headers arrive, one SSE chunk arrives, then the provider goes silent. The
+// export taken mid-stall must show the open request with status 200 and a
+// nonzero elapsed duration — previously finalize-on-close meant http.jsonl and
+// trace.json showed nothing at all.
+func TestHTTPLogPendingDuringStalledStream(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: partial\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Stall: keep the body open until the test finishes.
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+
+	log := NewHTTPLog(4)
+	tr := &HTTPTransport{Client: server.Client(), Log: log}
+	resp, err := tr.Do(context.Background(), &TransportRequest{
+		Method: "POST",
+		URL:    server.URL,
+		Body:   []byte(`{"model":"gpt-5.6-luna","input":[]}`),
+	})
+	require.NoError(t, err)
+
+	// Read the one available chunk, then simulate the stalled consumer.
+	buf := make([]byte, 64)
+	_, err = resp.Body.Read(buf)
+	require.NoError(t, err)
+
+	// "Export" during the stall.
+	pending := log.SnapshotPending()
+	require.Len(t, pending, 1, "stalled stream must be visible as an in-flight request")
+	assert.Equal(t, 200, pending[0].StatusCode)
+	assert.NotEmpty(t, pending[0].RequestBody)
+
+	// Stream terminates (close) → entry moves into the ring, still complete.
+	_ = resp.Body.Close()
+	assert.Empty(t, log.SnapshotPending())
+	done := log.Snapshot()
+	require.Len(t, done, 1)
+	assert.False(t, done[0].Pending)
+	assert.Contains(t, done[0].ResponseTail, "data: partial", "captured bytes must survive finalization")
+}

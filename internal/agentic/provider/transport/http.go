@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +59,10 @@ type HTTPLogEntry struct {
 	StatusCode      int               `json:"statusCode,omitempty"`
 	DurationMs      int64             `json:"durationMs"`
 	Error           string            `json:"error,omitempty"`
+	// Pending marks an in-flight transaction (request started, body not yet
+	// closed). Exports use it to see the open request during a provider stall —
+	// exactly when finalize-on-close logging used to go blind.
+	Pending         bool              `json:"pending,omitempty"`
 	RequestSummary  *RequestSummary   `json:"requestSummary,omitempty"`
 	RequestBody     string            `json:"requestBody,omitempty"`  // truncated tail of the request body
 	ResponseBody    string            `json:"responseBody,omitempty"` // head of the response stream
@@ -73,6 +78,9 @@ type HTTPLog struct {
 	pos     int
 	count   int
 	cap     int
+	// pending holds in-flight transactions keyed by pointer; entries move into
+	// the completed ring exactly once, when the response body ends.
+	pending map[*pendingEntry]struct{}
 }
 
 // NewHTTPLog creates a ring buffer for HTTP log entries.
@@ -118,6 +126,95 @@ func (l *HTTPLog) Clear() {
 	defer l.mu.Unlock()
 	l.pos = 0
 	l.count = 0
+	l.pending = nil
+}
+
+// pendingEntry is an in-flight HTTP transaction. Its own mutex lets exports
+// take a consistent copy while the finalize path writes the closing fields.
+type pendingEntry struct {
+	mu    sync.Mutex
+	entry HTTPLogEntry
+}
+
+// PendingRequest is the handle returned by HTTPLog.Begin. Finish finalizes
+// the entry exactly once and moves it into the completed ring.
+type PendingRequest struct {
+	log  *HTTPLog
+	pe   *pendingEntry
+	once sync.Once
+}
+
+// Begin registers an in-flight entry BEFORE the request is sent, so exports
+// taken during a stall (headers waiting or stream open) still show the open
+// request instead of nothing.
+func (l *HTTPLog) Begin(entry HTTPLogEntry) *PendingRequest {
+	entry.Pending = true
+	pe := &pendingEntry{entry: entry}
+	l.mu.Lock()
+	if l.pending == nil {
+		l.pending = make(map[*pendingEntry]struct{})
+	}
+	l.pending[pe] = struct{}{}
+	l.mu.Unlock()
+	return &PendingRequest{log: l, pe: pe}
+}
+
+// Update applies fn to the pending entry while it stays in flight (e.g. fill
+// in status code and headers once they arrive).
+func (pr *PendingRequest) Update(fn func(*HTTPLogEntry)) {
+	pr.pe.mu.Lock()
+	fn(&pr.pe.entry)
+	pr.pe.mu.Unlock()
+}
+
+// Finish applies fn to the entry (duration, error, captures), clears the
+// pending flag, unregisters it, and appends it to the completed ring.
+// Idempotent: only the first caller's fn runs.
+func (pr *PendingRequest) Finish(fn func(*HTTPLogEntry)) {
+	pr.once.Do(func() {
+		pr.pe.mu.Lock()
+		fn(&pr.pe.entry)
+		pr.pe.entry.Pending = false
+		entry := pr.pe.entry
+		pr.pe.mu.Unlock()
+		pr.log.mu.Lock()
+		delete(pr.log.pending, pr.pe)
+		pr.log.mu.Unlock()
+		pr.log.Add(entry)
+	})
+}
+
+// SnapshotPending returns copies of all in-flight entries with DurationMs
+// refreshed to the current elapsed time — the view an export needs when a
+// stream is stuck.
+func (l *HTTPLog) SnapshotPending() []HTTPLogEntry {
+	l.mu.Lock()
+	pending := make([]*pendingEntry, 0, len(l.pending))
+	for pe := range l.pending {
+		pending = append(pending, pe)
+	}
+	l.mu.Unlock()
+
+	out := make([]HTTPLogEntry, 0, len(pending))
+	for _, pe := range pending {
+		pe.mu.Lock()
+		e := pe.entry
+		if ts, err := time.Parse(time.RFC3339Nano, e.Timestamp); err == nil {
+			e.DurationMs = time.Since(ts).Milliseconds()
+		}
+		pe.mu.Unlock()
+		out = append(out, e)
+	}
+	return out
+}
+
+// SnapshotAll returns completed and in-flight entries merged oldest-first.
+// Timestamps are RFC3339Nano rendered in the process's fixed offset, so
+// lexicographic order matches chronological order.
+func (l *HTTPLog) SnapshotAll() []HTTPLogEntry {
+	all := append(l.Snapshot(), l.SnapshotPending()...)
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Timestamp < all[j].Timestamp })
+	return all
 }
 
 // GlobalHTTPLog is the global HTTP transaction log used by the default transport.
@@ -361,22 +458,26 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 	// One parse serves both outcomes: summary + conversation-region capture.
 	reqSummary, reqBodyCapture := requestAnalysis(req.Body)
 
+	log := t.Log
+	if log == nil {
+		log = GlobalHTTPLog
+	}
+	// Register BEFORE sending: an export taken during a header wait or a silent
+	// stream must see the open request instead of nothing (F2 review finding).
+	pending := log.Begin(HTTPLogEntry{
+		Timestamp:      start.Format(time.RFC3339Nano),
+		Method:         req.Method,
+		URL:            req.URL,
+		RequestSummary: reqSummary,
+		RequestBody:    reqBodyCapture,
+	})
+
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
-		entry := HTTPLogEntry{
-			Timestamp:      start.Format(time.RFC3339Nano),
-			Method:         req.Method,
-			URL:            req.URL,
-			DurationMs:     time.Since(start).Milliseconds(),
-			Error:          err.Error(),
-			RequestSummary: reqSummary,
-			RequestBody:    reqBodyCapture,
-		}
-		log := t.Log
-		if log == nil {
-			log = GlobalHTTPLog
-		}
-		log.Add(entry)
+		pending.Finish(func(entry *HTTPLogEntry) {
+			entry.DurationMs = time.Since(start).Milliseconds()
+			entry.Error = err.Error()
+		})
 		return nil, err
 	}
 
@@ -387,15 +488,10 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 		}
 	}
 
-	entry := HTTPLogEntry{
-		Timestamp:       start.Format(time.RFC3339Nano),
-		Method:          req.Method,
-		URL:             req.URL,
-		StatusCode:      httpResp.StatusCode,
-		ResponseHeaders: headers,
-		RequestSummary:  reqSummary,
-		RequestBody:     reqBodyCapture,
-	}
+	pending.Update(func(entry *HTTPLogEntry) {
+		entry.StatusCode = httpResp.StatusCode
+		entry.ResponseHeaders = headers
+	})
 
 	// Wrap the response body to capture the head and tail as bytes are read
 	// (lazy capture — does not consume the stream eagerly). The tail preserves
@@ -416,23 +512,21 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 		Headers:    headers,
 		Body: &logOnCloseBody{
 			ReadCloser: capBody,
-			entry:      &entry,
+			pending:    pending,
 			capture:    capBody,
-			log:        t.Log,
 			start:      start,
 		},
 	}, nil
 }
 
 // logOnCloseBody wraps the response body and finalizes the HTTP log entry
-// when the body is fully consumed (reaches EOF) or closed.
+// when the body is fully consumed (reaches EOF) or closed. Finish is
+// idempotent, so EOF and Close racing still record exactly once.
 type logOnCloseBody struct {
 	io.ReadCloser
-	entry   *HTTPLogEntry
+	pending *PendingRequest
 	capture *captureBody
-	log     *HTTPLog
 	start   time.Time
-	once    sync.Once
 }
 
 func (b *logOnCloseBody) Close() error {
@@ -449,31 +543,26 @@ func (b *logOnCloseBody) Read(p []byte) (int, error) {
 }
 
 func (b *logOnCloseBody) finalize(readErr error) {
-	b.once.Do(func() {
-		b.applyCapture()
+	b.pending.Finish(func(entry *HTTPLogEntry) {
+		b.applyCapture(entry)
 		// DurationMs is measured when the stream terminates (EOF, error, or
 		// close), not at header-arrival time, so a long-lived or stalled
 		// stream reports its true wall-clock duration.
 		if !b.start.IsZero() {
-			b.entry.DurationMs = time.Since(b.start).Milliseconds()
+			entry.DurationMs = time.Since(b.start).Milliseconds()
 		}
 		// Record a mid-stream read failure so a dropped/stalled connection is
 		// visible in the log instead of looking like a clean completion. A
 		// clean EOF (io.EOF) is the normal terminator, not an error.
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			b.entry.Error = readErr.Error()
+			entry.Error = readErr.Error()
 		}
-		l := b.log
-		if l == nil {
-			l = GlobalHTTPLog
-		}
-		l.Add(*b.entry)
 	})
 }
 
 // applyCapture transfers the buffered head/tail (and extracted finish_reason)
 // into the log entry. Called exactly once when the stream is fully consumed.
-func (b *logOnCloseBody) applyCapture() {
+func (b *logOnCloseBody) applyCapture(entry *HTTPLogEntry) {
 	if b.capture == nil {
 		return
 	}
@@ -482,7 +571,7 @@ func (b *logOnCloseBody) applyCapture() {
 		if len(head) > HTTPLogCaptureBytes {
 			head = head[:HTTPLogCaptureBytes] + "..."
 		}
-		b.entry.ResponseBody = head
+		entry.ResponseBody = head
 	}
 	if b.capture.tail == nil {
 		return
@@ -491,10 +580,10 @@ func (b *logOnCloseBody) applyCapture() {
 	if len(tail) > HTTPLogTailBytes {
 		tail = "..." + tail[len(tail)-HTTPLogTailBytes:]
 	}
-	b.entry.ResponseTail = tail
+	entry.ResponseTail = tail
 	// finish_reason lives at the end of the stream; scan the tail.
 	if fr := extractFinishReason(tail); fr != "" {
-		b.entry.FinishReason = fr
+		entry.FinishReason = fr
 	}
 }
 

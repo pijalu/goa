@@ -25,6 +25,7 @@ type llmTraceRequest struct {
 	Model            string   `json:"model,omitempty"`
 	StatusCode       int      `json:"statusCode,omitempty"`
 	DurationMs       int64    `json:"durationMs"`
+	Pending          bool     `json:"pending,omitempty"` // in-flight at export time
 	MessageCount     int      `json:"messageCount"`
 	LastRole         string   `json:"lastRole,omitempty"`
 	LastIsToolResult bool     `json:"lastIsToolResult"`
@@ -49,6 +50,7 @@ func buildLLMTrace(entries []transport.HTTPLogEntry) llmTrace {
 			Timestamp:    e.Timestamp,
 			StatusCode:   e.StatusCode,
 			DurationMs:   e.DurationMs,
+			Pending:      e.Pending,
 			FinishReason: e.FinishReason,
 			Error:        e.Error,
 		}
@@ -77,9 +79,23 @@ func detectLLMAnomalies(reqs []llmTraceRequest) []string {
 	}
 	var flags []string
 	flags = append(flags, lastRequestAnomaly(reqs)...)
+	flags = append(flags, pendingRequestAnomaly(reqs)...) // returns at most one
 	flags = append(flags, toolResultForwardAnomaly(reqs)...) // returns at most one
 	flags = append(flags, perRequestAnomalies(reqs)...)
 	return flags
+}
+
+// pendingRequestAnomaly flags a final request that is still in flight at
+// export time: the stream never closed, which is the signature of a provider
+// stall (the luna stuck-session case — without this flag the open request is
+// indistinguishable from a healthy completed one).
+func pendingRequestAnomaly(reqs []llmTraceRequest) []string {
+	last := reqs[len(reqs)-1]
+	if !last.Pending {
+		return nil
+	}
+	return []string{"request " + itoa(last.Seq) + " is still in flight at export time (stream open, never finalized) — " +
+		"the provider may have stalled; responseBody/responseTail hold the bytes received so far"}
 }
 
 // lastRequestAnomaly flags the final request when it ended after a tool result

@@ -165,8 +165,9 @@ func collectArtifacts(zb *ZipBuilder, ctx core.Context, opts BuildOptions) (pres
 	// System info.
 	collector.addJSON(buildSystemInfo(ctx, opts), "system/info.json")
 
-	// HTTP request/response log (captures last N LLM API calls).
-	httpEntries := transport.GlobalHTTPLog.Snapshot()
+	// HTTP request/response log (captures last N LLM API calls, including
+	// in-flight requests marked pending — the view needed during a stall).
+	httpEntries := transport.GlobalHTTPLog.SnapshotAll()
 	collector.addJSONLog(httpEntries, "logs/http.jsonl")
 
 	// Cache-miss forensics: COMPLETE API request bodies, retained only around

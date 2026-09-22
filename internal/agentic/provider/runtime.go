@@ -182,8 +182,13 @@ func executeRequest(
 	if p := protocol.ForAPI(req.Model.Api); p != nil {
 		if err := p.ParseResponse(reader, stream); err != nil {
 			stream.CloseWithError(err)
+			_ = reader.Close()
 			return
 		}
+		// The parse loop is synchronous; closing releases the connection and
+		// finalizes the HTTP-log entry (EOF alone would leave the entry pending
+		// when the parser stopped at a terminal SSE event before draining).
+		_ = reader.Close()
 	}
 }
 

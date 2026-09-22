@@ -7,6 +7,7 @@ import (
 
 	"github.com/pijalu/goa/internal/agentic/provider/transport"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func summaryRef(s transport.RequestSummary) *transport.RequestSummary {
@@ -121,6 +122,42 @@ func TestBuildLLMTrace_Empty(t *testing.T) {
 	trace := buildLLMTrace(nil)
 	assert.Empty(t, trace.Requests)
 	assert.Empty(t, trace.Anomalies)
+}
+
+// TestBuildLLMTrace_PendingLastRequest reproduces the luna stuck-session
+// export: the final request never finalized (stream still open). The trace
+// must carry the pending marker AND an anomaly calling it out — without it an
+// open-but-stalled request looks like a healthy completed one.
+func TestBuildLLMTrace_PendingLastRequest(t *testing.T) {
+	entries := []transport.HTTPLogEntry{
+		{Timestamp: "t1", StatusCode: 200, FinishReason: "tool_calls",
+			RequestSummary: summaryRef(transport.RequestSummary{MessageCount: 5, LastRole: "tool", LastIsToolResult: true, ToolResultBlocks: 1})},
+		{Timestamp: "t2", StatusCode: 200, Pending: true,
+			RequestSummary: summaryRef(transport.RequestSummary{MessageCount: 7})},
+	}
+	trace := buildLLMTrace(entries)
+	require.Len(t, trace.Requests, 2)
+	assert.True(t, trace.Requests[1].Pending, "pending marker must reach the trace")
+	found := false
+	for _, a := range trace.Anomalies {
+		if contains(a, "still in flight at export time") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a 'still in flight' anomaly for a pending last request")
+}
+
+// TestBuildLLMTrace_NoPendingAnomalyWhenFinalized guards against the pending
+// flag leaking onto healthy completed timelines.
+func TestBuildLLMTrace_NoPendingAnomalyWhenFinalized(t *testing.T) {
+	entries := []transport.HTTPLogEntry{
+		{Timestamp: "t1", StatusCode: 200, FinishReason: "stop",
+			RequestSummary: summaryRef(transport.RequestSummary{MessageCount: 3})},
+	}
+	trace := buildLLMTrace(entries)
+	for _, a := range trace.Anomalies {
+		assert.NotContains(t, a, "still in flight")
+	}
 }
 
 func contains(s, sub string) bool {
