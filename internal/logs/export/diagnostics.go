@@ -79,7 +79,7 @@ func detectLLMAnomalies(reqs []llmTraceRequest) []string {
 	}
 	var flags []string
 	flags = append(flags, lastRequestAnomaly(reqs)...)
-	flags = append(flags, pendingRequestAnomaly(reqs)...) // returns at most one
+	flags = append(flags, pendingRequestAnomaly(reqs)...)    // returns at most one
 	flags = append(flags, toolResultForwardAnomaly(reqs)...) // returns at most one
 	flags = append(flags, perRequestAnomalies(reqs)...)
 	return flags

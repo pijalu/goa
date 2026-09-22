@@ -53,12 +53,12 @@ type RequestSummary struct {
 
 // HTTPLogEntry records a single HTTP request/response transaction.
 type HTTPLogEntry struct {
-	Timestamp       string            `json:"timestamp"`
-	Method          string            `json:"method"`
-	URL             string            `json:"url"`
-	StatusCode      int               `json:"statusCode,omitempty"`
-	DurationMs      int64             `json:"durationMs"`
-	Error           string            `json:"error,omitempty"`
+	Timestamp  string `json:"timestamp"`
+	Method     string `json:"method"`
+	URL        string `json:"url"`
+	StatusCode int    `json:"statusCode,omitempty"`
+	DurationMs int64  `json:"durationMs"`
+	Error      string `json:"error,omitempty"`
 	// Pending marks an in-flight transaction (request started, body not yet
 	// closed). Exports use it to see the open request during a provider stall —
 	// exactly when finalize-on-close logging used to go blind.

@@ -118,3 +118,19 @@ summaries work for codex payloads; every advertised config key is wired.
    `gocyclo -over 12 .`, `go test -count=1 -race -cover ./...` separately; no
    new warnings vs baseline (staticcheck `probe.go:171` S1008 and gocyclo
    `agent_probe_retry_test.go`/`editfile.go` are pre-existing). Commit each fix.
+
+### Status: FIXED — all items executed and validated
+| Item | Commit | Regression tests | Validation |
+|---|---|---|---|
+| F3 | `d504523` | `TestSummarizeRequestBodyCodexInput`, `TestRequestAnalysisCapturesConversationRegion` | transport pkg green |
+| F2 | `da3d254` | `TestHTTPLogPendingLifecycle`, `TestHTTPLogSnapshotAllMergesChronologically`, `TestHTTPLogPendingDuringStalledStream`, `TestBuildLLMTrace_PendingLastRequest`, `TestBuildLLMTrace_NoPendingAnomalyWhenFinalized` | transport+export green |
+| F4 | `b6c1872` | `TestBuildStreamOptions_ActivityTimeoutIsConsumed` (4 cases) | provider+config green |
+| F5 | `28c120d` | `TestSilentStream_EmitsQuietProviderWarning`, `TestPacedStream_NoQuietProviderWarning` | agentic green |
+| F1a | `ec2e287` | `TestEmitEvent_WedgedObserverDetached`, `TestEmitEvent_SynchronousForHealthyObserver`, `TestEmitEvent_PreservesOrder`, `TestEmitEvent_PanickingObserverIsolated`, `TestRemoveObserver_SynchronousWithinOnEvent` | agentic/core/tui green |
+| F1b | `b6a7597` | `TestUnmappedEventFlood_TripsStallWatchdog`, `TestNoteStreamEventProgress` | agentic green |
+
+Gate (run separately, post-change): `go vet ./...` clean · `staticcheck ./...`
+= only the pre-existing `probe.go:171` S1008 · `gocognit -over 15 .` clean ·
+`gocyclo -over 12 .` = only the two pre-existing entries ·
+`go test -count=1 -race -cover ./...` → 87 packages ok, 0 FAIL (exit 0),
+`internal/agentic` 87.9%. Issue entry ready to archive per guideline 4.
