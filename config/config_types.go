@@ -72,15 +72,19 @@ type Config struct {
 
 // ExecutionConfig controls execution mode, retries, thresholds, and timeouts.
 type ExecutionConfig struct {
-	Mode            internal.ExecutionMode `yaml:"mode"`
-	Retries         int                    `yaml:"retries"`
-	TokenWarning    int                    `yaml:"token_warning"`
-	TokenCritical   int                    `yaml:"token_critical"`
-	LoopWarning     int                    `yaml:"loop_warning"`
-	LoopInterrupt   int                    `yaml:"loop_interrupt"`
-	ActivityTimeout string                 `yaml:"activity_timeout"`
-	ErrorThreshold  float64                `yaml:"error_threshold"`
-	WorktreeMode    internal.WorktreeMode  `yaml:"worktree_mode"`
+	Mode          internal.ExecutionMode `yaml:"mode"`
+	Retries       int                    `yaml:"retries"`
+	TokenWarning  int                    `yaml:"token_warning"`
+	TokenCritical int                    `yaml:"token_critical"`
+	LoopWarning   int                    `yaml:"loop_warning"`
+	LoopInterrupt int                    `yaml:"loop_interrupt"`
+	// ActivityTimeout bounds the maximum gap between stream events when the
+	// active provider has no explicit idle_timeout (drives the byte-idle and
+	// event-stall watchdogs, e.g. "30s"). Empty falls back to the 2-minute
+	// default.
+	ActivityTimeout string                `yaml:"activity_timeout"`
+	ErrorThreshold  float64               `yaml:"error_threshold"`
+	WorktreeMode    internal.WorktreeMode `yaml:"worktree_mode"`
 	// AutoSaveModel is tri-state: nil = inherit from the lower cascade layer
 	// (embedded default true). An explicit false opts out of the per-project
 	// model pin, falling back to legacy home-only persistence. The pointer is

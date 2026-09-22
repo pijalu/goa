@@ -35,6 +35,15 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 		// without capping long generations on slow local models.
 		opts.Timeout = 5 * time.Minute
 	}
+	if opts.IdleTimeout <= 0 {
+		// execution.activity_timeout bounds the maximum gap between stream
+		// events (byte-idle reader + event-stall watchdog) when the active
+		// provider declares no idle_timeout of its own. Without this the key
+		// was validated and merged but never consumed (F4 review finding).
+		if d := parsePositiveDuration(cfg.Execution.ActivityTimeout); d > 0 {
+			opts.IdleTimeout = d
+		}
+	}
 	if opts.CacheRetention == "" {
 		opts.CacheRetention = defaultCacheRetention(pCfg)
 	}
