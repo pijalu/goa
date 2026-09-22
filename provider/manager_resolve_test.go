@@ -407,13 +407,10 @@ func TestSetConfig_NilConfigSafe(t *testing.T) {
 	}
 }
 
-// TestListRegistryModels_OpenAICodexServesCodexFamily pins the codex registry
-// alias: the openai-codex subscription provider has no models.dev mapping of
-// its own and its endpoint serves no /models route, so ListRegistryModels
-// must alias to the openai catalog filtered to the codex family (the picker
-// showed ONLY "custom model" before the alias, behind a misleading "using
-// known models" flash).
-func TestListRegistryModels_OpenAICodexServesCodexFamily(t *testing.T) {
+// TestListRegistryModels_OpenAICodexServesOpenAICatalog pins the Codex registry
+// alias: the subscription provider has no models.dev mapping or /models route,
+// so use the full OpenAI catalog to avoid hiding newly supported models.
+func TestListRegistryModels_OpenAICodexServesOpenAICatalog(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.ProviderConfig{
 			{ID: "codex", Name: "OpenAI Codex", Endpoint: "https://chatgpt.com/backend-api"},
@@ -426,17 +423,25 @@ func TestListRegistryModels_OpenAICodexServesCodexFamily(t *testing.T) {
 	if len(codex) == 0 {
 		t.Fatal("ListRegistryModels(openai-codex endpoint) returned no models; the picker can only offer a custom row")
 	}
-	hasSpark := false
+	hasSpark, hasGPT4o, hasGPT6Luna := false, false, false
 	for _, m := range codex {
-		if m.ID == "gpt-5.3-codex-spark" {
+		switch m.ID {
+		case "gpt-5.3-codex-spark":
 			hasSpark = true
-		}
-		if !isCodexFamilyModel(m.ID) {
-			t.Errorf("non-codex-family model %q leaked into the openai-codex list", m.ID)
+		case "gpt-4o":
+			hasGPT4o = true // proves Codex lookup is no longer narrowly filtered
+		case "gpt-6-luna":
+			hasGPT6Luna = true
 		}
 	}
 	if !hasSpark {
-		t.Errorf("codex list missing gpt-5.3-codex-spark (Pi codex catalog); got %v", codex)
+		t.Errorf("catalog missing gpt-5.3-codex-spark; got %v", codex)
+	}
+	if !hasGPT4o {
+		t.Errorf("full OpenAI catalog model gpt-4o missing from Codex list; got %v", codex)
+	}
+	if !hasGPT6Luna {
+		t.Errorf("gpt-6-luna missing from Codex list; got %v", codex)
 	}
 
 	// The plain openai provider list must be unaffected by the alias.
@@ -444,13 +449,13 @@ func TestListRegistryModels_OpenAICodexServesCodexFamily(t *testing.T) {
 	if len(openai) == 0 {
 		t.Fatal("ListRegistryModels(openai) returned no models")
 	}
-	hasGPT4o := false
+	hasOpenAIGPT4o := false
 	for _, m := range openai {
 		if m.ID == "gpt-4o" {
-			hasGPT4o = true
+			hasOpenAIGPT4o = true
 		}
 	}
-	if !hasGPT4o {
+	if !hasOpenAIGPT4o {
 		t.Error("openai registry list lost gpt-4o — the codex alias must not narrow the openai list")
 	}
 }

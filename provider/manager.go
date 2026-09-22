@@ -401,11 +401,10 @@ func looksLikeHTML(s string) bool {
 // The openai-codex subscription provider has NO models.dev mapping of its own
 // and its endpoint (https://chatgpt.com/backend-api) serves no /models route
 // (Cloudflare 403), so both the live fetch and a straight registry lookup come
-// back empty. Codex subscriptions serve the codex model family of the openai
-// catalog, so the lookup aliases to the openai registry filtered to codex
-// models (matching Pi's hardcoded codex catalog: gpt-5.x-codex[-spark] plus
-// the gpt-5.x codex-served generations). The provider identity used for
-// streaming is unaffected — only the model-list lookup aliases.
+// back empty. The lookup aliases to the full openai registry rather than
+// filtering by a guessed Codex family: hiding a supported new model is worse
+// than offering a model the subscription endpoint may reject. The provider
+// identity used for streaming is unaffected — only the model-list lookup aliases.
 func (pm *ProviderManager) ListRegistryModels(providerID string) []ModelInfo {
 	pCfg := pm.cfg.Load().GetProviderByID(providerID)
 	if pCfg == nil {
@@ -413,22 +412,20 @@ func (pm *ProviderManager) ListRegistryModels(providerID string) []ModelInfo {
 	}
 	prov, _ := inferProviderIdentity(*pCfg)
 
-	filter := func(string) bool { return true }
 	if prov == schema.ProviderOpenAICodex {
 		prov = schema.ProviderOpenAI
-		filter = isCodexFamilyModel
 	}
 
 	seen := map[string]bool{}
 	var out []ModelInfo
 	for _, m := range models.GetRuntimeModels(prov) {
-		if !seen[m.ID] && filter(m.ID) {
+		if !seen[m.ID] {
 			out = append(out, ModelInfo{ID: m.ID})
 			seen[m.ID] = true
 		}
 	}
 	for _, m := range models.GetModels(prov) {
-		if !seen[m.ID] && filter(m.ID) {
+		if !seen[m.ID] {
 			out = append(out, ModelInfo{ID: m.ID})
 			seen[m.ID] = true
 		}
