@@ -73,7 +73,7 @@ func (t *WriteFileTool) Schema() agentic.ToolSchema {
 				},
 				"content": map[string]any{
 					"type":        "string",
-					"description": "file content",
+					"description": "complete file content; overwrites the file (nothing is merged or appended)",
 				},
 			},
 			"required": []string{"path", "content"},
@@ -117,7 +117,14 @@ func (t *WriteFileTool) Execute(input string) (string, error) {
 
 	t.stageIfExists(resolvedPath)
 
-	if err := os.WriteFile(resolvedPath, []byte(content), 0644); err != nil {
+	// Verified write (Issue 3): write, then read the file back and compare. A
+	// write tool that reports success while the bytes never landed hands the
+	// model a file that does not exist as described, so a read-back mismatch
+	// fails the call instead of returning a preview.
+	if err := WriteFileVerified(resolvedPath, []byte(content), 0644); err != nil {
+		if verifyFailed(err) {
+			return "", writeVerifyFailedError("write", resolvedPath, len(content), err)
+		}
 		return "", formatWriteError(originalPath, err)
 	}
 
@@ -126,7 +133,7 @@ func (t *WriteFileTool) Execute(input string) (string, error) {
 	}
 	diagBlock := t.lspDiagnostics(context.Background(), resolvedPath, content, true)
 
-	preview := buildWritePreview(originalPath, content)
+	preview := buildWritePreview(originalPath, resolvedPathNote(resolvedPath, originalPath), content)
 	if diagBlock != "" {
 		preview += diagBlock
 	}
@@ -226,10 +233,15 @@ func formatWriteError(path string, err error) error {
 	}
 }
 
-func buildWritePreview(path, content string) string {
+// buildWritePreview renders the write tool's result: the requested path in the
+// (renderer-parsed) header line, then the byte/line stats with the resolved-path
+// note when the file was written somewhere other than the requested path, then a
+// short fenced content preview. The note belongs on the stats line because the
+// renderer parses the header to recover the path.
+func buildWritePreview(path, note, content string) string {
 	lines := strings.Split(content, "\n")
 	lineCount := len(lines)
-	preview := fmt.Sprintf("[write: %s]\n✓ Written — %d bytes, %d lines\n", path, len(content), lineCount)
+	preview := fmt.Sprintf("[write: %s]\n✓ Written — %d bytes, %d lines%s\n", path, len(content), lineCount, note)
 	previewLines := 10
 	if len(lines) < previewLines {
 		previewLines = len(lines)

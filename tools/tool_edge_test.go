@@ -13,6 +13,11 @@ import (
 )
 
 // EditFileTool replacePattern helper tests
+//
+// replace_pattern substitutes the MATCHED TEXT inside the occurrence-th
+// matching line and preserves the rest of that line byte-for-byte (Issue 6).
+// The assertions below pin both halves of that contract: the matched fragment
+// is gone and the unmatched prefix/suffix survive.
 
 func TestEditFileTool_ReplacePattern_Basic(t *testing.T) {
 	tool := &EditFileTool{}
@@ -24,11 +29,11 @@ func TestEditFileTool_ReplacePattern_Basic(t *testing.T) {
 	if len(result) != 3 {
 		t.Fatalf("expected 3 lines, got %d: %v", len(result), result)
 	}
-	if result[0] != "hi" {
-		t.Errorf("expected 'hi' (first occurrence), got %q", result[0])
+	if result[0] != "hi world" {
+		t.Errorf("expected 'hi world' (fragment substituted, suffix kept), got %q", result[0])
 	}
 	if result[2] != "hello again" {
-		t.Errorf("expected 'hello again' (second match not replaced), got %q", result[2])
+		t.Errorf("expected 'hello again' (second matching line untouched for occurrence=1), got %q", result[2])
 	}
 }
 
@@ -39,8 +44,8 @@ func TestEditFileTool_ReplacePattern_Occurrence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result[0] != "dup line" || result[2] != "replaced" {
-		t.Errorf("expected only 2nd occurrence replaced, got: %v", result)
+	if result[0] != "dup line" || result[2] != "replaced line" {
+		t.Errorf("expected only the 2nd matching line's fragment replaced, got: %v", result)
 	}
 }
 

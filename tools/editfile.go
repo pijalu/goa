@@ -37,6 +37,24 @@ const (
 	IndentAsIs      IndentMode = "as-is"
 )
 
+// defaultIndentMode resolves the indent mode for an operation. An explicit
+// caller-supplied value always wins. insert_after/insert_before/replace_lines
+// default to as-is: caller content must land byte-for-byte, because padding it
+// to the target line's indent silently corrupts semantic-whitespace formats
+// such as Markdown (Issue 4). replace_pattern keeps the legacy preserve default
+// — its block path re-indents the whole matched region rather than a lone
+// insertion, and callers rely on that.
+func defaultIndentMode(op EditOperation, raw string) IndentMode {
+	if raw != "" {
+		return IndentMode(raw)
+	}
+	switch op {
+	case OpInsertAfter, OpInsertBefore, OpReplaceLines:
+		return IndentAsIs
+	}
+	return IndentPreserve
+}
+
 type editParams struct {
 	startLine    int
 	endLine      int
@@ -94,7 +112,7 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"pattern": map[string]any{
 					"type":        "string",
-					"description": "regex for pattern-based ops",
+					"description": "regex for pattern-based ops (invalid regex is matched literally)",
 				},
 				"pattern_flags": map[string]any{
 					"type":        "string",
@@ -102,19 +120,20 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"occurrence": map[string]any{
 					"type":        "integer",
-					"description": "occurrence for replace_pattern (default: 1)",
+					"description": "replace_pattern: Nth matching line to substitute (default: 1)",
 				},
 				"new_content": map[string]any{
 					"type":        "string",
-					"description": "replacement content for line ops",
+					"description": "replacement content for line ops; \"\" is valid and inserts one empty line",
 				},
 				"indent_mode": map[string]any{
-					"type": "string",
-					"enum": []string{"preserve", "normalize", "as-is"},
+					"type":        "string",
+					"description": "default: as-is for replace_lines/insert_after/insert_before, preserve otherwise",
+					"enum":        []string{"preserve", "normalize", "as-is"},
 				},
 				"edits": map[string]any{
 					"type":        "array",
-					"description": "Batch of edits to the same file, applied in order, atomically (all or nothing); each element mirrors single-edit fields and sees earlier results.",
+					"description": "Batch of edits to the same file, applied in order, atomically (all or nothing); each element mirrors single-edit fields and sees earlier results. Line-addressed edits (replace_lines, delete_lines, insert_* with start_line) must not follow an edit that changes the line count: the whole batch is rejected with stale_line_numbers — split it into two calls and re-harvest line numbers in between.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -132,10 +151,14 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 							"pattern":       map[string]any{"type": "string"},
 							"pattern_flags": map[string]any{"type": "string"},
 							"occurrence":    map[string]any{"type": "integer"},
-							"new_content":   map[string]any{"type": "string"},
+							"new_content": map[string]any{
+								"type":        "string",
+								"description": "replacement content; \"\" is valid (one empty line)",
+							},
 							"indent_mode": map[string]any{
-								"type": "string",
-								"enum": []string{"preserve", "normalize", "as-is"},
+								"type":        "string",
+								"description": "as-is default for line/insert ops",
+								"enum":        []string{"preserve", "normalize", "as-is"},
 							},
 						},
 					},
@@ -164,6 +187,47 @@ type editFileParams struct {
 	NewContent   string           `json:"new_content"`
 	IndentMode   string           `json:"indent_mode"`
 	Edits        []editFileParams `json:"edits"`
+
+	// NewContentSet records whether the caller SENT "new_content", as opposed
+	// to sending it empty or omitting it. It is not serialized: the wire
+	// format stays a plain string. Only UnmarshalJSON sets it, so a value
+	// decoded from JSON carries presence information while a struct built in
+	// Go keeps the zero value (see resolveOpContent).
+	NewContentSet bool `json:"-"`
+}
+
+// editFileAlias is editFileParams minus its methods: embedding it in the wire
+// type below makes every other field decode exactly as before (including the
+// Edits recursion, whose elements are editFileParams) while leaving room for
+// a presence-tracking new_content pointer at the shallower depth, which wins
+// over the alias's own new_content field.
+type editFileAlias editFileParams
+
+// editFileWire decodes editFileParams while tracking field presence. The
+// embedded alias contributes every field except new_content (shadowed by the
+// pointer, which sits at a shallower depth); the pointer then distinguishes an
+// explicit "" from an omitted field. A batch element is an editFileParams, so
+// nested edits recurse through UnmarshalJSON automatically.
+type editFileWire struct {
+	editFileAlias
+	NewContent *string `json:"new_content"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler for editFileParams: an explicitly
+// empty "new_content": "" is a deliberate write of one empty line (Issue 5)
+// and must survive decoding, while an omitted field must stay distinguishable
+// from it so the d3f8416 deletion guard still rejects lost payloads.
+func (p *editFileParams) UnmarshalJSON(data []byte) error {
+	var w editFileWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*p = editFileParams(w.editFileAlias)
+	if w.NewContent != nil {
+		p.NewContent = *w.NewContent
+		p.NewContentSet = true
+	}
+	return nil
 }
 
 func (t *EditFileTool) Execute(input string) (string, error) {
@@ -230,7 +294,7 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		return "", err
 	}
 
-	content, contentNote, err := resolveOpContent(op, p)
+	newLines, contentNote, err := resolveOpContent(op, p)
 	if err != nil {
 		return "", err
 	}
@@ -248,8 +312,8 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		pattern:      p.Pattern,
 		patternFlags: p.PatternFlags,
 		occurrence:   p.Occurrence,
-		newLines:     splitLines(content),
-		indentMode:   IndentMode(defaultStr(p.IndentMode, string(IndentPreserve))),
+		newLines:     newLines,
+		indentMode:   defaultIndentMode(op, p.IndentMode),
 	}
 
 	result, affected, opErr := t.runOp(lines, op, ep)
@@ -268,19 +332,7 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 
 	// Generate unified diff for the change so the renderer can display it.
 	diff := generateUnifiedDiff(lines, result)
-
-	var resultMsg string
-	if op == OpReplaceLines {
-		// affected = removed line count (see replaceLines); ep.newLines = inserted.
-		// Reporting both makes a mismatched edit (e.g. replacement vanished)
-		// visible at a glance instead of hiding behind "0 lines affected".
-		resultMsg = fmt.Sprintf("[edit: %s] %s — replaced %d lines with %d\n%s", p.Path, op, affected, len(ep.newLines), diff)
-	} else {
-		resultMsg = fmt.Sprintf("[edit: %s] %s — %d lines affected\n%s", p.Path, op, affected, diff)
-	}
-	if contentNote != "" {
-		resultMsg = contentNote + resultMsg
-	}
+	resultMsg := formatEditResult(p.Path, op, affected, len(ep.newLines), resolvedPathNote(targetPath, p.Path), diff, contentNote)
 	if fuzzyNote != "" {
 		resultMsg = fuzzyNote + "\n" + resultMsg
 	}
@@ -288,6 +340,20 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		resultMsg += diagBlock
 	}
 	return resultMsg, nil
+}
+
+// formatEditResult renders the single-edit result message: the operation
+// summary (replace_lines reports both the removed and the inserted line count
+// so a mismatched edit is visible at a glance instead of hiding behind "0
+// lines affected"), the resolved-path note when the write landed somewhere
+// other than the requested path, the unified diff, and the content note
+// explaining a new_string fallback or an explicit empty new_content. The caller
+// prepends fuzzy notes and appends LSP diagnostics, which it owns.
+func formatEditResult(path string, op EditOperation, affected, inserted int, note, diff, contentNote string) string {
+	if op == OpReplaceLines {
+		return contentNote + fmt.Sprintf("[edit: %s] %s — replaced %d lines with %d%s\n%s", path, op, affected, inserted, note, diff)
+	}
+	return contentNote + fmt.Sprintf("[edit: %s] %s — %d lines affected%s\n%s", path, op, affected, note, diff)
 }
 
 // executeMulti applies a batch of edits to one file atomically: every edit is
@@ -301,6 +367,13 @@ func (t *EditFileTool) executeMulti(resolvedPath, originalPath string, p editFil
 	}
 
 	lines := originalLines
+	// Pre-flight drift guard (Issue 2): absolute line numbers harvested before
+	// the batch go stale the moment an earlier entry changes the line count.
+	// Rejecting here — before the apply loop and the single write — keeps the
+	// file byte-identical (see editfile_batchguard.go).
+	if err := checkBatchLineDrift(p.Edits); err != nil {
+		return "", err
+	}
 	var matchTypes []MatchType
 	for i, e := range p.Edits {
 		newLines, mt, opErr := t.applySingleEdit(lines, e)
@@ -329,9 +402,18 @@ func (t *EditFileTool) executeMulti(resolvedPath, originalPath string, p editFil
 	// One diff from the original content to the final content: the renderer
 	// shows the net effect of the whole batch.
 	diff := generateUnifiedDiff(originalLines, lines)
-	resultMsg := fmt.Sprintf("[edit: %s] %d edits applied\n%s", p.Path, len(p.Edits), diff)
+	return formatMultiEditResult(p.Path, len(p.Edits), matchTypes, resolvedPathNote(targetPath, p.Path), diff, fuzzyNote, diagBlock), nil
+}
+
+// formatMultiEditResult renders the batch result message: the summary line
+// (naming the combined match tier when any content edit ran, plus the
+// resolved-path note when the write landed somewhere other than the requested
+// path), the net diff, and the optional fuzzy-match note and LSP diagnostics
+// block.
+func formatMultiEditResult(path string, count int, matchTypes []MatchType, note, diff, fuzzyNote, diagBlock string) string {
+	resultMsg := fmt.Sprintf("[edit: %s] %d edits applied%s\n%s", path, count, note, diff)
 	if mt := combinedMatchDesc(matchTypes); mt != "" {
-		resultMsg = fmt.Sprintf("[edit: %s] %d edits applied — match: %s\n%s", p.Path, len(p.Edits), mt, diff)
+		resultMsg = fmt.Sprintf("[edit: %s] %d edits applied — match: %s%s\n%s", path, count, mt, note, diff)
 	}
 	if fuzzyNote != "" {
 		resultMsg = fuzzyNote + "\n" + resultMsg
@@ -339,7 +421,7 @@ func (t *EditFileTool) executeMulti(resolvedPath, originalPath string, p editFil
 	if diagBlock != "" {
 		resultMsg += diagBlock
 	}
-	return resultMsg, nil
+	return resultMsg
 }
 
 // applySingleEdit applies one edit command to the in-memory content and
@@ -364,7 +446,7 @@ func (t *EditFileTool) applySingleEdit(lines []string, e editFileParams) ([]stri
 	if op == "" {
 		return nil, "", errMissingParam()
 	}
-	content, _, err := resolveOpContent(op, e)
+	newLines, _, err := resolveOpContent(op, e)
 	if err != nil {
 		return nil, "", err
 	}
@@ -374,8 +456,8 @@ func (t *EditFileTool) applySingleEdit(lines []string, e editFileParams) ([]stri
 		pattern:      e.Pattern,
 		patternFlags: e.PatternFlags,
 		occurrence:   e.Occurrence,
-		newLines:     splitLines(content),
-		indentMode:   IndentMode(defaultStr(e.IndentMode, string(IndentPreserve))),
+		newLines:     newLines,
+		indentMode:   defaultIndentMode(op, e.IndentMode),
 	}
 	result, _, err := t.runOp(lines, op, ep)
 	return result, "", err
@@ -444,22 +526,33 @@ func matchTypeDesc(mt MatchType) string {
 		return "trailing whitespace normalized"
 	case MatchFuzzy:
 		return "fuzzy whitespace match (indentation auto-adjusted)"
+	case MatchExactSubstring:
+		return "exact substring match"
 	default:
 		return "exact match"
 	}
 }
 
 // writeEditResult stages a backup, persists the new content in a single
-// write, and fires the change notifiers. It is the one place every successful
-// edit path (single or batch) goes through, so the file is always written
-// atomically per tool call. The content string is written verbatim: callers
-// decide how to render their line-based results (and whether to preserve the
-// file's trailing newline).
+// verified write, and fires the change notifiers. It is the one place every
+// successful edit path (single or batch) goes through, so the file is always
+// written atomically per tool call and always read back before the edit reports
+// success (Issue 3: a success must mean the bytes are on disk). The content
+// string is written verbatim: callers decide how to render their line-based
+// results (and whether to preserve the file's trailing newline).
+//
+// A read-back mismatch is reported as write_verify_failed — never as a
+// successful edit — because the model must not build further edits on content
+// that was never persisted.
 func (t *EditFileTool) writeEditResult(targetPath, displayPath, content string) (string, error) {
 	if t.BackupStager != nil {
 		t.BackupStager.StageBeforeEdit(targetPath, t.ProjectDir)
 	}
-	if err := os.WriteFile(targetPath, []byte(content), 0644); err != nil {
+	data := []byte(content)
+	if err := WriteFileVerified(targetPath, data, 0644); err != nil {
+		if verifyFailed(err) {
+			return "", writeVerifyFailedError("edit", targetPath, len(data), err)
+		}
 		return "", t.errWrite(displayPath, err)
 	}
 	if t.FileChangeNotifier != nil {
@@ -507,7 +600,7 @@ func opRequiresContent(op EditOperation) bool {
 	return false
 }
 
-// resolveOpContent returns the replacement content for a line/pattern op.
+// resolveOpContent returns the replacement LINES for a line/pattern op.
 // Models frequently conflate new_string (classic search/replace) with
 // new_content (line/pattern ops); for content-requiring ops it falls back to
 // new_string so the edit applies the intended content instead of silently
@@ -515,19 +608,29 @@ func opRequiresContent(op EditOperation) bool {
 // new_string deleted lines 116-127 and reported "0 lines affected"). When the
 // op requires content and neither field is set, it returns a
 // missing_parameter error rather than letting a no-op edit through.
-func resolveOpContent(op EditOperation, p editFileParams) (string, string, error) {
+//
+// An explicitly empty new_content (NewContentSet, i.e. the JSON carried
+// "new_content": "") is NOT a lost payload: it asks for one empty line
+// (Issue 5). splitLines("") is empty — trailing empty element dropped — so the
+// single empty line is materialized here instead of derived from the string;
+// replacing one line with [""] leaves the line count untouched. Only an
+// OMITTED field is the ambiguous case the d3f8416 guard rejects.
+func resolveOpContent(op EditOperation, p editFileParams) ([]string, string, error) {
 	content := p.NewContent
 	if content == "" && p.NewString != "" && opRequiresContent(op) {
-		return p.NewString, "Note: used new_string as replacement content (new_content was empty)\n", nil
+		return splitLines(p.NewString), "Note: used new_string as replacement content (new_content was empty)\n", nil
 	}
 	if opRequiresContent(op) && content == "" {
-		return "", "", &internal.ToolError{
-			Tool: "edit", Type: "missing_parameter",
-			Detail:   fmt.Sprintf("operation '%s' requires 'new_content' (or 'new_string') with the replacement text", p.Operation),
-			HintText: "Provide the replacement content in 'new_content'. To delete lines without replacement, use operation 'delete_lines'.",
+		if !p.NewContentSet {
+			return nil, "", &internal.ToolError{
+				Tool: "edit", Type: "missing_parameter",
+				Detail:   fmt.Sprintf("operation '%s' requires 'new_content' (or 'new_string') with the replacement text", p.Operation),
+				HintText: "Provide the replacement content in 'new_content'. To delete lines without replacement, use operation 'delete_lines'.",
+			}
 		}
+		return []string{""}, "(explicit empty new_content: writing one empty line)\n", nil
 	}
-	return content, "", nil
+	return splitLines(content), "", nil
 }
 
 func wrapEditOpError(opErr error, path, op string) error {
@@ -676,8 +779,9 @@ func (t *EditFileTool) errWrite(path string, err error) *internal.ToolError {
 }
 
 // searchReplace applies search/replace using the internal fuzzyEdit helper.
-// When allowFuzz is true, uses 3-tier matching (exact → trailing whitespace → fuzzy).
-// When false, uses exact match only.
+// When allowFuzz is true, uses 3 line-based tiers (exact → trailing whitespace →
+// fuzzy) and then, for a single-line oldStr, the additive exact-substring tier.
+// When false, uses exact whole-line and exact-substring matching only.
 // It reads the file, applies the edit, and writes the result back.
 func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr string, allowFuzz bool) (string, error) {
 	targetPath, data, err := ReadFileWithFuzzyFallback(t.Config, resolvedPath, originalPath)
@@ -706,8 +810,8 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 	// Build a clear result message
 	matchDesc := matchTypeDesc(result.MatchType)
 
-	resultMsg := fmt.Sprintf("[edit: %s] search/replace applied — lines %d-%d, match: %s\n%s",
-		originalPath, result.StartLine, result.EndLine, matchDesc, result.Diff)
+	resultMsg := fmt.Sprintf("[edit: %s] search/replace applied — lines %d-%d, match: %s%s\n%s",
+		originalPath, result.StartLine, result.EndLine, matchDesc, resolvedPathNote(targetPath, originalPath), result.Diff)
 	if diagBlock != "" {
 		resultMsg += diagBlock
 	}

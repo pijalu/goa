@@ -99,6 +99,28 @@ func TestBashTool_WarnFileEdits(t *testing.T) {
 	})
 }
 
+// TestSubstringEdit_ToolLevelSessionRepro runs the exact edit call from the bug
+// report through the real tool surface: a single-line intra-line anchor inside
+// a ~1.2 KB multi-byte Markdown row. It used to fail with not_found (issue 1)
+// even though bash confirmed the anchor was present byte-for-byte.
+func TestSubstringEdit_ToolLevelSessionRepro(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "care-expert.md")
+	content := "| Page | Route |\n|---|---|\n" + sessionLine744 + "\n| **Animal plan tab** | x | y | z |\n"
+	require.NoError(t, os.WriteFile(filePath, []byte(content), 0644))
+
+	tool := &EditFileTool{AllowFuzz: true}
+	input := `{"path": "` + filePath + `", "edits": [{"operation": "replace", "old_string": ` + jsonQuote(sessionAnchor744) + `, "new_string": "ANCHOR-REPLACED"}]}`
+	msg, err := tool.Execute(input)
+	require.NoError(t, err, "the session anchor must resolve now")
+
+	assert.Contains(t, msg, "exact substring match", "result should report the substring match tier, got: %s", msg)
+
+	got, readErr := os.ReadFile(filePath)
+	require.NoError(t, readErr)
+	assert.Equal(t, strings.Replace(content, sessionAnchor744, "ANCHOR-REPLACED", 1), string(got))
+}
+
 // TestEditNotFound_LineMatchDiagnostic verifies the not-found error now reports
 // how many old_string lines matched and steers toward smaller anchored edits
 // (items 2+3), so the model doesn't assume the tool is broken and use bash.

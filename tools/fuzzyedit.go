@@ -28,6 +28,11 @@ const (
 	// single space on every line being compared. The replacement text was
 	// automatically re-indented to match the file.
 	MatchFuzzy MatchType = "fuzzy_whitespace_and_indentation"
+
+	// MatchExactSubstring means a single-line old text was found as a
+	// byte-exact substring of a longer line in the file (whole-line matching
+	// cannot locate it). This is the final, strictly additive fallback tier.
+	MatchExactSubstring MatchType = "exact_substring"
 )
 
 // EditResult is returned by fuzzyEdit on success.
@@ -76,6 +81,11 @@ const diffContextLines = 3
 //
 // When allowFuzz is false, only exact matching (after CRLF normalization) is
 // attempted. When true, the full 3-tier strategy is used.
+//
+// If every line-based strategy fails and the old text is a single line, one
+// final exact tier is tried: locating it as a byte-exact substring of a longer
+// file line (MatchExactSubstring). That tier is strictly additive — it only
+// runs after the strategies above found zero matches.
 //
 // A single trailing newline on oldStr/newStr is ignored, so callers do not
 // need to worry about whether their replacement text should end with a
@@ -142,7 +152,61 @@ func fuzzyEdit(file, oldStr, newStr string, allowFuzz bool) (*EditResult, error)
 		}
 	}
 
+	// Final tier: a single-line old text that is a byte-exact substring of a
+	// longer file line. Whole-line matching can never locate such an anchor, so
+	// this runs only after every strategy above returned zero matches: no
+	// previously-successful input changes code path or result. It is an exact
+	// (not fuzzy) comparison, so it applies in exact-only mode too.
+	if len(oldLines) == 1 {
+		return substringEdit(fileLines, normFile, normOld, normNew, useCRLF)
+	}
+
 	return nil, ErrNotFound
+}
+
+// substringEdit locates a single-line normOld as a byte-exact substring of a
+// longer line in normFile and splices normNew in at the matching byte offset.
+//
+// Precondition: normOld contains no '\n' (the caller guarantees this by only
+// invoking it when the old text is a single line) and is non-empty.
+//
+// A unique match is required: zero occurrences yields ErrNotFound and more
+// than one yields ErrAmbiguous, matching the semantics of the whole-line
+// tiers. An anchor whose replacement is byte-identical yields ErrNoChange.
+//
+// The result is assembled with the same helper as the other tiers, so the diff
+// format and CRLF restoration behave identically. A multi-line normNew simply
+// expands the single matched line into several.
+func substringEdit(fileLines []string, normFile, normOld, normNew string, useCRLF bool) (*EditResult, error) {
+	// An empty anchor makes Count/Index meaningless (strings.Count of "" is
+	// len+1). The caller never sends one, but stay defensive.
+	if normOld == "" {
+		return nil, ErrNotFound
+	}
+
+	switch count := strings.Count(normFile, normOld); {
+	case count == 0:
+		return nil, ErrNotFound
+	case count > 1:
+		return nil, fmt.Errorf("%w: found %d possible matches for the given text", ErrAmbiguous, count)
+	}
+
+	if normNew == normOld {
+		return nil, ErrNoChange
+	}
+
+	idx := strings.Index(normFile, normOld)
+	start := strings.Count(normFile[:idx], "\n") // 0-indexed line holding the match
+	end := start + 1
+
+	// Splice at the byte offset, then slice out only the changed lines. Every
+	// byte before `start` is untouched and everything after the original line
+	// is untouched, so re-splitting the tail is enough to describe the change.
+	replaced := normFile[:idx] + normNew + normFile[idx+len(normOld):]
+	newFileLines := strings.Split(replaced, "\n")
+	replLines := newFileLines[start : len(newFileLines)-(len(fileLines)-end)]
+
+	return buildEditResult(fileLines, start, end, replLines, MatchExactSubstring, useCRLF), nil
 }
 
 // blockMatch describes how oldStr's lines align with the current file

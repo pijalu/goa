@@ -61,6 +61,8 @@ var (
 	MergeUserPriorityOverride = common.MergeUserPriorityOverride
 	ExtPriority               = common.ExtPriority
 	DefaultSearchPriority     = common.DefaultSearchPriority
+	WriteFileVerified         = common.WriteFileVerified
+	ErrWriteVerifyFailed      = common.ErrWriteVerifyFailed
 )
 
 var (

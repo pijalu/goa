@@ -82,6 +82,10 @@ func TestEditFileTool_MultiEdit_AppliesAllEditsInOrder(t *testing.T) {
 	}
 }
 
+// TestEditFileTool_MultiEdit_LaterEditsSeeUpdatedContent proves each batch
+// entry sees the content produced by the previous one. Both entries keep the
+// line count identical, so the batch stays legal under the stale-line-number
+// guard and the second edit re-anchors on the text the first one wrote.
 func TestEditFileTool_MultiEdit_LaterEditsSeeUpdatedContent(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "test.txt")
@@ -91,20 +95,56 @@ func TestEditFileTool_MultiEdit_LaterEditsSeeUpdatedContent(t *testing.T) {
 	}
 
 	tool := &EditFileTool{ProjectDir: dir, AllowFuzz: true}
-	// Edit 1 replaces line 1 with two lines, shifting every later line number
-	// by one. Edit 2 targets start_line 4 — only valid against the content
-	// produced by edit 1.
+	// Edit 1 rewrites line 1 in place (1 line -> 1 line). Edit 2 anchors on the
+	// text edit 1 produced: it can only match if it saw the updated content.
 	_, err := tool.Execute(`{"path": "` + filePath + `", "edits": [
-		{"operation": "replace_lines", "start_line": 1, "end_line": 1, "new_content": "one\none-and-a-half"},
-		{"operation": "replace_lines", "start_line": 4, "end_line": 4, "new_content": "THREE"}
+		{"operation": "replace_lines", "start_line": 1, "end_line": 1, "new_content": "ONE"},
+		{"old_string": "ONE", "new_string": "ONE-EDIT"}
 	]}`)
 	if err != nil {
 		t.Fatalf("multi-edit should succeed: %v", err)
 	}
 	data, _ := os.ReadFile(filePath)
-	want := "one\none-and-a-half\ntwo\nTHREE\n"
+	want := "ONE-EDIT\ntwo\nthree\n"
 	if string(data) != want {
 		t.Errorf("file content = %q, want %q", string(data), want)
+	}
+}
+
+// TestEditFileTool_MultiEdit_ShiftingEditBeforeLineOpIsRejected documents the
+// batch drift guard (Issue 2): edit 1 turns line 1 into two lines, so edit 2's
+// start_line 4 was harvested against stale coordinates. The batch used to apply
+// (and target the wrong line); it must now be rejected atomically with the
+// stale_line_numbers error and the actionable split-the-batch hint.
+func TestEditFileTool_MultiEdit_ShiftingEditBeforeLineOpIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	original := "one\ntwo\nthree\n"
+	if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{ProjectDir: dir, AllowFuzz: true}
+	_, err := tool.Execute(`{"path": "` + filePath + `", "edits": [
+		{"operation": "replace_lines", "start_line": 1, "end_line": 1, "new_content": "one\none-and-a-half"},
+		{"operation": "replace_lines", "start_line": 4, "end_line": 4, "new_content": "THREE"}
+	]}`)
+	if err == nil {
+		t.Fatal("batch with a line-addressed edit after a line-shifting edit must be rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "stale_line_numbers") {
+		t.Errorf("error type must be stale_line_numbers, got: %s", msg)
+	}
+	if !strings.Contains(msg, "edit 2/2 (replace_lines)") {
+		t.Errorf("error must identify the offending edit, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Split the batch") {
+		t.Errorf("error must carry the actionable hint, got: %s", msg)
+	}
+	data, _ := os.ReadFile(filePath)
+	if string(data) != original {
+		t.Errorf("rejected batch must leave the file untouched, got %q", string(data))
 	}
 }
 
@@ -117,10 +157,13 @@ func TestEditFileTool_MultiEdit_MixedOperations(t *testing.T) {
 	}
 
 	tool := &EditFileTool{ProjectDir: dir, AllowFuzz: true}
+	// The absolute-line entry goes FIRST: the delete keeps the batch legal under
+	// the stale-line-number guard, while the two later entries re-anchor on the
+	// current content and therefore may follow it.
 	_, err := tool.Execute(`{"path": "` + filePath + `", "edits": [
+		{"operation": "delete_lines", "start_line": 2, "end_line": 2},
 		{"old_string": "println(\"hi\")", "new_string": "println(\"hello\")"},
-		{"operation": "insert_after", "pattern": "func main() {", "new_content": "\t// entry point", "indent_mode": "as-is"},
-		{"operation": "delete_lines", "start_line": 2, "end_line": 2}
+		{"operation": "insert_after", "pattern": "func main() {", "new_content": "\t// entry point", "indent_mode": "as-is"}
 	]}`)
 	if err != nil {
 		t.Fatalf("mixed multi-edit should succeed: %v", err)
@@ -191,8 +234,10 @@ func TestEditFileTool_MultiEdit_FailingLineOpReportsPosition(t *testing.T) {
 	}
 
 	tool := &EditFileTool{ProjectDir: dir}
+	// Edit 1 is line-count stable (1 line -> 1 line), so the guard passes it and
+	// edit 2's out-of-range line number is what fails, at the right position.
 	_, err := tool.Execute(`{"path": "` + filePath + `", "edits": [
-		{"operation": "delete_lines", "start_line": 1, "end_line": 1},
+		{"operation": "replace_lines", "start_line": 1, "end_line": 1, "new_content": "one"},
 		{"operation": "replace_lines", "start_line": 99, "end_line": 99, "new_content": "X"}
 	]}`)
 	if err == nil {

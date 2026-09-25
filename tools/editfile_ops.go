@@ -77,25 +77,53 @@ func (t *EditFileTool) replacePattern(lines []string, pattern, flags string, occ
 	}
 
 	caseSensitive := !strings.Contains(flags, "i")
+
+	// Fragment semantics: `occurrence` selects the Nth matching LINE and only the
+	// matched text inside that line is substituted — the unmatched prefix and
+	// suffix are preserved byte-for-byte. Replacement is literal (no $-group
+	// expansion) and `indent_mode` does not apply here: there is no insertion
+	// whose indentation could be adjusted.
+	re := compileLinePattern(pattern, caseSensitive)
+	replacement := strings.Join(newLines, "\n")
 	found := 0
+	inserted := 0
 	result := make([]string, 0, len(lines))
+	replacedLine := false
 	for _, line := range lines {
-		if matchLine(line, pattern, caseSensitive) {
-			found++
-			if found == occurrence {
-				adjusted := t.adjustIndent([]string{line}, newLines, indentMode)
-				result = append(result, adjusted...)
-				continue
-			}
+		if !re.MatchString(line) {
+			result = append(result, line)
+			continue
 		}
-		result = append(result, line)
+		found++
+		if found != occurrence {
+			result = append(result, line)
+			continue
+		}
+		substituted := re.ReplaceAllLiteralString(line, replacement)
+		if substituted == line {
+			return nil, 0, &internal.ToolError{Tool: "edit", Type: "no_change",
+				Detail:   fmt.Sprintf("Pattern %q and the replacement produce an identical line", truncateStr(pattern, 40)),
+				HintText: "Provide replacement content that differs from the matched text."}
+		}
+		// A multi-line replacement splices new lines in; splitting here keeps the
+		// line array (and therefore the emitted diff) aligned with the new file.
+		result = append(result, splitLines(substituted)...)
+		inserted = len(splitLines(substituted))
+		replacedLine = true
 	}
 	if found == 0 {
 		return nil, 0, &internal.ToolError{Tool: "edit", Type: "pattern_not_found",
 			Detail:   fmt.Sprintf("Pattern %q not found in file", pattern),
 			HintText: "Use 'read' to verify the file content and check the pattern for typos or try different flags."}
 	}
-	return result, len(newLines), nil
+	if !replacedLine {
+		// occurrence > number of matching lines: previously a silent no-op that
+		// still reported success, leaving the caller convinced it edited the file.
+		return nil, 0, &internal.ToolError{Tool: "edit", Type: "occurrence_not_found",
+			Detail:   fmt.Sprintf("Pattern %q matched %d line(s), occurrence %d requested", truncateStr(pattern, 40), found, occurrence),
+			HintText: "Use an occurrence within the number of matching lines, or 'read' the file to confirm the pattern still matches."}
+	}
+	return result, inserted, nil
 }
 
 // replacePatternBlock replaces a multi-line pattern against the whole file
@@ -248,22 +276,31 @@ func (t *EditFileTool) insertAtPattern(lines []string, pattern string, newLines 
 }
 
 func matchLine(line, pattern string, caseSensitive bool) bool {
-	// Try as regex first
+	return compileLinePattern(pattern, caseSensitive).MatchString(line)
+}
+
+// compileLinePattern compiles a line-matching pattern for replace_pattern.
+//
+//   - A pattern that is not a valid regular expression falls back to its own
+//     literal text (regexp.QuoteMeta), so an unbalanced '(' is matched as text
+//     instead of failing the whole edit. Regexes are attempted first because
+//     models routinely pass real regexes (\d+, ^func foo, character classes).
+//   - Case-insensitive matching prepends "(?i)" to the pattern rather than
+//     lowercasing the input line. Lowercasing destroyed the line's original
+//     case and made the substituted result come back lowercased.
+func compileLinePattern(pattern string, caseSensitive bool) *regexp.Regexp {
 	re, err := regexp.Compile(pattern)
-	if err == nil {
-		if caseSensitive {
-			return re.MatchString(line)
-		}
-		return re.MatchString(strings.ToLower(line))
+	if err != nil {
+		re = regexp.MustCompile(regexp.QuoteMeta(pattern))
 	}
-	// Fall back to substring match
-	check := line
-	match := pattern
-	if !caseSensitive {
-		check = strings.ToLower(line)
-		match = strings.ToLower(pattern)
+	if caseSensitive {
+		return re
 	}
-	return strings.Contains(check, match)
+	insensitive := "(?i)" + re.String()
+	if alt, err := regexp.Compile(insensitive); err == nil {
+		return alt
+	}
+	return re
 }
 
 func (t *EditFileTool) adjustIndent(targetLines, newLines []string, mode IndentMode) []string {
