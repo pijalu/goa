@@ -168,10 +168,7 @@ func probeSurfaceOpens(ctx context.Context, model schema.Model, opts schema.Stre
 	// The stream opened: drain one event to catch error frames the runtime
 	// defers past open, then stop. Context cancel releases the connection.
 	for event := range stream.Seq() {
-		if event.Type == schema.EventError {
-			return false
-		}
-		return true
+		return event.Type != schema.EventError
 	}
 	// Clean EOF with no events: the surface accepted the request format.
 	return stream.Err() == nil

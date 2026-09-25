@@ -67,7 +67,9 @@ func TestBaselineDeepCopyIsolated(t *testing.T) {
 	lastInput := []provider.Message{provider.NewUserMessage("hello")}
 	completed := `{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"x"}]}]}}`
 	stream := provider.NewAssistantMessageEventStream(8)
-	parseSync(stream, func() { parseResponsesSSEWithBaseline(sseBody(completed), stream, "sess-dc", lastInput, requestFingerprint{}) })
+	parseSync(stream, func() {
+		parseResponsesSSEWithBaseline(sseBody(completed), stream, "sess-dc", lastInput, requestFingerprint{})
+	})
 
 	// Mutate the source input; the recorded baseline must be unaffected.
 	lastInput[0].Content[0].Text = "MUTATED"

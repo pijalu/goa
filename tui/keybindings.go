@@ -107,11 +107,11 @@ func DefaultKeybindings() map[string]KeybindingDef {
 		KbToggleThinkingBlocks: {[]string{KeyCtrlT}, "Toggle thinking blocks"},
 		// Multi-agent tab strip (T5): Tab next / Shift+Tab previous (opencode
 		// convention; Tab yields to a visible completion popup), Alt+]/[ aliases.
-		KbAgentTabNext: {[]string{KeyTab, "alt+]"}, "Next multi-agent tab"},
-		KbAgentTabPrev: {[]string{KeyShiftTab, "alt+["}, "Previous multi-agent tab"},
-		KbHistorySearch:        {[]string{"ctrl+r"}, "Reverse history search"},
-		KbHistorySearchPrev:    {[]string{"ctrl+s"}, "Cycle previous history match"},
-		KbEditSteering:         {[]string{"alt+e"}, "Edit pending steering message"},
+		KbAgentTabNext:      {[]string{KeyTab, "alt+]"}, "Next multi-agent tab"},
+		KbAgentTabPrev:      {[]string{KeyShiftTab, "alt+["}, "Previous multi-agent tab"},
+		KbHistorySearch:     {[]string{"ctrl+r"}, "Reverse history search"},
+		KbHistorySearchPrev: {[]string{"ctrl+s"}, "Cycle previous history match"},
+		KbEditSteering:      {[]string{"alt+e"}, "Edit pending steering message"},
 	}
 }
 

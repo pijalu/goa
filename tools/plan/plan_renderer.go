@@ -16,46 +16,57 @@ type PlanToolRenderer struct{}
 
 var _ tuirender.ToolRenderer = (*PlanToolRenderer)(nil)
 
-// RenderCall returns the header for a plan tool call.
+// planCallIcons maps each plan action to the icon shown in its call header.
+var planCallIcons = map[string]string{
+	"add_item":        "📋 add",
+	"update_item":     "✏️ update",
+	"remove_item":     "🗑️ remove",
+	"reorder":         "🔀 reorder",
+	"get":             "📄 get",
+	"submit_review":   "📬 submit review",
+	"resolve_comment": "✅ resolve comment",
+	"start_item":      "▶️ start",
+	"complete_item":   "✅ complete",
+	"block_item":      "🚫 block",
+	"skip_item":       "⏭️ skip",
+}
+
+// planCallLabelLimit caps the dynamic part of a call header (item title) so a
+// long plan item cannot flood the transcript line.
+const planCallLabelLimit = 40
+
+// RenderCall returns the header for a plan tool call. Known actions show their
+// icon plus the item title (add_item) or item/comment id (everything else);
+// unknown or missing actions fall back to a generic plan header.
 func (r *PlanToolRenderer) RenderCall(args map[string]any, ctx tuirender.RenderContext) string {
-	type renderInfo struct{ icon, label, detail string }
 	action, _ := args["action"].(string)
-	title, _ := args["title"].(string)
-	id, _ := args["id"].(string)
-
-	infos := map[string]renderInfo{
-		"add_item":        {"📋 add", title, ""},
-		"update_item":     {"✏️ update", id, ""},
-		"remove_item":     {"🗑️ remove", id, ""},
-		"reorder":         {"🔀 reorder", "", ""},
-		"get":             {"📄 get", "", ""},
-		"submit_review":   {"📬 submit review", "", ""},
-		"resolve_comment": {"✅ resolve comment", id, ""},
-		"start_item":      {"▶️ start", id, ""},
-		"complete_item":   {"✅ complete", id, ""},
-		"block_item":      {"🚫 block", id, ""},
-		"skip_item":       {"⏭️ skip", id, ""},
-	}
-
-	info, ok := infos[action]
-	if !ok {
-		parts := []string{"📋 plan"}
-		if action != "" {
-			parts = append(parts, action)
+	icon, known := planCallIcons[action]
+	if !known {
+		if action == "" {
+			return "📋 plan"
 		}
-		return strings.Join(parts, " ")
+		return "📋 plan " + action
 	}
 
-	var parts []string
-	parts = append(parts, info.icon, info.label)
-	if info.detail != "" {
-		if info.icon == "📋 add" && title != "" {
-			parts = append(parts, ansi.Bold+truncateForRender(title, 40)+ansi.BoldReset)
-		} else if info.detail != "" {
-			parts = append(parts, info.detail)
-		}
+	label := planCallLabel(action, args)
+	if label == "" {
+		return icon
 	}
-	return strings.Join(parts, " ")
+	if action == "add_item" {
+		return icon + " " + ansi.Bold + truncateForRender(label, planCallLabelLimit) + ansi.BoldReset
+	}
+	return icon + " " + label
+}
+
+// planCallLabel returns the argument worth showing for an action: the item
+// title for add_item, the item/comment id otherwise.
+func planCallLabel(action string, args map[string]any) string {
+	key := "id"
+	if action == "add_item" {
+		key = "title"
+	}
+	label, _ := args[key].(string)
+	return label
 }
 
 // RenderResult returns the body text for a plan tool result.

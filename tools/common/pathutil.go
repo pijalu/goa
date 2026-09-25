@@ -199,7 +199,10 @@ func LazySyncFromMain(wm *internal.WorktreeManager, worktreePath, resolvedPath s
 	if err != nil {
 		return fmt.Errorf("lazy sync: get relative path: %w", err)
 	}
-	mainPath := filepath.Join(wm.WorktreeDir(), relPath)
+	// The source lives in the MAIN project tree (the worktree is a checkout of
+	// it), so the matching path is projectDir/<relPath> — not WorktreeDir(),
+	// which is merely the container directory the worktrees live in.
+	mainPath := filepath.Join(wm.ProjectDir(), relPath)
 
 	// Check if file exists in main tree
 	if _, err := os.Stat(mainPath); err != nil {

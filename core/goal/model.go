@@ -76,9 +76,9 @@ type GoalBudgetReport struct {
 // GoalSnapshot is the public, computed projection of internal goal state.
 // WallClockMs always includes the live in-flight interval.
 type GoalSnapshot struct {
-	GoalID              string  `json:"goalId,omitempty"`
-	Name                string  `json:"name,omitempty"`      // friendly alias, e.g. "happy.fox"
-	ManagedBy           string  `json:"managedBy,omitempty"` // e.g. "orchestrator" or empty
+	GoalID    string `json:"goalId,omitempty"`
+	Name      string `json:"name,omitempty"`      // friendly alias, e.g. "happy.fox"
+	ManagedBy string `json:"managedBy,omitempty"` // e.g. "orchestrator" or empty
 	// Kind classifies the goal (GoalKind). Empty = standard goal; "unblock"
 	// marks the framework-spawned unblocking investigation, which must never
 	// itself spawn a successor investigation when it blocks.

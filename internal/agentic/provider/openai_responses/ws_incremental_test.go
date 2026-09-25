@@ -114,10 +114,10 @@ func TestComputeDeltaStrictAppend(t *testing.T) {
 	newTail := provider.NewUserMessage("u3")
 
 	cases := []struct {
-		name     string
-		input    []provider.Message
-		wantOK   bool
-		wantLen  int
+		name    string
+		input   []provider.Message
+		wantOK  bool
+		wantLen int
 	}{
 		{"exact_append_one", appendInput(newTail), true, 1},
 		{"exact_append_two", appendInput(newTail, provider.NewUserMessage("u4")), true, 2},

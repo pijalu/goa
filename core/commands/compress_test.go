@@ -263,6 +263,7 @@ func TestPctOf(t *testing.T) {
 		})
 	}
 }
+
 // TestCompressCommand_AsyncHint verifies that LLM-backed strategies (summarize,
 // hybrid, default) opt into async execution while in-memory strategies stay
 // synchronous.

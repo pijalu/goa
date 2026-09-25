@@ -170,7 +170,7 @@ func TestCompositor_RestoreFrameDropsStaleScene(t *testing.T) {
 
 	comp.RestoreFrame(FrameState{}) // switch to B: bumps the generation
 	writesBefore := len(term.writes)
-	comp.Render(stale)              // stale scene arrives late
+	comp.Render(stale) // stale scene arrives late
 	if len(term.writes) != writesBefore {
 		t.Errorf("stale pre-switch scene was rendered; want it dropped (wrote %q)",
 			strings.Join(term.writes[writesBefore:], ""))

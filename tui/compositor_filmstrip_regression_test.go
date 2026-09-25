@@ -195,11 +195,11 @@ func TestFilmstrip_StreamingTurnVisualEquality(t *testing.T) {
 // lost.
 func TestFilmstrip_ColorVisualEquality(t *testing.T) {
 	const (
-		headStyle  = "\x1b[1;38;2;88;166;255m"  // bold heading blue
-		toolBg     = "\x1b[48;2;42;50;41m"       // tool widget green background
-		toolFg     = "\x1b[38;2;139;148;158m"    // tool output gray
-		treeFg     = "\x1b[38;2;139;148;158m"    // arch-tree connector gray
-		borderFg   = "\x1b[38;2;48;54;61m"       // editor border slate
+		headStyle = "\x1b[1;38;2;88;166;255m" // bold heading blue
+		toolBg    = "\x1b[48;2;42;50;41m"     // tool widget green background
+		toolFg    = "\x1b[38;2;139;148;158m"  // tool output gray
+		treeFg    = "\x1b[38;2;139;148;158m"  // arch-tree connector gray
+		borderFg  = "\x1b[38;2;48;54;61m"     // editor border slate
 	)
 	band := []string{borderFg + "╭─ gpt-5 " + strings.Repeat("─", 42) + "╮" + "\x1b[0m",
 		borderFg + "╰" + strings.Repeat("─", 51) + "╯" + "\x1b[0m"}

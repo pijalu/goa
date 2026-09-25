@@ -72,17 +72,17 @@ type AgentViewEvent struct {
 	AgentID      string
 	DelegationID string
 	Role         string
-	Provider  string
-	Model     string
-	Thinking  string
-	Status    string
-	Text      string
-	Tool      string
-	ToolInput string
-	CallID    string
-	OK        bool
-	IsDelta   bool
-	Question  string
-	Stats     *AgentStatsDelta
-	Meta      map[string]string
+	Provider     string
+	Model        string
+	Thinking     string
+	Status       string
+	Text         string
+	Tool         string
+	ToolInput    string
+	CallID       string
+	OK           bool
+	IsDelta      bool
+	Question     string
+	Stats        *AgentStatsDelta
+	Meta         map[string]string
 }

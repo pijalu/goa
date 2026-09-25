@@ -98,10 +98,10 @@ func (a *Agent) emitWireFormatReroute(from, to provider.Model) {
 		Role: System,
 		Text: fmt.Sprintf("Detected wire-format mismatch for %q: %s returned a server error, but the model answers on %s. Rerouted for this session. To make it permanent, set `api: %s` on this model in your config.", from.ID, from.Api, to.Api, to.Api),
 		Metadata: map[string]string{
-			"category":         "system-notification",
+			"category":          "system-notification",
 			"wire_format_probe": "rerouted",
-			"from_api":         string(from.Api),
-			"to_api":           string(to.Api),
+			"from_api":          string(from.Api),
+			"to_api":            string(to.Api),
 		},
 	})
 }

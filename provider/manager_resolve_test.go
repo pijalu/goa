@@ -423,41 +423,36 @@ func TestListRegistryModels_OpenAICodexServesOpenAICatalog(t *testing.T) {
 	if len(codex) == 0 {
 		t.Fatal("ListRegistryModels(openai-codex endpoint) returned no models; the picker can only offer a custom row")
 	}
-	hasSpark, hasGPT4o, hasGPT6Luna := false, false, false
-	for _, m := range codex {
-		switch m.ID {
-		case "gpt-5.3-codex-spark":
-			hasSpark = true
-		case "gpt-4o":
-			hasGPT4o = true // proves Codex lookup is no longer narrowly filtered
-		case "gpt-6-luna":
-			hasGPT6Luna = true
-		}
-	}
-	if !hasSpark {
-		t.Errorf("catalog missing gpt-5.3-codex-spark; got %v", codex)
-	}
-	if !hasGPT4o {
-		t.Errorf("full OpenAI catalog model gpt-4o missing from Codex list; got %v", codex)
-	}
-	if !hasGPT6Luna {
-		t.Errorf("gpt-6-luna missing from Codex list; got %v", codex)
-	}
+	requireCatalogModel(t, codex, "gpt-5.3-codex-spark", "catalog missing gpt-5.3-codex-spark")
+	requireCatalogModel(t, codex, "gpt-4o", "full OpenAI catalog model gpt-4o missing from Codex list")
+	requireCatalogModel(t, codex, "gpt-6-luna", "gpt-6-luna missing from Codex list")
 
 	// The plain openai provider list must be unaffected by the alias.
 	openai := pm.ListRegistryModels("openai")
 	if len(openai) == 0 {
 		t.Fatal("ListRegistryModels(openai) returned no models")
 	}
-	hasOpenAIGPT4o := false
-	for _, m := range openai {
-		if m.ID == "gpt-4o" {
-			hasOpenAIGPT4o = true
+	requireCatalogModel(t, openai, "gpt-4o", "openai registry list lost gpt-4o — the codex alias must not narrow the openai list")
+}
+
+// requireCatalogModel fails the test when id is absent from the catalog list.
+func requireCatalogModel(t *testing.T, models []ModelInfo, id, problem string) {
+	t.Helper()
+	for _, m := range models {
+		if m.ID == id {
+			return
 		}
 	}
-	if !hasOpenAIGPT4o {
-		t.Error("openai registry list lost gpt-4o — the codex alias must not narrow the openai list")
+	t.Errorf("%s; got %v", problem, catalogModelIDs(models))
+}
+
+// catalogModelIDs lists the model IDs in order, for failure messages.
+func catalogModelIDs(models []ModelInfo) []string {
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
 	}
+	return ids
 }
 
 // TestIsCodexFamilyModel pins the codex-served model filter: the codex

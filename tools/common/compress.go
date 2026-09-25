@@ -152,7 +152,9 @@ func compressGitStatus(output string) (string, bool) {
 	if untracked > 0 {
 		header = append(header, "Untracked: "+pluralize(untracked, "file"))
 	}
-	return strings.Join(header, "\n"), true
+	// The per-file lines ARE the payload: appending (never overwriting) keeps
+	// every scanned entry after the summary header.
+	return strings.Join(append(header, result...), "\n"), true
 }
 
 // compressGitLog deduplicates and compacts git log output.
@@ -302,46 +304,111 @@ func compressRead(output string) (string, bool) {
 	return strings.Join(append(header, result...), "\n"), true
 }
 
-// compressTestOutput strips PASS lines, shows FAIL + summary.
+// stackCompressedMarker replaces the truncated tail of a stack trace.
+const stackCompressedMarker = "  ... (stack trace compressed)"
+
+// compressTestOutput strips passing result lines, compresses stack traces, and
+// summarises the outcome. Counts come from the test-result lines
+// ("--- PASS:" / "--- FAIL:") only, so a failing test is counted once even
+// though the package summary repeats "FAIL".
 func compressTestOutput(output string) (string, bool) {
 	scanner := bufio.NewScanner(strings.NewReader(output))
-	var result []string
-	passCount := 0
-	failCount := 0
-	inStack := false
-
+	var c testOutputCompressor
 	for scanner.Scan() {
-		line := scanner.Text()
-		// Strip PASS lines
-		if strings.Contains(line, "PASS") && !strings.Contains(line, "FAIL") {
-			passCount++
-			continue
-		}
-		// Compress stack traces (show only first 3 lines)
-		if strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "    ") {
-			if inStack {
-				continue
-			}
-			inStack = true
-			result = append(result, line)
-			result = append(result, "  ... (stack trace compressed)")
-			continue
-		}
-		inStack = false
-
-		if strings.Contains(line, "FAIL") {
-			failCount++
-		}
-		result = append(result, line)
+		c.add(scanner.Text())
 	}
-
-	if failCount == 0 && passCount == 0 {
+	if c.empty() {
 		return output, false
 	}
+	return strings.Join(append(c.header(), c.lines...), "\n"), true
+}
 
+// testOutputCompressor accumulates the compacted form of `go test` output.
+type testOutputCompressor struct {
+	lines      []string
+	passed     int
+	failed     int
+	sawFailure bool
+	inStack    bool
+}
+
+// add classifies one output line and keeps whatever should survive.
+func (c *testOutputCompressor) add(line string) {
+	switch {
+	case isTestResultLine(line):
+		c.addResult(line)
+	case isStackLine(line):
+		c.addStackLine(line)
+	default:
+		c.addPlainLine(line)
+	}
+}
+
+// addResult counts a per-test result. Passing results are the bulk of test
+// output and carry no information once counted, so only failures are kept.
+func (c *testOutputCompressor) addResult(line string) {
+	if !strings.Contains(line, "FAIL") {
+		c.passed++
+		return
+	}
+	c.failed++
+	c.inStack = false
+	c.lines = append(c.lines, line)
+}
+
+// addStackLine keeps the first line of a stack trace and elides the rest.
+func (c *testOutputCompressor) addStackLine(line string) {
+	if c.inStack {
+		return
+	}
+	c.inStack = true
+	c.lines = append(c.lines, line, stackCompressedMarker)
+}
+
+// addPlainLine keeps an ordinary line, dropping passing package summaries and
+// recording any failure so a build failure still compresses.
+func (c *testOutputCompressor) addPlainLine(line string) {
+	c.inStack = false
+	if isPassSummary(line) {
+		return
+	}
+	if strings.Contains(line, "FAIL") {
+		c.sawFailure = true
+	}
+	c.lines = append(c.lines, line)
+}
+
+// empty reports whether the output carried no recognisable test outcome.
+func (c *testOutputCompressor) empty() bool {
+	return c.passed == 0 && c.failed == 0 && !c.sawFailure
+}
+
+// header renders the compression header plus the outcome counts, which are
+// omitted when the output held no per-test results (e.g. a build failure).
+func (c *testOutputCompressor) header() []string {
 	header := formatCompressHeader("test")
-	header = append(header, pluralize(passCount, "passed")+", "+pluralize(failCount, "failed"))
-	return strings.Join(append(header, result...), "\n"), true
+	if c.passed > 0 || c.failed > 0 {
+		header = append(header, fmt.Sprintf("%d passed, %d failed", c.passed, c.failed))
+	}
+	return header
+}
+
+// isStackLine reports whether line is indented, i.e. part of a stack trace.
+func isStackLine(line string) bool {
+	return strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "    ")
+}
+
+// isTestResultLine reports whether line is a per-test result line, which is the
+// only line form that carries test counts ("--- PASS: TestX", "--- FAIL:").
+func isTestResultLine(line string) bool {
+	return strings.HasPrefix(line, "--- ") && (strings.Contains(line, "PASS") || strings.Contains(line, "FAIL"))
+}
+
+// isPassSummary reports whether line is a passing package summary ("PASS",
+// "ok  pkg  0.5s") that adds no information to the compressed report.
+func isPassSummary(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return trimmed == "PASS" || strings.HasPrefix(trimmed, "ok ")
 }
 
 // ── Helpers ──
@@ -363,9 +430,16 @@ func formatCompressHeader(cmd string) []string {
 	}
 }
 
+// pluralize renders a count with an English plural noun. Sibilant endings take
+// "es" ("match" → "matches"), everything else takes "s".
 func pluralize(n int, word string) string {
 	if n == 1 {
 		return "1 " + word
+	}
+	if strings.HasSuffix(word, "s") || strings.HasSuffix(word, "x") ||
+		strings.HasSuffix(word, "z") || strings.HasSuffix(word, "ch") ||
+		strings.HasSuffix(word, "sh") {
+		return fmt.Sprintf("%d %ses", n, word)
 	}
 	return fmt.Sprintf("%d %ss", n, word)
 }

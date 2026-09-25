@@ -77,26 +77,53 @@ func (b *Builder) buildFull() (*Index, error) {
 	}), nil
 }
 
+// Chunk geometry for semantic indexing. Every indexing path uses these so a
+// file's chunks are identical no matter which path produced them.
+const (
+	chunkMaxLines     = 120
+	chunkOverlapLines = 20
+)
+
+// fileIndexData is the complete tokenisation payload for one source file. The
+// full build and both refresh paths funnel through indexFile, because a
+// divergence between them silently strips a file's semantic chunks from the
+// index (SearchChunks would then quietly degrade to file-level matching).
+type fileIndexData struct {
+	meta      FileMeta
+	tokens    []string
+	documents []DocumentMeta
+	err       error
+}
+
+// indexFile stats, tokenises, and chunks one file. Error precedence mirrors the
+// historical build semantics: a tokenisation failure wins, otherwise a read
+// failure is reported.
+func (b *Builder) indexFile(path string) fileIndexData {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileIndexData{err: err}
+	}
+	tokens, lines, err := b.tokenizeFile(path)
+	data, readErr := os.ReadFile(path)
+	if readErr != nil && err == nil {
+		err = readErr
+	}
+	d := fileIndexData{
+		meta:   FileMeta{Path: path, Size: info.Size(), ModTime: info.ModTime(), Lines: lines},
+		tokens: tokens,
+		err:    err,
+	}
+	if err == nil {
+		d.documents = ChunkSource(path, string(data), b.analyzerFor(path), chunkMaxLines, chunkOverlapLines)
+	}
+	return d
+}
+
 func (b *Builder) tokenizeWorker(jobs <-chan tokenizeJob, results chan<- tokenizeResult, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for j := range jobs {
-		info, err := os.Stat(j.path)
-		if err != nil {
-			results <- tokenizeResult{index: j.index, err: err}
-			continue
-		}
-		tokens, lines, err := b.tokenizeFile(j.path)
-		data, readErr := os.ReadFile(j.path)
-		if readErr != nil && err == nil {
-			err = readErr
-		}
-		results <- tokenizeResult{
-			index:     j.index,
-			documents: ChunkSource(j.path, string(data), b.analyzerFor(j.path), 120, 20),
-			meta:      FileMeta{Path: j.path, Size: info.Size(), ModTime: info.ModTime(), Lines: lines},
-			tokens:    tokens,
-			err:       err,
-		}
+		d := b.indexFile(j.path)
+		results <- tokenizeResult{index: j.index, documents: d.documents, meta: d.meta, tokens: d.tokens, err: d.err}
 	}
 }
 
@@ -201,19 +228,18 @@ func (b *Builder) buildIncrementalIndex(idx *Index, added, modified []string, ol
 	newDocLengths := make([]int, 0, newTotal)
 	newDocTerms := make([]map[string]int, 0, newTotal)
 
-	// Copy surviving docs and their associated semantic chunks.
+	// Copy surviving docs, keeping their semantic chunks in lockstep with the
+	// file table (document order is preserved by documentsForPaths).
+	survivorPaths := make(map[string]bool, survivingCount)
 	for i, s := range survivors {
 		if s {
 			newFiles = append(newFiles, oldFiles[i])
 			newDocLengths = append(newDocLengths, oldDocLengths[i])
 			newDocTerms = append(newDocTerms, oldDocTerms[i])
-			for _, d := range idx.Data.Documents {
-				if d.Path == oldFiles[i].Path {
-					newDocuments = append(newDocuments, d)
-				}
-			}
+			survivorPaths[oldFiles[i].Path] = true
 		}
 	}
+	newDocuments = documentsForPaths(idx.Data.Documents, survivorPaths)
 
 	allChanges := b.collectChanges(added, modified, oldFileMap)
 	b.tokenizeFileBatch(allChanges, &newFiles, &newDocuments, &newDocLengths, &newDocTerms)
@@ -296,22 +322,19 @@ func (b *Builder) tokenizeFileBatch(changes []changeDescriptor, newFiles *[]File
 	}
 }
 
-// tokenizeOneFile stat's and tokenises a single file, sending the result
-// to the results channel.
+// tokenizeOneFile stat's and tokenises a single file, sending the result to
+// the results channel. It shares indexFile with the full build so a refreshed
+// file carries exactly the semantic chunks a full rebuild would produce.
 func (b *Builder) tokenizeOneFile(j changeDescriptor, results chan<- changeResult) {
-	info, err := os.Stat(j.path)
-	if err != nil {
-		results <- changeResult{path: j.path, err: err}
-		return
-	}
-	tokens, lines, err := b.tokenizeFile(j.path)
+	d := b.indexFile(j.path)
 	results <- changeResult{
-		path:   j.path,
-		meta:   FileMeta{Path: j.path, Size: info.Size(), ModTime: info.ModTime(), Lines: lines},
-		tokens: tokens,
-		err:    err,
-		isMod:  j.isMod,
-		oldID:  j.oldID,
+		path:      j.path,
+		meta:      d.meta,
+		documents: d.documents,
+		tokens:    d.tokens,
+		err:       d.err,
+		isMod:     j.isMod,
+		oldID:     j.oldID,
 	}
 }
 
@@ -344,6 +367,19 @@ func contains(strs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// documentsForPaths returns the semantic chunks belonging to the given file
+// paths, in document order. Keeping the chunk table filtered this way is what
+// keeps it in lockstep with the file table across every refresh path.
+func documentsForPaths(docs []DocumentMeta, paths map[string]bool) []DocumentMeta {
+	var out []DocumentMeta
+	for _, d := range docs {
+		if paths[d.Path] {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // --- File-level helpers ---
@@ -398,8 +434,11 @@ func countLines(text string) int {
 }
 
 // refreshWithPending reindexes only the files in pendingChanges and merges
-// them into the existing index. It collects metadata + tokens for each
-// pending file in parallel and applies updates to the existing Okapi scorer.
+// them into the existing index. It collects metadata + tokens + semantic chunks
+// for each pending file in parallel and applies updates to the existing Okapi
+// scorer. The result carries the current schema version: an index saved without
+// it is rejected by Load, which makes callers treat a healthy index as
+// corrupted and rebuild it from scratch.
 func (b *Builder) refreshWithPending(idx *Index, pendingChanges []string) (*Index, error) {
 	// Tokenise pending changes using the shared batch infrastructure.
 	changes := make([]changeDescriptor, len(pendingChanges))
@@ -407,30 +446,34 @@ func (b *Builder) refreshWithPending(idx *Index, pendingChanges []string) (*Inde
 		changes[i] = changeDescriptor{path: p}
 	}
 
-	newFiles, newDocLengths, newDocTerms := b.buildPendingIndex(idx, pendingChanges, changes)
+	newFiles, newDocuments, newDocLengths, newDocTerms := b.buildPendingIndex(idx, pendingChanges, changes)
 
 	o := NewOkapi(DefaultOkapiConfig())
 	o.SetDocData(newDocLengths, computeDocFreq(newDocTerms), newDocTerms)
 	return NewIndex(IndexData{
-		Version:    IndexVersion,
-		IndexTime:  time.Now(),
-		TotalFiles: len(newFiles),
-		Files:      newFiles,
-		AvgDocLen:  o.AvgDocLen(),
-		DocLengths: o.DocLengths(),
-		DocFreq:    o.DocFreq(),
-		DocTerms:   o.DocTerms(),
+		Version:       IndexVersion,
+		SchemaVersion: IndexSchemaVersion,
+		IndexTime:     time.Now(),
+		TotalFiles:    len(newFiles),
+		Files:         newFiles,
+		Documents:     newDocuments,
+		AvgDocLen:     o.AvgDocLen(),
+		DocLengths:    o.DocLengths(),
+		DocFreq:       o.DocFreq(),
+		DocTerms:      o.DocTerms(),
 	}), nil
 }
 
 // buildPendingIndex tokenises pending files and merges survivors from the
-// old index with new results. Returns the three parallel slices.
-func (b *Builder) buildPendingIndex(idx *Index, pendingChanges []string, changes []changeDescriptor) ([]FileMeta, []int, []map[string]int) {
+// old index with new results. Returns the four parallel slices (files, chunks,
+// lengths, terms) in matching order.
+func (b *Builder) buildPendingIndex(idx *Index, pendingChanges []string, changes []changeDescriptor) ([]FileMeta, []DocumentMeta, []int, []map[string]int) {
 	// Collect tokenisation results.
 	var newFiles []FileMeta
+	var newDocuments []DocumentMeta
 	var newDocLengths []int
 	var newDocTerms []map[string]int
-	b.tokenizeFileBatch(changes, &newFiles, nil, &newDocLengths, &newDocTerms)
+	b.tokenizeFileBatch(changes, &newFiles, &newDocuments, &newDocLengths, &newDocTerms)
 
 	// Build pending set for survivor check.
 	pendingSet := make(map[string]bool, len(pendingChanges))
@@ -441,6 +484,7 @@ func (b *Builder) buildPendingIndex(idx *Index, pendingChanges []string, changes
 	// Collect surviving old docs.
 	idx.mu.RLock()
 	oldFiles := idx.Data.Files
+	oldDocuments := idx.Data.Documents
 	oldDocLengths := idx.okapi.DocLengths()
 	oldDocTerms := idx.okapi.DocTerms()
 	idx.mu.RUnlock()
@@ -458,19 +502,24 @@ func (b *Builder) buildPendingIndex(idx *Index, pendingChanges []string, changes
 	mergedLengths := make([]int, 0, newTotal)
 	mergedTerms := make([]map[string]int, 0, newTotal)
 
-	// Copy survivors first, then new results.
+	// Copy survivors first, then new results, carrying the survivors' semantic
+	// chunks along so a tracker-driven refresh never strips the chunk table.
+	survivorPaths := make(map[string]bool, survivingCount)
 	for i, f := range oldFiles {
 		if !pendingSet[f.Path] {
 			mergedFiles = append(mergedFiles, f)
 			mergedLengths = append(mergedLengths, oldDocLengths[i])
 			mergedTerms = append(mergedTerms, oldDocTerms[i])
+			survivorPaths[f.Path] = true
 		}
 	}
+	mergedDocuments := documentsForPaths(oldDocuments, survivorPaths)
 	mergedFiles = append(mergedFiles, newFiles...)
+	mergedDocuments = append(mergedDocuments, newDocuments...)
 	mergedLengths = append(mergedLengths, newDocLengths...)
 	mergedTerms = append(mergedTerms, newDocTerms...)
 
-	return mergedFiles, mergedLengths, mergedTerms
+	return mergedFiles, mergedDocuments, mergedLengths, mergedTerms
 }
 
 // isIndexableFile reports whether a file should be included in the index

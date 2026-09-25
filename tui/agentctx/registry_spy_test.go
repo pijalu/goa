@@ -18,16 +18,19 @@ type spyTerminal struct {
 	writes []string
 }
 
-func (s *spyTerminal) Start(func(string), func())      {}
-func (s *spyTerminal) Stop()                           {}
-func (s *spyTerminal) Write(p []byte) (int, error)     { s.writes = append(s.writes, string(p)); return len(p), nil }
-func (s *spyTerminal) WriteString(str string)          { s.writes = append(s.writes, str) }
-func (s *spyTerminal) Size() (int, int)                { return s.w, s.h }
-func (s *spyTerminal) SetRaw() (func(), error)         { return func() {}, nil }
-func (s *spyTerminal) HideCursor()                     {}
-func (s *spyTerminal) ShowCursor()                     {}
-func (s *spyTerminal) ClearScreen()                    {}
-func (s *spyTerminal) SetTitle(string)                 {}
+func (s *spyTerminal) Start(func(string), func()) {}
+func (s *spyTerminal) Stop()                      {}
+func (s *spyTerminal) Write(p []byte) (int, error) {
+	s.writes = append(s.writes, string(p))
+	return len(p), nil
+}
+func (s *spyTerminal) WriteString(str string)  { s.writes = append(s.writes, str) }
+func (s *spyTerminal) Size() (int, int)        { return s.w, s.h }
+func (s *spyTerminal) SetRaw() (func(), error) { return func() {}, nil }
+func (s *spyTerminal) HideCursor()             {}
+func (s *spyTerminal) ShowCursor()             {}
+func (s *spyTerminal) ClearScreen()            {}
+func (s *spyTerminal) SetTitle(string)         {}
 
 // TestAgentViewRegistry_InactiveViewsArePureData drives a REAL engine on a
 // spy terminal: two transcripts are registered, only the active one is

@@ -21,9 +21,9 @@ import (
 // BuildSimpleOptions → protocol request body.
 func TestBuildSimpleOptions_ConfiguredXHighReachesWire(t *testing.T) {
 	model := Model{
-		ID:       "deepseek-v4.1-flash",
-		Provider: "inferx", // user-defined provider: DefaultProfile, ThinkingFormat "openai"
-		Api:      ApiOpenAICompletions,
+		ID:        "deepseek-v4.1-flash",
+		Provider:  "inferx", // user-defined provider: DefaultProfile, ThinkingFormat "openai"
+		Api:       ApiOpenAICompletions,
 		Reasoning: true, // set by manager_resolve.go because thinking_level != ""
 	}
 	// applyModelStreamOptions passes config thinking_level through raw.

@@ -219,10 +219,10 @@ func (a *Agent) rewriteReplyDelta(ctx context.Context, delta string) string {
 		return delta
 	}
 	decision, result, _ := sink.Intercept(ctx, HookReplyDelta, map[string]any{
-		"point":   string(HookReplyDelta),
-		"delta":   delta,
+		"point":    string(HookReplyDelta),
+		"delta":    delta,
 		"is_delta": true,
-		"state":   "content",
+		"state":    "content",
 	})
 	if decision == HookModified {
 		if v, ok := payloadString(result, "delta"); ok {
