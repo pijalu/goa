@@ -6,24 +6,37 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/skills"
 )
 
-// runDream executes a memory consolidation run and exits.
+// runDream executes a memory consolidation run and exits on failure. It is the
+// thin CLI shell around executeDream, which holds the logic and returns errors so
+// the diagnostics (e.g. the "dream is disabled — enable it" message) are testable
+// without os.Exit killing the test binary.
 func runDream(subs *subsystems, opts RuntimeOptions) {
-	if err := validateDreamPrerequisites(subs); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	if err := executeDream(subs, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Dream failed: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// executeDream performs one memory consolidation run and reports its outcome on
+// stdout. It returns an error for a missing prerequisite or a disabled dream
+// skill; the caller decides how to surface it.
+func executeDream(subs *subsystems, opts RuntimeOptions) error {
+	if err := validateDreamPrerequisites(subs); err != nil {
+		return err
 	}
 
 	skill, ok := loadDreamSkill(subs)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "Error: dream skill not found")
-		os.Exit(1)
+		return errors.New(commands.DreamSkillDisabledMessage)
 	}
 
 	ctx := context.Background()
@@ -44,13 +57,12 @@ func runDream(subs *subsystems, opts RuntimeOptions) {
 
 	result, err := engine.Run(ctx, opts.DreamApply)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Dream failed: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	if !result.Changed {
 		fmt.Println("No memories to consolidate.")
-		return
+		return nil
 	}
 
 	fmt.Printf("Dream output written to %s\n", result.OutputPath)
@@ -58,6 +70,7 @@ func runDream(subs *subsystems, opts RuntimeOptions) {
 	if result.Consolidated {
 		fmt.Println("Consolidated memory applied.")
 	}
+	return nil
 }
 
 func validateDreamPrerequisites(subs *subsystems) error {

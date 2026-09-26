@@ -63,11 +63,17 @@ func TestRunDream_Headless(t *testing.T) {
 		Memory:         config.MemoryConfig{Enabled: true},
 	}
 
+	// The embedded dream skill is OFF by default like every other built-in, so
+	// this test opts it in — exactly what a user does before running --dream.
+	cfg.Skills.EmbeddedEnabled = []string{"dream"}
+
 	loader := config.NewCascadeLoader(dir, "", nil)
 	subs := InitSubsystems(cfg, loader, dir, RuntimeOptions{})
 
 	var out bytes.Buffer
-	runDream(subs, RuntimeOptions{Dream: true})
+	if err := executeDream(subs, RuntimeOptions{Dream: true}); err != nil {
+		t.Fatalf("executeDream: %v", err)
+	}
 
 	got := out.String()
 	if got != "" {
@@ -123,6 +129,10 @@ func TestRunDream_WithApply(t *testing.T) {
 		Memory:         config.MemoryConfig{Enabled: true},
 	}
 
+	// The embedded dream skill is OFF by default like every other built-in, so
+	// this test opts it in — exactly what a user does before running the CLI mode.
+	cfg.Skills.EmbeddedEnabled = []string{"dream"}
+
 	loader := config.NewCascadeLoader(dir, "", nil)
 	subs := InitSubsystems(cfg, loader, dir, RuntimeOptions{})
 
@@ -131,7 +141,9 @@ func TestRunDream_WithApply(t *testing.T) {
 	defer cancel()
 	_ = ctx
 
-	runDream(subs, RuntimeOptions{DreamApply: true})
+	if err := executeDream(subs, RuntimeOptions{DreamApply: true}); err != nil {
+		t.Fatalf("executeDream: %v", err)
+	}
 
 	consolidated := filepath.Join(dir, ".goa", "memory.consolidated", "consolidated.md")
 	if _, err := os.Stat(consolidated); err != nil {
@@ -142,4 +154,90 @@ func TestRunDream_WithApply(t *testing.T) {
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("expected backup dir with entries, got %v", err)
 	}
+}
+
+// TestDreamCLI_SkillDisabledReportsHowToEnable: with the shipped defaults the
+// embedded dream skill is not registered, so the CLI path must return an
+// actionable message — naming skills.embedded_enabled / /config → Skills and the
+// restart caveat — instead of the old bare "dream skill not found".
+func TestDreamCLI_SkillDisabledReportsHowToEnable(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{Memory: config.MemoryConfig{Enabled: true}}
+	loader := config.NewCascadeLoader(dir, "", nil)
+	subs := InitSubsystems(cfg, loader, dir, RuntimeOptions{})
+	if subs.skillRegistry == nil {
+		t.Fatal("skill registry not wired")
+	}
+	if _, ok := subs.skillRegistry.Get("dream"); ok {
+		t.Fatal("precondition: dream must be OFF by default")
+	}
+
+	err := executeDream(subs, RuntimeOptions{Dream: true})
+	if err == nil {
+		t.Fatal("executeDream must fail while the dream skill is disabled")
+	}
+	msg := err.Error()
+	for _, want := range []string{"dream is disabled", "skills.embedded_enabled", "restart"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message must contain %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "dream skill not found") {
+		t.Errorf("the bare not-found message must be gone:\n%s", msg)
+	}
+}
+
+// TestReloadSkills_PicksUpEmbeddedEnabled: ReloadSkills must refresh the
+// embedded opt-in list from disk like the other skill lists, so an in-session
+// skill toggle produces exactly the registry a fresh start would build.
+func TestReloadSkills_PicksUpEmbeddedEnabled(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	loader := config.NewCascadeLoader(project, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Skills.EmbeddedEnabled) != 0 {
+		t.Fatalf("precondition: no embedded opt-ins, got %v", cfg.Skills.EmbeddedEnabled)
+	}
+	subs := InitSubsystems(cfg, loader, project, RuntimeOptions{})
+	if _, ok := subs.skillRegistry.Get("telegram"); ok {
+		t.Fatal("precondition: telegram must be OFF by default")
+	}
+
+	// Simulate the persisted opt-in a toggle writes, WITHOUT touching the live
+	// config: the reload must read the on-disk state. SaveHomeFieldValue is the
+	// same call persistSkillToggle makes for the embedded opt-in list.
+	if err := loader.SaveHomeFieldValue([]string{"skills", "embedded_enabled"}, []string{"telegram"}); err != nil {
+		t.Fatalf("persist opt-in: %v", err)
+	}
+
+	h := &ReloadHandler{subs: subs}
+	if _, err := h.ReloadSkills(); err != nil {
+		t.Fatalf("ReloadSkills: %v", err)
+	}
+	// The reload count is 1 (only the opted-in skill) — every embedded skill
+	// being OFF by default is exactly why a bare count assertion is meaningless.
+	if !stringInSliceForTest(subs.cfg.Skills.EmbeddedEnabled, "telegram") {
+		t.Errorf("ReloadSkills must refresh Skills.EmbeddedEnabled, got %v", subs.cfg.Skills.EmbeddedEnabled)
+	}
+	skill, ok := subs.skillRegistry.Get("telegram")
+	if !ok {
+		t.Fatal("telegram must be loaded in-session after the reload")
+	}
+	if !skill.IsSticky() {
+		t.Error("the opted-in telegram skill must keep its sticky (always-on) body")
+	}
+}
+
+func stringInSliceForTest(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }

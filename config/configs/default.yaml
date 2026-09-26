@@ -156,7 +156,10 @@ time_context:
   #                             # inject at every eligible step entry.
 
 telegram:
-  enabled: true
+  # Telegram talk-style skill injection. OFF like every other embedded skill:
+  # enable the `telegram` skill via skills.embedded_enabled (or /config →
+  # Skills → Embedded) when the telegraphic style is wanted.
+  enabled: false
 
 orchestrator:
   roles: {}

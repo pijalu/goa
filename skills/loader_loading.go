@@ -256,48 +256,31 @@ func (r *SkillRegistry) EmbeddedDefaultDisabled(name string) bool {
 }
 
 // IsEmbeddedDefaultOff reports whether the named skill is a MEMBER of the
-// embedded default-off set (all embedded skills except telegram), regardless
-// of whether the user has since re-enabled it. Unlike EmbeddedDefaultDisabled
-// (the current suppressed state), this is stable across a toggle, so the
-// disable path can tell a default-off skill (disabling = drop the opt-in)
-// from a default-ON one (disabling = write an explicit Disabled entry).
+// embedded default-off set (every embedded skill), regardless of whether the
+// user has since re-enabled it. Unlike EmbeddedDefaultDisabled (the current
+// suppressed state), this is stable across a toggle, so the disable path can
+// tell a default-off skill (disabling = drop the opt-in) from a file skill
+// (disabling = write an explicit Disabled entry).
 func (r *SkillRegistry) IsEmbeddedDefaultOff(name string) bool {
 	return r.embeddedDefaultDisabled[name]
 }
 
-// DefaultOnEmbeddedSkill is the single agent-facing embedded skill that stays
-// ON by default; every other agent-facing embedded skill is OFF by default
-const DefaultOnEmbeddedSkill = "telegram"
-
-// DefaultEmbeddedOffNames returns the names of all embedded skills that are
-// OFF by default: every agent-facing embedded skill except
-// DefaultOnEmbeddedSkill (telegram). Two kinds are excluded and stay ON:
-//   - telegram (the one kept agent-facing skill), and
-//   - hidden/internal skills (e.g. dream): they are never listed to the agent
-//     (Meta.Hidden) but internal features load them by name via Get, so
-//     defaulting them off would break those features for zero prompt savings.
+// DefaultEmbeddedOffNames returns the names of every embedded skill: ALL of
+// them are OFF by default. Nothing compiled into the binary is active unless the
+// user asks for it — neither the agent-facing skills (review, debug, …) nor
+// telegram (whose sticky body used to be injected into every session) nor
+// hidden/internal skills such as dream (whose feature is user-invoked).
 //
-// Derived from the embedded FS so it never drifts as skills are added.
+// Derived from the embedded FS so it never drifts as skills are added. Two
+// comment-level consequences worth keeping in mind:
+//   - telegram's former "default-ON" exception is gone, so configs that pinned
+//     skills.disabled: [telegram] under the old policy remain off (they are
+//     honoured like any other Disabled entry) and are re-enablable;
+//   - hidden skills are no longer exempt, so /dream and --dream report an
+//     actionable "enable it" message while the skill is off instead of relying
+//     on the loader having registered it.
 func DefaultEmbeddedOffNames(efs fs.FS) []string {
-	var out []string
-	if efs == nil {
-		return nil
-	}
-	for _, n := range EmbeddedSkillNames(efs) {
-		if n == DefaultOnEmbeddedSkill {
-			continue
-		}
-		hidden := false
-		if data, err := fs.ReadFile(efs, filepath.Join(n, "SKILL.md")); err == nil {
-			if s := parseSkill(n, string(data), "embedded", ""); s != nil {
-				hidden = s.Meta.Hidden
-			}
-		}
-		if !hidden {
-			out = append(out, n)
-		}
-	}
-	return out
+	return EmbeddedSkillNames(efs)
 }
 
 // EmbeddedSkillNames returns the names of every top-level skill discoverable

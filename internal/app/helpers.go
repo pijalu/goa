@@ -68,12 +68,15 @@ func (h *ReloadHandler) ReloadSkills() (int, error) {
 	// config and persists a per-source partition; reloading the merged lists
 	// here guarantees the running session and a parallel session see identical
 	// skill sets (must-fix #5: skills enable/disable inconsistent
-	// across sessions). Only Enabled/Disabled are refreshed — Dirs,
-	// ExecutionMode, etc. stay from the live config.
+	// across sessions). EmbeddedEnabled is part of that set: it is the
+	// embedded-scoped opt-in list every embedded default-off skill is enabled
+	// through, so leaving it stale would make an in-session "skill on" disagree
+	// with the next start. Dirs, ExecutionMode, etc. stay from the live config.
 	if h.subs.loader != nil {
 		if fresh, err := h.subs.loader.Load(); err == nil {
 			h.subs.cfg.Skills.Enabled = fresh.Skills.Enabled
 			h.subs.cfg.Skills.Disabled = fresh.Skills.Disabled
+			h.subs.cfg.Skills.EmbeddedEnabled = fresh.Skills.EmbeddedEnabled
 			h.subs.cfg.Skills.Sticky = fresh.Skills.Sticky
 			h.subs.cfg.Skills.StickyOff = fresh.Skills.StickyOff
 		}

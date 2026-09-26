@@ -201,7 +201,7 @@ type SkillsConfig struct {
 	// wins). Load-time only: the system prompt is not rebuilt mid-session.
 	Disabled []string `yaml:"disabled,omitempty"`
 	// EmbeddedEnabled re-enables individual embedded skills that are OFF by
-	// default (all embedded skills except telegram). Unlike the
+	// default (ALL embedded skills ship inactive). Unlike the
 	// global Enabled allowlist — which gates EVERY source and would suppress
 	// home/project/plugin file skills — this list is embedded-scoped: it only
 	// opts embedded skills back in, leaving file-based skills untouched.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/skills"
 )
 
@@ -85,8 +86,8 @@ func TestConfigMenu_SkillSourceListsOnlySource(t *testing.T) {
 		if o.Value != "refactor" && o.Value != "telegram" {
 			t.Errorf("unexpected embedded skill %q", o.Value)
 		}
-		if o.Description != "on" {
-			t.Errorf("skill %s description = %q, want on", o.Value, o.Description)
+		if o.Description != "off" {
+			t.Errorf("skill %s description = %q, want off (every embedded skill is default-off)", o.Value, o.Description)
 		}
 	}
 
@@ -109,7 +110,10 @@ func TestConfigMenu_SkillSourceListsOnlySource(t *testing.T) {
 
 // TestConfigMenu_SkillToggleEmbeddedPersistsToHome verifies toggling an
 // embedded skill writes the change to the HOME (global) config per the gold
-// rules, and re-enabling removes it.
+// rules, and toggling it back removes the entry. Every embedded skill is OFF by
+// default, so the first toggle ENABLES it (embedded_enabled opt-in) and the
+// second disables it again — no Disabled entry is written, so a later enable
+// cannot be shadowed by a stale pin.
 func TestConfigMenu_SkillToggleEmbeddedPersistsToHome(t *testing.T) {
 	cfg := &config.Config{}
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
@@ -123,13 +127,22 @@ func TestConfigMenu_SkillToggleEmbeddedPersistsToHome(t *testing.T) {
 	_ = menu.showRoot()
 	sr.onSel("skills", true)
 	sr.onSel("embedded", true)
-	sr.onSel("refactor", true)
 
-	if skillEnabled(cfg, "refactor", nil) {
-		t.Error("refactor should be disabled after toggle")
+	// Default state: off (nothing compiled in is active).
+	if skillEnabledIn(cfg, "refactor", "embedded", ctx.SkillRegistry) {
+		t.Fatal("refactor must be OFF before the first toggle")
 	}
-	if !stringInSlice(cfg.Skills.Disabled, "refactor") {
-		t.Error("cfg.Skills.Disabled should contain refactor")
+
+	// First toggle: ENABLE via the embedded opt-in, persisted at HOME level.
+	sr.onSel("refactor", true)
+	if !skillEnabledIn(cfg, "refactor", "embedded", ctx.SkillRegistry) {
+		t.Error("refactor should be enabled after the first toggle")
+	}
+	if !stringInSlice(cfg.Skills.EmbeddedEnabled, "refactor") {
+		t.Errorf("cfg.Skills.EmbeddedEnabled should contain refactor, got %v", cfg.Skills.EmbeddedEnabled)
+	}
+	if stringInSlice(cfg.Skills.Disabled, "refactor") {
+		t.Errorf("enabling must not write a Disabled entry, got %v", cfg.Skills.Disabled)
 	}
 
 	homeCfg := filepath.Join(os.Getenv("HOME"), ".goa", "config.yaml")
@@ -138,17 +151,20 @@ func TestConfigMenu_SkillToggleEmbeddedPersistsToHome(t *testing.T) {
 		t.Fatalf("read home config: %v", err)
 	}
 	if !strings.Contains(string(data), "refactor") {
-		t.Errorf("home config should disable refactor, got:\n%s", data)
+		t.Errorf("home config should opt refactor in, got:\n%s", data)
 	}
 
-	// Re-enable: the home key must be removed.
+	// Second toggle: DISABLE by dropping the opt-in; the home entry must go.
 	sr.onSel("refactor", true)
-	if !skillEnabled(cfg, "refactor", nil) {
-		t.Error("refactor should be enabled after second toggle")
+	if skillEnabledIn(cfg, "refactor", "embedded", ctx.SkillRegistry) {
+		t.Error("refactor should be disabled after the second toggle")
+	}
+	if stringInSlice(cfg.Skills.EmbeddedEnabled, "refactor") {
+		t.Errorf("disabling should drop the opt-in, got %v", cfg.Skills.EmbeddedEnabled)
 	}
 	data, err = os.ReadFile(homeCfg)
 	if err != nil {
-		t.Fatalf("read home config after re-enable: %v", err)
+		t.Fatalf("read home config after disable: %v", err)
 	}
 	if strings.Contains(string(data), "refactor") {
 		t.Errorf("home config should no longer mention refactor, got:\n%s", data)
@@ -183,15 +199,23 @@ func TestConfigMenu_SkillToggleSurvivesReload(t *testing.T) {
 	_ = menu.showRoot()
 	sr.onSel("skills", true)
 
-	// Disable an embedded skill → home layer. After a "restart", the same
-	// state must be computed from the merged config.
+	// Enable an embedded skill (off by default) → home layer. After a "restart",
+	// the same state must be computed from the merged config.
 	sr.onSel("embedded", true)
 	sr.onSel("refactor", true)
-	if got := reload(); skillEnabled(got, "refactor", nil) {
-		t.Errorf("after disable+reload, refactor should be off (home=%s)", home)
+	if got := reload(); !skillEnabledIn(got, "refactor", "embedded", nil) {
+		t.Errorf("after enable+reload, refactor should be on (home=%s)", home)
 	}
-	if got := reload(); !skillEnabled(got, "qa-e2e", nil) {
-		t.Error("after disable+reload, qa-e2e should still be on (untouched)")
+	if got := reload(); !skillEnabledIn(got, "qa-e2e", "local", nil) {
+		t.Error("after enable+reload, qa-e2e should still be on (untouched)")
+	}
+
+	// Disable it again → the opt-in must be gone after a restart as well.
+	menu.settingSkills()
+	sr.onSel("embedded", true)
+	sr.onSel("refactor", true)
+	if got := reload(); skillEnabledIn(got, "refactor", "embedded", nil) {
+		t.Errorf("after disable+reload, refactor should be off (opt-in=%v disabled=%v)", got.Skills.EmbeddedEnabled, got.Skills.Disabled)
 	}
 
 	// Disable a local skill → project layer; restart; must stay off.
@@ -201,7 +225,7 @@ func TestConfigMenu_SkillToggleSurvivesReload(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(projectDir, ".goa", "config.yaml")); err == nil {
 		t.Logf("project config after disabling qa-e2e:\n%s", data)
 	}
-	if got := reload(); skillEnabled(got, "qa-e2e", nil) {
+	if got := reload(); skillEnabledIn(got, "qa-e2e", "local", nil) {
 		t.Error("after disable+reload, qa-e2e should be off")
 	}
 
@@ -214,10 +238,10 @@ func TestConfigMenu_SkillToggleSurvivesReload(t *testing.T) {
 	sr.onSel("local", true)
 	sr.onSel("qa-e2e", true)
 	got := reload()
-	if !skillEnabled(got, "refactor", nil) {
-		t.Errorf("after re-enable+reload, refactor should be on (disabled=%v enabled=%v)", got.Skills.Disabled, got.Skills.Enabled)
+	if !skillEnabledIn(got, "refactor", "embedded", nil) {
+		t.Errorf("after re-enable+reload, refactor should be on (embedded_enabled=%v disabled=%v enabled=%v)", got.Skills.EmbeddedEnabled, got.Skills.Disabled, got.Skills.Enabled)
 	}
-	if !skillEnabled(got, "qa-e2e", nil) {
+	if !skillEnabledIn(got, "qa-e2e", "local", nil) {
 		t.Errorf("after re-enable+reload, qa-e2e should be on (disabled=%v enabled=%v)", got.Skills.Disabled, got.Skills.Enabled)
 	}
 }
@@ -251,7 +275,7 @@ func TestConfigMenu_SkillAllowListSurvivesDisableReenable(t *testing.T) {
 	}
 
 	// Initially: allow-list active — review is implicitly off.
-	if got := reload(); skillEnabled(got, "review", nil) {
+	if got := reload(); skillEnabledIn(got, "review", "embedded", nil) {
 		t.Fatal("review should be off under allow-list [refactor]")
 	}
 
@@ -262,17 +286,17 @@ func TestConfigMenu_SkillAllowListSurvivesDisableReenable(t *testing.T) {
 
 	// Disable refactor explicitly, then re-enable it.
 	sr.onSel("refactor", true)
-	if got := reload(); skillEnabled(got, "refactor", nil) {
+	if got := reload(); skillEnabledIn(got, "refactor", "embedded", nil) {
 		t.Error("refactor should be off after disable+reload")
 	}
 	sr.onSel("refactor", true)
 	got := reload()
-	if !skillEnabled(got, "refactor", nil) {
+	if !skillEnabledIn(got, "refactor", "embedded", nil) {
 		t.Error("refactor should be on after re-enable+reload")
 	}
 	// The allow-list must be restored: review must still be off. If the
 	// round-trip deleted skills.enabled, review flips on — the state loss.
-	if skillEnabled(got, "review", nil) {
+	if skillEnabledIn(got, "review", "embedded", nil) {
 		t.Errorf("review flipped on after disable/re-enable round trip; allow-list was lost (enabled=%v disabled=%v)",
 			got.Skills.Enabled, got.Skills.Disabled)
 	}
@@ -319,7 +343,9 @@ func TestConfigMenu_SkillToggleLocalPersistsToProject(t *testing.T) {
 }
 
 // TestSkillEnableDisableCommand verifies /skill:enable and /skill:disable
-// toggle the skill and persist the change to the correct config layer.
+// toggle the skill and persist the change to the correct config layer. Embedded
+// skills are OFF by default, so their round trip is enable (opt-in written) →
+// disable (opt-in removed); file skills keep the Disabled-entry semantics.
 func TestSkillEnableDisableCommand(t *testing.T) {
 	var buf strings.Builder
 	ctx := skillTestContext(&buf)
@@ -333,28 +359,27 @@ func TestSkillEnableDisableCommand(t *testing.T) {
 	homeCfg := filepath.Join(os.Getenv("HOME"), ".goa", "config.yaml")
 	projectCfg := filepath.Join(projectDir, ".goa", "config.yaml")
 
-	// Disable an embedded skill → home config.
-	assertSkillToggle(t, ctx, "disable", "refactor", false)
+	// Embedded skill, off by default: enable → HOME opt-in, disable → removed.
+	assertSkillToggle(t, ctx, "enable", "refactor", "embedded", true)
 	assertFileMentions(t, homeCfg, "refactor", true)
 
-	// Re-enable it → home key removed.
-	assertSkillToggle(t, ctx, "enable", "refactor", true)
+	assertSkillToggle(t, ctx, "disable", "refactor", "embedded", false)
 	assertFileMentions(t, homeCfg, "refactor", false)
 
 	// Disable a local skill → project config.
-	assertSkillToggle(t, ctx, "disable", "qa-e2e", false)
+	assertSkillToggle(t, ctx, "disable", "qa-e2e", "local", false)
 	assertFileMentions(t, projectCfg, "qa-e2e", true)
 }
 
 // assertSkillToggle runs /skill:<verb> <name> and asserts the resulting
-// effective enablement matches want.
-func assertSkillToggle(t *testing.T, ctx core.Context, verb, name string, want bool) {
+// effective enablement for the given source matches want.
+func assertSkillToggle(t *testing.T, ctx core.Context, verb, name, source string, want bool) {
 	t.Helper()
 	cmd := &SkillsCommand{}
 	if err := cmd.Run(ctx, []string{verb, name}); err != nil {
 		t.Fatalf("%s %s: %v", verb, name, err)
 	}
-	if got := skillEnabled(ctx.Config, name, nil); got != want {
+	if got := skillEnabledIn(ctx.Config, name, source, nil); got != want {
 		t.Errorf("%s %s: enabled = %v, want %v", verb, name, got, want)
 	}
 }
@@ -562,21 +587,25 @@ func realRegistrySkillContext(t *testing.T) (*core.Context, *config.Config, *Ski
 }
 
 func disableRealSkills(t *testing.T, ctx *core.Context, cfg *config.Config, cmd *SkillsCommand, dir string) {
-	if err := cmd.Run(*ctx, []string{"disable", "refactor"}); err != nil {
-		t.Fatal(err)
-	}
-	if skillEnabled(cfg, "refactor", nil) {
-		t.Error("refactor should be disabled")
-	}
+	// Embedded skills are OFF by default, so they start disabled and this call is
+	// the explicit no-op path; local-skill (file) starts on and must be turned off.
 	if err := cmd.Run(*ctx, []string{"disable", "local-skill"}); err != nil {
 		t.Fatal(err)
 	}
-	if skillEnabled(cfg, "local-skill", nil) {
+	if skillEnabledIn(cfg, "local-skill", "local", nil) {
 		t.Error("local-skill should be disabled")
+	}
+	if err := cmd.Run(*ctx, []string{"disable", "refactor"}); err != nil {
+		t.Fatal(err)
+	}
+	if skillEnabledIn(cfg, "refactor", "embedded", nil) {
+		t.Error("refactor should be disabled (embedded skills are off by default)")
 	}
 	reloaded := skills.NewSkillRegistry([]string{dir})
 	reloaded.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	reloaded.SetDisabled(cfg.Skills.Disabled)
+	reloaded.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
+	reloaded.SetEmbeddedEnabled(cfg.Skills.EmbeddedEnabled)
 	if err := reloaded.LoadAll(); err != nil {
 		t.Fatal(err)
 	}
@@ -589,11 +618,14 @@ func disableRealSkills(t *testing.T, ctx *core.Context, cfg *config.Config, cmd 
 }
 
 func enableRealSkills(t *testing.T, ctx *core.Context, cfg *config.Config, cmd *SkillsCommand, dir string) {
+	// Embedded and file skills are both re-enabled through their own rules:
+	// refactor via the embedded opt-in, local-skill by clearing its Disabled entry.
+	reEnablingSources := map[string]string{"refactor": "embedded", "local-skill": "local"}
 	for _, name := range []string{"refactor", "local-skill"} {
 		if err := cmd.Run(*ctx, []string{"enable", name}); err != nil {
 			t.Fatal(err)
 		}
-		if !skillEnabled(cfg, name, nil) {
+		if !skillEnabledIn(cfg, name, reEnablingSources[name], nil) {
 			t.Errorf("%s should be re-enabled", name)
 		}
 	}
@@ -668,50 +700,58 @@ func TestSkillSourceForToggle(t *testing.T) {
 // TestSetSkillEnabled verifies the in-memory list transitions for toggles,
 // including allowlist (Enabled non-empty) semantics.
 // TestSetSkillEnabled_EmbeddedRouting verifies the embedded-scoped toggle
-// routing (embedded default-off except telegram): enabling a
-// default-off embedded skill opts it in via EmbeddedEnabled WITHOUT touching
-// the global Enabled allowlist; disabling removes the opt-in; disabling the
-// default-ON telegram writes an explicit Disabled entry.
+// routing now that ALL embedded skills are default-off: enabling an embedded
+// skill opts it in via EmbeddedEnabled WITHOUT touching the global Enabled
+// allowlist (which would suppress file skills); disabling drops the opt-in and
+// writes no Disabled entry, so a later enable cannot be shadowed by a stale pin.
+// Enabling also clears a legacy Disabled entry (configs written under the old
+// telegram-default-ON policy).
 func TestSetSkillEnabled_EmbeddedRouting(t *testing.T) {
 	// Enable a default-off embedded skill: EmbeddedEnabled grows, Enabled stays
 	// empty (no global allowlist), Disabled untouched.
 	cfg := &config.Config{}
-	setSkillEnabled(cfg, "review", true, false, true, true)
+	setSkillEnabled(cfg, "review", true, false, true)
 	if !stringInSlice(cfg.Skills.EmbeddedEnabled, "review") {
-		t.Errorf("enabling default-off embedded skill should add to EmbeddedEnabled, got %v", cfg.Skills.EmbeddedEnabled)
+		t.Errorf("enabling an embedded skill should add to EmbeddedEnabled, got %v", cfg.Skills.EmbeddedEnabled)
 	}
 	if len(cfg.Skills.Enabled) != 0 {
 		t.Errorf("enabling embedded skill must not activate the global allowlist, got %v", cfg.Skills.Enabled)
 	}
 
-	// Disable it again: the opt-in is dropped; no Disabled entry needed.
-	setSkillEnabled(cfg, "review", false, false, true, true)
+	// Disable it again: the opt-in is dropped; no Disabled entry is written.
+	setSkillEnabled(cfg, "review", false, false, true)
 	if stringInSlice(cfg.Skills.EmbeddedEnabled, "review") {
-		t.Errorf("disabling default-off embedded skill should drop the opt-in, got %v", cfg.Skills.EmbeddedEnabled)
+		t.Errorf("disabling an embedded skill should drop the opt-in, got %v", cfg.Skills.EmbeddedEnabled)
 	}
 	if stringInSlice(cfg.Skills.Disabled, "review") {
-		t.Errorf("disabling a default-off embedded skill needs no Disabled entry, got %v", cfg.Skills.Disabled)
+		t.Errorf("disabling an embedded skill needs no Disabled entry, got %v", cfg.Skills.Disabled)
 	}
 
-	// Disable the default-ON telegram: an explicit Disabled entry is required.
-	setSkillEnabled(cfg, "telegram", false, false, true, false)
-	if !stringInSlice(cfg.Skills.Disabled, "telegram") {
-		t.Errorf("disabling default-ON telegram should add to Disabled, got %v", cfg.Skills.Disabled)
+	// Telegram is no longer special: disabling it drops the opt-in like any other
+	// embedded skill (no Disabled entry), enabling it opts back in and clears a
+	// legacy Disabled entry left by the old default-ON policy.
+	setSkillEnabled(cfg, "telegram", true, false, true)
+	cfg.Skills.Disabled = append(cfg.Skills.Disabled, "telegram") // simulate the legacy pin
+	setSkillEnabled(cfg, "telegram", false, false, true)
+	if stringInSlice(cfg.Skills.EmbeddedEnabled, "telegram") {
+		t.Errorf("disabling telegram should drop the opt-in, got %v", cfg.Skills.EmbeddedEnabled)
 	}
-	// Re-enable telegram: the Disabled entry is removed and it is opted in.
-	setSkillEnabled(cfg, "telegram", true, false, true, false)
+	setSkillEnabled(cfg, "telegram", true, false, true)
 	if stringInSlice(cfg.Skills.Disabled, "telegram") {
-		t.Error("re-enabling telegram should remove it from Disabled")
+		t.Errorf("re-enabling telegram must clear the legacy Disabled entry, got %v", cfg.Skills.Disabled)
+	}
+	if !stringInSlice(cfg.Skills.EmbeddedEnabled, "telegram") {
+		t.Errorf("re-enabling telegram must opt it in, got %v", cfg.Skills.EmbeddedEnabled)
 	}
 }
 
 func TestSetSkillEnabled(t *testing.T) {
 	cfg := &config.Config{}
-	setSkillEnabled(cfg, "refactor", false, false, false, false)
+	setSkillEnabled(cfg, "refactor", false, false, false)
 	if !stringInSlice(cfg.Skills.Disabled, "refactor") {
 		t.Error("disable should add to Disabled")
 	}
-	setSkillEnabled(cfg, "refactor", true, false, false, false)
+	setSkillEnabled(cfg, "refactor", true, false, false)
 	if stringInSlice(cfg.Skills.Disabled, "refactor") {
 		t.Error("enable should remove from Disabled")
 	}
@@ -721,12 +761,12 @@ func TestSetSkillEnabled(t *testing.T) {
 
 	// Allowlist mode: enabling adds to the allowlist.
 	cfg.Skills.Enabled = []string{"telegram"}
-	setSkillEnabled(cfg, "refactor", true, true, false, false)
+	setSkillEnabled(cfg, "refactor", true, true, false)
 	if !stringInSlice(cfg.Skills.Enabled, "refactor") {
 		t.Errorf("enable with allowlist should add to Enabled, got %v", cfg.Skills.Enabled)
 	}
 	// Disabling removes from the allowlist and adds to Disabled.
-	setSkillEnabled(cfg, "refactor", false, true, false, false)
+	setSkillEnabled(cfg, "refactor", false, true, false)
 	if stringInSlice(cfg.Skills.Enabled, "refactor") {
 		t.Error("disable should remove from Enabled")
 	}
@@ -735,7 +775,7 @@ func TestSetSkillEnabled(t *testing.T) {
 	}
 	// Re-enabling the last allow-listed skill restores membership when the
 	// caller knows the allowlist mode is active (from the persisted layer).
-	setSkillEnabled(cfg, "refactor", true, true, false, false)
+	setSkillEnabled(cfg, "refactor", true, true, false)
 	if !stringInSlice(cfg.Skills.Enabled, "refactor") {
 		t.Errorf("re-enable with active allowlist should restore Enabled, got %v", cfg.Skills.Enabled)
 	}
@@ -814,5 +854,130 @@ func TestSkillToggle_CrossSessionConsistency(t *testing.T) {
 	if len(diverged) > 0 {
 		t.Errorf("skill decisions diverge across sessions: %s\n  in-mem enabled=%v disabled=%v\n  fresh  enabled=%v disabled=%v",
 			strings.Join(diverged, ", "), cfg.Skills.Enabled, cfg.Skills.Disabled, fresh.Skills.Enabled, fresh.Skills.Disabled)
+	}
+}
+
+// TestConfigMenu_SkillsShowEmbeddedOffByDefault is the menu-level regression for
+// "all embedded skills should be disabled by default": the Skills sub-menu reports
+// 0/N on for the embedded source and every embedded entry reads "off", including
+// telegram (whose sticky body used to be injected into every session) and dream.
+func TestConfigMenu_SkillsShowEmbeddedOffByDefault(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	reg := skills.NewSkillRegistry(nil)
+	reg.SetEmbeddedFS(skills.EmbeddedSkillsFS)
+	reg.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	ctx.SkillRegistry = reg
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("skills", true)
+
+	total := len(skills.EmbeddedSkillNames(skills.EmbeddedSkillsFS))
+	wantLabel := fmt.Sprintf("0/%d on", total)
+	for _, item := range sr.options {
+		if item.Value == "embedded" && item.Description != wantLabel {
+			t.Errorf("embedded source description = %q, want %q", item.Description, wantLabel)
+		}
+	}
+
+	sr.onSel("embedded", true)
+	if len(sr.options) != total {
+		t.Fatalf("embedded list has %d entries, want all %d discoverable", len(sr.options), total)
+	}
+	seen := map[string]string{}
+	for _, o := range sr.options {
+		seen[o.Value] = o.Description
+		if o.Description != "off" {
+			t.Errorf("embedded skill %s = %q, want off by default", o.Value, o.Description)
+		}
+	}
+	for _, want := range []string{"telegram", "dream"} {
+		if _, ok := seen[want]; !ok {
+			t.Errorf("%s must be listed (so it can be enabled)", want)
+		}
+	}
+}
+
+// TestSkillToggle_ReportsRestartWhenNotApplied: skills are re-scanned by
+// ReloadHandler.ReloadSkills; when that hook is missing the running registry keeps
+// its old contents, so a toggle that could not take effect must say a restart is
+// required instead of flashing success (the user's "if it requires a restart -
+// inform the user"). Disabling is the case a static registry cannot honour.
+func TestSkillToggle_ReportsRestartWhenNotApplied(t *testing.T) {
+	cfg := &config.Config{Skills: config.SkillsConfig{EmbeddedEnabled: []string{"dream"}}}
+	ctx, sr, _, events := newMenuTestContext(t, cfg)
+	// The registry still holds dream and has no reload hook, so the disable
+	// cannot become live.
+	ctx.SkillRegistry = newRegistryKeepingEverySkill(map[string]*skills.Skill{
+		"dream": embeddedTestSkill("dream", "Dream consolidation"),
+	})
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("skills", true)
+	sr.onSel("embedded", true)
+	sr.onSel("dream", true) // seeded as ON → this toggle disables it
+
+	flashes := drainFlashTexts(events)
+	if len(flashes) == 0 {
+		t.Fatal("toggle must flash an outcome")
+	}
+	last := flashes[len(flashes)-1]
+	if !strings.Contains(last, "restart") {
+		t.Errorf("flash = %q, want an explicit restart notice", last)
+	}
+	if strings.Contains(last, "Skill dream off") {
+		t.Errorf("flash must not claim success when nothing changed live: %q", last)
+	}
+	if !stringInSlice(cfg.Skills.EmbeddedEnabled, "dream") == false {
+		// The opt-in must have been dropped in the config even though the live
+		// registry still holds the skill: the change applies on restart.
+		t.Errorf("config opt-in = %v, want dream removed", cfg.Skills.EmbeddedEnabled)
+	}
+}
+
+// TestSkillToggle_AppliedInSessionClaimsSuccess is the counterpart: with a reload
+// handler that DOES apply the change, the normal flash is kept (no false restart
+// notice).
+func TestSkillToggle_AppliedInSessionClaimsSuccess(t *testing.T) {
+	cfg := &config.Config{Skills: config.SkillsConfig{EmbeddedEnabled: []string{"dream"}}}
+	ctx, sr, _, events := newMenuTestContext(t, cfg)
+	ctx.SkillRegistry = newToggleableSkillRegistry(map[string]*skills.Skill{
+		"dream": embeddedTestSkill("dream", "Dream consolidation"),
+	})
+	ctx.ReloadHandler = &stubReloadHandler{reg: ctx.SkillRegistry, removing: true}
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("skills", true)
+	sr.onSel("embedded", true)
+	sr.onSel("dream", true) // seeded as ON → disable, and the reload applies it
+
+	flashes := drainFlashTexts(events)
+	if len(flashes) == 0 {
+		t.Fatal("toggle must flash an outcome")
+	}
+	last := flashes[len(flashes)-1]
+	if last != "Skill dream off" {
+		t.Errorf("flash = %q, want the normal success flash", last)
+	}
+}
+
+// drainFlashTexts returns the flash texts queued on the chat event bus.
+func drainFlashTexts(events *event.Bus) []string {
+	var out []string
+	for {
+		select {
+		case ev := <-events.Chat:
+			if ev.Flash != nil {
+				out = append(out, ev.Flash.Text)
+			}
+		default:
+			return out
+		}
 	}
 }

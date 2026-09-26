@@ -46,7 +46,7 @@ func (c *DreamCommand) Run(ctx core.Context, args []string) error {
 
 	skill, ok := loadDreamSkill(ctx.SkillRegistry)
 	if !ok {
-		return fmt.Errorf("dream skill not found")
+		return fmt.Errorf("%s", DreamSkillDisabledMessage)
 	}
 
 	if len(args) > 0 && args[0] == "status" {
@@ -149,6 +149,15 @@ func loadDreamSkill(reg core.SkillRegistry) (*skills.Skill, bool) {
 	}
 	return reg.Get("dream")
 }
+
+// DreamSkillDisabledMessage is returned when the embedded dream skill is not
+// loaded. Dream is OFF by default like every other embedded skill, so the message
+// must name the switch that turns it back on (and the restart caveat) instead of
+// the old bare "dream skill not found", which read as a bug. Exported so the CLI
+// mode (internal/app) reports the identical, actionable text.
+const DreamSkillDisabledMessage = "dream is disabled (embedded skills are off by default) — enable it with `/config → Skills → Embedded → dream` " +
+	"or by adding `skills.embedded_enabled: [dream]` to your config (~/.goa/config.yaml); a restart may be required if the " +
+	"in-session reload is unavailable"
 
 func sessionStoreForDream(store core.SessionStoreAPI) *core.SessionStore {
 	if store == nil {

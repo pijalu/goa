@@ -313,3 +313,57 @@ func (f *fakeDocsProvider) FindDocFile(query string) (core.DocInfo, error) {
 	}
 	return core.DocInfo{}, f.findErr
 }
+
+// newRegistryKeepingEverySkill returns a registry whose contents never change:
+// Get keeps reporting every skill, so a toggle that asks to disable one cannot
+// become live (the "no in-session reload" case) and a disable-looking success
+// would be a lie.
+func newRegistryKeepingEverySkill(skills map[string]*skills.Skill) *fakeSkillRegistry {
+	return &fakeSkillRegistry{skills: skills}
+}
+
+// toggleableSkillRegistry models a registry that CAN apply a toggle in place:
+// Remove drops the skill so a later Get misses, mirroring what ReloadSkills
+// produces when a skill is disabled.
+type toggleableSkillRegistry struct {
+	*fakeSkillRegistry
+}
+
+func newToggleableSkillRegistry(skills map[string]*skills.Skill) *toggleableSkillRegistry {
+	return &toggleableSkillRegistry{fakeSkillRegistry: newSkillRegistry(skills)}
+}
+
+// skillRemover is implemented by registries whose contents can be dropped, so a
+// stub reload handler does not need to know the concrete registry type.
+type skillRemover interface{ removeAllSkills() }
+
+// removeAllSkills empties the fake registry (used by stubReloadHandler to model
+// the effect of a real re-scan after a skill is disabled).
+func (f *fakeSkillRegistry) removeAllSkills() {
+	for name := range f.skills {
+		delete(f.skills, name)
+	}
+}
+
+// stubReloadHandler applies a toggle to the registry it was given: disabling
+// drops its contents, enabling leaves them. It is the minimal ReloadHandler a
+// menu toggle needs to become live.
+type stubReloadHandler struct {
+	reg      core.SkillRegistry
+	removing bool
+}
+
+func (h *stubReloadHandler) ReloadSkills() (int, error) {
+	if h.removing {
+		if r, ok := h.reg.(skillRemover); ok {
+			r.removeAllSkills()
+		}
+	}
+	if h.reg != nil {
+		return len(h.reg.List()), nil
+	}
+	return 0, nil
+}
+
+func (h *stubReloadHandler) ReloadContext() (int, error) { return 0, nil }
+func (h *stubReloadHandler) ReloadPlugins() error        { return nil }

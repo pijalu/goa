@@ -134,75 +134,6 @@ Gate (run separately, post-change): `go vet ./...` clean · `staticcheck ./...`
 `gocyclo -over 12 .` = only the two pre-existing entries ·
 `go test -count=1 -race -cover ./...` → 87 packages ok, 0 FAIL (exit 0),
 `internal/agentic` 87.9%. Issue entry ready to archive per guideline 4.
-## Embedded skills are active by default (telegram sticky-injected into every session; dream reported ON)
-Observed: the embedded default-off policy keeps two exceptions
-(`skills/loader_loading.go:268-301`): `DefaultOnEmbeddedSkill = "telegram"` stays
-**ON** by default, and hidden/internal embedded skills (dream) are excluded from
-the default-off set. Consequences:
-
-- `skills/telegram/SKILL.md` is `inline: true`, `category: knowledge`,
-  `sticky: true`, so the ON-by-default telegram skill is persisted into EVERY
-  agent's history by the sticky-skill provider (`internal/app/subsystems.go`
-  `stickySkillProvider`) and is advertised in `<available_skills>` — a fresh
-  install silently forces telegraphic thinking/communication on the user.
-- The hidden dream skill is loaded and reported ON in
-  `/config → Skills → Embedded` (`skillEnabled`/`EmbeddedDefaultDisabled`), even
-  though memory consolidation is a user-invoked feature.
-
-Expected: **every** embedded skill is OFF by default — including telegram and
-dream — and the user opts in explicitly (`skills.embedded_enabled`, or
-`/config → Skills → Embedded`). Dream stays off by default; when enabling it
-cannot take effect without a restart, the user is told so instead of the toggle
-silently doing nothing. File-based (home/project/plugin) skills keep their
-current semantics.
-
-### Fix plan (test approach + validation)
-1. **skills**: make the default-off set cover every embedded skill. Remove the
-   `DefaultOnEmbeddedSkill` telegram exception and the hidden-skill exclusion
-   from `DefaultEmbeddedOffNames`; the set becomes "all embedded skills",
-   derived from the embedded FS (no hardcoded names).
-   *Test*: `TestDefaultEmbeddedOffNames_CoversEveryEmbeddedSkill` — every name
-   from `EmbeddedSkillNames(EmbeddedSkillsFS)` is in the default-off set,
-   including `telegram` and `dream`;
-   `TestShippedEmbeddedSkills_AllOffByDefault` — a registry wired like
-   `newSkillRegistry` (embedded FS + default-off set) has an EMPTY `List()` and
-   an empty `StickyBodies()` for a default config; `TestEmbeddedSkill_OptIn…`
-   — `embedded_enabled: [telegram]` loads exactly telegram (sticky body present)
-   and `embedded_enabled: [dream]` loads dream, while other embedded skills stay
-   off.
-2. **skills/commands**: `IsEmbeddedDefaultOff` stays true for every embedded
-   skill, so a disable is "drop the opt-in" (`setSkillEnabled`); keep the
-   `Disabled` honouring so configs that pinned `skills.disabled: [telegram]`
-   under the old default-ON policy stay off and can still be re-enabled.
-   *Test*: extend `core/commands/config_skills_test.go` — telegram shows off,
-   toggling ON writes `skills.embedded_enabled: [telegram]` (never a stale
-   `disabled` entry), toggling OFF removes it.
-3. **app**: `ReloadHandler.ReloadSkills` must refresh `Skills.EmbeddedEnabled`
-   from the reloaded (on-disk) config like it already does for
-   `Enabled/Disabled/Sticky/StickyOff`, so the running session and a freshly
-   started one compute identical skill sets; after the reload the toggle checks
-   whether the requested state is actually live and, when it is not (no reload
-   handler / skill could not load), informs the user that a **restart is
-   required** instead of flashing success.
-   *Test*: `TestReloadSkills_PicksUpEmbeddedEnabled`, and a toggle test
-   asserting the restart notice when no `ReloadHandler` is wired.
-4. **dream**: both dream entry points (`DreamCommand.Run`,
-   `internal/app/dream.go runDream`) report an actionable error when the skill is
-   off by default — name the setting (`skills.embedded_enabled: [dream]` or
-   `/config → Skills → Embedded`) and state that a restart may be required —
-   instead of the bare "dream skill not found".
-   *Test*: `TestDreamCommand_SkillDisabledReportsHowToEnable` (no registry entry
-   → message names the opt-in and the restart caveat) plus a positive test that
-   the command runs when the skill is opted in.
-5. **docs/config**: update the misleading comments that still say
-   "all embedded skills except telegram" (`skills/loader.go`,
-   `skills/loader_loading.go`, `internal/app/subsystems_skills.go`,
-   `core/commands/config_skills.go`, `config/config_features.go`) and set
-   `telegram.enabled: false` in the embedded default config so the shipped
-   config no longer advertises the style injection as on.
-6. **Gate**: `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
-   `gocyclo -over 12 .`, `go test -count=1 -race -cover ./...` (separately); then
-   archive this entry per guideline 4 and commit.
 
 ## The goal tool is disabled by default
 Observed: `tools.enabled.goal` is absent from the embedded default config
@@ -355,3 +286,113 @@ no-op); the command path and the `/config` menu always agree.
    required".
 5. **Gate**: separate vet/staticcheck/gocognit/gocyclo/race-cover runs; archive +
    commit.
+
+## Vercel AI Gateway: no way to add an API key
+Observed: the Vercel AI Gateway provider cannot be given a credential. Goa ships
+the provider in its catalog — `internal/agentic/provider/models/api.json` has
+`"vercel": {"id": "vercel", "name": "Vercel AI Gateway", "npm": "@ai-sdk/gateway",
+"env": ["AI_GATEWAY_API_KEY"], ...}` — and models can be selected for it, but:
+
+- `/login` only offers the hardcoded list `loginProviders = ["copilot", "github",
+  "openai", "openai-codex", "codex", "anthropic", "kimi"]`
+  (`core/commands/login.go:108`) — vercel (and every other catalog provider) is
+  absent from the list, from completions and from `/login` discovery, so there is
+  no advertised way to store its key;
+- the setup/provider flow never asks for a key at all: `core/commands/setup.go`
+  contains no API-key prompt, and neither `/provider` nor the wizard prompts when
+  a selected provider has no credential;
+- the catalog's `env` names are dead data: no code reads them
+  (`grep '"env"'` finds no consumer), so `AI_GATEWAY_API_KEY` in the environment
+  is ignored;
+- key resolution is only `ProviderConfig.APIKey` → auth store
+  (`provider/manager_auth.go:14-34 resolveAPIKey`, used by
+  `provider/manager_streamopts.go effectiveAPIKey`), with no environment fallback.
+
+Net effect: selecting Vercel AI Gateway leaves the request unauthenticated (401)
+with no prompt and no documented alternative — the user cannot add the key.
+
+### Additional evidence — export agent-mcp/.goa/exports/goa-export-20260926-113044.zip
+
+The failure is worse than a missing key: the request is sent to the WRONG HOST,
+which is why the user sees a model error rather than an auth error.
+
+- `config/project.yaml` / `config/user.yaml`: `active_provider: vercel`,
+  `active_model: stealth/pixel-canary`, the `vercel` provider entry has
+  **`endpoint: ""`**, and the model entry correctly declares
+  `provider: vercel` / `model: stealth/pixel-canary`;
+- `logs/http.jsonl` (single request):
+  `POST https://api.openai.com/v1/chat/completions` with
+  `"model": "stealth/pixel-canary"` → **400 invalid model ID** (OpenAI does not
+  know a Vercel-namespaced model).
+
+Cause: a provider entry with an empty endpoint silently falls back to the OpenAI
+host (`internal/agentic/provider/runtime.go:246-252` returns
+`https://api.openai.com/v1/chat/completions`), and nothing supplies a per-provider
+default base URL for catalog-only gateways. Vercel AI Gateway also has no
+credential prompt, so even after fixing the host the request has no key (the
+user's report). Two further gaps this evidence pins down:
+
+- the catalog carries no base URL for these gateways (only `npm`/`env`), so the
+  default must come from an explicit per-provider/gateway mapping, not from the
+  OpenAI fallback;
+- with an empty endpoint there is no diagnostic: the request goes out to another
+  vendor's API instead of failing with "provider vercel has no endpoint".
+Expected: any provider Goa can select can also be given a key. Concretely
+(a) the sign-on/key surface is derived from the provider catalog instead of a
+hardcoded list, so vercel (and future catalog providers) appear in `/login`,
+`/setup` and `/provider`; (b) selecting or adding a provider with no credential
+asks for the API key, naming the catalog's env var as a hint
+(`AI_GATEWAY_API_KEY`) and offering to read it from the environment; (c) the key
+resolution chain honors that env var when neither config nor auth store has one;
+(d) when no credential is available the failure is actionable (names the provider
+and the ways to add a key) rather than a bare 401.
+
+### Fix plan (test approach + validation)
+1. **catalog-driven auth providers** (`quality: single source of truth`): expose
+the provider catalog's id/name/env (from `internal/agentic/provider/models`,
+where `api.json` is loaded) and derive the `/login` provider list + completions
+from it, keeping the curated entries' richer auth kinds (oauth/device-code) as a
+capability overlay. `loginProviders` stops being the gate for "can I add a key".
+   *Test*: `TestLoginProviders_IncludeCatalogProviders` (vercel present with
+   `apikey` kind), `TestLoginCompletions_CatalogProvider`,
+   `TestLogin_AliasStillResolves` (codex/openai behaviour unchanged).
+2. **prompt for a missing key**: when a provider is selected/added without a
+credential, `core/commands/setup.go` and the `/provider` path prompt for the key
+(pre-filled from the catalog env var when set), storing it via
+`auth.Store.SetAPIKey`; skip the prompt when config/env/store already has one.
+   *Test*: `TestSetupProvider_PromptsForKeyWhenMissing`,
+   `TestSetupProvider_SkipsPromptWhenKeyPresent`,
+   `TestSetupProvider_EnvVarPrefill`.
+3. **env fallback in resolution**: `provider.resolveAPIKey` (or
+`effectiveAPIKey`) gains the catalog env-var fallback after config → auth store,
+so headless/CI use works too.
+   *Test*: `TestResolveAPIKey_EnvFallback` (env set → key used; config/auth win
+   over env; no key anywhere → empty).
+4. **actionable failure**: when a request goes out with no credential, surface a
+message naming the provider and the ways to add a key (config `api_key`,
+`/login:<provider>:apikey`, env var).
+   *Test*: `TestProviderRequestWithoutCredential_ActionableError`.
+5. **docs**: document the catalog `env` names and the `/login:<provider>:apikey`
+path in the providers doc (embedded markdown), so "where do I put the key?" has
+an answer without reading code.
+6. **default endpoint for gateway providers** (from the export evidence above):
+give catalog-only gateways a real default base URL — for `vercel` the AI Gateway
+(`https://ai-gateway.vercel.sh/v1`) — so an empty `endpoint` never routes to
+`api.openai.com`; and when a provider ends up with no endpoint at all, fail with
+an actionable error naming the provider instead of silently calling another
+vendor. The model id must be passed through unchanged (`stealth/pixel-canary` is
+valid ON the gateway).
+   *Test*: `TestProviderDefaultEndpoint_VercelGateway` (empty endpoint → gateway
+   host, model id untouched), `TestProviderWithoutEndpoint_FailsActionably` (no
+   silent OpenAI fallback for a non-OpenAI provider), plus an
+   `internal/agentic/provider` test asserting the resolved URL for a vercel model
+   is the gateway's chat-completions path.
+7. **end-to-end acceptance**: with only `AI_GATEWAY_API_KEY` in the environment
+and `active_provider: vercel`, a request must go to the gateway host with the
+catalog model id (succeeding, or failing with a gateway-side auth/permission
+error — never "invalid model ID" from another vendor).
+   *Test*: `TestVercelGateway_RequestRouting` (fake transport asserts host +
+   model + Authorization header derived from the env key).
+8. **Gate**: `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
+`gocyclo -over 12 .`, `go test -count=1 -race -cover ./...` (separately); archive
++ commit.

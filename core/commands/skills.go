@@ -181,7 +181,7 @@ func enableSkill(ctx core.Context, args []string) error {
 		writeFmt(ctx, "Skill not found: %s. Use /skills to list available skills.\n", name)
 		return nil
 	}
-	if ctx.Config != nil && skillEnabled(ctx.Config, name, ctx.SkillRegistry) {
+	if ctx.Config != nil && skillEnabledIn(ctx.Config, name, skillSourceForToggle(ctx, name), ctx.SkillRegistry) {
 		writeFmt(ctx, "Skill %s is already enabled.\n", name)
 		return nil
 	}
@@ -203,7 +203,7 @@ func disableSkill(ctx core.Context, args []string) error {
 		writeFmt(ctx, "Skill not found: %s. Use /skills to list available skills.\n", name)
 		return nil
 	}
-	if ctx.Config != nil && !skillEnabled(ctx.Config, name, ctx.SkillRegistry) {
+	if ctx.Config != nil && !skillEnabledIn(ctx.Config, name, skillSourceForToggle(ctx, name), ctx.SkillRegistry) {
 		writeFmt(ctx, "Skill %s is already disabled.\n", name)
 		return nil
 	}

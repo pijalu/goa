@@ -242,8 +242,9 @@ type SkillRegistry struct {
 	trustChecker TrustChecker // nil means all filesystem skills are trusted
 	disabled     map[string]bool
 	enabled      map[string]bool // non-nil → allowlist; only listed skills load
-	// embeddedDefaultDisabled lists embedded skills that are OFF by default
-	// (all embedded skills except telegram). A default-off skill
+	// embeddedDefaultDisabled lists embedded skills that are OFF by default:
+	// every embedded skill, telegram and the hidden/internal ones included. A
+	// default-off skill
 	// loads only when the user explicitly opts it back in via the embedded
 	// opt-in list (embeddedEnabled) or the global Enabled allowlist. It
 	// applies ONLY to the embedded source — home/project/plugin file skills
