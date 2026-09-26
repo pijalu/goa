@@ -12,7 +12,9 @@ import (
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
+	"github.com/pijalu/goa/internal/agentic/provider/models"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/auth"
 	"github.com/pijalu/goa/plugins"
@@ -103,9 +105,103 @@ func (c *LoginCommand) LongHelp() string {
 	return help.LongHelp(c.Name())
 }
 
-// loginProviders lists the providers that expose a sign-on flow, in display
-// order. openai-codex is the canonical Codex entry; codex is kept as an alias.
-var loginProviders = []string{"copilot", "github", "openai", "openai-codex", "codex", "anthropic", "kimi"}
+// curatedLoginProviders lists the providers whose sign-on flows the bare
+// catalog cannot express — OAuth and device-code — in display order. It is a
+// capability OVERLAY on top of the catalog, not the boundary of what can be
+// authenticated: /login offers every catalog provider too, because a provider
+// Goa can select must always be giveable a credential (bugs.md "Vercel AI
+// Gateway: no way to add an API key"). openai-codex is the canonical Codex
+// entry; codex is kept as a credential alias of "openai".
+var curatedLoginProviders = []string{"copilot", "github", "openai", "openai-codex", "codex", "anthropic", "kimi"}
+
+// curatedLoginNames are the display names of the curated entries. Aliases that
+// share an auth-store key are named after the credential they store.
+var curatedLoginNames = map[string]string{
+	"copilot":      "GitHub Copilot",
+	"github":       "GitHub Copilot",
+	"openai":       "OpenAI",
+	"openai-codex": "OpenAI Codex",
+	"codex":        "OpenAI Codex (alias)",
+	"anthropic":    "Anthropic",
+	"kimi":         "Moonshot",
+}
+
+// loginProvider is one sign-on option advertised by /login.
+type loginProvider struct {
+	// ID is the provider id shown in the list and typed in
+	// /login:<id>:<kind> (the auth-store key follows normalizeProviderID).
+	ID string
+	// Name is the display name.
+	Name string
+	// Kinds are the supported auth kinds, in preference order.
+	Kinds []string
+	// EnvKeys are the catalog's API-key environment variables, in priority
+	// order — the "where do I put the key" hint.
+	EnvKeys []string
+	// Curated marks the entries that carry OAuth/device-code capabilities.
+	Curated bool
+}
+
+// loginProviderList derives the sign-on surface from the provider catalog: the
+// curated entries first (they keep their richer auth kinds), then every
+// remaining catalog provider as an API-key entry. Deriving it — instead of a
+// hardcoded list — is what makes vercel and any future catalog provider
+// addressable with /login:<provider>:apikey.
+func loginProviderList() []loginProvider {
+	seen := make(map[string]bool, len(curatedLoginProviders)+len(models.CatalogProviders()))
+	out := make([]loginProvider, 0, len(curatedLoginProviders)+len(models.CatalogProviders()))
+	for _, id := range curatedLoginProviders {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, loginProvider{
+			ID:      id,
+			Name:    curatedLoginName(id),
+			Kinds:   supportedAuthKinds(normalizeProviderID(id)),
+			EnvKeys: loginEnvKeys(id),
+			Curated: true,
+		})
+	}
+	for _, cp := range models.CatalogProviders() {
+		if seen[cp.ID] {
+			continue
+		}
+		seen[cp.ID] = true
+		out = append(out, loginProvider{
+			ID:      cp.ID,
+			Name:    cp.Name,
+			Kinds:   []string{"apikey"},
+			EnvKeys: cp.EnvKeys,
+		})
+	}
+	return out
+}
+
+// curatedLoginName returns the display name of a curated entry, falling back to
+// the catalog name and finally the id itself.
+func curatedLoginName(id string) string {
+	if name, ok := curatedLoginNames[id]; ok {
+		return name
+	}
+	if def := schema.LookupProviderDefByID(id); def != nil && def.Name != "" {
+		return def.Name
+	}
+	if def := schema.LookupProviderDef(schema.Provider(normalizeProviderID(id))); def != nil && def.Name != "" {
+		return def.Name
+	}
+	return id
+}
+
+// loginEnvKeys returns the catalog env vars for an entry, including those of
+// the credential key it aliases (codex → openai).
+func loginEnvKeys(id string) []string {
+	keys := models.CatalogEnvKeys(id)
+	if alias := normalizeProviderID(id); alias != id {
+		keys = append(keys, models.CatalogEnvKeys(alias)...)
+	}
+	return keys
+}
 
 // CompleteArgs provides argument completions for providers and auth kinds.
 // prefix is the raw text after "/login:" (e.g. "openai-codex o"). When the
@@ -117,12 +213,22 @@ func (c *LoginCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgC
 		return completeAuthKinds(provider, kindPrefix)
 	}
 	var comps []core.ArgCompletion
-	for _, p := range loginProviders {
-		if prefix == "" || strings.HasPrefix(p, prefix) {
-			comps = append(comps, core.ArgCompletion{Value: p, Description: "provider"})
+	for _, p := range loginProviderList() {
+		if prefix == "" || strings.HasPrefix(p.ID, prefix) {
+			comps = append(comps, core.ArgCompletion{Value: p.ID, Description: loginCompletionDesc(p)})
 		}
 	}
 	return comps
+}
+
+// loginCompletionDesc renders the hint shown next to a provider completion:
+// the catalog env var to export, or the supported auth kinds when the catalog
+// declares no env name.
+func loginCompletionDesc(p loginProvider) string {
+	if len(p.EnvKeys) > 0 {
+		return "API key: " + strings.Join(p.EnvKeys, " or ")
+	}
+	return strings.Join(p.Kinds, ", ")
 }
 
 // splitLoginPrefix splits the raw completion prefix into the provider token and
@@ -205,13 +311,59 @@ func (c *LoginCommand) listProviders(ctx uiWriter) error {
 		ctx.Writef("\n")
 	}
 	// Always advertise the available sign-on options so /login doubles as
-	// discovery, not only a view of stored credentials.
+	// discovery, not only a view of stored credentials. The curated entries
+	// (OAuth / device-code) come first; every other catalog provider follows,
+	// grouped so the list stays readable.
 	ctx.Writef("Available sign-on:\n")
-	for _, p := range loginProviders {
-		ctx.Writef("  %-14s %s\n", p, strings.Join(supportedAuthKinds(normalizeProviderID(p)), ", "))
+	var catalog []loginProvider
+	for _, p := range loginProviderList() {
+		if !p.Curated {
+			catalog = append(catalog, p)
+			continue
+		}
+		ctx.Writef("  %-14s %s\n", p.ID, strings.Join(p.Kinds, ", "))
+	}
+	if len(catalog) > 0 {
+		ctx.Writef("\nCatalog providers (API key):\n%s\n", wrapProviderIDs(catalog))
+		ctx.Writef("Run /login:<provider>:apikey to store the key; the catalog's env var (e.g. %s) is read automatically.\n",
+			envHintExample(catalog))
 	}
 	ctx.Writef("Run /login:<provider>:<kind> to authenticate.\n")
 	return nil
+}
+
+// wrapProviderIDs renders the catalog provider ids as comma-separated wrapped
+// lines so discovering "can I give provider X a key?" stays readable in the
+// chat viewport.
+func wrapProviderIDs(ps []loginProvider) string {
+	const width = 72
+	var b strings.Builder
+	lineLen := 0
+	for i, p := range ps {
+		entry := p.ID
+		if i > 0 {
+			entry = ", " + entry
+		}
+		if lineLen > 0 && lineLen+len(entry) > width {
+			b.WriteString("\n  ")
+			lineLen = 2
+			entry = p.ID
+		}
+		b.WriteString(entry)
+		lineLen += len(entry)
+	}
+	return "  " + b.String()
+}
+
+// envHintExample returns a concrete env-var example for the catalog section
+// hint: the first provider that declares one.
+func envHintExample(ps []loginProvider) string {
+	for _, p := range ps {
+		if len(p.EnvKeys) > 0 {
+			return p.EnvKeys[0]
+		}
+	}
+	return "PROVIDER_API_KEY"
 }
 
 func (c *LoginCommand) listKindsOrStartDefault(ctx core.Context, provider, display string) error {

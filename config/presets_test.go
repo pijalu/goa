@@ -156,6 +156,7 @@ func TestPresetProviders_StableOrder(t *testing.T) {
 		"openai", "openai-codex", "lmstudio", "ollama", "openrouter",
 		"opencode", "opencode-go", "deepseek", "kimi", "kimi-code",
 		"zai", "zai-api", "poolside",
+		"vercel",
 		"anthropic", "google", "mistral",
 		"groq", "xai", "together", "fireworks", "perplexity", "github",
 	}

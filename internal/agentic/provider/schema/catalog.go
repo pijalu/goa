@@ -434,6 +434,20 @@ var providerCatalog = []ProviderDef{
 	},
 	// --- providers known to agentic but without a wizard preset ---
 	{
+		// Vercel AI Gateway (models.dev key "vercel", npm "@ai-sdk/gateway"): an
+		// OpenAI-compatible gateway in front of many vendors. Its models.dev
+		// entry carries only npm/env — no base URL — so without this catalog
+		// entry an empty provider endpoint fell through to the OpenAI host and
+		// the gateway's vendor-namespaced model id was rejected there with
+		// "invalid model id" (bugs.md, export 2026-09-26-113044). The chat
+		// surface is {BaseURL}/chat/completions and the credential comes from
+		// AI_GATEWAY_API_KEY (the catalog's own env name).
+		ID: "vercel", Name: "Vercel AI Gateway", Provider: ProviderVercel,
+		API: ApiOpenAICompletions, BaseURL: "https://ai-gateway.vercel.sh/v1",
+		EnvKeys: []string{"AI_GATEWAY_API_KEY"}, ModelsDevKey: "vercel",
+		URLPatterns: []string{"ai-gateway.vercel.sh", "gateway.vercel.sh"},
+	},
+	{
 		ID: "anthropic", Name: "Anthropic", Provider: ProviderAnthropic,
 		API: ApiAnthropicMessages, BaseURL: "https://api.anthropic.com",
 		EnvKeys: []string{"ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}, ModelsDevKey: "anthropic",

@@ -571,16 +571,25 @@ application actions). Shortcuts come from the default keybinding set.
   /hotkeys     Show the shortcut table
 ```
 
-### `/login` — OAuth login for providers
+### `/login` — provider credentials (OAuth sign-in and API keys)
 
 ```
-Usage: /login[:<provider>[:<token>]]
+Usage: /login[:<provider>[:<kind>[:<token>]]]
 Aliases: (none)
 
-Manage OAuth tokens for authentication-required providers.
-  /login                    → List stored providers
-  /login:<provider>         → Start OAuth login for a provider
-  /login:<provider>:<token> → Store a token for a provider
+Manage credentials for providers: OAuth sign-in, device-code sign-in, and API
+keys. ANY provider in the catalog can be given a key — including gateways with
+no dedicated sign-on flow (e.g. /login:vercel:apikey).
+  /login                          → List stored providers + the sign-on surface
+  /login:<provider>               → Default (or only) sign-on flow for a provider
+  /login:<provider>:apikey        → Store an API key for a provider
+  /login:<provider>:oauth         → Start OAuth sign-in (copilot/github/openai-codex)
+  /login:<provider>:oauth:device  → Headless device-code sign-in
+  /login:<provider>:<token>       → Legacy form: stored as an API key
+
+Credential resolution order: provider `api_key` in config → auth store
+(~/.goa/tokens.json) → the provider's catalog environment variable (e.g.
+AI_GATEWAY_API_KEY for vercel, OPENROUTER_API_KEY for openrouter).
 ```
 
 ### `/logout` — Clear provider tokens

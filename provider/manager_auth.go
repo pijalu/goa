@@ -7,30 +7,60 @@ package provider
 import (
 	"context"
 
+	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
 	"github.com/pijalu/goa/internal/auth"
 )
 
+// resolveAPIKey resolves the API key for a provider id from the auth store
+// (API key first, then OAuth access token), falling back to the provider
+// catalog's environment variables when the store holds nothing. The env
+// fallback comes LAST so an explicit credential always wins; it is what makes
+// headless/CI use work with only (for example) AI_GATEWAY_API_KEY exported
+// (bugs.md "Vercel AI Gateway: no way to add an API key").
 func resolveAPIKey(store *auth.Store, providerID string) string {
 	// Codex catalog provider shares the "openai" credential.
 	if sid := codexStoreID(providerID); sid != "" {
 		providerID = sid
 	}
-	if key, ok := store.GetAPIKey(providerID); ok {
-		return key
+	if store != nil {
+		if key, ok := store.GetAPIKey(providerID); ok && key != "" {
+			return key
+		}
+		if tokens, ok := store.GetOAuth(providerID); ok {
+			if key := oauthAccessToken(store, providerID, tokens); key != "" {
+				return key
+			}
+		}
 	}
-	tokens, ok := store.GetOAuth(providerID)
-	if !ok {
+	return envAPIKey(providerID)
+}
+
+// oauthAccessToken returns the OAuth access token for a stored credential,
+// refreshing it when possible. Without a refresh token (or a known provider) we
+// cannot refresh: return the current access token as-is.
+func oauthAccessToken(store *auth.Store, providerID string, tokens *oauth.Tokens) string {
+	if tokens == nil {
 		return ""
 	}
-	// Without a refresh token (or a known provider), we cannot refresh: return
-	// the current access token as-is.
 	prov := oauthProviderFor(providerID)
 	if prov == nil || tokens.RefreshToken == "" || !tokens.IsExpired() {
 		return tokens.AccessToken
 	}
 	ts := oauth.NewTokenSource(prov, tokens)
 	return refreshAndPersist(context.Background(), prov, store, providerID, ts, tokens)
+}
+
+// envAPIKey resolves a key from the provider catalog's declared environment
+// variables (the models.dev `env` names surfaced as ProviderDef.EnvKeys). A
+// malformed value is treated as "no usable key": the wire path validates it
+// again and reports the defect.
+func envAPIKey(providerID string) string {
+	key, err := agenticprovider.GetEnvAPIKey(agenticprovider.Provider(providerID))
+	if err != nil {
+		return ""
+	}
+	return key
 }
 
 // refreshAndPersist obtains a (possibly refreshed) access token from ts and

@@ -5,10 +5,13 @@
 package provider
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/pijalu/goa/internal/agentic/provider/protocol"
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
+	"github.com/pijalu/goa/internal/agentic/provider/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -69,13 +72,26 @@ func TestCrossProviderReplay(t *testing.T) {
 	}
 }
 
+// TestGenericRuntimeForAllAPIs walks every registered protocol through the
+// generic pipeline. Each model carries an explicit endpoint: the runtime
+// refuses to guess a host for a provider it cannot place (the empty-endpoint
+// fallback to api.openai.com is what sent a gateway's namespaced model id to
+// another vendor — bugs.md "Vercel AI Gateway"), so a URL must be given.
 func TestGenericRuntimeForAllAPIs(t *testing.T) {
+	old := transport.Default()
+	defer transport.SetDefault(old)
+	// The smoke test only needs every API to reach the wire: a fast-failing
+	// transport terminates each stream instead of waiting on a parse of a body
+	// shaped for a different protocol.
+	transport.SetDefault(failingTransport{})
+
 	for _, api := range protocol.RegisteredAPIs() {
 		t.Run(string(api), func(t *testing.T) {
 			model := schema.Model{
 				ID:       "test-model",
 				Api:      api,
 				Provider: schema.ProviderCustom,
+				BaseURL:  testEndpointForAPI(api),
 			}
 			ctx := schema.Context{Messages: []schema.Message{schema.NewUserMessage("hi")}}
 			stream, err := GenericStream(model, ctx, schema.StreamOptions{})
@@ -83,5 +99,32 @@ func TestGenericRuntimeForAllAPIs(t *testing.T) {
 			assert.NotNil(t, stream)
 			_ = stream.Result()
 		})
+	}
+}
+
+// failingTransport fails every request immediately; the smoke test only needs
+// the pipeline to build and dispatch a request for every API.
+type failingTransport struct{}
+
+func (failingTransport) Do(context.Context, *transport.TransportRequest) (*transport.TransportResponse, error) {
+	return nil, errors.New("dial tcp 127.0.0.1:1: connect: connection refused (smoke test)")
+}
+
+// testEndpointForAPI returns an explicit endpoint for each wire API so the
+// pipeline can resolve a request URL without consulting any catalog default.
+func testEndpointForAPI(api schema.Api) string {
+	switch api {
+	case schema.ApiOpenAIResponses, schema.ApiAzureOpenAIResponses:
+		return "http://127.0.0.1:1/v1/responses"
+	case schema.ApiOpenAICodexResponses:
+		return "http://127.0.0.1:1/codex/responses"
+	case schema.ApiAnthropicMessages:
+		return "http://127.0.0.1:1/v1/messages"
+	case schema.ApiGoogleGenerativeAI:
+		return "http://127.0.0.1:1/v1beta/models/test-model:streamGenerateContent?alt=sse"
+	case schema.ApiBedrockConverse:
+		return "http://127.0.0.1:1/model/test-model/converse-stream"
+	default:
+		return "http://127.0.0.1:1/v1/chat/completions"
 	}
 }

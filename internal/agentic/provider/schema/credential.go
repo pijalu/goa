@@ -40,13 +40,34 @@ type MissingCredentialError struct {
 	Sources  []string
 }
 
-// Error implements error.
+// Error implements error. It names the provider and the three ways to give it
+// a credential — the /login command, the provider's api_key in config, and the
+// catalog environment variable(s) that were checked — so an unauthenticated
+// request is actionable instead of a bare 401 from the far end.
 func (e *MissingCredentialError) Error() string {
 	if e == nil {
 		return "no API key found"
 	}
-	return fmt.Sprintf("no API key found for provider %q: checked %s",
-		e.Provider, strings.Join(e.Sources, ", "))
+	msg := fmt.Sprintf("no API key found for provider %q: checked %s — add one with /login:%s:apikey, set api_key on the provider in config",
+		e.Provider, strings.Join(e.Sources, ", "), e.Provider)
+	if env := envSources(e.Sources); len(env) > 0 {
+		msg += ", or provide it in the environment (" + strings.Join(env, ", ") + ")"
+	}
+	return msg
+}
+
+// envSources returns the environment-variable-looking entries of a checked-
+// sources list (an env var name is upper snake case), preserving order. Used to
+// render the "or export …" remedy without repeating the option source.
+func envSources(sources []string) []string {
+	var out []string
+	for _, s := range sources {
+		if s == "" || strings.ContainsAny(s, ".:") {
+			continue // config entry points (options.api_key) are not env vars
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // ValidateAPIKey validates a resolved API key value before first use, mirroring

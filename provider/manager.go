@@ -249,6 +249,31 @@ func MessagesEndpoint(endpoint string) string {
 	return u.String()
 }
 
+// providerEndpoint returns the base endpoint to use for a provider config: the
+// configured endpoint, then the config's base_url override, then the provider
+// catalog's default base URL for the inferred identity. It returns "" when none
+// is known — in which case the runtime either uses the model's own catalog base
+// URL or fails with an actionable schema.NoEndpointError.
+//
+// The catalog step is what places gateway-style providers: their models.dev
+// entry carries only npm/env (no base URL), so a provider added from the
+// catalog has endpoint "" — and an empty endpoint used to send the request to
+// api.openai.com with a gateway-namespaced model id (bugs.md "Vercel AI
+// Gateway", export 2026-09-26-113044).
+func providerEndpoint(pCfg config.ProviderConfig) string {
+	if pCfg.Endpoint != "" {
+		return pCfg.Endpoint
+	}
+	if pCfg.BaseURL != "" {
+		return pCfg.BaseURL
+	}
+	prov, _ := inferProviderIdentity(pCfg)
+	if def := schema.LookupProviderDef(prov); def != nil {
+		return def.BaseURL
+	}
+	return ""
+}
+
 // modelEndpointURL adapts a configured provider endpoint to the wire URL for
 // an API: /chat/completions for the OpenAI-compatible surface, /responses for
 // the OpenAI Responses surfaces, /messages for the Anthropic Messages surface

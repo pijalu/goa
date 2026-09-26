@@ -77,6 +77,13 @@ func (w *wizardComponent) renderHeader(title string, step, total int) []string {
 	}
 }
 
+// visibleProviderPresets is how many provider presets the wizard list shows at
+// once. The catalog keeps growing (every models.dev provider with a base URL is
+// a preset), so the list is windowed around the selection — the same idiom
+// renderModelSelect uses — instead of rendering every row: a screen taller than
+// the terminal scrolls its own header out of view.
+const visibleProviderPresets = 12
+
 func (w *wizardComponent) renderProviderType(width int) []string {
 	presets := PresetProviders()
 	s := w.currentSlot()
@@ -84,7 +91,12 @@ func (w *wizardComponent) renderProviderType(width int) []string {
 	lines = append(lines, w.renderHeader("LLM Provider", w.stepForState(w.state), 9)...)
 	lines = append(lines, "  Choose your LLM provider:")
 	lines = append(lines, "")
-	for i, p := range presets {
+	start, end := providerListWindow(len(presets), s.selectedPresetIndex)
+	if start > 0 {
+		lines = append(lines, ansi.Faint+fmt.Sprintf("  (%d more ↑)", start)+ansi.Reset)
+	}
+	for i := start; i < end; i++ {
+		p := presets[i]
 		marker := " "
 		disp := strings.TrimPrefix(p.Endpoint, "https://")
 		disp = strings.TrimPrefix(disp, "http://")
@@ -98,6 +110,9 @@ func (w *wizardComponent) renderProviderType(width int) []string {
 		}
 		lines = append(lines, line)
 	}
+	if end < len(presets) {
+		lines = append(lines, ansi.Faint+fmt.Sprintf("  (%d more ↓)", len(presets)-end)+ansi.Reset)
+	}
 	customKey := len(presets) + 1
 	marker := " "
 	line := fmt.Sprintf("  %s %d) %-16s -- any OpenAI-compatible endpoint", marker, customKey, "Custom")
@@ -109,6 +124,27 @@ func (w *wizardComponent) renderProviderType(width int) []string {
 	lines = append(lines, "")
 	lines = append(lines, ansi.Faint+"  [Up/Down] Navigate  [Enter] Select  [Esc] Back  [1-9] Quick pick"+ansi.Reset)
 	return lines
+}
+
+// providerListWindow returns the [start,end) preset range to render so the
+// selected entry stays visible while the list fits the terminal. A selection of
+// -1 means the Custom row (rendered after the list) is selected, so the window
+// shows the tail of the list and stays adjacent to it.
+func providerListWindow(total, selected int) (int, int) {
+	if total <= visibleProviderPresets {
+		return 0, total
+	}
+	if selected < 0 {
+		return total - visibleProviderPresets, total
+	}
+	start := selected - visibleProviderPresets/2
+	if start < 0 {
+		start = 0
+	}
+	if start+visibleProviderPresets > total {
+		start = total - visibleProviderPresets
+	}
+	return start, start + visibleProviderPresets
 }
 
 func (w *wizardComponent) renderProviderEndpoint(width int) []string {

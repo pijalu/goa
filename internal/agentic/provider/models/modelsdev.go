@@ -215,6 +215,11 @@ type ModelsDevProvider struct {
 	BaseURL  string
 	API      provider.Api
 	ModelIDs []string
+	// Env are the API-key environment variables the catalog declares for this
+	// provider (models.dev "env"). They are what makes "how do I give this
+	// provider a credential?" answerable without reading code — the sign-on
+	// surface names them and the credential chain reads them.
+	Env []string
 }
 
 // ModelsDevProviders returns the canonical enumeration of "all providers from
@@ -222,7 +227,22 @@ type ModelsDevProvider struct {
 // provider key serving at least one tool-calling model, with its Goa identity
 // and tool-calling model IDs. Sorted by key for deterministic tests. Tests and
 // tooling use it to assert coverage without re-parsing api.json.
+//
+// The result is cached: the embedded catalog is immutable, and callers run on
+// hot paths (the /login and /provider completions, the add-provider pickers).
 func ModelsDevProviders() []ModelsDevProvider {
+	modelsDevProvidersOnce.Do(func() {
+		modelsDevProvidersCache = parseModelsDevProviders()
+	})
+	return modelsDevProvidersCache
+}
+
+var (
+	modelsDevProvidersOnce  sync.Once
+	modelsDevProvidersCache []ModelsDevProvider
+)
+
+func parseModelsDevProviders() []ModelsDevProvider {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(embeddedAPIJSON, &top); err != nil {
 		return nil
@@ -274,6 +294,7 @@ func modelsDevProviderFromEntry(key string, raw json.RawMessage) (ModelsDevProvi
 		BaseURL:  baseURL,
 		API:      api,
 		ModelIDs: ids,
+		Env:      prov.Env,
 	}, true
 }
 
@@ -337,11 +358,13 @@ func writeCatalogCache(cacheDir string, raw []byte) error {
 
 // modelsDevProviderInfo captures the provider-level metadata that models.dev
 // publishes alongside each provider entry. Used by the unmapped-provider
-// fallback to synthesize a mapping from scratch.
+// fallback to synthesize a mapping from scratch, and to surface the catalog's
+// API-key environment variables (the "env" field) to the sign-on surface.
 type modelsDevProviderInfo struct {
-	API  string `json:"api"`  // base URL (e.g. "https://api.tensorx.ai/v1")
-	NPM  string `json:"npm"`  // AI-SDK package hint for wire protocol
-	Name string `json:"name"` // display name
+	API  string   `json:"api"`  // base URL (e.g. "https://api.tensorx.ai/v1")
+	NPM  string   `json:"npm"`  // AI-SDK package hint for wire protocol
+	Name string   `json:"name"` // display name
+	Env  []string `json:"env"` // API-key env var names the provider reads
 }
 
 // modelsDevProviderEntry is a full models.dev provider entry: the provider

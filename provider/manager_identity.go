@@ -148,18 +148,12 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 		return agenticprovider.Model{}, fmt.Errorf("no provider configured")
 	}
 
-	resolveURL := modelEndpointURL
-
 	prov, api := inferProviderIdentity(*pCfg)
 	// Provider-exact first: identical model IDs exist under multiple providers
 	// (e.g. muse-spark-1.2 on opencode AND llmgateway) and only the
 	// provider-exact entry carries this deployment's metadata — the global ID
 	// index is first-wins and may belong to an aggregator.
-	m := models.GetModelForProvider(prov, modelName)
-	if m == nil {
-		m = models.GetModel(modelName)
-	}
-	if m != nil {
+	if m := lookupProviderModel(prov, modelName); m != nil {
 		mdl := *m
 		mdl.ID = modelName
 		mdl.Name = modelName
@@ -170,9 +164,7 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 		if mdl.Provider != "" && mdl.Provider != prov {
 			mdl.Api = api
 		}
-		if pCfg.Endpoint != "" {
-			mdl.BaseURL = resolveURL(mdl.Api, pCfg.Endpoint)
-		}
+		applyResolvedEndpoint(&mdl, *pCfg)
 		return mdl, nil
 	}
 
@@ -187,9 +179,7 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 		if mdl.Api == "" {
 			mdl.Api = api
 		}
-		if pCfg.Endpoint != "" {
-			mdl.BaseURL = resolveURL(mdl.Api, pCfg.Endpoint)
-		}
+		applyResolvedEndpoint(&mdl, *pCfg)
 		return mdl, nil
 	}
 
@@ -198,9 +188,33 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 		Name:       modelName,
 		Api:        api,
 		Provider:   prov,
-		BaseURL:    resolveURL(api, pCfg.Endpoint),
+		BaseURL:    modelEndpointURL(api, providerEndpoint(*pCfg)),
 		InputTypes: []string{"text"},
 	}, nil
+}
+
+// lookupProviderModel resolves a model name against the registry: provider-exact
+// first, then the global ID index (first-wins, may belong to an aggregator).
+func lookupProviderModel(prov agenticprovider.Provider, modelName string) *agenticprovider.Model {
+	if m := models.GetModelForProvider(prov, modelName); m != nil {
+		return m
+	}
+	return models.GetModel(modelName)
+}
+
+// applyResolvedEndpoint stamps the request URL onto a resolved catalog model:
+// the configured endpoint — or the catalog's default for this identity — when
+// there is one, otherwise the model's own catalog base URL routed for its API.
+// Mirrors mergeRegistryModel so both resolve paths place a gateway model on
+// its own host.
+func applyResolvedEndpoint(mdl *agenticprovider.Model, pCfg config.ProviderConfig) {
+	if endpoint := providerEndpoint(pCfg); endpoint != "" {
+		mdl.BaseURL = modelEndpointURL(mdl.Api, endpoint)
+		return
+	}
+	if mdl.BaseURL != "" {
+		mdl.BaseURL = modelEndpointURL(mdl.Api, mdl.BaseURL)
+	}
 }
 
 // BuildStreamOptions constructs provider.StreamOptions from the active

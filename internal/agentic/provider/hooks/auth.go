@@ -67,12 +67,17 @@ func (h *AuthHook) ApplyRequest(ctx *RequestContext) error {
 		return nil
 	}
 
-	// Resolve from env vars declared in the profile. Each candidate is
-	// validated before use: a set-but-malformed value is an InvalidCredential
-	// naming the variable; a silent lookup is a checked-but-unset source and
-	// is listed if the provider requires a credential.
+	// Resolve from env vars declared in the profile, then from the provider
+	// catalog. Each candidate is validated before use: a set-but-malformed value
+	// is an InvalidCredential naming the variable; a silent lookup is a
+	// checked-but-unset source and is listed if the provider requires a
+	// credential.
+	//
+	// The catalog pass is what makes a catalog-only gateway usable: its models.dev
+	// entry declares AI_GATEWAY_API_KEY but no variant profile had to be written
+	// for it (bugs.md "Vercel AI Gateway: no way to add an API key").
 	checked := []string{"options.api_key"}
-	for _, env := range auth.EnvVars {
+	for _, env := range envCandidates(ctx.Model.Provider, auth.EnvVars) {
 		checked = append(checked, env)
 		if raw := os.Getenv(env); raw != "" {
 			key, err := schema.ValidateAPIKey(env, raw)
@@ -220,6 +225,34 @@ func (h *AuthHook) authFor(api schema.Api) schema.AuthConfig {
 		base.Prefix = ov.Prefix
 	}
 	return base
+}
+
+// envCandidates returns the environment variables the credential chain
+// consults for a provider: the resolved profile's own env_vars first (a
+// dedicated variant profile knows best), then the provider catalog's declared
+// env names — the models.dev "env" field, surfaced through ProviderDef.EnvKeys
+// — with duplicates removed and order preserved. A catalog-only gateway whose
+// models.dev entry declares AI_GATEWAY_API_KEY therefore works even before any
+// variant profile mentions it.
+func envCandidates(prov schema.Provider, profileEnv []string) []string {
+	out := make([]string, 0, len(profileEnv)+2)
+	seen := make(map[string]bool, len(profileEnv)+2)
+	add := func(v string) {
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	for _, v := range profileEnv {
+		add(v)
+	}
+	if def := schema.LookupProviderDef(prov); def != nil {
+		for _, v := range def.EnvKeys {
+			add(v)
+		}
+	}
+	return out
 }
 
 func hasHeader(headers map[string]string, name string) bool {

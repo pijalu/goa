@@ -41,11 +41,10 @@ func (m *configMenu) finalizePresetProvider(p config.ProviderPreset) {
 		m.finalizeAddProvider(p.ID, p.Name, p.Endpoint, "")
 		return
 	}
-	m.ctx.ShowInput("API key for "+p.Name+":", "", func(k string, ok bool) {
-		if !ok {
-			m.back()
-			return
-		}
+	// Prompt only when the credential chain has nothing (config → auth store →
+	// the catalog env var); the answer goes to the auth store, the same vault
+	// /login:<provider>:apikey uses.
+	setupProviderCredential(m.ctx, m.ctx.Config, p.ID, p.Name, func(k string) {
 		m.finalizeAddProvider(p.ID, p.Name, p.Endpoint, k)
 	})
 }

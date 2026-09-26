@@ -177,8 +177,10 @@ func runAddProviderFromPicker(host core.UIHost, cfg *config.Config, saver config
 
 // finalizePresetProviderFromPicker adds a preset provider. Codex-capable
 // presets first ask how to authenticate (Sign in with ChatGPT / OAuth vs API
-// key) instead of forcing a key prompt; other presets prompt for an API key
-// when the preset requires one.
+// key) instead of forcing a key prompt; other presets that need a credential go
+// through setupProviderCredential, which prompts only when the credential chain
+// (config → auth store → catalog env var) has no key and stores the answer in
+// the auth store.
 func finalizePresetProviderFromPicker(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, preset *config.ProviderPreset) {
 	ctx, isCtx := host.(core.Context)
 	if isCtx && isCodexAuthSelectable(preset) {
@@ -189,10 +191,7 @@ func finalizePresetProviderFromPicker(host core.UIHost, cfg *config.Config, save
 		finalizePickedProvider(host, cfg, saver, preset.ID, preset.Name, preset.Endpoint, "")
 		return
 	}
-	host.ShowInput("API key for "+preset.Name+":", "", func(apiKey string, ok bool) {
-		if !ok {
-			return
-		}
+	setupProviderCredential(host, cfg, preset.ID, preset.Name, func(apiKey string) {
 		finalizePickedProvider(host, cfg, saver, preset.ID, preset.Name, preset.Endpoint, apiKey)
 	})
 }
@@ -224,10 +223,7 @@ func promptCodexAuthChoice(ctx core.Context, cfg *config.Config, saver config.Co
 			startCodexOAuthFromPicker(ctx, cfg, saver, preset)
 			return
 		}
-		ctx.ShowInput("API key for "+preset.Name+":", "", func(apiKey string, ok bool) {
-			if !ok {
-				return
-			}
+		setupProviderCredential(ctx, cfg, preset.ID, preset.Name, func(apiKey string) {
 			finalizePickedProvider(ctx, cfg, saver, preset.ID, preset.Name, preset.Endpoint, apiKey)
 		})
 	})

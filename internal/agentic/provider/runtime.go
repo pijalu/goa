@@ -59,6 +59,15 @@ func streamWithInterceptors(model schema.Model, ctx schema.Context, opts schema.
 		return nil, fmt.Errorf("no protocol registered for API %q", model.Api)
 	}
 
+	// Resolve the request URL before doing any work. An unresolvable URL is a
+	// configuration error the user must see: silently posting to another
+	// vendor's API is what made a gateway model's namespaced id fail with
+	// "invalid model id" instead of reaching its own host.
+	url := resolveURL(model, profile)
+	if url == "" {
+		return nil, &schema.NoEndpointError{Provider: string(model.Provider), Model: model.ID}
+	}
+
 	body, err := p.BuildRequest(model, reqCtx.Context, reqCtx.Options, profile)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
@@ -75,7 +84,7 @@ func streamWithInterceptors(model schema.Model, ctx schema.Context, opts schema.
 		Profile: profile,
 		Headers: reqCtx.Headers,
 		Body:    body,
-		URL:     resolveURL(model, profile),
+		URL:     url,
 		Fingerprint: BuildRequestFingerprint(
 			string(model.Provider), model.ID, reqCtx.Options.PromptCacheKey,
 			nil, body, 0, 0, string(reqCtx.Options.Transport), "", false,
@@ -242,10 +251,7 @@ func codexResponsesURL(baseURL string) string {
 func defaultBaseURL(model schema.Model, profile schema.VariantProfile) string {
 	switch model.Api {
 	case schema.ApiOpenAICompletions:
-		if isLocalProvider(model.Provider, model.BaseURL) {
-			return ""
-		}
-		return "https://api.openai.com/v1/chat/completions"
+		return openAICompletionsBaseURL(model)
 	case schema.ApiOpenAIResponses:
 		return "https://api.openai.com/v1/responses"
 	case schema.ApiOpenAICodexResponses:
@@ -267,6 +273,57 @@ func defaultBaseURL(model schema.Model, profile schema.VariantProfile) string {
 		return profile.Match.BaseURL
 	}
 	return ""
+}
+
+// openAICompletionsBaseURL resolves the chat-completions URL for an
+// OpenAI-compatible model that carries no base URL of its own:
+//
+//   - a local provider keeps no default (its own endpoint is required),
+//   - a provider the catalog places is reached at ITS host — gateways address
+//     models with vendor-namespaced ids (vercel: "stealth/pixel-canary") that no
+//     other vendor serves,
+//   - the OpenAI identity (explicit, or none at all — the implicit default of
+//     every OpenAI-compatible config) may use the OpenAI host,
+//   - anything else has no endpoint: "" makes the runtime fail with an
+//     actionable schema.NoEndpointError instead of calling another vendor.
+func openAICompletionsBaseURL(model schema.Model) string {
+	if isLocalProvider(model.Provider, model.BaseURL) {
+		return ""
+	}
+	if base := catalogCompletionsBase(model); base != "" {
+		return base
+	}
+	if model.Provider == "" || model.Provider == schema.ProviderOpenAI {
+		return "https://api.openai.com/v1/chat/completions"
+	}
+	return ""
+}
+
+// catalogCompletionsBase returns the catalog's chat-completions URL for a
+// model's provider, or "" when the catalog knows no base URL for that identity
+// (or speaks a different wire API). The catalog is the single source of truth
+// for gateway-style defaults: a gateway's models.dev entry carries only
+// npm/env, so without this an empty endpoint had nowhere to go but the OpenAI
+// host (bugs.md "Vercel AI Gateway", export 2026-09-26-113044).
+func catalogCompletionsBase(model schema.Model) string {
+	def := schema.LookupProviderDef(model.Provider)
+	if def == nil || def.BaseURL == "" {
+		return ""
+	}
+	if def.API != "" && def.API != model.Api {
+		return "" // the catalog base URL belongs to a different protocol
+	}
+	return chatCompletionsURL(def.BaseURL)
+}
+
+// chatCompletionsURL appends the chat-completions route to a base URL unless it
+// already carries it, mirroring provider.ChatCompletionsEndpoint.
+func chatCompletionsURL(base string) string {
+	u := strings.TrimRight(base, "/")
+	if strings.HasSuffix(u, "/chat/completions") {
+		return u
+	}
+	return u + "/chat/completions"
 }
 
 func isLocalProvider(prov schema.Provider, baseURL string) bool {

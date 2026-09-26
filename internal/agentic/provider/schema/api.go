@@ -50,6 +50,10 @@ const (
 	ProviderOpenAICodex Provider = "openai-codex"
 	ProviderPoolside    Provider = "poolside"
 	ProviderCustom      Provider = "custom"
+	// ProviderVercel is the Vercel AI Gateway: an OpenAI-compatible gateway in
+	// front of many vendors' models, addressed with vendor-namespaced model ids
+	// (e.g. "stealth/pixel-canary").
+	ProviderVercel Provider = "vercel"
 )
 
 // Transport indicates the wire protocol for API communication.

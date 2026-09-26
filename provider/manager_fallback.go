@@ -81,7 +81,15 @@ func mergeRegistryModel(m agenticprovider.Model, pCfg config.ProviderConfig, mCf
 	mdl.Api = api
 	mdl.ApiSource = apiSource(mCfg, prov, modelName)
 
-	mdl.BaseURL = modelEndpointURL(api, pCfg.Endpoint)
+	// Endpoint preference: the configured endpoint, else the catalog default for
+	// this identity, else the model's own catalog base URL (a models.dev-only
+	// provider) routed for this API. Only when all three are absent does the
+	// URL stay empty and the runtime fail actionably.
+	if endpoint := providerEndpoint(pCfg); endpoint != "" {
+		mdl.BaseURL = modelEndpointURL(api, endpoint)
+	} else if mdl.BaseURL != "" {
+		mdl.BaseURL = modelEndpointURL(api, mdl.BaseURL)
+	}
 	applyModelConfigCapabilities(&mdl, mCfg, api)
 	applyProviderExtra(&mdl, pCfg)
 	return mdl
@@ -123,7 +131,7 @@ func buildFallbackModel(pCfg config.ProviderConfig, mCfg config.ModelConfig, mod
 		inputTypes = []string{"text"}
 	}
 
-	baseURL := modelEndpointURL(api, pCfg.Endpoint)
+	baseURL := modelEndpointURL(api, providerEndpoint(pCfg))
 	mdl := agenticprovider.Model{
 		ID:         modelName,
 		Name:       modelName,
