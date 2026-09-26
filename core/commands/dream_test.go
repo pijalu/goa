@@ -62,7 +62,7 @@ func TestDreamCommand_RunsWhenSkillOptedIn(t *testing.T) {
 func dreamTestContext(t *testing.T) core.Context {
 	t.Helper()
 	var buf strings.Builder
-	ctx := skillTestContext(&buf)
+	ctx := skillTestContext(t, &buf)
 	ctx.Config = &config.Config{Memory: config.MemoryConfig{Enabled: true}}
 	ctx.Config.ConfigDir = t.TempDir()
 	ctx.MemoryStore = newFakeMemoryStore()

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"testing"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
@@ -227,7 +228,13 @@ var _ core.SkillSubAgentRunner = (*fakeSkillSubAgentRunner)(nil)
 // It uses the given output buffer and starts with an empty turn history so
 // that inline skills are loaded into the system prompt rather than submitted
 // as user messages.
-func skillTestContext(buf *strings.Builder) core.Context {
+func skillTestContext(t *testing.T, buf *strings.Builder) core.Context {
+	t.Helper()
+	// Isolate from the real user home: these flows persist config changes,
+	// and a test must never read or write the user's actual ~/.goa.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	cfg := &config.Config{}
 	ss := core.NewSessionState(internal.ModeState{Major: internal.MajorCoder, Autonomy: internal.AutonomyYolo})
 	tuiEvents := event.MakeBus(10, 10, 10, 10)
@@ -240,8 +247,8 @@ func skillTestContext(buf *strings.Builder) core.Context {
 
 // skillTestContextWithHistory builds a core.Context where the conversation has
 // already started, so inline skills are submitted as user messages.
-func skillTestContextWithHistory(buf *strings.Builder) core.Context {
-	ctx := skillTestContext(buf)
+func skillTestContextWithHistory(t *testing.T, buf *strings.Builder) core.Context {
+	ctx := skillTestContext(t, buf)
 	// Set last user input to signal that the conversation has started.
 	if am := ctx.AgentManager; am != nil {
 		am.SetLastUserInputForTest("hello")

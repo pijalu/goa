@@ -129,22 +129,37 @@ func valueToYAMLNode(value any) (*yaml.Node, error) {
 // Invalid duration shapes are ignored here — Config.Validate reports them with
 // its own wording. Returns true when a correction was applied.
 func sanitizeActivityPairLayer(exec *ExecutionConfig, source string) bool {
-	if exec.ActivityTimeout == "" || exec.ActivityWarnAfter == "" {
-		return false
-	}
-	timeout, err := time.ParseDuration(exec.ActivityTimeout)
-	if err != nil {
-		return false // shape errors are reported by Config.Validate with its own wording
-	}
-	warn, err := time.ParseDuration(exec.ActivityWarnAfter)
-	if err != nil {
-		return false
-	}
-	if warn < timeout {
+	desc, bad := ActivityPairViolation(*exec)
+	if !bad {
 		return false
 	}
 	exec.ActivityWarnAfter = ""
-	fmt.Fprintf(os.Stderr, "Warning: execution.activity_warn_after (%s) is not shorter than execution.activity_timeout (%s) in %s — dropping the override so the stall warning leads the auto-retry (derived 2/3 of the window)\n",
-		warn, timeout, source)
+	fmt.Fprintf(os.Stderr, "Warning: %s in %s — dropping the override so the stall warning leads the auto-retry (derived 2/3 of the window)\n", desc, source)
 	return true
+}
+
+// ActivityPairViolation reports whether a config's stall-timing pair is
+// contradictory — BOTH keys set, both parseable, and the warning lead at or
+// beyond the retry window — returning a human-readable description when it
+// is. Empty or unparseable values are NOT a violation: shape errors belong to
+// Config.Validate, and half-set pairs are legitimate (the keys cascade
+// independently; the runtime derives the lead at use). Shared by the
+// load-time heal (sanitizeActivityPairLayer) and the write-path guard
+// (validateConfigBytes) so both sides agree on what "contradictory" means.
+func ActivityPairViolation(exec ExecutionConfig) (string, bool) {
+	if exec.ActivityTimeout == "" || exec.ActivityWarnAfter == "" {
+		return "", false
+	}
+	timeout, err := time.ParseDuration(exec.ActivityTimeout)
+	if err != nil {
+		return "", false
+	}
+	warn, err := time.ParseDuration(exec.ActivityWarnAfter)
+	if err != nil {
+		return "", false
+	}
+	if warn < timeout {
+		return "", false
+	}
+	return fmt.Sprintf("execution.activity_warn_after (%s) is not shorter than execution.activity_timeout (%s)", warn, timeout), true
 }

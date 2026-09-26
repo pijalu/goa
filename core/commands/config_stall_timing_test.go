@@ -5,6 +5,9 @@
 package commands
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,22 +20,39 @@ import (
 
 // stallTimingContext builds a menu context wired to a REAL provider manager
 // (so BuildStreamOptions reflects the live config) plus a running session, the
-// same shape the app uses. It returns the context and the live agent's stream
-// options accessor.
+// same shape the app uses, with the shipped stall-timing defaults.
 func stallTimingContext(t *testing.T) (*core.Context, *selectRecorder, *inputRecorder) {
+	t.Helper()
+	ctx, sr, ir := stallTimingContextWithHomeConfig(t, "")
+	if ctx.Config.Execution.ActivityTimeout != "45s" || ctx.Config.Execution.ActivityWarnAfter != "30s" {
+		t.Fatalf("precondition: shipped stall timing = (%q, %q), want (45s, 30s)",
+			ctx.Config.Execution.ActivityTimeout, ctx.Config.Execution.ActivityWarnAfter)
+	}
+	return ctx, sr, ir
+}
+
+// stallTimingContextWithHomeConfig seeds $HOME/.goa/config.yaml with the given
+// body BEFORE any loader or session exists, so the whole stack (config, live
+// stream options, saver) starts from that home layer.
+func stallTimingContextWithHomeConfig(t *testing.T, homeYAML string) (*core.Context, *selectRecorder, *inputRecorder) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	if homeYAML != "" {
+		dir := filepath.Join(home, ".goa")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("seed home config dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(homeYAML), 0o644); err != nil {
+			t.Fatalf("seed home config: %v", err)
+		}
+	}
 
 	loader := config.NewCascadeLoader(t.TempDir(), "", nil)
 	cfg, err := loader.Load()
 	if err != nil {
 		t.Fatalf("load config: %v", err)
-	}
-	if cfg.Execution.ActivityTimeout != "45s" || cfg.Execution.ActivityWarnAfter != "30s" {
-		t.Fatalf("precondition: shipped stall timing = (%q, %q), want (45s, 30s)",
-			cfg.Execution.ActivityTimeout, cfg.Execution.ActivityWarnAfter)
 	}
 
 	ctx, sr, ir, events := newMenuTestContext(t, cfg)
@@ -262,5 +282,144 @@ func TestRetrySettingsMenu_Labels(t *testing.T) {
 	}
 	if _, ok := labels["provider_idle"]; !ok {
 		t.Error("provider idle timeout entry must stay in the retry settings menu")
+	}
+}
+
+// drainFlashes collects every flash currently queued on the event bus so a
+// test can assert on (or discard) notifications.
+func drainFlashes(t *testing.T, ctx *core.Context) []string {
+	t.Helper()
+	var texts []string
+	for {
+		select {
+		case ev := <-ctx.EventBus.Chat:
+			if ev.Flash != nil {
+				texts = append(texts, ev.Flash.Text)
+			}
+		default:
+			return texts
+		}
+	}
+}
+
+// assertStaleWarnLeadGone verifies the drop landed everywhere: memory, home
+// file (override deleted, not merely healed), reload, and the live session.
+func assertStaleWarnLeadGone(t *testing.T, ctx *core.Context) {
+	t.Helper()
+	if got := ctx.Config.Execution.ActivityTimeout; got != "45s" {
+		t.Errorf("config activity_timeout = %q, want 45s", got)
+	}
+	if got := ctx.Config.Execution.ActivityWarnAfter; got != "" {
+		t.Errorf("config activity_warn_after = %q, want empty (stale lead dropped)", got)
+	}
+
+	// On disk: the stale lead is DELETED, not merely healed on load.
+	homePath := ctx.ConfigSaver.(*config.CascadeLoader).HomeConfigPath()
+	raw, err := os.ReadFile(homePath)
+	if err != nil {
+		t.Fatalf("read home config: %v", err)
+	}
+	if strings.Contains(string(raw), "activity_warn_after") {
+		t.Errorf("home config still contains the stale lead:\n%s", raw)
+	}
+	// Reload merges the cascade: with the home override deleted the lead
+	// falls back to the shipped default 30s — legal (inside the 45s window).
+	// The point is the stale 45s override is GONE, not that the effective
+	// lead is unset.
+	reloaded, err := ctx.ConfigSaver.(*config.CascadeLoader).Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Execution.ActivityTimeout != "45s" {
+		t.Errorf("reloaded activity_timeout = %s, want 45s", reloaded.Execution.ActivityTimeout)
+	}
+	if reloaded.Execution.ActivityWarnAfter == "45s" {
+		t.Errorf("reloaded activity_warn_after = %q, want the stale override gone", reloaded.Execution.ActivityWarnAfter)
+	}
+
+	// Live session: new window, no lead — the agent derives 2/3 (30s of 45s).
+	live := liveStreamOptions(t, ctx)
+	if live.IdleTimeout != 45*time.Second {
+		t.Errorf("running session window = %s, want 45s", live.IdleTimeout)
+	}
+	if live.ActivityWarnAfter != 0 {
+		t.Errorf("running session lead = %s, want 0 (unset: the agent derives 2/3 of the window)", live.ActivityWarnAfter)
+	}
+}
+
+// TestConfigSet_ActivityTimeoutDropsStaleWarnLead: shrinking the retry window
+// below the persisted warning lead must drop the lead — in memory AND on disk,
+// in one /config set — leaving the runtime to derive 2/3 of the new window
+// (bugs.md: goa must never keep or persist a contradictory stall pair).
+func TestConfigSet_ActivityTimeoutDropsStaleWarnLead(t *testing.T) {
+	ctx, _, _ := stallTimingContextWithHomeConfig(t,
+		"execution:\n  activity_timeout: 60s\n  activity_warn_after: 45s\n")
+	if ctx.Config.Execution.ActivityTimeout != "60s" || ctx.Config.Execution.ActivityWarnAfter != "45s" {
+		t.Fatalf("precondition: loaded pair = (%s, %s), want (60s, 45s)",
+			ctx.Config.Execution.ActivityTimeout, ctx.Config.Execution.ActivityWarnAfter)
+	}
+	drainFlashes(t, ctx)
+
+	if err := applyConfigSet(*ctx, "execution.activity_timeout", "45s"); err != nil {
+		t.Fatalf("applyConfigSet: %v", err)
+	}
+	assertStaleWarnLeadGone(t, ctx)
+
+	// The drop must be announced, not silent.
+	announced := false
+	for _, f := range drainFlashes(t, ctx) {
+		if strings.Contains(f, "Stall warning lead dropped") {
+			announced = true
+		}
+	}
+	if !announced {
+		t.Error("no \"Stall warning lead dropped\" flash after the shrink")
+	}
+}
+
+// assertWarnSetRefused verifies a refused out-of-window lead changes nothing:
+// memory, home file (which must not even appear), and the live session.
+func assertWarnSetRefused(t *testing.T, ctx *core.Context) {
+	t.Helper()
+	if got := ctx.Config.Execution.ActivityWarnAfter; got != "30s" {
+		t.Errorf("config activity_warn_after = %q, want 30s (refusal must not change it)", got)
+	}
+	if got := ctx.Config.Execution.ActivityTimeout; got != "45s" {
+		t.Errorf("config activity_timeout = %q, want 45s", got)
+	}
+	homePath := ctx.ConfigSaver.(*config.CascadeLoader).HomeConfigPath()
+	if _, err := os.Stat(homePath); err == nil {
+		t.Error("refused /config set created a home config file")
+	}
+	live := liveStreamOptions(t, ctx)
+	if live.ActivityWarnAfter != 30*time.Second || live.IdleTimeout != 45*time.Second {
+		t.Errorf("running session options = lead %s / window %s, want 30s / 45s",
+			live.ActivityWarnAfter, live.IdleTimeout)
+	}
+	rejected := false
+	for _, f := range drainFlashes(t, ctx) {
+		if strings.Contains(f, "Rejected execution.activity_warn_after") {
+			rejected = true
+		}
+	}
+	if !rejected {
+		t.Error("no rejection flash for the out-of-window lead")
+	}
+}
+
+// TestConfigSet_ActivityWarnAboveWindowRejected: an explicitly typed warning
+// lead at or beyond the retry window is REFUSED — nothing changes in memory,
+// on disk, or in the running session — and the rejection is visible (flash).
+func TestConfigSet_ActivityWarnAboveWindowRejected(t *testing.T) {
+	for _, warn := range []string{"90s", "45s"} { // beyond AND exactly at the window
+		t.Run(warn, func(t *testing.T) {
+			ctx, _, _ := stallTimingContext(t)
+			drainFlashes(t, ctx)
+
+			if err := applyConfigSet(*ctx, "execution.activity_warn_after", warn); err != nil {
+				t.Fatalf("applyConfigSet: %v", err)
+			}
+			assertWarnSetRefused(t, ctx)
+		})
 	}
 }

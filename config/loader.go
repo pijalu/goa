@@ -330,8 +330,13 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
+	prev, hadPrev := existingConfigBytes(cl.HomeConfigPath())
 	if err := os.WriteFile(cl.HomeConfigPath(), data, 0644); err != nil {
 		return fmt.Errorf("write config: %w", err)
+	}
+	if err := validateConfigBytes(data, "home"); err != nil {
+		rollbackConfigFile(cl.HomeConfigPath(), prev, hadPrev)
+		return fmt.Errorf("%w; the previous home config was restored", err)
 	}
 
 	return nil

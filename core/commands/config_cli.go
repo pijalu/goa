@@ -217,36 +217,24 @@ func applyConfigSet(ctx core.Context, key, value string) error {
 		updateModeDefault(candidate, value)
 	}
 	if err := candidate.Validate(); err != nil {
-		writeFmt(ctx, "Refusing to set %s = %s: the resulting configuration is invalid (not applied, not saved):\n%v\n", key, value, err)
-		// /config:set is an internal command: its router output is not echoed
-		// to the chat viewport (echoCommandResult drops internal output), so
-		// the rejection must also go through the flash channel — otherwise it
-		// would be silent in the TUI.
-		flash := err.Error()
-		var ve *internal.ValidationError
-		if errors.As(err, &ve) {
-			flash = strings.Join(ve.ErrList, "; ")
-		}
-		ctx.Flash(fmt.Sprintf("Rejected %s = %s: %s (not applied, not saved)", key, value, flash))
+		refuseInvalidCandidate(ctx, key, value, err)
 		return nil
 	}
-	// Commit the validated change to the live config. The setters are
-	// deterministic functions of (cfg, value), so this cannot fail after the
-	// candidate applied cleanly.
-	_ = setConfigField(ctx.Config, path, value)
-	if key == "execution.mode" {
-		updateModeDefault(ctx.Config, value)
-	}
-	if err := syncRuntimeConfig(ctx, key, value); err != nil {
-		writeFmt(ctx, "%v\n", err)
+	// A stall-timing change must never leave the contradictory pair the loader
+	// heals at startup (warn >= timeout within one layer): Validate above only
+	// checks parseability so cross-layer combinations stay legal. Two cases:
+	// an explicitly typed warn lead at or beyond the window is REFUSED (the
+	// user chose it — say so instead of second-guessing), while a window
+	// change that strands the existing lead has the stale lead DROPPED so the
+	// runtime derives two thirds of the new window.
+	refused, warnDropped := applyStallPairPolicy(ctx, key, value, candidate)
+	if refused {
 		return nil
 	}
-	if ctx.ConfigSaver == nil {
-		writeFmt(ctx, "Set %s = %s (in memory; no saver)\n", key, value)
+	if !commitConfigSet(ctx, key, value, path, warnDropped) {
 		return nil
 	}
-	if err := persistConfigValue(ctx, key, path, value); err != nil {
-		writeFmt(ctx, "%v\n", err)
+	if !persistConfigSet(ctx, key, value, path, warnDropped) {
 		return nil
 	}
 	// Changing the active model may also change the provider: persist that
@@ -260,6 +248,107 @@ func applyConfigSet(ctx core.Context, key, value string) error {
 	writeFmt(ctx, "Set %s = %s\n", key, value)
 	ctx.FooterRefresh()
 	return nil
+}
+
+// refuseInvalidCandidate reports a candidate that failed Config.Validate.
+// /config:set is an internal command: its router output is not echoed to the
+// chat viewport (echoCommandResult drops internal output), so the rejection
+// must also go through the flash channel — otherwise it would be silent in
+// the TUI.
+func refuseInvalidCandidate(ctx core.Context, key, value string, err error) {
+	writeFmt(ctx, "Refusing to set %s = %s: the resulting configuration is invalid (not applied, not saved):\n%v\n", key, value, err)
+	flash := err.Error()
+	var ve *internal.ValidationError
+	if errors.As(err, &ve) {
+		flash = strings.Join(ve.ErrList, "; ")
+	}
+	ctx.Flash(fmt.Sprintf("Rejected %s = %s: %s (not applied, not saved)", key, value, flash))
+}
+
+// commitConfigSet applies the validated candidate to the live config and
+// pushes the runtime-syncable parts into running subsystems. Returns false
+// when the caller must stop (sync error already reported).
+func commitConfigSet(ctx core.Context, key, value string, path []string, warnDropped bool) bool {
+	// The setters are deterministic functions of (cfg, value), so this
+	// cannot fail after the candidate applied cleanly.
+	_ = setConfigField(ctx.Config, path, value)
+	if key == "execution.mode" {
+		updateModeDefault(ctx.Config, value)
+	}
+	if warnDropped {
+		ctx.Config.Execution.ActivityWarnAfter = ""
+	}
+	if err := syncRuntimeConfig(ctx, key, value); err != nil {
+		writeFmt(ctx, "%v\n", err)
+		return false
+	}
+	return true
+}
+
+// persistConfigSet writes the committed change through the config saver.
+// Returns false when the caller must stop (no saver, or persist error
+// already reported).
+func persistConfigSet(ctx core.Context, key, value string, path []string, warnDropped bool) bool {
+	if ctx.ConfigSaver == nil {
+		writeFmt(ctx, "Set %s = %s (in memory; no saver)\n", key, value)
+		return false
+	}
+	if warnDropped {
+		// Clear the stale lead from the home file BEFORE writing the new
+		// window value: every intermediate on-disk state must pass the
+		// writer's validation (which would refuse the window write while
+		// the contradictory lead is still in the file).
+		if err := deleteStaleWarnLead(ctx, value); err != nil {
+			writeFmt(ctx, "%v\n", err)
+		}
+	}
+	if err := persistConfigValue(ctx, key, path, value); err != nil {
+		writeFmt(ctx, "%v\n", err)
+		return false
+	}
+	if warnDropped {
+		announceStallLeadDrop(ctx, value)
+	}
+	return true
+}
+
+// applyStallPairPolicy enforces the stall-timing invariant on a /config:set
+// candidate. An explicitly typed warn lead at or beyond the window is refused
+// (the user chose it — say so instead of second-guessing); a window change
+// that strands the existing lead drops it so the runtime derives 2/3 of the
+// new window. Returns (refused, warnDropped); the candidate is normalized in
+// place when the lead is dropped.
+func applyStallPairPolicy(ctx core.Context, key, value string, candidate *config.Config) (refused, warnDropped bool) {
+	desc, bad := config.ActivityPairViolation(candidate.Execution)
+	if !bad {
+		return false, false
+	}
+	if key == "execution.activity_warn_after" {
+		writeFmt(ctx, "Refusing to set %s = %s: %s (not applied, not saved)\n", key, value, desc)
+		ctx.Flash(fmt.Sprintf("Rejected %s = %s: the stall warning must be shorter than the auto-retry window", key, value))
+		return true, false
+	}
+	candidate.Execution.ActivityWarnAfter = ""
+	return false, true
+}
+
+// deleteStaleWarnLead removes the stranded warning lead from the home config
+// BEFORE the new window value is written: every intermediate on-disk state
+// must pass the writer's validation (which would refuse the window write
+// while the contradictory lead is still in the file).
+func deleteStaleWarnLead(ctx core.Context, value string) error {
+	if err := ctx.ConfigSaver.DeleteHomeField([]string{"execution", "activity_warn_after"}); err != nil {
+		return fmt.Errorf("set execution.activity_timeout = %s (stale warn lead not cleared on disk: %w)", value, err)
+	}
+	return nil
+}
+
+// announceStallLeadDrop tells the user the persisted warning lead no longer
+// fits the new window and what the runtime does instead (Flash, not just the
+// internal-command output buffer, so the note is visible in the TUI).
+func announceStallLeadDrop(ctx core.Context, value string) {
+	writeFmt(ctx, "Stall warning lead dropped (no longer inside the new %s window); the runtime derives 2/3 of the window\n", value)
+	ctx.Flash(fmt.Sprintf("Stall warning lead dropped: no longer inside the new %s window (runtime derives 2/3)", value))
 }
 
 // persistActiveModelProviderSwitch persists the provider that followed a

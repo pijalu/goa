@@ -348,7 +348,7 @@ func TestConfigMenu_SkillToggleLocalPersistsToProject(t *testing.T) {
 // disable (opt-in removed); file skills keep the Disabled-entry semantics.
 func TestSkillEnableDisableCommand(t *testing.T) {
 	var buf strings.Builder
-	ctx := skillTestContext(&buf)
+	ctx := skillTestContext(t, &buf)
 	projectDir := t.TempDir()
 	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
 	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
@@ -417,7 +417,7 @@ func TestSkillStickyToggleCommand(t *testing.T) {
 
 func testStickyContext(t *testing.T) (*core.Context, *SkillsCommand, *strings.Builder, string) {
 	var buf strings.Builder
-	ctx := skillTestContext(&buf)
+	ctx := skillTestContext(t, &buf)
 	projectDir := t.TempDir()
 	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
 	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
@@ -498,7 +498,7 @@ func testStickyInvalidSkills(t *testing.T) {
 // offers knowledge skills and reports the effective sticky state.
 func TestBuildStickyToggleItems(t *testing.T) {
 	var buf strings.Builder
-	ctx := skillTestContext(&buf)
+	ctx := skillTestContext(t, &buf)
 	ctx.Config.Skills.Sticky = []string{"plain-k"}
 	plain := knowledgeTestSkill("plain-k", "P")
 	other := knowledgeTestSkill("other-k", "O")
@@ -532,7 +532,7 @@ func TestBuildStickyToggleItems(t *testing.T) {
 // handling for /skill:enable and /skill:disable.
 func TestSkillEnableDisableCommand_Errors(t *testing.T) {
 	var buf strings.Builder
-	ctx := skillTestContext(&buf)
+	ctx := skillTestContext(t, &buf)
 	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
 		"refactor": embeddedTestSkill("refactor", "Refactor code"),
 	})
@@ -566,7 +566,7 @@ func TestSkillEnableDisableCommand_RealRegistry(t *testing.T) {
 
 func realRegistrySkillContext(t *testing.T) (*core.Context, *config.Config, *SkillsCommand, string) {
 	var buf strings.Builder
-	ctx := skillTestContext(&buf)
+	ctx := skillTestContext(t, &buf)
 	projectDir := t.TempDir()
 	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
 	dir := t.TempDir()
@@ -641,7 +641,7 @@ func TestSkillEnableCompletions(t *testing.T) {
 	cfg := &config.Config{Skills: config.SkillsConfig{
 		Disabled: []string{"telegram", "review"},
 	}}
-	ctx := skillTestContext(&strings.Builder{})
+	ctx := skillTestContext(t, &strings.Builder{})
 	ctx.Config = cfg
 	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
 		"refactor": embeddedTestSkill("refactor", "Refactor code"),
@@ -669,7 +669,7 @@ func TestSkillDisableCompletions(t *testing.T) {
 	cfg := &config.Config{Skills: config.SkillsConfig{
 		Disabled: []string{"telegram"},
 	}}
-	ctx := skillTestContext(&strings.Builder{})
+	ctx := skillTestContext(t, &strings.Builder{})
 	ctx.Config = cfg
 	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
 		"refactor": embeddedTestSkill("refactor", "Refactor code"),
@@ -685,7 +685,7 @@ func TestSkillDisableCompletions(t *testing.T) {
 // TestSkillSourceForToggle verifies the toggle layer resolution: loaded skills
 // report their own source; disabled skills fall back to the registry scan.
 func TestSkillSourceForToggle(t *testing.T) {
-	ctx := skillTestContext(&strings.Builder{})
+	ctx := skillTestContext(t, &strings.Builder{})
 	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
 		"refactor": embeddedTestSkill("refactor", "Refactor code"),
 	})
@@ -797,7 +797,7 @@ func TestSkillToggle_CrossSessionConsistency(t *testing.T) {
 	projectDir := t.TempDir()
 
 	var buf strings.Builder
-	ctx := skillTestContext(&buf)
+	ctx := skillTestContext(t, &buf)
 	cfg := ctx.Config
 	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
 

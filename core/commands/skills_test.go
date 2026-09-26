@@ -36,7 +36,7 @@ func testSkill(name, desc string, inline bool, command string) *skills.Skill {
 }
 
 func TestListSkills_NoRegistry(t *testing.T) {
-	ctx := skillTestContext(new(strings.Builder))
+	ctx := skillTestContext(t, new(strings.Builder))
 	err := listSkills(ctx, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -51,7 +51,7 @@ func TestListSkills_NoRegistry(t *testing.T) {
 }
 
 func TestListSkills_WithRegistry(t *testing.T) {
-	ctx := skillTestContext(new(strings.Builder))
+	ctx := skillTestContext(t, new(strings.Builder))
 	reg := newSkillRegistry(map[string]*skills.Skill{
 		"test-gen": testSkill("test-gen", "Generate unit tests", false, ""),
 		"refactor": testSkill("refactor", "Refactor code", true, ""),
@@ -78,7 +78,7 @@ func TestListSkills_WithRegistry(t *testing.T) {
 
 func TestRunSkill_NoArgs(t *testing.T) {
 	var buf strings.Builder
-	err := runSkill(skillTestContext(&buf), nil, nil, nil)
+	err := runSkill(skillTestContext(t, &buf), nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for no args")
 	}
@@ -89,7 +89,7 @@ func TestRunSkill_NoArgs(t *testing.T) {
 
 func TestRunSkill_NoRegistry(t *testing.T) {
 	var buf strings.Builder
-	err := runSkill(skillTestContext(&buf), nil, nil, []string{"test-gen"})
+	err := runSkill(skillTestContext(t, &buf), nil, nil, []string{"test-gen"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestRunSkill_NotFound(t *testing.T) {
 	var buf strings.Builder
 	reg := newSkillRegistry(map[string]*skills.Skill{})
 
-	err := runSkill(skillTestContext(&buf), reg, nil, []string{"nonexistent"})
+	err := runSkill(skillTestContext(t, &buf), reg, nil, []string{"nonexistent"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestRunSkill_Inline(t *testing.T) {
 		"test-gen": testSkill("test-gen", "Generate tests", true, ""),
 	})
 
-	err := runSkill(skillTestContextWithHistory(&buf), reg, submitFunc, []string{"test-gen", "src/main.go"})
+	err := runSkill(skillTestContextWithHistory(t, &buf), reg, submitFunc, []string{"test-gen", "src/main.go"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestRunSkill_InlineStripsNoise(t *testing.T) {
 	sk.Body = "<!--\nSPDX-License-Identifier: GPL-3.0-or-later\n\nCopyright (C) 2026 Pierre Poissinger\n-->\n\n[Skill: commit-msg]\n# Skill: commit-msg\nGenerate the commit message from staged changes."
 	reg := newSkillRegistry(map[string]*skills.Skill{"commit-msg": sk})
 
-	err := runSkill(skillTestContextWithHistory(&buf), reg, submitFunc, []string{"commit-msg", "~/dev/frigolite"})
+	err := runSkill(skillTestContextWithHistory(t, &buf), reg, submitFunc, []string{"commit-msg", "~/dev/frigolite"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestRunSkill_InlineNoTask(t *testing.T) {
 		"test-gen": testSkill("test-gen", "Generate tests", true, ""),
 	})
 
-	err := runSkill(skillTestContextWithHistory(&buf), reg, submitFunc, []string{"test-gen"})
+	err := runSkill(skillTestContextWithHistory(t, &buf), reg, submitFunc, []string{"test-gen"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestRunSkill_InlineNoSubmitFunc(t *testing.T) {
 		"test-gen": testSkill("test-gen", "Generate tests", true, ""),
 	})
 
-	err := runSkill(skillTestContextWithHistory(&buf), reg, nil, []string{"test-gen", "src/main.go"})
+	err := runSkill(skillTestContextWithHistory(t, &buf), reg, nil, []string{"test-gen", "src/main.go"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestRunSkill_Inline_BeforeConversation_SubmitsAsUserMessage(t *testing.T) {
 		"telegram": testSkill("telegram", "Telegraphic style", true, ""),
 	})
 
-	ctx := skillTestContext(&buf)
+	ctx := skillTestContext(t, &buf)
 	err := runSkill(ctx, reg, submitFunc, []string{"telegram"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -249,7 +249,7 @@ func TestRunSkill_Action_Inline(t *testing.T) {
 		"review": testSkill("review", "Code review", false, ""),
 	})
 
-	err := runSkill(skillTestContext(&buf), reg, nil, []string{"review", "src/"})
+	err := runSkill(skillTestContext(t, &buf), reg, nil, []string{"review", "src/"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestRunSkill_ActionSkill_Inline_Execution(t *testing.T) {
 			ExecutionMode: config.AgenticSkillModeInline,
 		},
 	}
-	ctx := skillTestContextWithHistory(&buf)
+	ctx := skillTestContextWithHistory(t, &buf)
 	ctx.Config = cfg
 
 	err := runSkill(ctx, reg, submitFunc, []string{"golang-check"})
@@ -313,7 +313,7 @@ func TestRunSkill_ActionSkill_BeforeConversation_SubmitsAsUserMessage(t *testing
 		"golang-check": testSkill("golang-check", "Run static analysis checks", false, ""),
 	})
 
-	ctx := skillTestContext(&buf)
+	ctx := skillTestContext(t, &buf)
 	err := runSkill(ctx, reg, submitFunc, []string{"golang-check", "src/"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -354,7 +354,7 @@ func TestRunSkill_ActionSkill_SubAgent_Execution(t *testing.T) {
 			ExecutionMode: config.AgenticSkillModeSubAgent,
 		},
 	}
-	ctx := skillTestContextWithHistory(&buf)
+	ctx := skillTestContextWithHistory(t, &buf)
 	ctx.Config = cfg
 	ctx.SkillSubAgentRunner = runner
 
@@ -399,7 +399,7 @@ func TestRunSkill_SubAgent_NoRunner_Warns(t *testing.T) {
 			ExecutionMode: config.AgenticSkillModeSubAgent,
 		},
 	}
-	ctx := skillTestContextWithHistory(&buf)
+	ctx := skillTestContextWithHistory(t, &buf)
 	ctx.Config = cfg
 
 	err := runSkill(ctx, reg, nil, []string{"golang-check"})
@@ -422,7 +422,7 @@ func TestRunSkill_SubAgent_Error_Warns(t *testing.T) {
 			ExecutionMode: config.AgenticSkillModeSubAgent,
 		},
 	}
-	ctx := skillTestContextWithHistory(&buf)
+	ctx := skillTestContextWithHistory(t, &buf)
 	ctx.Config = cfg
 	ctx.SkillSubAgentRunner = runner
 
@@ -653,7 +653,7 @@ func TestRunSkill_SubAgent_ViaRunSkillTool(t *testing.T) {
 			ExecutionMode: config.AgenticSkillModeSubAgent,
 		},
 	}
-	ctx := skillTestContextWithHistory(&buf)
+	ctx := skillTestContextWithHistory(t, &buf)
 	ctx.Config = cfg
 	tool := &fakeTool{
 		name:   "run_skill",
@@ -703,7 +703,7 @@ func (f *fakeTool) IsRetryable(err error) bool { return false }
 // menu: a user_invocable:false skill never appears in /skills, while a
 // model_invocable:false skill still appears (and runs) from the UI.
 func TestListSkills_FiltersUserInvocable(t *testing.T) {
-	ctx := skillTestContext(new(strings.Builder))
+	ctx := skillTestContext(t, new(strings.Builder))
 	plain := testSkill("plain", "Plain skill", false, "")
 	modelOff := testSkill("model-off", "Model-off skill", false, "")
 	modelOff.Meta.ModelInvocable = false
