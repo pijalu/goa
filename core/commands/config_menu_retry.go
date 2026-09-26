@@ -69,18 +69,23 @@ func activeActivityTimeout(cfg *config.Config) time.Duration {
 }
 
 // activityTimeoutLabel renders the auto-retry window and the warning that
-// precedes it, mirroring the values the agent actually uses.
+// precedes it, mirroring the values the agent actually uses. Stall-timing
+// values display as plain seconds (bugs.md): "45 (warn at 30)", not "45s".
 func activityTimeoutLabel(cfg *config.Config) string {
 	window := activeActivityTimeout(cfg)
-	return fmt.Sprintf("%s (warn at %s)", window.Round(time.Second), effectiveWarnAfter(cfg, window).Round(time.Second))
+	return fmt.Sprintf("%s (warn at %s)",
+		formatStallSeconds(window.Round(time.Second)),
+		formatStallSeconds(effectiveWarnAfter(cfg, window).Round(time.Second)))
 }
 
 func activityWarnAfterLabel(cfg *config.Config) string {
 	window := activeActivityTimeout(cfg)
 	if d, err := time.ParseDuration(cfg.Execution.ActivityWarnAfter); err == nil && d > 0 && d < window {
-		return d.Round(time.Second).String()
+		return formatStallSeconds(d.Round(time.Second))
 	}
-	return fmt.Sprintf("%s (derived: 2/3 of %s)", effectiveWarnAfter(cfg, window).Round(time.Second), window.Round(time.Second))
+	return fmt.Sprintf("%s (derived: 2/3 of %s)",
+		formatStallSeconds(effectiveWarnAfter(cfg, window).Round(time.Second)),
+		formatStallSeconds(window.Round(time.Second)))
 }
 
 // effectiveWarnAfter mirrors the agent's rule (see
@@ -94,14 +99,18 @@ func effectiveWarnAfter(cfg *config.Config, window time.Duration) time.Duration 
 }
 
 // promptActivityTimeout asks for execution.activity_timeout — how long the
-// provider may stay silent before the agent retries.
+// provider may stay silent before the agent retries. The prompt prefills
+// plain seconds and accepts a bare number (bugs.md BUG-5); durations
+// ("45s", "2m") stay valid.
 func (m *configMenu) promptActivityTimeout() {
 	m.current = m.settingRetrySettings
 	current := m.ctx.Config.Execution.ActivityTimeout
-	if current == "" {
-		current = agenticprovider.DefaultStreamIdleTimeout.String()
+	if d, err := time.ParseDuration(current); err == nil {
+		current = formatStallSeconds(d)
+	} else if current == "" {
+		current = formatStallSeconds(agenticprovider.DefaultStreamIdleTimeout)
 	}
-	m.ctx.ShowInput("Auto-retry after provider silence (duration):", current, func(v string, accepted bool) {
+	m.ctx.ShowInput("Auto-retry after provider silence (seconds, e.g. 60):", current, func(v string, accepted bool) {
 		if accepted && v != "" {
 			m.applySet("execution.activity_timeout", v)
 		}
@@ -111,13 +120,16 @@ func (m *configMenu) promptActivityTimeout() {
 
 // promptActivityWarnAfter asks for execution.activity_warn_after — how long the
 // provider may stay silent before the user is told the agent is still waiting.
+// Plain seconds in, canonical duration persisted (bugs.md BUG-5).
 func (m *configMenu) promptActivityWarnAfter() {
 	m.current = m.settingRetrySettings
 	current := m.ctx.Config.Execution.ActivityWarnAfter
-	if current == "" {
-		current = effectiveWarnAfter(m.ctx.Config, activeActivityTimeout(m.ctx.Config)).Round(time.Second).String()
+	if d, err := time.ParseDuration(current); err == nil {
+		current = formatStallSeconds(d)
+	} else if current == "" {
+		current = formatStallSeconds(effectiveWarnAfter(m.ctx.Config, activeActivityTimeout(m.ctx.Config)).Round(time.Second))
 	}
-	m.ctx.ShowInput("Stall warning after provider silence (duration):", current, func(v string, accepted bool) {
+	m.ctx.ShowInput("Stall warning after provider silence (seconds, e.g. 30):", current, func(v string, accepted bool) {
 		if accepted && v != "" {
 			m.applySet("execution.activity_warn_after", v)
 		}

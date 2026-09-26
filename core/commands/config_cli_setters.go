@@ -22,8 +22,8 @@ var configSetters = map[string]configSetter{
 	"active_model":                                   setActiveModel,
 	"multi_agent.companion_model":                    setStringWithValidate(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionModel }, validateActiveModel),
 	"execution.mode":                                 setExecutionMode,
-	"execution.activity_timeout":                     setStringWithValidate(func(cfg *config.Config) *string { return &cfg.Execution.ActivityTimeout }, validateDurationValue("execution.activity_timeout")),
-	"execution.activity_warn_after":                  setStringWithValidate(func(cfg *config.Config) *string { return &cfg.Execution.ActivityWarnAfter }, validateDurationValue("execution.activity_warn_after")),
+	"execution.activity_timeout":                     setStallDuration(func(cfg *config.Config) *string { return &cfg.Execution.ActivityTimeout }),
+	"execution.activity_warn_after":                  setStallDuration(func(cfg *config.Config) *string { return &cfg.Execution.ActivityWarnAfter }),
 	"execution.retries":                              setInt(func(cfg *config.Config) *int { return &cfg.Execution.Retries }),
 	"execution.auto_save_model":                      setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.AutoSaveModel }),
 	"execution.auto_heal_tool_calls":                 setBool(func(cfg *config.Config) *bool { return &cfg.Execution.AutoHealToolCalls }),
@@ -132,17 +132,53 @@ func setStringWithValidate(getter func(*config.Config) *string, validate func(st
 	}
 }
 
-// validateDurationValue returns a validator for a duration-valued config key.
-// It names the key in the error so a rejected /config:set says which value was
-// unusable, and is shared by every duration key (stall timing, provider idle
-// timeout, retry caps) instead of a per-call inline check.
-func validateDurationValue(key string) func(string) error {
-	return func(value string) error {
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("%s must be a duration (e.g. 30s, 45s, 2m): %w", key, err)
+// setStallDuration creates a configSetter for the stall-timing keys. It
+// accepts what the stall-timing UI speaks (bugs.md: the user reads and types
+// plain seconds): a bare number is whole seconds ("60" → 60s), anything else
+// must be a Go duration ("45s", "2m"). The PERSISTED string stays canonical
+// ("60s", "2m0s") so the config file never carries unitless values.
+func setStallDuration(getter func(*config.Config) *string) configSetter {
+	return func(cfg *config.Config, value string) error {
+		canonical, err := parseStallDuration(value)
+		if err != nil {
+			return err
 		}
+		*getter(cfg) = canonical
 		return nil
 	}
+}
+
+// parseStallDuration normalizes a stall-timing input: bare numbers become
+// whole seconds ("60" → "60s"); an explicit duration passes through as typed
+// ("60s" stays "60s", "2m" stays "2m" — never rewrite the unit the user
+// chose, e.g. "60s" must not turn into "1m0s"). Returns the canonical string
+// to persist.
+func parseStallDuration(value string) (string, error) {
+	v := strings.TrimSpace(value)
+	if n, err := strconv.Atoi(v); err == nil {
+		if n <= 0 {
+			return "", fmt.Errorf("stall timing must be a positive number of seconds, got %q", value)
+		}
+		return strconv.Itoa(n) + "s", nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return "", fmt.Errorf("invalid duration %q: use plain seconds (\"60\", \"90\") or a duration (\"45s\", \"2m\")", value)
+	}
+	if d <= 0 {
+		return "", fmt.Errorf("stall timing must be positive, got %q", value)
+	}
+	return v, nil
+}
+
+// formatStallSeconds renders a duration the way the stall-timing UI displays
+// it (bugs.md): whole seconds as a bare number ("45", "120"), anything else
+// via time.Duration.String().
+func formatStallSeconds(d time.Duration) string {
+	if d == d.Round(time.Second) {
+		return strconv.FormatInt(int64(d/time.Second), 10)
+	}
+	return d.String()
 }
 
 // setActiveModel sets the active model and follows the model's configured

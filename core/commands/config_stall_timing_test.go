@@ -173,15 +173,15 @@ func TestRetrySettingsMenu_ShowsStallTiming(t *testing.T) {
 	if !ok {
 		t.Fatalf("retry settings menu is missing the retry-window entry: %+v", sr.options)
 	}
-	if windowDesc != "45s (warn at 30s)" {
-		t.Errorf("retry-window description = %q, want \"45s (warn at 30s)\"", windowDesc)
+	if windowDesc != "45 (warn at 30)" {
+		t.Errorf("retry-window description = %q, want \"45 (warn at 30)\"", windowDesc)
 	}
 	warnDesc, ok := descriptions["stall_warn"]
 	if !ok {
 		t.Fatalf("retry settings menu is missing the stall-warning entry: %+v", sr.options)
 	}
-	if warnDesc != "30s" {
-		t.Errorf("stall-warning description = %q, want \"30s\"", warnDesc)
+	if warnDesc != "30" {
+		t.Errorf("stall-warning description = %q, want \"30\"", warnDesc)
 	}
 
 	// Editing the warning lead from the menu persists it and re-renders with the
@@ -201,8 +201,8 @@ func TestRetrySettingsMenu_ShowsStallTiming(t *testing.T) {
 			refreshed = item.Description
 		}
 	}
-	if refreshed != "20s" {
-		t.Errorf("menu did not re-render the new lead, got %q", refreshed)
+	if refreshed != "20" {
+		t.Errorf("menu did not re-render the new lead as plain seconds, got %q", refreshed)
 	}
 }
 
@@ -225,11 +225,87 @@ func TestRetrySettingsMenu_DerivesWarningWhenUnset(t *testing.T) {
 			windowDesc = item.Description
 		}
 	}
-	if windowDesc != "45s (warn at 30s)" {
-		t.Errorf("derived window description = %q, want \"45s (warn at 30s)\"", windowDesc)
+	if windowDesc != "45 (warn at 30)" {
+		t.Errorf("derived window description = %q, want \"45 (warn at 30)\"", windowDesc)
 	}
-	if warnDesc != "30s (derived: 2/3 of 45s)" {
-		t.Errorf("derived warning description = %q, want \"30s (derived: 2/3 of 45s)\"", warnDesc)
+	if warnDesc != "30 (derived: 2/3 of 45)" {
+		t.Errorf("derived warning description = %q, want \"30 (derived: 2/3 of 45)\"", warnDesc)
+	}
+}
+
+// TestStallTiming_PlainSecondsPrimitives pins the BUG-5 helpers: the UI
+// speaks plain seconds — formatStallSeconds renders whole seconds as bare
+// numbers, parseStallDuration accepts a bare number as seconds alongside
+// explicit durations (which pass through with the unit the user chose).
+func TestStallTiming_PlainSecondsPrimitives(t *testing.T) {
+	parseTests := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{in: "60", want: "60s"},
+		{in: "60s", want: "60s"},
+		{in: "2m", want: "2m"},
+		{in: "1m30s", want: "1m30s"},
+		{in: " 45 ", want: "45s"},
+		{in: "0", wantErr: true},
+		{in: "-5", wantErr: true},
+		{in: "soon", wantErr: true},
+		{in: "", wantErr: true},
+	}
+	for _, tt := range parseTests {
+		got, err := parseStallDuration(tt.in)
+		if tt.wantErr != (err != nil) {
+			t.Errorf("parseStallDuration(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+			continue
+		}
+		if !tt.wantErr && got != tt.want {
+			t.Errorf("parseStallDuration(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+
+	formatTests := []struct {
+		in   time.Duration
+		want string
+	}{
+		{in: 45 * time.Second, want: "45"},
+		{in: 2 * time.Minute, want: "120"},
+		{in: 1500 * time.Millisecond, want: "1.5s"},
+	}
+	for _, tt := range formatTests {
+		if got := formatStallSeconds(tt.in); got != tt.want {
+			t.Errorf("formatStallSeconds(%s) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestRetrySettingsMenu_PrefillsPlainSeconds: the stall-timing input prompts
+// prefill whole-second values as bare numbers ("45", not "45s") so editing
+// stays in the unit the user reads (bugs.md BUG-5), and a bare-number answer
+// is accepted and persisted canonically ("60" → "60s").
+func TestRetrySettingsMenu_PrefillsPlainSeconds(t *testing.T) {
+	ctx, sr, ir := stallTimingContext(t)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("retry", true)
+	sr.onSel("stall_timeout", true)
+	if ir.current != "45" {
+		t.Errorf("window prompt prefill = %q, want \"45\"", ir.current)
+	}
+	ir.onSub("60", true)
+	if got := ctx.Config.Execution.ActivityTimeout; got != "60s" {
+		t.Errorf("bare-number input persisted as %q, want \"60s\"", got)
+	}
+
+	sr.onSel("stall_timeout", true)
+	if ir.current != "60" {
+		t.Errorf("window prompt re-prefill = %q, want \"60\"", ir.current)
+	}
+
+	sr.onSel("stall_warn", true)
+	if ir.current != "30" {
+		t.Errorf("warning prompt prefill = %q, want \"30\"", ir.current)
 	}
 }
 
@@ -257,8 +333,8 @@ func TestConfigKeyCompletions_StallTiming(t *testing.T) {
 func TestRetrySettingsRootLabel_ShowsStallRetry(t *testing.T) {
 	ctx, _, _ := stallTimingContext(t)
 	label := retrySettingsLabel(ctx.Config)
-	if label != "5 retries, 45s (warn at 30s) stall retry" {
-		t.Errorf("retrySettingsLabel = %q, want the stall timing in the summary", label)
+	if label != "5 retries, 45 (warn at 30) stall retry" {
+		t.Errorf("retrySettingsLabel = %q, want the stall timing in plain seconds", label)
 	}
 }
 
