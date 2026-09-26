@@ -125,6 +125,9 @@ type ConfigurableTool struct {
 // /config and /docs show the same on/off state a fresh install ships with.
 // ask_user_question is Default:true (opt-out) — it is enabled by default and
 // only removed when the user sets tools.enabled.clarify_disabled: true.
+// goal is Default:true too: the embedded default ships tools.enabled.goal:true
+// so autonomous goal `create` works out of the box; the flag only gates that
+// one action (every other goal action works whenever a goal exists).
 func ConfigurableTools() []ConfigurableTool {
 	return []ConfigurableTool{
 		{Name: "agent", Description: "Spawn a sub-agent for a task", Default: false},
@@ -136,7 +139,7 @@ func ConfigurableTools() []ConfigurableTool {
 		{Name: "run_code", Description: "Python program with multi-tool dispatch (code-mode)", Default: true},
 		{Name: "bg_exec", Description: "Background process execution", Default: false},
 		{Name: "delegate_to", Description: "Delegate tasks to sub-agents", Default: false},
-		{Name: "goal", Description: "Goal tracking", Default: false},
+		{Name: "goal", Description: "Goal tracking", Default: true},
 		{Name: "lsp", Description: "LSP code navigation", Default: false},
 		{Name: "memento", Description: "Persistent memory files", Default: false},
 		{Name: "terminals", Description: "Persistent terminal sessions", Default: true},

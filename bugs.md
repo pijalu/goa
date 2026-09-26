@@ -135,44 +135,6 @@ Gate (run separately, post-change): `go vet ./...` clean · `staticcheck ./...`
 `go test -count=1 -race -cover ./...` → 87 packages ok, 0 FAIL (exit 0),
 `internal/agentic` 87.9%. Issue entry ready to archive per guideline 4.
 
-## The goal tool is disabled by default
-Observed: `tools.enabled.goal` is absent from the embedded default config
-(`config/configs/default.yaml`, `tools.enabled` block), so
-`ToolEnabledConfig.Goal` is false and `registerGoalTools`
-(`internal/app/subsystems.go:328-331`) builds the goal tool with
-`createFlagOn: cfg.Tools.Enabled.Goal || opts.Goal` = false → autonomous goal
-`create` is rejected unless the user edits config. `ConfigurableTools()`
-(`tools/registry.go:139`) reports `{goal, Default: false}` and the
-`/config:set tools.enabled.goal` completion text says "enable goal tools
-(default false)" (`core/commands/config_completion.go:140`).
-
-Expected: the goal tool is enabled by default — the model can create goals with
-no config edit — with `/config`, `/tools:goal:off` and the config cascade able
-to turn it back off.
-
-### Fix plan (test approach + validation)
-1. **config**: add `goal: true` to the embedded default
-   `tools.enabled` block, keeping the opt-IN flag mechanics untouched.
-   *Test*: `TestDefaultConfig_GoalToolEnabledByDefault` — cascade load of the
-   shipped defaults yields `cfg.Tools.Enabled.Goal == true` (and a project with
-   `goal: false` still overrides it).
-2. **registry/docs**: flip `ConfigurableTools()` goal entry to `Default: true`
-   and the `/config:set tools.enabled.goal` help/completion text, so
-   `/config → Tools`, `/docs` and `/tools:goal` agree with the shipped default.
-   *Test*: `TestConfigurableTools_GoalDefaultMatchesEmbeddedConfig` — assert the
-   `Default` field equals the value the embedded default config loads.
-3. **make the gate live, not captured**: `newGoalTool` currently captures the
-   flag by value (`internal/app/subsystems_goal.go`), so flipping
-   `tools.enabled.goal` in-session leaves the registered tool with a stale
-   `false` and `create` keeps failing (see the next entry). Change
-   `newGoalTool`/`registerGoalTools` to take `createFlagOn func() bool`, wired to
-   the live config (`func() bool { return cfg.Tools.Enabled.Goal || opts.Goal }`)
-   and to `makeGoalToolRuntime`.
-   *Test*: `TestGoalTool_CreateGateFollowsLiveConfig` — build the tool with a
-   live flag callback, flip the underlying config from false to true, assert
-   `create` succeeds without re-registration.
-4. **Gate**: same separate checks as above; archive + commit.
-
 ## Tools are disabled "out of the blue" (unsynchronized registry + lost deferred loads)
 Observed, two independent defects:
 

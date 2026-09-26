@@ -314,6 +314,10 @@ tools:
     goa: false
     lsp: false
     todo_list: false
+    # Goal tool: ON by default so the model can create goals with no config
+    # edit. Setting it false blocks ONLY autonomous `create`; every other goal
+    # action keeps working whenever a goal exists (user-started or queued).
+    goal: true
   search:
     threads: 4
     max_results: 30

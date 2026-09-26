@@ -278,25 +278,38 @@ func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin b
 	return err
 }
 
-func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) {
+// goalCreateGate returns the LIVE autonomous-creation gate for the goal tool.
+// It reads cfg.Tools.Enabled.Goal at call time (never captured at
+// construction), so flipping tools.enabled.goal in-session — /config → Tools,
+// /tools:goal:on|off, /config:set tools.enabled.goal true — takes effect on the
+// already-registered tool with no re-registration. opts.Goal (--goal)
+// force-enables creation for headless runs.
+func goalCreateGate(cfg *config.Config, opts RuntimeOptions) func() bool {
+	return func() bool { return cfg.Tools.Enabled.Goal || opts.Goal }
+}
+
+func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn func() bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) {
 	toolRegistry.Register(newGoalTool(manager, createFlagOn, autoUnblock, freshContextDefault, verifyTimeout))
 }
 
 // newGoalTool builds the single agent-facing goal tool bound to the manager's
 // GoalMode. Extracted so both the startup registration path and the runtime
 // /tools:goal:on factory (makeToolFactory) construct it identically.
-// autoUnblock gates the auto-spawning of an unblocking investigation goal when
-// the model blocks a goal with justification (goals.auto_unblock; nil = on).
+// createFlagOn is the LIVE feature flag (nil = flag off): it is consulted on
+// every `create` call, so an in-session toggle of tools.enabled.goal is honoured
+// without re-registration. autoUnblock gates the auto-spawning of an unblocking
+// investigation goal when the model blocks a goal with justification
+// (goals.auto_unblock; nil = on).
 // verifyTimeout feeds the live display of the verify-command bound at goal
 // completion (goals.verify_timeout; nil = default 2m) — Bug A.
-func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) agentic.Tool {
+func newGoalTool(manager *core.GoalManager, createFlagOn func() bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) agentic.Tool {
 	// Autonomous `create` is allowed when the feature flag is on, or whenever a
 	// goal exists (S2: all goal actions work during a goal). Existence
 	// — not just active status — matters: a paused/blocked goal still means
 	// "during a goal", and the tool queues behind it ("Goal management
 	// tool issue").
 	createAllowed := func() bool {
-		return createFlagOn || manager.Mode.GetGoal().Goal != nil
+		return (createFlagOn != nil && createFlagOn()) || manager.Mode.GetGoal().Goal != nil
 	}
 	tool := tools.NewGoalTools(manager.Mode, createAllowed)[0]
 	// Wire the durable goal queue so the tool manages goals as a todo-like

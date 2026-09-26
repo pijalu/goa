@@ -95,6 +95,10 @@ type subsystems struct {
 	pluginSched *plugins.Scheduler
 	noPlugins   bool // --no-plugins: skip plugin load entirely
 	headless    bool // no TUI session: external plugin hooks fail closed (§7 step 5)
+	// opts is the startup RuntimeOptions, retained so runtime paths (e.g. the
+	// /tools:goal:on factory) rebuild the same LIVE gates the startup
+	// registration used — --goal must force-enable creation on both paths.
+	opts RuntimeOptions
 	// sessionUsageFn supplies cumulative token stats to plugins (goa.sessionUsage).
 	// Wired in New() once the App (which owns the counters) exists.
 	sessionUsageFn func() map[string]any
@@ -326,8 +330,10 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	goalManager, goalDriver := initGoalSystem(cfg, projectDir, agentBundle.eventBus, agentBundle.agentMgr, swarmState, subs.providerMgr)
 	// Goal tools are always registered (stable tool array, S2). The
 	// tools.enabled.goal flag gates only AUTONOMOUS creation at execution time:
-	// `create` is allowed when the flag is on OR a goal is already active.
-	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal, cfg.Goals.AutoUnblockEnabled, cfg.Goals.FreshContextEnabled,
+	// `create` is allowed when the flag is on OR a goal is already active. The
+	// gate is a LIVE closure over cfg (goalCreateGate), so an in-session toggle
+	// takes effect without re-registration.
+	registerGoalTools(subs.toolRegistry, goalManager, goalCreateGate(cfg, opts), cfg.Goals.AutoUnblockEnabled, cfg.Goals.FreshContextEnabled,
 		func() time.Duration { return cfg.Goals.VerifyTimeoutOr(defaultGoalVerifyTimeout) })
 	// The standalone todo_list tool (available outside of goal). It is
 	// linked to the goal's own todo list while a goal is active and falls back

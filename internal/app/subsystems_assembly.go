@@ -79,6 +79,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		authStore:         sc.authStore,
 		noPlugins:         opts.NoPlugins,
 		headless:          opts.Headless(),
+		opts:              opts,
 		MemoryEnabled:     !opts.NoMemory,
 		MemoryBudget:      opts.MemoryBudget,
 		perfLoad:          opts.PerfLoad,

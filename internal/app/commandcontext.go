@@ -341,14 +341,15 @@ func setLSPOnFileTools(reg *tools.ToolRegistry, mgr tools.LSPDocumentManager) {
 }
 
 // makeGoalToolRuntime builds the goal tool for the /tools:goal:on runtime
-// path. /tools:goal:on has already flipped cfg.Tools.Enabled.Goal to true
-// before invoking the factory, so reading it here yields the same
-// createAllowed gate used at startup (flag on OR a goal active).
+// path. The create gate is the same LIVE closure used at startup
+// (goalCreateGate: cfg.Tools.Enabled.Goal OR --goal), read at every call — so
+// a tool built while the flag was off still allows `create` once the flag is
+// flipped (/tools:goal:on, /config → Tools, /config:set) with no restart.
 func makeGoalToolRuntime(subs *subsystems) (agentic.Tool, bool) {
 	if subs.goalManager == nil {
 		return nil, false
 	}
-	return newGoalTool(subs.goalManager, subs.cfg.Tools.Enabled.Goal, subs.cfg.Goals.AutoUnblockEnabled, subs.cfg.Goals.FreshContextEnabled,
+	return newGoalTool(subs.goalManager, goalCreateGate(subs.cfg, subs.opts), subs.cfg.Goals.AutoUnblockEnabled, subs.cfg.Goals.FreshContextEnabled,
 		func() time.Duration { return subs.cfg.Goals.VerifyTimeoutOr(defaultGoalVerifyTimeout) }), true
 }
 

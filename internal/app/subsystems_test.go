@@ -48,25 +48,32 @@ func TestPopulateModeDefaults_PreservesExisting(t *testing.T) {
 	}
 }
 
-func TestRegisterGoalTools_GatedByConfigAndFlag(t *testing.T) {
+func TestGoalCreateGate_GatedByConfigAndFlag(t *testing.T) {
 	cfg := &config.Config{}
-	if goalToolsEnabled(cfg, RuntimeOptions{}) {
-		t.Error("goal tools should be disabled by default")
+	gate := goalCreateGate(cfg, RuntimeOptions{})
+	if gate() {
+		t.Error("create gate should be closed by default (zero-value config)")
 	}
-	if !goalToolsEnabled(cfg, RuntimeOptions{Goal: true}) {
-		t.Error("--goal flag should force-enable goal tools")
+	if !goalCreateGate(cfg, RuntimeOptions{Goal: true})() {
+		t.Error("--goal flag should force-open the create gate")
 	}
 
 	cfg2 := &config.Config{}
 	cfg2.Tools.Enabled.SetEnabled("goal", true)
-	if !goalToolsEnabled(cfg2, RuntimeOptions{}) {
-		t.Error("tools.enabled.goal=true should enable goal tools")
+	if !goalCreateGate(cfg2, RuntimeOptions{})() {
+		t.Error("tools.enabled.goal=true should open the create gate")
 	}
-}
 
-// goalToolsEnabled mirrors the gate used in InitSubsystems.
-func goalToolsEnabled(cfg *config.Config, opts RuntimeOptions) bool {
-	return cfg.Tools.Enabled.Goal || opts.Goal
+	// LIVE: the gate reads the config at CALL time, so flipping the flag
+	// in-session opens an already-built gate (no re-registration).
+	cfg.Tools.Enabled.SetEnabled("goal", true)
+	if !gate() {
+		t.Error("create gate must follow a live tools.enabled.goal flip ON")
+	}
+	cfg.Tools.Enabled.SetEnabled("goal", false)
+	if gate() {
+		t.Error("create gate must follow a live tools.enabled.goal flip OFF")
+	}
 }
 
 // TestRegisterGoalTools_Directly verifies the helper registers the single
@@ -75,7 +82,7 @@ func TestRegisterGoalTools_Directly(t *testing.T) {
 	dir := t.TempDir()
 	gm := core.NewGoalManager(dir)
 	reg := tools.NewToolRegistry()
-	registerGoalTools(reg, gm, false, nil, nil, nil)
+	registerGoalTools(reg, gm, func() bool { return false }, nil, nil, nil)
 	if _, ok := reg.Get("goal"); !ok {
 		t.Errorf("expected the unified \"goal\" tool to be registered")
 	}

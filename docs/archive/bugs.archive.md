@@ -1558,3 +1558,60 @@ multi-round flow; existing premature-stop tests unchanged and green.
 **Validation:** go vet ./... clean; staticcheck exit 0; gocognit -over 15 identical set
 of 14 pre-existing warnings as HEAD (none added); gocyclo -over 12 byte-identical to
 HEAD; go test -count=1 -race -cover ./... green (87 pkgs ok, 0 FAIL).
+
+---
+
+### BUG: The goal tool is disabled by default — and its `create` gate captured a stale flag
+
+**Status:** IMPLEMENTED — tested, validated, archived (2026-09-26).
+
+**Observed:** `tools.enabled.goal` was absent from the embedded default config
+(`config/configs/default.yaml`, `tools.enabled` block), so `ToolEnabledConfig.Goal`
+loaded false and `registerGoalTools` built the goal tool with
+`createFlagOn: cfg.Tools.Enabled.Goal || opts.Goal` = false: autonomous goal `create`
+was rejected unless the user edited config. `ConfigurableTools()` reported
+`{goal, Default: false}` and the `/config:set tools.enabled.goal` completion text said
+"enable goal tools (default false)". A second defect in the same gate: `newGoalTool`
+captured the flag BY VALUE, so flipping `tools.enabled.goal` in-session left the
+already-registered tool holding the stale `false` — `create` kept failing until a
+restart (the dependency of the "Enabling a tool during a session does not enable it"
+entry).
+
+**Root cause:** the gate was a snapshot (`bool`) instead of a live predicate, and the
+shipped default never enabled it.
+
+**Resolution:**
+- `config/configs/default.yaml`: `tools.enabled.goal: true` (opt-IN mechanics
+  untouched; `false` blocks only autonomous `create`, every other goal action keeps
+  working whenever a goal exists).
+- `tools/registry.go`: `ConfigurableTools()` goal entry → `Default: true`;
+  `core/commands/config_completion.go` help → "enable goal tools (default true)" — so
+  `/config → Tools`, `/docs` and `/tools:goal` agree with the shipped default.
+- `internal/app/subsystems_goal.go`: new `goalCreateGate(cfg, opts) func() bool`
+  returning a LIVE closure (`cfg.Tools.Enabled.Goal || opts.Goal`);
+  `newGoalTool`/`registerGoalTools` now take `createFlagOn func() bool` (nil = off)
+  consulted on every `create` call, so an in-session flip takes effect with no
+  re-registration. `makeGoalToolRuntime` uses the SAME gate.
+- `internal/app/subsystems.go` + `subsystems_assembly.go`: startup registration passes
+  `goalCreateGate(cfg, opts)`; the subsystems struct retains `opts RuntimeOptions` so the
+  runtime `/tools:goal:on` factory rebuilds the identical gate (incl. the `--goal`
+  force-enable, which the runtime path previously lacked).
+
+**Tests:** `TestDefaultConfig_GoalToolEnabledByDefault` (cascade load of the shipped
+defaults → true; a project pin of `goal: false` still wins),
+`TestConfigurableTools_GoalDefaultMatchesEmbeddedConfig` (the registry `Default` equals
+what the embedded config loads — drift guard), `TestGoalTool_CreateGateFollowsLiveConfig`
+(blocked → live flip → `create` succeeds without re-registration),
+`TestMakeToolFactory_GoalCreateGateFollowsLiveConfig` (same contract on the
+`/tools:goal:on` factory path), `TestGoalCreateGate_ForceOnByFlag` (`--goal`),
+`TestGoalCreateGate_GatedByConfigAndFlag` (rewired to exercise the production
+`goalCreateGate`; the old test-only `goalToolsEnabled` mirror was deleted), plus
+rendered-output checks `TestToolsMenu_GoalShowsOnWithShippedDefaults` and
+`TestToolsGoalToggleOfferedWithShippedDefaults` (`/config → Tools` goal row reads
+"on"; `/tools:goal` offers `:off`, `/tools:` labels it "enabled"). RED recorded by
+mutation: re-capturing the flag makes both live-gate tests fail with `create_disabled`;
+removing the YAML default fails the config and menu tests.
+
+**Validation:** go vet ./... clean; staticcheck ./... exit 0; gocognit -over 15 . clean;
+gocyclo -over 12 . clean; go test -count=1 -race -cover ./... green (87 packages ok,
+0 FAIL, exit 0).
