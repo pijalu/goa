@@ -27,15 +27,3 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
-
-## Enable embed skill telegram by default
-Observed: embedded skills ship OFF by default (config commit "skills: every
-embedded skill is OFF by default (telegram + dream included)"), so the
-telegram skill must be enabled by hand on every install before its style
-applies.
-Expected: the embedded `telegram` skill is ENABLED by default in the shipped
-defaults (config/skills defaults), so its behavior applies out of the box.
-Every other embedded skill stays OFF. The toggle stays live and
-user-changeable (enable/disable persists as today); a home config that
-already pins `skills.enabled`/`skills.disabled` must not be overridden by
-the defaults.

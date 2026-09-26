@@ -290,6 +290,11 @@ func (cl *CascadeLoader) loadDefaults() (*Config, error) {
 	if err := yaml.Unmarshal([]byte(defaults), cfg); err != nil {
 		return nil, &internal.ConfigError{Key: "embedded", Err: fmt.Errorf("unmarshal embedded defaults: %w", err)}
 	}
+	// The embedded layer OWNS whatever skills.enabled list it ships (e.g. the
+	// default-on telegram skill): mark it as default-provided so lower layers
+	// can replace it with an explicit pin and the registry can apply it
+	// embedded-scoped instead of as a global allowlist.
+	cfg.Skills.EnabledFromDefaults = len(cfg.Skills.Enabled) > 0
 	homeConfigPath := filepath.Join(cl.homeDir, ".goa", "config.yaml")
 	_, err = os.Stat(homeConfigPath)
 	cfg.FirstRun = os.IsNotExist(err)

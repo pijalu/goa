@@ -69,8 +69,20 @@ func (c *Config) mergeSkills(other *Config) {
 	if other.Skills.ExecutionMode != "" {
 		c.Skills.ExecutionMode = other.Skills.ExecutionMode
 	}
-	c.Skills.Enabled = append(c.Skills.Enabled, other.Skills.Enabled...)
-	c.Skills.Enabled = uniqueStrings(c.Skills.Enabled)
+	// An explicit skills.enabled pin in a layer replaces the shipped default
+	// list (a home/project pin is never overridden by the defaults); user
+	// layers among themselves keep the concatenating cascade (home + project
+	// + local), because the toggle persistence partitions the allowlist
+	// across those layers by skill source.
+	if len(other.Skills.Enabled) > 0 {
+		if c.Skills.EnabledFromDefaults {
+			c.Skills.Enabled = append([]string(nil), other.Skills.Enabled...)
+		} else {
+			c.Skills.Enabled = append(c.Skills.Enabled, other.Skills.Enabled...)
+		}
+		c.Skills.EnabledFromDefaults = false
+		c.Skills.Enabled = uniqueStrings(c.Skills.Enabled)
+	}
 	c.Skills.Disabled = append(c.Skills.Disabled, other.Skills.Disabled...)
 	c.Skills.Disabled = uniqueStrings(c.Skills.Disabled)
 	c.Skills.EmbeddedEnabled = append(c.Skills.EmbeddedEnabled, other.Skills.EmbeddedEnabled...)

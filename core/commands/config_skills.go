@@ -328,30 +328,57 @@ func skillEnabledIn(cfg *config.Config, name, source string, reg core.SkillRegis
 		return false
 	}
 	if len(cfg.Skills.Enabled) > 0 {
-		return stringInSlice(cfg.Skills.Enabled, name)
+		if !cfg.Skills.EnabledFromDefaults {
+			// An explicit user pin is a real allowlist across all sources.
+			return stringInSlice(cfg.Skills.Enabled, name)
+		}
+		// The default-provided list (the shipped telegram default) is
+		// embedded-scoped: embedded skills are on while listed (or explicitly
+		// opted in), file-based skills are unaffected and stay on.
+		if source != "embedded" && registrySourceIsEmbedded(reg, name) {
+			source = "embedded"
+		}
+		if source == "embedded" {
+			return stringInSlice(cfg.Skills.Enabled, name) || stringInSlice(cfg.Skills.EmbeddedEnabled, name)
+		}
+		return true
 	}
 	if source == "embedded" {
 		return stringInSlice(cfg.Skills.EmbeddedEnabled, name)
 	}
 	// A concrete registry can still classify a skill the caller did not label
 	// (e.g. an unlabelled entry): embedded skills are opt-in, others are on.
-	if r, ok := reg.(*skills.SkillRegistry); ok {
-		if src, ok := r.SourceOf(name); ok && src == "embedded" {
-			return stringInSlice(cfg.Skills.EmbeddedEnabled, name)
-		}
+	if registrySourceIsEmbedded(reg, name) {
+		return stringInSlice(cfg.Skills.EmbeddedEnabled, name)
 	}
 	return true
 }
 
+// registrySourceIsEmbedded reports whether a concrete registry classifies the
+// named skill as embedded (for callers that pass an unknown/blank source).
+func registrySourceIsEmbedded(reg core.SkillRegistry, name string) bool {
+	r, ok := reg.(*skills.SkillRegistry)
+	if !ok {
+		return false
+	}
+	src, ok := r.SourceOf(name)
+	return ok && src == "embedded"
+}
+
 // setSkillEnabled updates the in-memory skills lists for a toggle.
 //
-// Embedded skills are ALL default-off and are therefore routed exclusively
-// through the embedded-scoped skills.embedded_enabled list: enabling adds the
-// opt-in (and clears any legacy Disabled entry written under the old
+// Embedded skills are default-off and are normally routed exclusively through
+// the embedded-scoped skills.embedded_enabled list: enabling adds the opt-in
+// (and clears any legacy Disabled entry written under the old
 // telegram-default-ON policy) WITHOUT activating the global Enabled allowlist
 // (which would suppress file-based skills), and disabling simply drops the
 // opt-in so the skill returns to its shipped off state — no Disabled entry is
 // written, so a later enable cannot be shadowed by a stale pin.
+//
+// The one shipped-on embedded skill (telegram, via the default-provided
+// skills.enabled list) is the exception: it is on without an opt-in, so
+// disabling it needs an explicit Disabled entry to beat the default list (off
+// wins), and re-enabling drops that entry.
 //
 // Non-embedded (file) skills keep the legacy semantics: enabling removes the
 // name from Disabled and adds it to Enabled when an allowlist is active (so
@@ -465,7 +492,10 @@ func skillAllowListActive(ctx core.Context, name, source string, enabling bool) 
 		return false
 	}
 	if len(ctx.Config.Skills.Enabled) > 0 {
-		return true
+		// The default-provided list (shipped telegram default) is not a user
+		// pin: enabling routes through the embedded opt-in / plain un-disable
+		// instead of persisting a skills.enabled pin.
+		return !ctx.Config.Skills.EnabledFromDefaults
 	}
 	if !enabling {
 		// Disabling never needs the disk check: an empty live list means no
@@ -567,6 +597,12 @@ func persistSkillToggle(ctx core.Context, source string, enabling bool) error {
 	}
 	cfg := ctx.Config
 	enabled, disabled := cfg.Skills.Enabled, cfg.Skills.Disabled
+	if cfg.Skills.EnabledFromDefaults {
+		// The shipped default list is not user-owned: never persist it as a
+		// home/project skills.enabled pin — that would flip the cascade into
+		// global-allowlist mode and suppress the user's file-based skills.
+		enabled = nil
+	}
 	embeddedEnabled := cfg.Skills.EmbeddedEnabled
 	switch source {
 	case "embedded", "file":

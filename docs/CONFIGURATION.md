@@ -170,6 +170,15 @@ skills:
     - .goa/skills
   embedded: true
   execution_mode: subagent           # subagent | inline
+  # Shipped default allowlist: the telegram skill is ON out of the box;
+  # every other embedded skill stays OFF. An explicit pin in any config
+  # layer REPLACES this default list and acts as a global allowlist across
+  # all skill sources; until then the default list is embedded-scoped and
+  # never suppresses file-based skills.
+  enabled:
+    - telegram
+  disabled: []                       # Explicit off wins over enabled
+  embedded_enabled: []               # Embedded-scoped opt-ins (home layer)
   sticky:                            # Force knowledge skills always-on (project level)
     - telegram
   sticky_off: []                     # Turn frontmatter-sticky skills back to on-demand

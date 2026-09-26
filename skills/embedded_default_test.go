@@ -306,6 +306,42 @@ func TestEmbeddedDefaultOff_FileSkillsUnaffected(t *testing.T) {
 	}
 }
 
+// TestShippedWiring_TelegramOnFileSkillsCoexist mirrors the app wiring for the
+// shipped default: the default-off set covers every embedded skill, and the
+// default-provided skills.enabled [telegram] list is applied embedded-scoped
+// (SkillGateLists → SetEmbeddedEnabled). Result: telegram loads with its
+// sticky body, every other embedded skill stays off, and file-based skills
+// load untouched.
+func TestShippedWiring_TelegramOnFileSkillsCoexist(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "my-custom", "A project skill")
+
+	reg := NewSkillRegistry([]string{dir})
+	reg.SetEmbeddedFS(EmbeddedSkillsFS)
+	reg.SetEmbeddedDefaultDisabled(DefaultEmbeddedOffNames(EmbeddedSkillsFS))
+	// The default-provided skills.enabled [telegram] list is applied
+	// embedded-scoped (config.SkillGateLists → SetEmbeddedEnabled in app
+	// wiring); mirror that here.
+	reg.SetEmbeddedEnabled([]string{"telegram"})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+
+	loaded := summaryNames(reg.List())
+	if !loaded["telegram"] || !loaded["my-custom"] {
+		t.Errorf("telegram and the file skill must both load, got %v", loaded)
+	}
+	for _, n := range []string{"refactor", "review", "dream", "debug"} {
+		if loaded[n] {
+			t.Errorf("embedded skill %q must stay off under the shipped wiring", n)
+		}
+	}
+	bodies := reg.StickyBodies()
+	if len(bodies) != 1 || !strings.Contains(bodies[0], "name=\"telegram\"") {
+		t.Errorf("exactly the telegram sticky body must be injected, got %v", bodies)
+	}
+}
+
 // TestNoStickyBodiesByDefault is the focused gate for the reported symptom: the
 // telegram skill is a STICKY knowledge skill, so while it was default-ON its body
 // was persisted into every agent's history. With the shipped default-off set

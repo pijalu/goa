@@ -115,14 +115,18 @@ func newSkillRegistry(cfg *config.Config, projectDir string, pluginMgr *plugins.
 	skillRegistry.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
 	skillRegistry.SetDisabled(cfg.Skills.Disabled)
-	skillRegistry.SetEnabled(cfg.Skills.Enabled)
-	// Embedded skills are OFF by default — including telegram (whose sticky body
-	// used to be injected into every session) and the hidden/internal dream
+	// Embedded skills are OFF by default — including the hidden/internal dream
 	// skill; the user opts individual ones back in via skills.embedded_enabled
 	// (or the global allowlist). File-based skills are never affected by the
-	// default-off set.
+	// default-off set. The one shipped exception is telegram: the embedded
+	// default config lists it in skills.enabled, and that default-provided
+	// list is applied embedded-scoped (SkillGateLists) so it turns telegram on
+	// without ever gating file-based skills. An explicit skills.enabled pin in
+	// a config layer is a real allowlist across all sources.
 	skillRegistry.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
-	skillRegistry.SetEmbeddedEnabled(cfg.Skills.EmbeddedEnabled)
+	allow, embeddedScoped := cfg.Skills.SkillGateLists()
+	skillRegistry.SetEnabled(allow)
+	skillRegistry.SetEmbeddedEnabled(embeddedScoped)
 	// Config-level sticky overrides (skills.sticky / skills.sticky_off),
 	// persisted at project level and toggled via /skill:sticky and /config.
 	skillRegistry.SetStickyOverrides(cfg.Skills.Sticky, cfg.Skills.StickyOff)

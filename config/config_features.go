@@ -200,6 +200,15 @@ type SkillsConfig struct {
 	// catalog. A name in both Enabled and Disabled is disabled (explicit off
 	// wins). Load-time only: the system prompt is not rebuilt mid-session.
 	Disabled []string `yaml:"disabled,omitempty"`
+	// EnabledFromDefaults records that the merged Enabled list came solely
+	// from the embedded shipped defaults — no config layer pinned the
+	// skills.enabled key. A default-provided list must not behave like a user
+	// allowlist: it is applied embedded-scoped (see SkillGateLists) so it
+	// turns the shipped-on built-in on WITHOUT suppressing the user's
+	// home/project/plugin file skills, and an explicit pin in any layer
+	// replaces it entirely (a home config is never overridden by the
+	// defaults). Derived during the cascade merge; never persisted.
+	EnabledFromDefaults bool `yaml:"-"`
 	// EmbeddedEnabled re-enables individual embedded skills that are OFF by
 	// default (ALL embedded skills ship inactive). Unlike the
 	// global Enabled allowlist — which gates EVERY source and would suppress

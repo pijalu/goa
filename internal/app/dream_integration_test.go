@@ -190,7 +190,45 @@ func TestDreamCLI_SkillDisabledReportsHowToEnable(t *testing.T) {
 // TestReloadSkills_PicksUpEmbeddedEnabled: ReloadSkills must refresh the
 // embedded opt-in list from disk like the other skill lists, so an in-session
 // skill toggle produces exactly the registry a fresh start would build.
+// The shipped default already has telegram ON (skills.enabled in the embedded
+// default config), so the opt-in pickup is exercised on review, a skill that
+// stays default-off.
 func TestReloadSkills_PicksUpEmbeddedEnabled(t *testing.T) {
+	subs := subsystemsWithShippedDefaultSkills(t)
+
+	// Simulate the persisted opt-in a toggle writes, WITHOUT touching the live
+	// config: the reload must read the on-disk state. SaveHomeFieldValue is the
+	// same call persistSkillToggle makes for the embedded opt-in list.
+	if err := subs.loader.SaveHomeFieldValue([]string{"skills", "embedded_enabled"}, []string{"review"}); err != nil {
+		t.Fatalf("persist opt-in: %v", err)
+	}
+
+	h := &ReloadHandler{subs: subs}
+	if _, err := h.ReloadSkills(); err != nil {
+		t.Fatalf("ReloadSkills: %v", err)
+	}
+	if !stringInSliceForTest(subs.cfg.Skills.EmbeddedEnabled, "review") {
+		t.Errorf("ReloadSkills must refresh Skills.EmbeddedEnabled, got %v", subs.cfg.Skills.EmbeddedEnabled)
+	}
+	skill, ok := subs.skillRegistry.Get("review")
+	if !ok {
+		t.Fatal("review must be loaded in-session after the reload")
+	}
+	if skill.Source != "embedded" {
+		t.Errorf("reloaded review must come from the embedded source, got %q", skill.Source)
+	}
+	// The shipped-on default must survive the reload untouched.
+	if _, ok := subs.skillRegistry.Get("telegram"); !ok {
+		t.Error("telegram must stay loaded after the reload (shipped default)")
+	}
+}
+
+// subsystemsWithShippedDefaultSkills builds subsystems over a defaults-only
+// cascade (isolated home) and pins the shipped skill policy as test
+// preconditions: skills.enabled [telegram] flagged default-provided, telegram
+// loaded, review (and every other embedded skill) off.
+func subsystemsWithShippedDefaultSkills(t *testing.T) *subsystems {
+	t.Helper()
 	home := t.TempDir()
 	project := t.TempDir()
 	t.Setenv("HOME", home)
@@ -203,34 +241,17 @@ func TestReloadSkills_PicksUpEmbeddedEnabled(t *testing.T) {
 	if len(cfg.Skills.EmbeddedEnabled) != 0 {
 		t.Fatalf("precondition: no embedded opt-ins, got %v", cfg.Skills.EmbeddedEnabled)
 	}
+	if !cfg.Skills.EnabledFromDefaults || len(cfg.Skills.Enabled) != 1 || cfg.Skills.Enabled[0] != "telegram" {
+		t.Fatalf("precondition: shipped default must carry skills.enabled [telegram] (default-only), got %v", cfg.Skills.Enabled)
+	}
 	subs := InitSubsystems(cfg, loader, project, RuntimeOptions{})
-	if _, ok := subs.skillRegistry.Get("telegram"); ok {
-		t.Fatal("precondition: telegram must be OFF by default")
+	if _, ok := subs.skillRegistry.Get("telegram"); !ok {
+		t.Fatal("precondition: telegram must be ON by default (shipped skills.enabled default)")
 	}
-
-	// Simulate the persisted opt-in a toggle writes, WITHOUT touching the live
-	// config: the reload must read the on-disk state. SaveHomeFieldValue is the
-	// same call persistSkillToggle makes for the embedded opt-in list.
-	if err := loader.SaveHomeFieldValue([]string{"skills", "embedded_enabled"}, []string{"telegram"}); err != nil {
-		t.Fatalf("persist opt-in: %v", err)
+	if _, ok := subs.skillRegistry.Get("review"); ok {
+		t.Fatal("precondition: review must be OFF by default")
 	}
-
-	h := &ReloadHandler{subs: subs}
-	if _, err := h.ReloadSkills(); err != nil {
-		t.Fatalf("ReloadSkills: %v", err)
-	}
-	// The reload count is 1 (only the opted-in skill) — every embedded skill
-	// being OFF by default is exactly why a bare count assertion is meaningless.
-	if !stringInSliceForTest(subs.cfg.Skills.EmbeddedEnabled, "telegram") {
-		t.Errorf("ReloadSkills must refresh Skills.EmbeddedEnabled, got %v", subs.cfg.Skills.EmbeddedEnabled)
-	}
-	skill, ok := subs.skillRegistry.Get("telegram")
-	if !ok {
-		t.Fatal("telegram must be loaded in-session after the reload")
-	}
-	if !skill.IsSticky() {
-		t.Error("the opted-in telegram skill must keep its sticky (always-on) body")
-	}
+	return subs
 }
 
 func stringInSliceForTest(list []string, want string) bool {
