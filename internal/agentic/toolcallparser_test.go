@@ -6,6 +6,7 @@ package agentic
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -335,5 +336,124 @@ func TestParseToolCalls_DSMLIncompleteStreamTolerated(t *testing.T) {
 	calls := parseDSMLToolCallsFromText(content, 0, true)
 	if len(calls) != 1 || calls[0].name != "read" {
 		t.Fatalf("incomplete DSML not recovered: %+v", calls)
+	}
+}
+
+// --- whitespace DSML dialect (export goa-export-20260926-101445) -----------
+//
+// A model emitted the DSML marker with a space after the delimiter
+// ("<｜｜DSML｜｜ invoke name=..."), which every recognizer used to require
+// without whitespace. Detection then failed, the call was never parsed, and
+// the turn ended with the raw markup as the answer — a dropped tool call with
+// no feedback. These tests pin the tolerant behavior for detection, parsing
+// and stripping.
+
+// exportWhitespaceDSML reproduces the shape observed in the export: spaced
+// delimiters, a string="true" action and a string="false" JSON array payload
+// spanning multiple lines.
+const exportWhitespaceDSML = `Let me create it.
+<｜｜DSML｜｜ invoke name="goal">
+<｜｜DSML｜｜ parameter name="action" string="true">create</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="objective" string="true">Stall timing
+continues here.</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="freshContext" string="false">false</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="verifyCommand" string="true">go test ./...</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>
+</｜｜DSML｜｜`
+
+func TestHasDSMLSignal_WhitespaceDialect(t *testing.T) {
+	// RED-before-fix evidence: the pre-fix recognizer was exactly this
+	// predicate (canonical spelling, no whitespace) and it does NOT match the
+	// export text — which is why the call was dropped silently.
+	strictPredicate := strings.Contains(exportWhitespaceDSML, "<｜｜DSML｜｜invoke") ||
+		strings.Contains(exportWhitespaceDSML, "<｜｜DSML｜｜tool_calls>")
+	if strictPredicate {
+		t.Fatal("fixture no longer reproduces the export dialect the old recognizer missed")
+	}
+
+	if !hasDSMLSignal(exportWhitespaceDSML) {
+		t.Fatal("whitespace DSML dialect not detected (recognizer must tolerate '<｜｜DSML｜｜ invoke')")
+	}
+	if !hasDSMLSignal(`< ｜｜ DSML ｜｜ invoke name="x">`) {
+		t.Error("whitespace inside the delimiter must be tolerated too")
+	}
+	if hasDSMLSignal("plain prose about the DSML format without markup") {
+		t.Error("prose must not count as a DSML signal")
+	}
+}
+
+func TestParseDSMLToolCalls_WhitespaceDialect(t *testing.T) {
+	// RED-before-fix evidence: the pre-fix invoke/parameter patterns (which
+	// required the keyword immediately after the delimiter) matched nothing in
+	// this text, so zero calls were recovered.
+	strictInvoke := regexp.MustCompile(`<｜｜DSML｜｜invoke\s+name="([^"]+)"\s*>`)
+	strictParam := regexp.MustCompile(`<｜｜DSML｜｜parameter\s+name="([^"]+)"`)
+	if strictInvoke.MatchString(exportWhitespaceDSML) || strictParam.MatchString(exportWhitespaceDSML) {
+		t.Fatal("fixture no longer reproduces the dialect the old parser dropped")
+	}
+
+	calls := parseDSMLToolCallsFromText(exportWhitespaceDSML, 0, true)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 recovered call, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].name != "goal" {
+		t.Errorf("name = %q, want goal", calls[0].name)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(calls[0].arguments), &args); err != nil {
+		t.Fatalf("arguments not valid JSON: %v (%q)", err, calls[0].arguments)
+	}
+	if args["action"] != "create" {
+		t.Errorf("action = %v, want create", args["action"])
+	}
+	if args["freshContext"] != "false" {
+		t.Errorf("freshContext = %v, want false", args["freshContext"])
+	}
+	if obj, _ := args["objective"].(string); !strings.Contains(obj, "Stall timing") || !strings.Contains(obj, "continues here.") {
+		t.Errorf("multi-line objective mangled: %q", obj)
+	}
+	if vc, _ := args["verifyCommand"].(string); vc != "go test ./..." {
+		t.Errorf("verifyCommand = %q, want %q", vc, "go test ./...")
+	}
+}
+
+func TestParseToolCalls_DSMLWhitespaceSpacedDelimiter(t *testing.T) {
+	content := `< ｜｜ DSML ｜｜ invoke name="read">` + "\n" +
+		`<｜｜DSML｜｜parameter name="path" string="true">/tmp/x.go</｜｜DSML｜｜ parameter>` + "\n" +
+		`</｜｜ DSML ｜｜ invoke>`
+	calls := parseToolCallsFromText(content, 0, true)
+	if len(calls) != 1 || calls[0].name != "read" {
+		t.Fatalf("spaced delimiter not recovered: %+v", calls)
+	}
+	if !strings.Contains(calls[0].arguments, "/tmp/x.go") {
+		t.Errorf("path argument lost: %q", calls[0].arguments)
+	}
+}
+
+func TestStripToolMarkup_WhitespaceDialect(t *testing.T) {
+	stripped := stripToolMarkup(exportWhitespaceDSML, true)
+	if strings.Contains(stripped, "DSML") {
+		t.Errorf("whitespace DSML markup not stripped: %q", stripped)
+	}
+	if strings.Contains(stripped, "invoke name") || strings.Contains(stripped, "parameter name") {
+		t.Errorf("parameter markup leaked: %q", stripped)
+	}
+	if !strings.Contains(stripped, "Let me create it.") {
+		t.Errorf("surrounding prose lost: %q", stripped)
+	}
+}
+
+// TestClosedInvokeCallNames_WhitespaceDialect pins the detector used for the
+// "emitted as text and NOT executed" report: it must see the whitespace
+// dialect as a closed call naming the tool.
+func TestClosedInvokeCallNames_WhitespaceDialect(t *testing.T) {
+	names := closedInvokeCallNames(exportWhitespaceDSML, func(string) bool { return true })
+	if len(names) != 1 || names[0] != "goal" {
+		t.Fatalf("closed-call detector missed the whitespace dialect: %v", names)
+	}
+	// An unterminated block is not judged (the stream may still complete it).
+	open := `<｜｜DSML｜｜ invoke name="goal"><｜｜DSML｜｜ parameter name="action">create</｜｜DSML｜｜ parameter>`
+	if names := closedInvokeCallNames(open, func(string) bool { return true }); len(names) != 0 {
+		t.Errorf("unterminated block must not be reported: %v", names)
 	}
 }

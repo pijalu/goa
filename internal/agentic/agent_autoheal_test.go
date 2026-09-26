@@ -381,3 +381,263 @@ func TestInvokeToolCallWarnsWithAutoHealOff(t *testing.T) {
 		t.Errorf("warning must name the tool: %q", warnings[0])
 	}
 }
+
+// --- whitespace DSML dialect: recovery + never-silent reporting -------------
+//
+// Export goa-export-20260926-101445: a model emitted its tool call as TEXT in a
+// whitespace variant of the DSML dialect ("<｜｜DSML｜｜ invoke name=...>"). Every
+// recognizer required the canonical spelling, so the call was neither detected
+// nor parsed, healing being ON produced no diagnostics, the markup was shown as
+// the answer and the turn just ended ("unexpected stop").
+
+// whitespaceDSMLEvents replays the observed delta sequence: the marker arrives
+// split across deltas with a space before the keyword.
+func whitespaceDSMLEvents(toolName string) []provider.AssistantMessageEvent {
+	return []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Let me create it.\n<｜｜DSML｜｜ invoke name=\"" + toolName + "\">\n"},
+		{Type: provider.EventTextDelta, Delta: `<｜｜DSML｜｜ parameter name="command" string="true">echo hello</｜｜DSML｜｜ parameter>` + "\n"},
+		{Type: provider.EventTextDelta, Delta: "</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜"},
+	}
+}
+
+// TestAutoHeal_WhitespaceDSMLRecoveredWithAutoHealOff pins the export fix: the
+// whitespace dialect is recovered by the DSML path (which never needs the
+// generic auto-heal opt-in), the tool executes, and the markup never reaches
+// the user-visible answer.
+func TestAutoHeal_WhitespaceDSMLRecoveredWithAutoHealOff(t *testing.T) {
+	p := registerTestProvider("dsml-whitespace-noautoheal", whitespaceDSMLEvents("terminal"))
+	mdl := testModel(p.api)
+
+	called := false
+	tool := &autoHealMockTool{
+		name: "terminal",
+		exec: func(input string) (string, error) {
+			called = true
+			if input != `{"command":"echo hello"}` {
+				t.Errorf("unexpected input: %q", input)
+			}
+			return "hello", nil
+		},
+	}
+
+	agent := NewAgent(Config{
+		Model:        mdl,
+		SystemPrompt: "test",
+		Tools:        []Tool{tool},
+		// AutoHealToolCalls deliberately false: DSML must not need it.
+	})
+
+	out, err := agent.RunAndCollect(context.Background(), "create it")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !called {
+		t.Fatal("whitespace DSML tool call was dropped (must be recovered)")
+	}
+	if strings.Contains(out, "DSML") || strings.Contains(out, "invoke name") {
+		t.Errorf("tool markup leaked into user-visible output: %q", out)
+	}
+}
+
+// TestAutoHeal_WhitespaceDSMLRecoveredWithAutoHealOn covers the export's actual
+// configuration (tool call fixing ON) end to end.
+func TestAutoHeal_WhitespaceDSMLRecoveredWithAutoHealOn(t *testing.T) {
+	p := registerTestProvider("dsml-whitespace-autoheal", whitespaceDSMLEvents("terminal"))
+	mdl := testModel(p.api)
+
+	called := false
+	tool := &autoHealMockTool{
+		name: "terminal",
+		exec: func(input string) (string, error) { called = true; return "hello", nil },
+	}
+
+	agent := NewAgent(Config{
+		Model:             mdl,
+		SystemPrompt:      "test",
+		Tools:             []Tool{tool},
+		AutoHealToolCalls: true,
+	})
+
+	if _, err := agent.RunAndCollect(context.Background(), "create it"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !called {
+		t.Fatal("whitespace DSML tool call was dropped with auto-heal on")
+	}
+}
+
+// newReportTestAgent builds an agent with one registered tool and a content
+// buffer holding the given text, for direct reportUnrecoveredTextToolCall
+// tests (the heal path itself is covered by the end-to-end tests above).
+func newReportTestAgent(t *testing.T, name string, autoHeal bool, buffered string) (*Agent, *mockEventObserver) {
+	t.Helper()
+	p := registerTestProvider("report-"+name, nil)
+	agent := NewAgent(Config{
+		Model:             testModel(p.api),
+		SystemPrompt:      "test",
+		Tools:             []Tool{&autoHealMockTool{name: name, exec: func(string) (string, error) { return "", nil }}},
+		AutoHealToolCalls: autoHeal,
+	})
+	agent.contentBuf.Reset()
+	agent.contentBuf.WriteString(buffered)
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	return agent, obs
+}
+
+func reportProgress(obs *mockEventObserver) []string {
+	var out []string
+	for _, e := range obs.Events() {
+		if e.Type == EventProgress && strings.Contains(e.Text, "was NOT executed") {
+			out = append(out, e.Text)
+		}
+	}
+	return out
+}
+
+func guidanceInHistory(a *Agent) string {
+	for _, m := range a.GetHistory() {
+		if m.Role == System && strings.Contains(m.Content, "Re-issue that call now as a native tool call") {
+			return m.Content
+		}
+	}
+	return ""
+}
+
+// exportWhitespaceDSMLTool is the tool named by exportWhitespaceDSML.
+const exportWhitespaceDSMLTool = "goal"
+
+// TestUnrecoveredTextToolCall_WarnsWithHealingOff: the operator-visible notice
+// must tell them which switch recovers the call.
+func TestUnrecoveredTextToolCall_WarnsWithHealingOff(t *testing.T) {
+	agent, obs := newReportTestAgent(t, exportWhitespaceDSMLTool, false, exportWhitespaceDSML)
+	agent.reportUnrecoveredTextToolCall(agent.contentBuf.String(), agent.contentBuf.String(), "")
+
+	warnings := reportProgress(obs)
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly 1 warning, got %d (%v)", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], exportWhitespaceDSMLTool) {
+		t.Errorf("warning must name the tool: %q", warnings[0])
+	}
+	if !strings.Contains(warnings[0], "enable auto_heal_tool_calls") {
+		t.Errorf("healing-off warning must point at the switch: %q", warnings[0])
+	}
+}
+
+// TestUnrecoveredTextToolCall_WarnsWithHealingOn is the export regression: with
+// healing ON (the shipped user config) a call that could not be reconstructed
+// must STILL be reported — the old code returned silently in exactly this case.
+func TestUnrecoveredTextToolCall_WarnsWithHealingOn(t *testing.T) {
+	agent, obs := newReportTestAgent(t, exportWhitespaceDSMLTool, true, exportWhitespaceDSML)
+	agent.reportUnrecoveredTextToolCall(agent.contentBuf.String(), agent.contentBuf.String(), "")
+
+	warnings := reportProgress(obs)
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly 1 warning with healing on, got %d (%v)", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "could not reconstruct") {
+		t.Errorf("healing-on wording must explain recovery failed: %q", warnings[0])
+	}
+}
+
+// TestUnrecoveredTextToolCall_GuidesModelToReissue: the model must be told to
+// re-issue the call natively, otherwise the turn ends on raw markup with no way
+// forward.
+func TestUnrecoveredTextToolCall_GuidesModelToReissue(t *testing.T) {
+	agent, _ := newReportTestAgent(t, exportWhitespaceDSMLTool, true, exportWhitespaceDSML)
+	agent.reportUnrecoveredTextToolCall(agent.contentBuf.String(), agent.contentBuf.String(), "")
+
+	guidance := guidanceInHistory(agent)
+	if guidance == "" {
+		t.Fatal("no re-issue guidance injected into the conversation history")
+	}
+	if !strings.Contains(guidance, exportWhitespaceDSMLTool) {
+		t.Errorf("guidance must name the dropped tool: %q", guidance)
+	}
+}
+
+// TestUnrecoveredTextToolCall_StripsMarkupFromAnswer: unrecovered markup must
+// not survive into the finalized assistant message.
+func TestUnrecoveredTextToolCall_StripsMarkupFromAnswer(t *testing.T) {
+	agent, _ := newReportTestAgent(t, exportWhitespaceDSMLTool, true, exportWhitespaceDSML)
+	content := agent.contentBuf.String()
+	agent.reportUnrecoveredTextToolCall(content, content, "")
+
+	if got := agent.contentBuf.String(); strings.Contains(got, "DSML") {
+		t.Errorf("markup left in the answer buffer: %q", got)
+	}
+}
+
+// TestUnrecoveredTextToolCall_ReportsOncePerTurn keeps the notice from
+// repeating on every recovery round.
+func TestUnrecoveredTextToolCall_ReportsOncePerTurn(t *testing.T) {
+	agent, obs := newReportTestAgent(t, exportWhitespaceDSMLTool, false, exportWhitespaceDSML)
+	content := agent.contentBuf.String()
+	agent.reportUnrecoveredTextToolCall(content, content, "")
+	agent.reportUnrecoveredTextToolCall(content, content, "")
+
+	if n := len(reportProgress(obs)); n != 1 {
+		t.Fatalf("expected 1 warning for two rounds, got %d", n)
+	}
+}
+
+// TestUnrecoveredTextToolCall_SilentOnProse: prose discussing the markup, or a
+// block naming an unregistered tool, must not produce a warning.
+func TestUnrecoveredTextToolCall_SilentOnProse(t *testing.T) {
+	prose := "The model wrote <｜｜DSML｜｜ invoke name=\"nonexistent\"> in its reply."
+	agent, obs := newReportTestAgent(t, "terminal", true, prose)
+	agent.reportUnrecoveredTextToolCall(prose, prose, "")
+
+	if n := len(reportProgress(obs)); n != 0 {
+		t.Fatalf("prose/unregistered tool must stay quiet, got %d warnings", n)
+	}
+}
+
+// TestFinalize_StripsOrphanDSMLMarkup: when a text tool call cannot be
+// recovered, its markup must not be finalized as the assistant's answer — the
+// user gets the notice instead of a wall of XML (the "unexpected stop" shape
+// from export goa-export-20260926-101445). The Anthropic-legacy invoke dialect
+// is used here because it is deliberately opt-in (auto-heal OFF => not
+// recovered), which forces the report path; the pre-fix code left the markup in
+// the output because its warning path never stripped the buffers.
+func TestFinalize_StripsOrphanDSMLMarkup(t *testing.T) {
+	events := []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Working on it.\n<invoke name=\"terminal\">\n"},
+		{Type: provider.EventTextDelta, Delta: "<parameter name=\"command\">echo hi</parameter>\n</invoke>"},
+	}
+	p := registerTestProvider("orphan-invoke", events)
+	mdl := testModel(p.api)
+
+	called := false
+	tool := &autoHealMockTool{name: "terminal", exec: func(string) (string, error) { called = true; return "hi", nil }}
+	agent := NewAgent(Config{
+		Model:        mdl,
+		SystemPrompt: "test",
+		Tools:        []Tool{tool},
+		// Healing off: the invoke dialect is not recovered without the opt-in.
+	})
+	var warned bool
+	agent.AddObserver(OutputObserverFunc(func(ev OutputEvent) {
+		if ev.Type == EventProgress && strings.Contains(ev.Text, "was NOT executed") {
+			warned = true
+		}
+	}))
+
+	out, err := agent.RunAndCollect(context.Background(), "run")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if called {
+		t.Fatal("invoke dialect must not execute with healing off")
+	}
+	if !warned {
+		t.Fatal("unrecovered call must be reported (never a silent drop)")
+	}
+	if strings.Contains(out, "invoke name") || strings.Contains(out, "parameter name") {
+		t.Errorf("orphan tool markup finalized as the answer: %q", out)
+	}
+	if !strings.Contains(out, "Working on it.") {
+		t.Errorf("surrounding answer text lost: %q", out)
+	}
+}

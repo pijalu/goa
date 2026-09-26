@@ -24,10 +24,26 @@ var (
 	// entries. DeepSeek-family models fall back to this native text format when
 	// the request suppresses structured tool calls (tool_choice "none") — the
 	// exact collapse-round case where a dropped call loses user work.
-	dsmlInvokeRE = regexp.MustCompile(`<｜｜DSML｜｜invoke\s+name="([^"]+)"\s*>`)
-	dsmlParamRE  = regexp.MustCompile(`<｜｜DSML｜｜parameter\s+name="([^"]+)"(?:\s+string="(?:true|false)")?\s*>`)
-	// dsmlInvokeClose terminates one invoke block.
-	dsmlInvokeClose = "</｜｜DSML｜｜invoke>"
+	//
+	// The delimiter tolerates whitespace around the marker
+	// (<｜｜DSML｜｜ invoke, <｜｜DSML｜｜ parameter, </｜｜DSML｜｜ invoke): models emit
+	// that variant too, and a recognizer that only matches the canonical form
+	// drops the call silently (export goa-export-20260926-101445). Every
+	// pattern therefore carries \s* after the delimiter, and the scanner
+	// additionally normalizes the text up front (normalizeDSMLMarkup) so
+	// detection, parsing and stripping cannot disagree — see the comment there.
+	dsmlInvokeRE = regexp.MustCompile(`<｜｜DSML｜｜\s*invoke\s+name="([^"]+)"\s*>`)
+	dsmlParamRE  = regexp.MustCompile(`<｜｜DSML｜｜\s*parameter\s+name="([^"]+)"(?:\s+string="(?:true|false)")?\s*>`)
+	// dsmlInvokeCloseRE terminates one invoke block (whitespace-tolerant).
+	dsmlInvokeCloseRE = regexp.MustCompile(`</｜｜DSML｜｜\s*invoke>`)
+	dsmlParamClose    = "</｜｜DSML｜｜parameter>"
+	// dsmlParamCloseRE matches the parameter close in either spelling.
+	dsmlParamCloseRE = regexp.MustCompile(`</｜｜DSML｜｜\s*parameter>`)
+
+	// dsmlDelimiterWSRE matches the DSML delimiter with arbitrary whitespace
+	// inside or after it, in both the opening and the closing spelling, so a
+	// single normalization pass makes every downstream pattern match.
+	dsmlDelimiterWSRE = regexp.MustCompile(`<(/?) *｜｜ *DSML *｜｜ *`)
 
 	// Anthropic-legacy tool-use dialect: <invoke name="fn">…</invoke> wrapping
 	// <parameter name="k">value</parameter> entries. Models trained on the
@@ -44,28 +60,57 @@ var (
 	toolClosedPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?s)<tool_call>.*?</tool_call>`),
 		regexp.MustCompile(`(?s)<function=[\w-]+>.*?</function>`),
-		regexp.MustCompile(`(?s)<｜｜DSML｜｜tool_calls>.*?</｜｜DSML｜｜tool_calls>`),
-		regexp.MustCompile(`(?s)<｜｜DSML｜｜invoke\s+name="[^"]+"\s*>.*?</｜｜DSML｜｜invoke>`),
+		regexp.MustCompile(`(?s)<｜｜DSML｜｜\s*tool_calls>.*?</｜｜DSML｜｜\s*tool_calls>`),
+		regexp.MustCompile(`(?s)<｜｜DSML｜｜\s*invoke\s+name="[^"]+"\s*>.*?</｜｜DSML｜｜\s*invoke>`),
 		regexp.MustCompile(`(?s)<invoke\s+name="[^"]+"\s*>.*?</invoke>`),
 	}
 	toolAllPatterns = append([]*regexp.Regexp(nil), toolClosedPatterns...)
 
-	toolXMLSignals = []string{"<tool_call>", "<function=", "<invoke name", "<｜｜DSML｜｜invoke", "<｜｜DSML｜｜tool_calls>"}
+	toolXMLSignals = []string{"<tool_call>", "<function=", "<invoke name", "<｜｜DSML｜｜", "<｜｜DSML｜｜tool_calls>"}
+
+	// dsmlSignalRE recognizes DSML markup in the canonical and in the
+	// whitespace spelling, open or close, so detection can never be stricter
+	// than the parser.
+	dsmlSignalRE = regexp.MustCompile(`</?｜｜DSML｜｜\s*(invoke|tool_calls)`)
 )
 
 func init() {
 	toolAllPatterns = append(toolAllPatterns,
 		regexp.MustCompile(`(?s)<tool_call>.*$`),
 		regexp.MustCompile(`(?s)<function=[\w-]+>.*$`),
-		regexp.MustCompile(`(?s)<｜｜DSML｜｜tool_calls>.*$`),
-		regexp.MustCompile(`(?s)<｜｜DSML｜｜invoke\s+name="[^"]+"\s*>.*$`),
+		regexp.MustCompile(`(?s)<｜｜DSML｜｜\s*tool_calls>.*$`),
+		regexp.MustCompile(`(?s)<｜｜DSML｜｜\s*invoke\s+name="[^"]+"\s*>.*$`),
 		regexp.MustCompile(`(?s)<invoke\s+name="[^"]+"\s*>.*$`),
 		// Orphan closers: a close tag whose open was already stripped/flushed on
 		// an earlier delta must not leak into the display.
-		regexp.MustCompile(`(?s)</｜｜DSML｜｜tool_calls>`),
-		regexp.MustCompile(`(?s)</｜｜DSML｜｜invoke>`),
+		regexp.MustCompile(`(?s)</｜｜DSML｜｜\s*tool_calls>`),
+		regexp.MustCompile(`(?s)</｜｜DSML｜｜\s*invoke>`),
+		// Parameter markup of a partially stripped block (the open marker was
+		// consumed on an earlier delta) would otherwise reach the display.
+		regexp.MustCompile(`(?s)</｜｜DSML｜｜\s*parameter>`),
+		regexp.MustCompile(`(?s)<｜｜DSML｜｜\s*parameter\s+name="[^"]+"(?:\s+string="(?:true|false)")?\s*>`),
+		// Bare delimiter tokens left over by a block whose keyword was consumed
+		// on an earlier delta (the export ends with a lone "</｜｜DSML｜｜").
+		// Final pass only: the non-final pass must not eat markup that a later
+		// delta may still complete into a call.
+		regexp.MustCompile(`(?s)</?｜｜DSML｜｜\s*`),
 		regexp.MustCompile(`(?s)</invoke>`),
 	)
+}
+
+// normalizeDSMLMarkup collapses every accepted spelling of the DSML delimiter
+// onto the canonical one: whitespace inside the delimiter ("< ｜｜ DSML ｜｜") and
+// whitespace between the delimiter and the keyword ("<｜｜DSML｜｜ invoke",
+// "</｜｜DSML｜｜ parameter>") are removed. Detection, parsing and stripping all run
+// it, so a dialect variant can never match one path while another misses it —
+// the failure that dropped a live tool call in export
+// goa-export-20260926-101445. Text that is not DSML markup is returned
+// unchanged.
+func normalizeDSMLMarkup(text string) string {
+	if !strings.Contains(text, "DSML") {
+		return text
+	}
+	return dsmlDelimiterWSRE.ReplaceAllString(text, "<$1｜｜DSML｜｜")
 }
 
 // hasToolSignal reports whether text contains any tool-call XML signal.
@@ -81,17 +126,29 @@ func hasToolSignal(text string) bool {
 // hasDSMLSignal reports whether text contains DeepSeek DSML tool-call markup.
 // Tracked separately because DSML is recovered unconditionally (it is a
 // first-class provider format surfaced when structured calls are suppressed),
-// unlike the generic XML forms gated behind AutoHealToolCalls.
+// unlike the generic XML forms gated behind AutoHealToolCalls. Both the
+// canonical and the whitespace spelling count.
 func hasDSMLSignal(text string) bool {
-	return strings.Contains(text, "<｜｜DSML｜｜invoke") || strings.Contains(text, "<｜｜DSML｜｜tool_calls>")
+	return dsmlSignalRE.MatchString(normalizeDSMLMarkup(text))
 }
 
 // parseDSMLToolCallsFromText recovers only DSML tool calls (used when the
 // generic XML auto-heal opt-in is off but a DeepSeek native call must still be
 // honored). It never touches the <tool_call>/<function=name> forms.
 func parseDSMLToolCallsFromText(content string, idOffset int, allowIncomplete bool) []parsedToolCall {
-	sc := &toolCallScanner{content: content, idOffset: idOffset, allowIncomplete: allowIncomplete}
-	return sc.allDSMLCalls()
+	return newToolCallScanner(content, idOffset, allowIncomplete).allDSMLCalls()
+}
+
+// newToolCallScanner builds a scanner over the normalized DSML spelling: a
+// single normalization point shared by every dialect entry point, so the
+// whitespace variant of the DSML markup is recovered by the same code path as
+// the canonical one.
+func newToolCallScanner(content string, idOffset int, allowIncomplete bool) *toolCallScanner {
+	return &toolCallScanner{
+		content:         normalizeDSMLMarkup(content),
+		idOffset:        idOffset,
+		allowIncomplete: allowIncomplete,
+	}
 }
 
 // stripToolMarkup removes tool-call XML from text.
@@ -102,6 +159,7 @@ func stripToolMarkup(text string, final bool) string {
 	if final {
 		pats = toolAllPatterns
 	}
+	text = normalizeDSMLMarkup(text)
 	for _, p := range pats {
 		text = p.ReplaceAllString(text, "")
 	}
@@ -119,11 +177,7 @@ type parsedToolCall struct {
 // It handles <tool_call>{json}</tool_call> and <function=name><parameter=k>v.
 // When allowIncomplete is true, missing closing tags are tolerated.
 func parseToolCallsFromText(content string, idOffset int, allowIncomplete bool) []parsedToolCall {
-	sc := &toolCallScanner{
-		content:         content,
-		idOffset:        idOffset,
-		allowIncomplete: allowIncomplete,
-	}
+	sc := newToolCallScanner(content, idOffset, allowIncomplete)
 	if calls := sc.allJSONCalls(); len(calls) > 0 {
 		return calls
 	}
@@ -247,9 +301,9 @@ func (sc *toolCallScanner) nextDSMLCall() (parsedToolCall, bool) {
 		// next invoke / tool_calls open, or end of content.
 		bodyEnd := len(sc.content)
 		end := len(sc.content)
-		if ci := strings.Index(sc.content[bodyStart:], dsmlInvokeClose); ci >= 0 {
-			bodyEnd = bodyStart + ci
-			end = bodyEnd + len(dsmlInvokeClose)
+		if loc := dsmlInvokeCloseRE.FindStringIndex(sc.content[bodyStart:]); loc != nil {
+			bodyEnd = bodyStart + loc[0]
+			end = bodyStart + loc[1]
 		} else if !sc.allowIncomplete {
 			// Complete parse requires a close tag; skip this candidate.
 			sc.pos = bodyStart
@@ -291,7 +345,8 @@ func parseDSMLParameters(body string) (string, bool) {
 			valEnd = matches[i+1][0]
 		}
 		val := strings.TrimSpace(body[valStart:valEnd])
-		val = strings.TrimSuffix(val, "</｜｜DSML｜｜parameter>")
+		val = strings.TrimSuffix(val, dsmlParamClose)
+		val = dsmlParamCloseRE.ReplaceAllString(val, "")
 		args[key] = strings.TrimSpace(val)
 	}
 	b, _ := json.Marshal(args)

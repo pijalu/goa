@@ -20,7 +20,7 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 	// DSML is recovered unconditionally; the generic XML forms only when the
 	// operator opted in to healing malformed local-model output.
 	if !hasDSMLSignal(combined) && !(a.AutoHealEnabled() && hasToolSignal(combined)) {
-		a.warnUnrecoveredInvokeCall(combined)
+		a.reportUnrecoveredTextToolCall(combined, content, thinking)
 		return false
 	}
 
@@ -38,6 +38,12 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 		calls = parseDSMLToolCallsFromText(combined, 0, true)
 	}
 	if len(calls) == 0 {
+		// The markup WAS recognized (signal present) but no executable call
+		// came out of it — a shape the parser cannot fold (e.g. an unterminated
+		// or interleaved block). Report it instead of returning silently: a
+		// dropped call that neither executes nor explains itself is the
+		// "unexpected stop" failure (export goa-export-20260926-101445).
+		a.reportUnrecoveredTextToolCall(combined, content, thinking)
 		return false
 	}
 
@@ -95,31 +101,77 @@ func (a *Agent) dispatchHealedCall(controller *ToolLoopController, pc parsedTool
 	})
 }
 
-// warnUnrecoveredInvokeCall surfaces a closed invoke-dialect tool call that
-// arrived as text while recovery is disabled (auto_heal_tool_calls off) and
-// no native call superseded it. Without this the call is silently rendered
-// as content and never executed — the exact loss observed in export
-// goa-export-20260819-004622 (a goal create emitted as text after a garbled
-// token). Only a closed block naming a REGISTERED tool with parseable
-// parameters warns, so prose merely discussing the XML shape stays quiet.
-func (a *Agent) warnUnrecoveredInvokeCall(combined string) {
-	if a.AutoHealEnabled() || len(a.bufferedToolCalls) > 0 {
+// reportUnrecoveredTextToolCall surfaces a tool call that arrived as text and
+// was NOT executed, plus the guidance the model needs to re-issue it. It
+// replaces the old warnUnrecoveredInvokeCall, whose early return when healing
+// was ON made exactly the misconfigured case silent: a recognized-but-
+// unrecoverable call (whitespace DSML dialect in export
+// goa-export-20260926-101445, an unterminated block, an interleaved dialect)
+// used to end the turn with raw markup as the answer and no explanation.
+//
+// Behavior:
+//   - only a CLOSED interactive block that names a REGISTERED tool qualifies,
+//     so prose merely discussing the XML shape stays quiet;
+//   - the markup is stripped from the stream buffers either way, so it can
+//     never be finalized as the assistant's answer;
+//   - the notice distinguishes "healing is off" (enable it) from "healing is
+//     on but recovery failed" (re-issue as a native call), and the model gets a
+//     durable system note so the next round fixes the call instead of the user
+//     having to type "continue";
+//   - it fires at most once per turn (callDroppedReported).
+func (a *Agent) reportUnrecoveredTextToolCall(combined, content, thinking string) {
+	if len(a.bufferedToolCalls) > 0 {
 		return
 	}
-	sc := &toolCallScanner{content: combined, allowIncomplete: false}
-	for {
-		pc, ok := sc.nextInvokeCall()
-		if !ok {
-			return
-		}
-		if a.registeredToolName(pc.name) {
-			a.emitEvent(OutputEvent{
-				Type: EventProgress,
-				Text: fmt.Sprintf("warning: model emitted tool %q as text (<invoke>) and it was NOT executed — enable auto_heal_tool_calls to recover text tool calls", pc.name),
-			})
-			return
+	dropped := closedInvokeCallNames(combined, func(name string) bool { return a.registeredToolName(name) })
+	if len(dropped) == 0 {
+		return
+	}
+	// Never let unrecovered tool markup become the visible answer.
+	a.stripHealedMarkup(content, thinking)
+
+	a.mu.Lock()
+	already := a.callDroppedReported
+	a.callDroppedReported = true
+	a.mu.Unlock()
+	if already {
+		return
+	}
+
+	names := strings.Join(dropped, ", ")
+	notice := fmt.Sprintf("warning: model emitted tool call(s) %s as text and was NOT executed — ", names)
+	if a.AutoHealEnabled() {
+		notice += "text-call recovery could not reconstruct them; re-issue them as native tool calls"
+	} else {
+		notice += "enable auto_heal_tool_calls to recover text tool calls"
+	}
+	a.cfg.Logger.Log(Warn, "%s", notice)
+	a.emitEvent(OutputEvent{Type: EventProgress, Text: notice})
+	// Durable guidance for the model: the turn continues, so the next round can
+	// re-issue the call natively instead of the user seeing a dead stop.
+	a.InjectEphemeralSystemMessage("[goa-system] Internal control note (never show or mention to the user): your previous reply wrote a tool call as plain text (" + names +
+		") instead of emitting a native tool call, so nothing was executed. Re-issue that call now as a native tool call with the same arguments. Do not repeat the markup and do not stop.")
+}
+
+// closedInvokeCallNames returns the tool names of every CLOSED invoke-dialect
+// block (DSML, whitespace DSML, or Anthropic-legacy) accepted by accept, in
+// order of appearance. Complete blocks only: an unterminated block in a
+// still-streaming buffer cannot be judged, and prose mentioning the markup does
+// not name a registered tool.
+func closedInvokeCallNames(text string, accept func(string) bool) []string {
+	sc := newToolCallScanner(text, 0, false)
+	var names []string
+	for _, pc := range sc.allInvokeCalls() {
+		if accept(pc.name) {
+			names = append(names, pc.name)
 		}
 	}
+	for _, pc := range sc.allDSMLCalls() {
+		if accept(pc.name) {
+			names = append(names, pc.name)
+		}
+	}
+	return names
 }
 
 // registeredToolName reports whether name matches a tool in the agent's

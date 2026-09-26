@@ -320,6 +320,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.consecutiveToolRounds = 0
 	a.toolRoundNudgeFired = false
 	a.autoContinueCount = 0
+	a.callDroppedReported = false
 	a.lastStopReason = ""
 	a.turnStep = 0
 	a.mu.Unlock()

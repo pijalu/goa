@@ -463,6 +463,12 @@ type Agent struct {
 	// autoContinueCount tracks how many times this turn auto-continued after a
 	// detected premature stop (bounded by maxAutoContinuePerTurn).
 	autoContinueCount int
+	// callDroppedReported ensures the "tool call emitted as text and NOT
+	// executed" report (and its re-issue guidance) fires at most once per turn:
+	// the recovery path runs once per stream round, and repeating the same
+	// notice every round would spam the user and the model. Reset per turn
+	// alongside autoContinueCount.
+	callDroppedReported bool
 	// lastPersistedGoalReminder is the static goal-reminder text most recently
 	// appended to history by persistGoalReminder. The static reminder is
 	// byte-identical for a given goal across turns (BuildStaticGoalReminder's
