@@ -95,13 +95,13 @@ Regression tests (each documents the RED condition with the pre-fix predicate):
   - `TestAutoHeal_WhitespaceDSMLRecoveredWithAutoHealOff` /
     `…WithAutoHealOn` — end-to-end delta replay of the export: the tool executes
     and no markup leaks into the output;
-  - `TestUnrecoveredTextToolCall_WarnsWithHealingOff` / `…WithHealingOn` — the
-    report fires in both configurations (the healing-on case is the export
-    regression), with the right wording;
-  - `TestUnrecoveredTextToolCall_GuidesModelToReissue` — the model gets the
+  - `TestUnrecoveredInvokeCall_WarnsWithHealingDisabled` /
+    `…_WarnsWithHealingOn` — the report fires in both configurations (the
+    healing-on case is the export regression), with the right wording;
+  - `TestUnrecoveredInvokeCall_GuidesModelToReissue` — the model gets the
     re-issue guidance in history;
-  - `TestUnrecoveredTextToolCall_StripsMarkupFromAnswer`,
-    `…ReportsOncePerTurn`, `…SilentOnProse`;
+  - `TestUnrecoveredInvokeCall_StripsMarkupFromAnswer`,
+    `…_ReportsOncePerTurn`, `…_SilentOnProse`;
   - `TestFinalize_StripsOrphanDSMLMarkup` — an unrecovered call is reported and
     its markup never reaches the finalized answer.
 - Existing DSML/invoke tests (canonical spelling) unchanged and green — the

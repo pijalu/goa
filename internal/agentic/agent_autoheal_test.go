@@ -507,9 +507,9 @@ func guidanceInHistory(a *Agent) string {
 // exportWhitespaceDSMLTool is the tool named by exportWhitespaceDSML.
 const exportWhitespaceDSMLTool = "goal"
 
-// TestUnrecoveredTextToolCall_WarnsWithHealingOff: the operator-visible notice
+// TestUnrecoveredInvokeCall_WarnsWithHealingDisabled: the operator-visible notice
 // must tell them which switch recovers the call.
-func TestUnrecoveredTextToolCall_WarnsWithHealingOff(t *testing.T) {
+func TestUnrecoveredInvokeCall_WarnsWithHealingDisabled(t *testing.T) {
 	agent, obs := newReportTestAgent(t, exportWhitespaceDSMLTool, false, exportWhitespaceDSML)
 	agent.reportUnrecoveredTextToolCall(agent.contentBuf.String(), agent.contentBuf.String(), "")
 
@@ -525,10 +525,10 @@ func TestUnrecoveredTextToolCall_WarnsWithHealingOff(t *testing.T) {
 	}
 }
 
-// TestUnrecoveredTextToolCall_WarnsWithHealingOn is the export regression: with
+// TestUnrecoveredInvokeCall_WarnsWithHealingOn is the export regression: with
 // healing ON (the shipped user config) a call that could not be reconstructed
 // must STILL be reported — the old code returned silently in exactly this case.
-func TestUnrecoveredTextToolCall_WarnsWithHealingOn(t *testing.T) {
+func TestUnrecoveredInvokeCall_WarnsWithHealingOn(t *testing.T) {
 	agent, obs := newReportTestAgent(t, exportWhitespaceDSMLTool, true, exportWhitespaceDSML)
 	agent.reportUnrecoveredTextToolCall(agent.contentBuf.String(), agent.contentBuf.String(), "")
 
@@ -541,10 +541,10 @@ func TestUnrecoveredTextToolCall_WarnsWithHealingOn(t *testing.T) {
 	}
 }
 
-// TestUnrecoveredTextToolCall_GuidesModelToReissue: the model must be told to
+// TestUnrecoveredInvokeCall_GuidesModelToReissue: the model must be told to
 // re-issue the call natively, otherwise the turn ends on raw markup with no way
 // forward.
-func TestUnrecoveredTextToolCall_GuidesModelToReissue(t *testing.T) {
+func TestUnrecoveredInvokeCall_GuidesModelToReissue(t *testing.T) {
 	agent, _ := newReportTestAgent(t, exportWhitespaceDSMLTool, true, exportWhitespaceDSML)
 	agent.reportUnrecoveredTextToolCall(agent.contentBuf.String(), agent.contentBuf.String(), "")
 
@@ -557,9 +557,9 @@ func TestUnrecoveredTextToolCall_GuidesModelToReissue(t *testing.T) {
 	}
 }
 
-// TestUnrecoveredTextToolCall_StripsMarkupFromAnswer: unrecovered markup must
+// TestUnrecoveredInvokeCall_StripsMarkupFromAnswer: unrecovered markup must
 // not survive into the finalized assistant message.
-func TestUnrecoveredTextToolCall_StripsMarkupFromAnswer(t *testing.T) {
+func TestUnrecoveredInvokeCall_StripsMarkupFromAnswer(t *testing.T) {
 	agent, _ := newReportTestAgent(t, exportWhitespaceDSMLTool, true, exportWhitespaceDSML)
 	content := agent.contentBuf.String()
 	agent.reportUnrecoveredTextToolCall(content, content, "")
@@ -569,9 +569,9 @@ func TestUnrecoveredTextToolCall_StripsMarkupFromAnswer(t *testing.T) {
 	}
 }
 
-// TestUnrecoveredTextToolCall_ReportsOncePerTurn keeps the notice from
+// TestUnrecoveredInvokeCall_ReportsOncePerTurn keeps the notice from
 // repeating on every recovery round.
-func TestUnrecoveredTextToolCall_ReportsOncePerTurn(t *testing.T) {
+func TestUnrecoveredInvokeCall_ReportsOncePerTurn(t *testing.T) {
 	agent, obs := newReportTestAgent(t, exportWhitespaceDSMLTool, false, exportWhitespaceDSML)
 	content := agent.contentBuf.String()
 	agent.reportUnrecoveredTextToolCall(content, content, "")
@@ -582,9 +582,9 @@ func TestUnrecoveredTextToolCall_ReportsOncePerTurn(t *testing.T) {
 	}
 }
 
-// TestUnrecoveredTextToolCall_SilentOnProse: prose discussing the markup, or a
+// TestUnrecoveredInvokeCall_SilentOnProse: prose discussing the markup, or a
 // block naming an unregistered tool, must not produce a warning.
-func TestUnrecoveredTextToolCall_SilentOnProse(t *testing.T) {
+func TestUnrecoveredInvokeCall_SilentOnProse(t *testing.T) {
 	prose := "The model wrote <｜｜DSML｜｜ invoke name=\"nonexistent\"> in its reply."
 	agent, obs := newReportTestAgent(t, "terminal", true, prose)
 	agent.reportUnrecoveredTextToolCall(prose, prose, "")
