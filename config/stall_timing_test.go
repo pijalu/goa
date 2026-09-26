@@ -5,6 +5,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,16 +86,25 @@ func TestMergeExecution_ActivityWarnAfter(t *testing.T) {
 	})
 }
 
-// TestValidate_ActivityWarnAfter covers the validation contract for the new
-// key: an unparseable value is rejected, while — deliberately — a warning lead
-// at or beyond the retry window is NOT fatal. The two keys cascade
-// independently, so a home/project pin of activity_timeout: 30s under the
-// shipped activity_warn_after: 30s is a legitimate install and must not refuse
-// to start (observed against a real ~/.goa/config.yaml). The ordering invariant
-// is enforced where the values are consumed instead:
-// agentic.Agent.effectiveStallWarnAfter derives two thirds of the effective
-// window whenever the configured lead is unset, at, or beyond it.
+// TestValidate_ActivityWarnAfter covers the validation contract for the stall
+// timing pair in BOTH scopes:
+//
+//   - a single cascade layer that explicitly sets both keys must be consistent
+//     (warn < timeout) — a contradictory explicit pair in one file is a
+//     configuration mistake and is reported at load time, naming the file;
+//   - the MERGED config is only checked for parseability. The two keys cascade
+//     independently, so a home/project pin of activity_timeout: 30s under the
+//     shipped activity_warn_after: 30s is a legitimate install and must not
+//     refuse to start (observed against a real ~/.goa/config.yaml). The
+//     ordering invariant is enforced where the values are consumed instead:
+//     agentic.Agent.effectiveStallWarnAfter derives two thirds of the effective
+//     window whenever the configured lead is unset, at, or beyond it.
 func TestValidate_ActivityWarnAfter(t *testing.T) {
+	t.Run("merged config only checks parseability", testActivityWarnAfterMergedConfig)
+	t.Run("one layer setting both keys must be consistent", testActivityWarnAfterLayerPair)
+}
+
+func testActivityWarnAfterMergedConfig(t *testing.T) {
 	tests := []struct {
 		name      string
 		warn      string
@@ -102,8 +114,8 @@ func TestValidate_ActivityWarnAfter(t *testing.T) {
 		{name: "shipped pair", warn: "30s", timeout: "45s"},
 		{name: "unparseable warn value rejected", warn: "not-a-duration", timeout: "45s", wantError: true},
 		{name: "unparseable timeout rejected", warn: "30s", timeout: "soon", wantError: true},
-		{name: "warn at the window is accepted (runtime derives 2/3)", warn: "30s", timeout: "30s"},
-		{name: "warn beyond the window is accepted (runtime derives 2/3)", warn: "90s", timeout: "30s"},
+		{name: "cross-layer lead equal to the window accepted", warn: "30s", timeout: "30s"},
+		{name: "cross-layer lead beyond the window accepted", warn: "90s", timeout: "30s"},
 		{name: "empty values accepted (provider/agent default window applies)"},
 	}
 	for _, tt := range tests {
@@ -118,5 +130,79 @@ func TestValidate_ActivityWarnAfter(t *testing.T) {
 				t.Fatalf("Validate(%q/%q) = %v, want nil", tt.warn, tt.timeout, err)
 			}
 		})
+	}
+}
+
+// testActivityWarnAfterLayerPair covers the per-layer pair check: a single
+// config source that sets BOTH keys must be self-consistent, while a source
+// that sets only one of them combines freely with the other layers.
+func testActivityWarnAfterLayerPair(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantMsg string
+	}{
+		{
+			name: "consistent explicit pair accepted",
+			yaml: "execution:\n  activity_timeout: 45s\n  activity_warn_after: 30s\n",
+		},
+		{
+			name:    "lead equal to the window rejected",
+			yaml:    "execution:\n  activity_timeout: 30s\n  activity_warn_after: 30s\n",
+			wantMsg: "activity_warn_after",
+		},
+		{
+			name:    "lead beyond the window rejected",
+			yaml:    "execution:\n  activity_timeout: 30s\n  activity_warn_after: 90s\n",
+			wantMsg: "activity_warn_after",
+		},
+		{
+			name: "only the window pinned (cross-layer combination) accepted",
+			yaml: "execution:\n  activity_timeout: 30s\n",
+		},
+		{
+			name:    "unparseable value still rejected (by Validate)",
+			yaml:    "execution:\n  activity_timeout: soon\n  activity_warn_after: 30s\n",
+			wantMsg: "activity_timeout",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := loadHomeLayerOnly(t, tt.yaml)
+			if tt.wantMsg == "" {
+				if err != nil {
+					t.Fatalf("Load() = %v, want nil for %q", err, tt.yaml)
+				}
+				return
+			}
+			assertLoadErrorMentions(t, err, tt.wantMsg, tt.yaml)
+		})
+	}
+}
+
+// loadHomeLayerOnly writes the YAML as the ONLY config layer (isolated HOME and
+// project dir) and loads the cascade.
+func loadHomeLayerOnly(t *testing.T, yamlText string) (*Config, error) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, ".goa"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".goa", "config.yaml"), []byte(yamlText), 0o644); err != nil {
+		t.Fatalf("write home config: %v", err)
+	}
+	return NewCascadeLoader(t.TempDir(), "", nil).Load()
+}
+
+// assertLoadErrorMentions requires a load failure whose message names the key.
+func assertLoadErrorMentions(t *testing.T, err error, wantMsg, yamlText string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("Load() = nil, want an error for %q", yamlText)
+	}
+	if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("error must name %s, got: %v", wantMsg, err)
 	}
 }

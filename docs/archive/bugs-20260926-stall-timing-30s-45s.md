@@ -39,14 +39,17 @@ visible and changeable from `/config`.
    with the existing `execution.activity_timeout`; embedded defaults now ship
    `activity_timeout: "45s"` and `activity_warn_after: "30s"` with explanatory
    comments. Both are merged like any execution scalar
-   (`config/config_merge.go`) and validated as durations
-   (`config/config_validate.go`).
-   Deliberate decision: validation does **not** reject a warning lead at or
-   beyond the retry window. The two keys cascade independently, so a
-   home/project pin of `activity_timeout: 30s` under the shipped
-   `activity_warn_after: 30s` is a legitimate install (observed against a real
-   `~/.goa/config.yaml`) and must not refuse to start. The ordering invariant is
-   enforced where the values are consumed instead (see 2).
+   (`config/config_merge.go`).
+   Validation is **layer-scoped** (`config/loader_yaml.go checkActivityPairLayer`,
+   called from `mergeFile`/`mergeProjectFile`): a single config source that
+   explicitly sets BOTH keys must be self-consistent — `activity_warn_after`
+   shorter than `activity_timeout` — and a contradictory explicit pair is
+   reported at load time naming the file. The MERGED config is only checked for
+   parseability (`config/config_validate.go`). Reason: the two keys cascade
+   independently, so a home/project pin of `activity_timeout: 30s` under the
+   shipped `activity_warn_after: 30s` is a legitimate install (observed against a
+   real `~/.goa/config.yaml` — a merged-pair rule refused to start); the ordering
+   invariant is additionally enforced where the values are consumed (see 2).
 2. **Proportional fallback instead of a hard-coded half**
    (`internal/agentic/agent_streaming.go`):
    `effectiveStallWarnAfter(opts)` returns the configured
@@ -78,9 +81,11 @@ visible and changeable from `/config`.
     and the lead is two thirds of the window;
   - `TestMergeExecution_ActivityWarnAfter` — layer override and inheritance
     (direct merge plus a full `Config.DeepMerge`);
-  - `TestValidate_ActivityWarnAfter` — unparseable values rejected; a lead at or
-    beyond the window accepted by design (with the rationale and the runtime
-    fallback named).
+  - `TestValidate_ActivityWarnAfter` — merged config: unparseable values
+    rejected, cross-layer combinations accepted; layer-scoped: an explicit
+    contradictory pair in one source is rejected naming the key, while a source
+    that pins only the window combines freely (`loadHomeLayerOnly` drives a real
+    cascade load).
 - `provider/manager_activity_timeout_test.go`
   - `TestBuildStreamOptions_ActivityWarnAfterIsConsumed` — configured lead
     consumed, unset/invalid leaves 0 (agent derives), window untouched.
