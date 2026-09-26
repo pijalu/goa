@@ -289,6 +289,12 @@ type StreamOptions struct {
 	// long-running generations on slow models are not capped.
 	Timeout     time.Duration `json:"timeout,omitempty"`
 	IdleTimeout time.Duration `json:"idle_timeout,omitempty"`
+	// ActivityWarnAfter is the stall-warning lead time: how long the provider
+	// must stay silent before the agent tells the user it is waiting and when
+	// the automatic retry will run. Zero (or a value at or above the effective
+	// stall window) means "derive it from the window" — two thirds of it, so
+	// the warning always precedes the retry.
+	ActivityWarnAfter time.Duration `json:"activity_warn_after,omitempty"`
 
 	MaxRetries    int           `json:"max_retries,omitempty"`
 	MaxRetryDelay time.Duration `json:"max_retry_delay,omitempty"`

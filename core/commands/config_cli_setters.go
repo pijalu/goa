@@ -22,6 +22,8 @@ var configSetters = map[string]configSetter{
 	"active_model":                                   setActiveModel,
 	"multi_agent.companion_model":                    setStringWithValidate(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionModel }, validateActiveModel),
 	"execution.mode":                                 setExecutionMode,
+	"execution.activity_timeout":                     setStringWithValidate(func(cfg *config.Config) *string { return &cfg.Execution.ActivityTimeout }, validateDurationValue("execution.activity_timeout")),
+	"execution.activity_warn_after":                  setStringWithValidate(func(cfg *config.Config) *string { return &cfg.Execution.ActivityWarnAfter }, validateDurationValue("execution.activity_warn_after")),
 	"execution.retries":                              setInt(func(cfg *config.Config) *int { return &cfg.Execution.Retries }),
 	"execution.auto_save_model":                      setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.AutoSaveModel }),
 	"execution.auto_heal_tool_calls":                 setBool(func(cfg *config.Config) *bool { return &cfg.Execution.AutoHealToolCalls }),
@@ -126,6 +128,19 @@ func setStringWithValidate(getter func(*config.Config) *string, validate func(st
 			return err
 		}
 		*getter(cfg) = value
+		return nil
+	}
+}
+
+// validateDurationValue returns a validator for a duration-valued config key.
+// It names the key in the error so a rejected /config:set says which value was
+// unusable, and is shared by every duration key (stall timing, provider idle
+// timeout, retry caps) instead of a per-call inline check.
+func validateDurationValue(key string) func(string) error {
+	return func(value string) error {
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("%s must be a duration (e.g. 30s, 45s, 2m): %w", key, err)
+		}
 		return nil
 	}
 }

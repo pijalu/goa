@@ -230,6 +230,31 @@ func (a *Agent) effectiveEventStallTimeout(opts provider.StreamOptions) time.Dur
 	return provider.DefaultStreamIdleTimeout
 }
 
+// stallWarnNumerator / stallWarnDenominator express the fallback stall-warning
+// lead as a fraction of the stall window: two thirds, so the shipped pairing is
+// "provider quiet for 30s — still waiting; will auto-retry after 45s of
+// silence" (30s of the 45s execution.activity_timeout), and the warning stays
+// proportionally placed inside the 2-minute fallback window.
+const (
+	stallWarnNumerator   = 2
+	stallWarnDenominator = 3
+)
+
+// effectiveStallWarnAfter returns how long the provider must be silent before
+// the stall warning is emitted. An explicit ActivityWarnAfter (from
+// execution.activity_warn_after, via StreamOptions) wins as long as it lands
+// strictly inside the stall window; anything else — unset, zero, or a value at
+// or beyond the window, e.g. because a provider-level idle_timeout shrank the
+// window below it — falls back to two thirds of the window, so a warning is
+// always delivered before the retry it announces.
+func (a *Agent) effectiveStallWarnAfter(opts provider.StreamOptions) time.Duration {
+	stall := a.effectiveEventStallTimeout(opts)
+	if w := opts.ActivityWarnAfter; w > 0 && w < stall {
+		return w
+	}
+	return stall * stallWarnNumerator / stallWarnDenominator
+}
+
 // effectiveMaxStreamRounds returns the configured per-turn stream round
 // cap. Zero or negative disables the cap: there is deliberately no hidden
 // fallback (matching the MaxConsecutiveToolRounds contract) — the application
@@ -358,13 +383,16 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 	})
 	defer watchdog.Stop()
 
-	// Quiet-provider notice (F5): after half the stall window of silence,
+	// Quiet-provider notice (F5): after the configured warn lead of silence,
 	// tell the user the provider is quiet and when the watchdog will act —
 	// without this, a content→silence gap is just a dead spinner until the
-	// stall fires minutes later, which reads as "stuck".
+	// stall fires minutes later, which reads as "stuck". The lead is
+	// execution.activity_warn_after (30s by default) inside the
+	// execution.activity_timeout window (45s by default); see
+	// effectiveStallWarnAfter.
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
-	quietAfter := stallTimeout / 2
+	quietAfter := a.effectiveStallWarnAfter(opts)
 	var quietWarn *time.Timer
 	if quietAfter > 0 {
 		quietWarn = time.AfterFunc(quietAfter, func() {

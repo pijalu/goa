@@ -80,11 +80,20 @@ type ExecutionConfig struct {
 	LoopInterrupt int                    `yaml:"loop_interrupt"`
 	// ActivityTimeout bounds the maximum gap between stream events when the
 	// active provider has no explicit idle_timeout (drives the byte-idle and
-	// event-stall watchdogs, e.g. "30s"). Empty falls back to the 2-minute
-	// default.
-	ActivityTimeout string                `yaml:"activity_timeout"`
-	ErrorThreshold  float64               `yaml:"error_threshold"`
-	WorktreeMode    internal.WorktreeMode `yaml:"worktree_mode"`
+	// event-stall watchdogs, e.g. "45s"). Empty falls back to the 2-minute
+	// default. The stall warning that precedes the automatic retry fires
+	// ActivityWarnAfter into this window.
+	ActivityTimeout string `yaml:"activity_timeout"`
+	// ActivityWarnAfter is the stall-warning lead time: how long the provider
+	// must stay silent before the agent emits the user-facing "provider quiet
+	// for Xs — still waiting; will auto-retry after Ys of silence" notice
+	// (X = this value, Y = the effective stall window). It must be shorter than
+	// that window; empty/zero — or a value at or above it — falls back to two
+	// thirds of the window, so the warning always precedes the retry.
+	// Default: "30s" inside a "45s" activity_timeout.
+	ActivityWarnAfter string                `yaml:"activity_warn_after"`
+	ErrorThreshold    float64               `yaml:"error_threshold"`
+	WorktreeMode      internal.WorktreeMode `yaml:"worktree_mode"`
 	// AutoSaveModel is tri-state: nil = inherit from the lower cascade layer
 	// (embedded default true). An explicit false opts out of the per-project
 	// model pin, falling back to legacy home-only persistence. The pointer is

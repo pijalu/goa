@@ -176,6 +176,9 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	if src.ActivityTimeout != "" {
 		dst.ActivityTimeout = src.ActivityTimeout
 	}
+	if src.ActivityWarnAfter != "" {
+		dst.ActivityWarnAfter = src.ActivityWarnAfter
+	}
 	if src.ErrorThreshold != 0 {
 		dst.ErrorThreshold = src.ErrorThreshold
 	}

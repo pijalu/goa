@@ -337,6 +337,13 @@ func syncRuntimeConfig(ctx core.Context, key, value string) error {
 		// push the fresh value so an ongoing session uses it immediately
 		// (bugs-20260826-config-tool-live-sync).
 		ctx.AgentManager.RefreshAutoHeal()
+	case "execution.activity_timeout", "execution.activity_warn_after":
+		// Stream options are sampled once at session start
+		// (internal/app/prompt.go BuildStreamOptions → StartSession), so a stall
+		// timing change would otherwise only apply after a restart. Rebuild and
+		// push them so the running session warns/retries on the new schedule
+		// (SetStreamOptions preserves the session's cache identity).
+		syncStreamOptions(ctx)
 	default:
 		// context_compression.* changes apply to the live agent immediately
 		// (thresholds, strategy, max_tokens, on_context_error).

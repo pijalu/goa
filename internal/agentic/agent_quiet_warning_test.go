@@ -98,9 +98,11 @@ func hasQuietWarning(obs *mockEventObserver) bool {
 
 // TestSilentStream_EmitsQuietProviderWarning is the F5 regression test: a
 // provider that goes silent after opening the stream must surface a
-// user-facing progress notice (how long quiet, when auto-retry) at half the
-// stall window — previously the user watched a dead spinner with zero
-// feedback until the 2-minute watchdog fired, which reads as "stuck".
+// user-facing progress notice (how long quiet, when auto-retry) before the
+// stall window elapses — previously the user watched a dead spinner with zero
+// feedback until the 2-minute watchdog fired, which reads as "stuck". The lead
+// is execution.activity_warn_after (30s of the shipped 45s window; two thirds of
+// the window when unset — see effectiveStallWarnAfter).
 func TestSilentStream_EmitsQuietProviderWarning(t *testing.T) {
 	p := &silentStreamProvider{api: provider.Api(fmt.Sprintf("test-quiet-%d", testProviderCounter.Add(1)))}
 	provider.RegisterApiProvider(p)
@@ -204,7 +206,7 @@ func TestToolExecution_NoQuietWarningOrStallRetry(t *testing.T) {
 	p := &slowToolProvider{api: provider.Api(fmt.Sprintf("test-slow-tool-%d", testProviderCounter.Add(1)))}
 	provider.RegisterApiProvider(p)
 
-	const idle = 400 * time.Millisecond // stall window; quiet fires at 200ms
+	const idle = 400 * time.Millisecond // stall window; the quiet warning fires at 2/3 of it
 	agent := NewAgent(Config{
 		Model: provider.Model{
 			ID:         "slow-tool-test",

@@ -148,6 +148,20 @@ func (c *Config) validateTimeout(ve *internal.ValidationError) {
 			ve.Add(fmt.Sprintf("execution.activity_timeout: cannot parse %q as duration: %v", c.Execution.ActivityTimeout, err))
 		}
 	}
+	if c.Execution.ActivityWarnAfter != "" {
+		if _, err := time.ParseDuration(c.Execution.ActivityWarnAfter); err != nil {
+			ve.Add(fmt.Sprintf("execution.activity_warn_after: cannot parse %q as duration: %v", c.Execution.ActivityWarnAfter, err))
+		}
+	}
+	// The stall warning must land INSIDE the retry window, but that relationship
+	// is deliberately NOT a fatal cross-field rule here: the two keys cascade
+	// independently, so a home/config pin of activity_timeout: 30s combined with
+	// the shipped activity_warn_after: 30s is a legitimate (and common) state —
+	// rejecting it would refuse to start on an existing install. The invariant is
+	// enforced where the values are consumed instead: the agent derives two
+	// thirds of the window whenever the configured lead is unset, at, or beyond
+	// it (see agentic.Agent.effectiveStallWarnAfter), so the warning still
+	// precedes the retry it announces.
 	for _, p := range c.Providers {
 		if p.IdleTimeout == "" {
 			continue

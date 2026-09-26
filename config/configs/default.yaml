@@ -22,7 +22,14 @@ execution:
   token_critical: 90
   loop_warning: 10
   loop_interrupt: 15
-  activity_timeout: "30s"
+  # Stall timing (see docs/limits): activity_timeout is the silent-stream
+  # window that ends in an automatic retry; activity_warn_after is how long
+  # the provider must be quiet before the user is told "provider quiet for Xs —
+  # still waiting; will auto-retry after Ys of silence". Keep it below
+  # activity_timeout; a value at or above the window falls back to two thirds
+  # of it. Both are editable live via /config → Retry settings and /config:set.
+  activity_timeout: "45s"
+  activity_warn_after: "30s"
   error_threshold: 0.5
   worktree_mode: "multi_agent"
   auto_save_model: true

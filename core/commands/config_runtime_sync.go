@@ -43,3 +43,22 @@ func syncGoalLimits(ctx core.Context) {
 		d.StallTurns = 0
 	}
 }
+
+// syncStreamOptions rebuilds the stream options from the live config and pushes
+// them into the running session. Stream options (idle/stall window, stall
+// warning lead, retry caps) are sampled once when the session starts
+// (internal/app StartSession), so without this a /config change to any of them
+// would silently wait for the next restart — the "toggle that does nothing"
+// failure mode. SetStreamOptions keeps the conversation's cache identity, so a
+// timing change never invalidates the provider prefix cache.
+//
+// Shared by every key that feeds StreamOptions: execution.activity_timeout,
+// execution.activity_warn_after, and the per-provider idle_timeout /
+// max_retry_delay entries. Nil-safe on every dependency (headless/test contexts
+// degrade to a no-op).
+func syncStreamOptions(ctx core.Context) {
+	if ctx.AgentManager == nil || ctx.ProviderManager == nil {
+		return
+	}
+	ctx.AgentManager.SetStreamOptions(ctx.ProviderManager.BuildStreamOptions())
+}

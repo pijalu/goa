@@ -44,6 +44,14 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 			opts.IdleTimeout = d
 		}
 	}
+	// execution.activity_warn_after is the stall-warning lead time inside that
+	// window: how long the provider must stay silent before the user is told
+	// the agent is still waiting and when the automatic retry will run. The
+	// agent derives two thirds of the window when this is unset or lands at or
+	// beyond it, so the warning always precedes the retry.
+	if d := parsePositiveDuration(cfg.Execution.ActivityWarnAfter); d > 0 {
+		opts.ActivityWarnAfter = d
+	}
 	if opts.CacheRetention == "" {
 		opts.CacheRetention = defaultCacheRetention(pCfg)
 	}

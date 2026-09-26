@@ -118,6 +118,8 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"execution.max_tool_error_streak", "integer (0 = disabled, default 4)"},
 		{"execution.tool_call_limit_reset_window", "integer (rolling duplicate window size)"},
 		{"execution.max_stream_rounds", "integer LLM rounds per turn (0 = unlimited)"},
+		{"execution.activity_timeout", "duration: silent-provider window before the automatic retry (default 45s)"},
+		{"execution.activity_warn_after", "duration: stall warning lead inside activity_timeout (default 30s; derived 2/3 when unset)"},
 		{"providers.*.max_retry_delay", "duration cap for provider retry backoff (default 5m)"},
 		{"providers.*.retry_policy.max_retries", "provider retry count"},
 		{"providers.*.retry_policy.backoff.max_ms", "provider retry cap in milliseconds"},

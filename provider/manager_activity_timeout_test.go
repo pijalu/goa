@@ -53,3 +53,32 @@ func TestBuildStreamOptions_ActivityTimeoutIsConsumed(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildStreamOptions_ActivityWarnAfterIsConsumed pins the wiring of
+// execution.activity_warn_after into StreamOptions.ActivityWarnAfter: the agent
+// needs it to arm the stall warning at the configured lead (30s of the shipped
+// 45s window). An unset or invalid value must leave 0 so the agent falls back to
+// two thirds of the effective window.
+func TestBuildStreamOptions_ActivityWarnAfterIsConsumed(t *testing.T) {
+	tests := []struct {
+		name     string
+		warn     string
+		wantWarn time.Duration
+	}{
+		{name: "configured lead is consumed", warn: "30s", wantWarn: 30 * time.Second},
+		{name: "custom lead is consumed", warn: "10s", wantWarn: 10 * time.Second},
+		{name: "unset leaves zero (agent derives 2/3)", warn: "", wantWarn: 0},
+		{name: "invalid leaves zero (agent derives 2/3)", warn: "soon", wantWarn: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := activityTimeoutConfig("45s", "")
+			cfg.Execution.ActivityWarnAfter = tt.warn
+
+			opts := NewProviderManager(cfg).BuildStreamOptions()
+			assert.Equal(t, tt.wantWarn, opts.ActivityWarnAfter)
+			assert.Equal(t, 45*time.Second, opts.IdleTimeout,
+				"the warning key must not disturb the retry window")
+		})
+	}
+}
