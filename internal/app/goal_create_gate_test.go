@@ -10,9 +10,6 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
-	"github.com/pijalu/goa/internal/agentic"
-	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
-	"github.com/pijalu/goa/tools"
 )
 
 // TestGoalTool_CreateGateFollowsLiveConfig pins the requirement that the goal
@@ -73,67 +70,53 @@ func TestMakeToolFactory_GoalCreateGateFollowsLiveConfig(t *testing.T) {
 }
 
 // TestGoalToolEnabledLive_ConfigMenuPath is the same-session, no-restart
-// contract on the REAL tool instance the agent holds: the tool is registered
-// once (registerGoalTools, enabled=false), handed to the agent through the
-// production StartSession path, and must accept `create` after the in-session
-// config flip the /config → Tools → goal row and /config:set
-// tools.enabled.goal true both perform — without rebuilding or re-registering
-// the tool.
+// contract driven through the REAL /config → Tools → goal row: with
+// tools.enabled.goal false the goal tool is not registered at session start, so
+// the menu must construct it through the host factory, register it, push it to
+// the running agent — and `create` must then be accepted by the SAME instance,
+// because the create gate reads the live config. No restart, no manual
+// SetTools: this is the end-to-end contract of bugs.md "Enabling a tool during a
+// session does not enable it".
 func TestGoalToolEnabledLive_ConfigMenuPath(t *testing.T) {
-	cfg := &config.Config{} // goal OFF in this session's live config
-	gm := core.NewGoalManager(t.TempDir())
-	reg := tools.NewToolRegistry()
-	registerGoalTools(reg, gm, goalCreateGate(cfg, RuntimeOptions{}), nil, nil, nil)
+	cfg := factoryConfig()
+	cfg.Tools.Enabled.SetEnabled("goal", false) // goal OFF in this session's live config
+	h := newConfigMenuHarness(t, cfg, &probeLiveTool{name: "read"})
 
-	am := core.NewAgentManager(cfg, nil, nil, nil, nil, "")
-	if _, err := am.StartSession(agenticprovider.Model{},
-		agenticprovider.StreamOptions{SessionID: "sess-live-goal"}, "sys", reg.All(), cfg); err != nil {
-		t.Fatalf("StartSession: %v", err)
+	if _, ok := h.subs.toolRegistry.Get("goal"); ok {
+		t.Fatal("precondition: the goal tool must not be registered while tools.enabled.goal is false")
 	}
-	agent := am.CurrentAgent()
-	if agent == nil {
-		t.Fatal("no active agent after StartSession")
+	if toolNamesContain(h.agentToolNames(), "goal") {
+		t.Fatal("precondition: the agent must not hold the goal tool")
 	}
 
-	// The instance the agent holds must be the REGISTERED one, not a copy.
-	registered, ok := reg.Get("goal")
-	if !ok {
-		t.Fatal("goal tool is not registered")
+	// /config → Tools → Enabled/disabled tools → goal (the real menu).
+	h.pick("goal")
+	h.runConfig(t)
+
+	if !cfg.Tools.Enabled.Goal {
+		t.Fatal("/config → Tools → goal did not flip tools.enabled.goal")
 	}
-	var held agentic.Tool
-	for _, tl := range agent.Tools() {
-		if tl.Schema().Name == "goal" {
-			held = tl
-			break
-		}
+	registered := mustTool(t, h.subs.toolRegistry, "goal")
+	if _, ok := h.subs.toolRegistry.Get("goal"); !ok {
+		t.Fatal("/config → Tools → goal did not register the goal tool")
 	}
+	held := h.findAgentTool("goal")
 	if held == nil {
-		t.Fatal("the agent does not hold the goal tool")
+		t.Fatalf("/config → Tools → goal did not push the goal tool to the running agent: %v", h.agentToolNames())
 	}
 	if held != registered {
-		t.Fatal("agent holds a different goal tool instance than the registry (rebuilt copy)")
+		t.Error("the agent holds a different goal tool instance than the registry (rebuilt copy)")
 	}
-
-	if _, err := held.Execute(`{"action":"create","objective":"blocked"}`); err == nil {
-		t.Fatal("create must be blocked while tools.enabled.goal is false")
-	}
-
-	// /config → Tools → goal: setToolEnabled flips the flag on the LIVE config
-	// and the menu pushes the registry's tools to the agent (applyToolToggle →
-	// AgentManager.SetTools). /config:set tools.enabled.goal true writes the same
-	// field through the CLI setter.
-	cfg.Tools.Enabled.SetEnabled("goal", true)
-	_ = am.SetTools(reg.All())
 
 	// The SAME instance, in the SAME session, now accepts create.
-	out, err := held.Execute(`{"action":"create","objective":"live enabled goal"}`)
+	out, err := held.Execute(`{"action":"create","objective":"enabled live from /config"}`)
 	if err != nil {
-		t.Fatalf("create must succeed in-session after the config flip (no restart): %v", err)
+		t.Fatalf("create must succeed in-session after the /config enable (no restart): %v", err)
 	}
-	if !strings.Contains(out, "live enabled goal") {
+	if !strings.Contains(out, "enabled live from /config") {
 		t.Errorf("create output missing the objective: %q", out)
 	}
-	if gm.Mode.GetActiveGoal() == nil {
+	if h.subs.goalManager.Mode.GetActiveGoal() == nil {
 		t.Error("goal must be active after the in-session create")
 	}
 }

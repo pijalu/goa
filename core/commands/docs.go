@@ -6,6 +6,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -375,82 +376,24 @@ func toolSaveKeyValue(name string, enabled bool) (path []string, value bool) {
 }
 
 // toggleTool enables or disables a configurable tool, persists the change,
-// and updates the active agent's tool list if possible.
+// and updates the active agent's tool list. It is the /tools:<name>:on|off and
+// /docs …:on|off surface of the shared primitive (ApplyToolToggle), so it can
+// never disagree with /config → Tools.
 func toggleTool(ctx core.Context, name, onOff string) error {
-	if ctx.Config == nil {
-		return fmt.Errorf("configuration not available")
-	}
-	enabled := strings.ToLower(onOff) == "on"
-	if getToolEnabled(ctx.Config, name) == enabled {
-		ctx.Writef("Tool %s is already %s.\n", name, onOffLabel(enabled))
-		return nil
-	}
-	setToolEnabled(ctx.Config, name, enabled)
-	if !persistToolToggle(ctx, name, enabled) {
-		return nil
-	}
-	if enabled {
-		enableRuntimeTool(ctx, name)
-	} else {
-		disableRuntimeTool(ctx, name)
-	}
-	ctx.Writef("Tool %s %s. %s\n", name, onOffLabel(enabled), restartHint(enabled))
-	ctx.Flash(fmt.Sprintf("Tool %s %s", name, onOffLabel(enabled)))
-	return nil
-}
-
-func persistToolToggle(ctx core.Context, name string, enabled bool) bool {
-	if ctx.ConfigSaver == nil {
-		return true
-	}
-	path, value := toolSaveKeyValue(name, enabled)
-	if err := ctx.ConfigSaver.SaveProjectField(path, value); err != nil {
-		ctx.Writef("Failed to save config: %v\n", err)
-		return false
-	}
-	return true
-}
-
-func enableRuntimeTool(ctx core.Context, name string) {
-	if ctx.ToolFactory != nil {
-		tool, ok := ctx.ToolFactory(name)
-		if !ok {
-			ctx.Writef("Tool %s could not be instantiated at runtime. Restart Goa to apply the change.\n", name)
-			return
+	enabled := parseToolOnOff(onOff)
+	outcome, err := ApplyToolToggle(ctx, name, enabled)
+	if err != nil {
+		if errors.Is(err, errToolToggleNoConfig) {
+			return err
 		}
-		ctx.ToolRegistry.Register(tool)
+		ctx.Writef("%s\n", ToolToggleErrorText(err))
+		return nil
 	}
-	// The model is notified by AgentManager.SetTools (batched toolset-change
-	// notice) — no separate injection here.
-	refreshToolRegistry(ctx)
-}
-
-func disableRuntimeTool(ctx core.Context, name string) {
-	ctx.ToolRegistry.Unregister(name)
-	refreshToolRegistry(ctx)
-	if ctx.ToolTeardown != nil {
-		ctx.ToolTeardown(name)
+	ctx.Writef("%s\n", ToolToggleMessage(name, enabled, outcome))
+	if outcome != ToolToggleUnchanged {
+		ctx.Flash(fmt.Sprintf("Tool %s %s", name, onOffLabel(enabled)))
 	}
-}
-
-func refreshToolRegistry(ctx core.Context) {
-	if ctx.AgentManager != nil {
-		_ = ctx.AgentManager.SetTools(ctx.ToolRegistry.All())
-	}
-}
-
-func onOffLabel(enabled bool) string {
-	if enabled {
-		return "enabled"
-	}
-	return "disabled"
-}
-
-func restartHint(enabled bool) string {
-	if enabled {
-		return "The tool is now available to the model."
-	}
-	return "The tool is no longer available to the model."
+	return nil
 }
 
 // toolSummaryLine returns a clean single-line summary of a tool description

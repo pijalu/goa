@@ -241,11 +241,15 @@ func (a *App) Run() bool {
 	engine, chat, inp := a.buildTUI()
 	a.activatePluginUI(engine)
 	// Attach the interactive clarify host callback now that the App exists.
-	attachClarifyTool(subs.toolRegistry, func(title, summary, question string, options []string, step, total int) (string, bool) {
+	// subs.clarifyFn retains the SAME hook so a tool instance built later by the
+	// runtime factory (/config → Tools, /tools:ask_user_question:on) can reach
+	// the user too.
+	subs.clarifyFn = func(title, summary, question string, options []string, step, total int) (string, bool) {
 		card := tui.NewClarifyCard(title, summary, question, options)
 		card.SetProgress(step, total)
 		return a.clarify(card)
-	})
+	}
+	attachClarifyTool(subs.toolRegistry, subs.clarifyFn)
 	// Attach the sandbox escalation approval path (bash sandbox surface). The
 	// approver routes through the same perms-driven decision as tool
 	// confirmation; headless builds stay fail-closed (no approver wired).

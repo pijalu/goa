@@ -32,6 +32,7 @@ import (
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tools/ask"
 	"github.com/pijalu/goa/tui"
 	"github.com/pijalu/goa/tui/agentctx"
 	bgpanel "github.com/pijalu/goa/tui/background"
@@ -99,6 +100,13 @@ type subsystems struct {
 	// /tools:goal:on factory) rebuild the same LIVE gates the startup
 	// registration used — --goal must force-enable creation on both paths.
 	opts RuntimeOptions
+	// clarifyFn is the interactive clarify host callback attached to the
+	// registered ask_user_question tool at startup. Retained so the runtime
+	// tool factory can hand the SAME hook to a freshly built instance when the
+	// user re-enables ask_user_question mid-session (/config → Tools,
+	// /tools:ask_user_question:on) — a runtime instance without the hook could
+	// never reach the user.
+	clarifyFn ask.ClarifyFunc
 	// sessionUsageFn supplies cumulative token stats to plugins (goa.sessionUsage).
 	// Wired in New() once the App (which owns the counters) exists.
 	sessionUsageFn func() map[string]any

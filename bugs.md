@@ -135,65 +135,6 @@ Gate (run separately, post-change): `go vet ./...` clean · `staticcheck ./...`
 `go test -count=1 -race -cover ./...` → 87 packages ok, 0 FAIL (exit 0),
 `internal/agentic` 87.9%. Issue entry ready to archive per guideline 4.
 
-## Enabling a tool during a session does not enable it
-Observed: `/config → Tools → <name>` (`core/commands/config_tools.go:73-101`)
-flips `tools.enabled.<name>` and saves it, but `applyToolToggle` only acts in the
-**disable** direction (`if !enabled { return }` → `Unregister`). Turning a tool
-ON therefore registers nothing: `/config` reports it enabled while the registry
-never contains it, so the model's call fails ("unknown tool") even though the
-next session has it. The slash path `/tools:<name>:on`
-(`core/commands/docs.go toggleTool` → `enableRuntimeTool`, docs.go:414-427) does
-consult `ctx.ToolFactory`, so the two surfaces disagree. Two further holes in the
-same area:
-
-- the registered goal tool captured `createFlagOn` at construction
-  (`internal/app/subsystems_goal.go`), so even after `/tools:goal:on` flips the
-  config, a tool built while the flag was false keeps `create` blocked until the
-  process restarts;
-- `refreshToolRegistry` pushes `ToolRegistry.All()`
-  (`core/commands/docs.go:436-440`), not the mode-filtered set the session was
-  started with (`filterToolsForCurrentMode`, `internal/app/prompt.go:515`), so a
-toggle can advertise tools the active mode disallows — and any push it performs
-  re-partitions the tool set.
-
-Expected: one shared enable/disable primitive used by `/config → Tools`,
-`/tools:<name>:on|off` and `/docs …:on`; enabling constructs and registers the
-tool, pushes the same tools the session would start with, and when a tool cannot
-be built at runtime the user is explicitly told a restart is required (no silent
-no-op); the command path and the `/config` menu always agree.
-
-### Fix plan (test approach + validation)
-1. **core/commands**: move `enableRuntimeTool` / `disableRuntimeTool` /
-   `refreshToolRegistry` into a single helper set shared by both surfaces and
-   call them from `toolToggleHandler`, deleting `applyToolToggle`'s
-   disable-only logic. Report the outcome (registered vs "restart required").
-   *Test*: `TestConfigMenu_EnableToolRegistersIt` — menu context with a stub
-   `ToolFactory` returning a disposable tool: toggle OFF→ON registers the tool in
-   the registry, pushes it to the agent (`AgentManager.SetTools` spy) and the
-   message contains no restart claim; toggle ON→OFF unregisters and calls
-   `ToolTeardown`; `TestConfigMenu_EnableToolWithoutFactorySaysRestart` — nil
-   factory → the user is told a restart is required.
-2. **mode-filtered push**: add a live tool-set provider to `core.Context`
-   (e.g. `LiveTools func() []agentic.Tool`) wired by `internal/app` to
-   `filterToolsForCurrentMode(subs, subs.toolRegistry.All())`;
-   `refreshToolRegistry` uses it when set (fallback: `ToolRegistry.All()`).
-   *Test*: `TestRefreshToolRegistry_UsesModeFilteredProvider` (provider called,
-   its slice pushed verbatim) + `internal/app` test asserting the wired provider
-   equals the session-start filter (`filterToolsForCurrentMode`).
-3. **goal liveness**: covered by the goal entry's item 3 (live `func() bool`
-   callback) — verified here end-to-end: `/config` goal ON → model `create`
-   succeeds in the same session.
-   *Test*: `TestGoalToolEnabledLive_ConfigMenuPath`.
-4. **coverage for the remaining configurable tools**: extend `makeToolFactory` so
-   the tools that are re-enablable are actually constructible (verify, run_code,
-   webfetch, ask_user_question + its clarify hook); keep `smartsearch` on the
-   documented "needs restart" path and assert that message.
-   *Test*: table test over every `ConfigurableTools()` name → factory either
-   builds a tool with a matching schema name or the caller reports "restart
-   required".
-5. **Gate**: separate vet/staticcheck/gocognit/gocyclo/race-cover runs; archive +
-   commit.
-
 ## Vercel AI Gateway: no way to add an API key
 Observed: the Vercel AI Gateway provider cannot be given a credential. Goa ships
 the provider in its catalog — `internal/agentic/provider/models/api.json` has

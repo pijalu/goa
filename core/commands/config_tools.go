@@ -70,43 +70,41 @@ func buildToolItems(c *config.Config) []tui.SelectorItem {
 	}
 	return out
 }
+
+// toolToggleHandler is the /config → Tools entry point of the shared
+// enable/disable primitive: it delegates to ApplyToolToggle so this menu and
+// /tools:<name>:on|off can never disagree (bugs.md "Enabling a tool during a
+// session does not enable it"). A tool that cannot be built at runtime is
+// reported explicitly — never a silent no-op.
 func (c *configMenu) toolToggleHandler(s string, ok bool) {
 	if !ok || !isConfigurableTool(s) {
 		c.back()
 		return
 	}
-	enabled := getToolEnabled(c.ctx.Config, s)
-	c.applyToolToggle(s, enabled)
-	setToolEnabled(c.ctx.Config, s, !enabled)
-	c.saveToolToggle(s, !enabled)
-	c.flash(fmt.Sprintf("Tool %s %s", s, toggleNextLabel(enabled)))
+	next := !getToolEnabled(c.ctx.Config, s)
+	outcome, err := ApplyToolToggle(c.ctx, s, next)
+	switch {
+	case err != nil:
+		c.flash(ToolToggleErrorText(err))
+	case outcome == ToolToggleRestartRequired:
+		// Durable as well as transient: a toast alone is easy to miss, and the
+		// user must know the change only lands after a restart.
+		c.ctx.WriteSystem(ToolRestartMessage(s)+"\n", false)
+		c.flash(ToolRestartMessage(s))
+	case outcome == ToolToggleUnchanged:
+		c.flash(fmt.Sprintf("Tool %s is already %s", s, onOffLabel(next)))
+	default:
+		c.flash(fmt.Sprintf("Tool %s %s", s, onOffLabel(next)))
+	}
 	c.settingTools()
 }
+
+// toggleNextLabel names the state a toggle lands on (used by the MCP row).
 func toggleNextLabel(v bool) string {
 	if v {
 		return "off"
 	}
 	return "on"
-}
-func (c *configMenu) applyToolToggle(name string, enabled bool) {
-	if !enabled {
-		return
-	}
-	if tr, ok := c.ctx.ToolRegistry.(*tools.ToolRegistry); ok {
-		tr.Unregister(name)
-	}
-	if c.ctx.AgentManager != nil {
-		_ = c.ctx.AgentManager.SetTools(c.ctx.ToolRegistry.All())
-	}
-}
-func (c *configMenu) saveToolToggle(name string, enabled bool) {
-	if c.ctx.ConfigSaver == nil {
-		return
-	}
-	path, v := toolSaveKeyValue(name, enabled)
-	if err := c.ctx.ConfigSaver.SaveProjectField(path, v); err != nil {
-		c.flash("Failed to save config: " + err.Error())
-	}
 }
 func toolsEnabledLabel(c *config.Config) string {
 	on := 0

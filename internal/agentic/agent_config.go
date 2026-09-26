@@ -143,6 +143,43 @@ func (a *Agent) Tools() []Tool {
 	return out
 }
 
+// DeferredStatus reports whether name names a deferred tool that has not been
+// loaded yet on this agent's live registry (with the loader's name), so hosts,
+// commands and tests can observe the deferred state without reaching into the
+// registry. Nil-safe: an agent without a registry reports ("", false).
+func (a *Agent) DeferredStatus(name string) (loaderName string, unloaded bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.reg == nil {
+		return "", false
+	}
+	return a.reg.DeferredStatus(name)
+}
+
+// LoadedDeferred returns the names of the deferred tools already exposed on
+// this agent's live registry, in load order (append-only). Nil-safe.
+func (a *Agent) LoadedDeferred() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.reg == nil {
+		return nil
+	}
+	return a.reg.LoadedDeferred()
+}
+
+// LoadDeferredTools exposes deferred tools by name on this agent's live
+// registry — the same append-only operation the tool_search loader performs
+// when the model selects tools. Hosts use it to preload tools a known next
+// turn needs; names that are not deferred in the current set are skipped.
+func (a *Agent) LoadDeferredTools(names []string) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.reg == nil {
+		return nil
+	}
+	return a.reg.LoadDeferred(names)
+}
+
 // SteeringSource supplies mid-turn steering messages typed by the user while
 // the agent is running. It mirrors pi's getSteeringMessages hook. Drain must
 // atomically return and remove all currently-pending messages.

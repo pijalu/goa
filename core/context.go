@@ -295,6 +295,14 @@ type Context struct {
 	// its manager and detaches read/edit/write linking — Issue LSP).
 	ToolTeardown func(name string)
 
+	// LiveTools, when set, returns the tool set a session would START with —
+	// the mode-filtered view of the live registry. The host (internal/app)
+	// wires it to filterToolsForCurrentMode(toolRegistry.All()), the single
+	// source of that filter, so a runtime toggle pushes exactly what the next
+	// session start would push instead of the unfiltered registry. When nil,
+	// callers fall back to ToolRegistry.All() (see Context.LiveToolSet).
+	LiveTools func() []agentic.Tool
+
 	// SkillRegistry provides skill lookup (populated by M08).
 	SkillRegistry SkillRegistry
 

@@ -16,6 +16,7 @@ import (
 	"github.com/pijalu/goa/internal/lsp"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tools/ask"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -28,10 +29,11 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 		InitialActiveModel:     subs.cfg.ActiveModel,
 		AgentManager:           subs.agentMgr,
 		ExecutionController:    subs.execCtrl,
-		ToolRegistry:           subs.toolRegistry,
+		ToolRegistry:           toolRegistryFor(subs),
 		ToolFactory:            makeToolFactory(subs),
 		ToolTeardown:           makeToolTeardown(subs),
-		SkillRegistry:          subs.skillRegistry,
+		LiveTools:              liveToolSetProvider(subs),
+		SkillRegistry:          skillRegistryFor(subs),
 		ProviderManager:        subs.providerMgr,
 		ModelValidator:         subs.modelValidator,
 		MemoryStore:            subs.memStore,
@@ -221,43 +223,118 @@ func loopDetectorFrom(subs *subsystems) *core.LoopDetector {
 // makeToolFactory returns a factory that creates configurable tool instances
 // on demand when the user enables them at runtime via /tools:name:on.
 func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
-	// Simple tools that always construct successfully.
-	simple := map[string]func() agentic.Tool{
-		"bg_exec":  func() agentic.Tool { return makeBGExecTool(subs) },
-		"memento":  func() agentic.Tool { return makeMementoTool(subs) },
-		"python":   func() agentic.Tool { return makePythonTool(subs) },
-		"ssh_bash": func() agentic.Tool { return makeSSHBashTool(subs) },
-	}
+	builders := runtimeToolBuilders(subs)
 	return func(name string) (agentic.Tool, bool) {
-		if mk, ok := simple[name]; ok {
-			return mk(), true
+		build, ok := builders[name]
+		if !ok {
+			return nil, false
 		}
-		switch name {
-		case "terminals":
-			return makeTerminalsTool(subs)
-		case "request_review", "delegate_to":
-			return makeAgentDrivenTool(subs, name)
-		case "agent":
-			return newAgentTool(subs.agentPool, subs.modeRegistry, subs.taskBus, subs.agentMgr), true
-		case "agent_swarm":
-			return newAgentSwarmTool(subs.agentPool, subs.modeRegistry, subs.swarmState, subs.taskBus, subs.agentMgr, subs.events), true
-		case "goa":
+		return build()
+	}
+}
+
+// runtimeToolBuilders maps every runtime-constructible configurable tool to its
+// constructor. A table (not a switch) keeps the factory open for extension: a
+// new re-enablable tool is one entry plus its constructor, and the enable path
+// (/config → Tools, /tools:<name>:on, /docs …:on) picks it up unchanged.
+func runtimeToolBuilders(subs *subsystems) map[string]func() (agentic.Tool, bool) {
+	always := func(build func() agentic.Tool) func() (agentic.Tool, bool) {
+		return func() (agentic.Tool, bool) { return build(), true }
+	}
+	return map[string]func() (agentic.Tool, bool){
+		"bg_exec":           always(func() agentic.Tool { return makeBGExecTool(subs) }),
+		"memento":           always(func() agentic.Tool { return makeMementoTool(subs) }),
+		"python":            always(func() agentic.Tool { return makePythonTool(subs) }),
+		"ssh_bash":          always(func() agentic.Tool { return makeSSHBashTool(subs) }),
+		"verify":            always(func() agentic.Tool { return makeVerifyTool(subs.projectDir) }),
+		"ask_user_question": always(func() agentic.Tool { return newAskUserQuestionTool(subs) }),
+		"run_code": always(func() agentic.Tool {
+			return makeRunCodeTool(subs.toolRegistry, subs.projectDir, subs.cfg)
+		}),
+		"agent": always(func() agentic.Tool {
+			return newAgentTool(subs.agentPool, subs.modeRegistry, subs.taskBus, subs.agentMgr)
+		}),
+		"agent_swarm": always(func() agentic.Tool {
+			return newAgentSwarmTool(subs.agentPool, subs.modeRegistry, subs.swarmState, subs.taskBus, subs.agentMgr, subs.events)
+		}),
+		"goa": func() (agentic.Tool, bool) {
 			if subs.goaTool == nil {
 				return nil, false
 			}
 			return subs.goaTool, true
-		case "goal":
-			return makeGoalToolRuntime(subs)
-		case "todo_list":
+		},
+		"terminals":      func() (agentic.Tool, bool) { return makeTerminalsTool(subs) },
+		"webfetch":       func() (agentic.Tool, bool) { return makeWebFetchToolWithSummarizer(subs) },
+		"goal":           func() (agentic.Tool, bool) { return makeGoalToolRuntime(subs) },
+		"lsp":            func() (agentic.Tool, bool) { return makeLSPToolRuntime(subs) },
+		"request_review": func() (agentic.Tool, bool) { return makeAgentDrivenTool(subs, "request_review") },
+		"delegate_to":    func() (agentic.Tool, bool) { return makeAgentDrivenTool(subs, "delegate_to") },
+		"todo_list": func() (agentic.Tool, bool) {
 			if subs.goalManager == nil {
 				return nil, false
 			}
 			return &tools.TodoListTool{Mode: subs.goalManager.Mode}, true
-		case "lsp":
-			return makeLSPToolRuntime(subs)
-		}
+		},
+	}
+}
+
+// makeWebFetchToolWithSummarizer builds webfetch for the runtime factory and
+// wires the sub-agent summarizer pool the startup path attaches separately
+// (the pool may not exist yet when the tool is first registered).
+func makeWebFetchToolWithSummarizer(subs *subsystems) (agentic.Tool, bool) {
+	tool, ok := makeWebFetchTool(subs.sessionStore, subs.cfg, subs.projectDir)
+	if !ok {
 		return nil, false
 	}
+	if subs.agentPool != nil {
+		attachWebFetchSummarizerTo(tool, &webFetchAgentPool{pool: subs.agentPool})
+	}
+	return tool, true
+}
+
+// newAskUserQuestionTool builds ask_user_question with the SAME interactive
+// clarify hook the startup registration receives: without it a runtime-built
+// instance could never reach the user.
+func newAskUserQuestionTool(subs *subsystems) agentic.Tool {
+	tool := &ask.AskUserQuestionTool{}
+	if subs.clarifyFn != nil {
+		tool.SetClarify(subs.clarifyFn)
+	}
+	return tool
+}
+
+// liveToolSetProvider returns the core.Context.LiveTools hook: the mode-
+// filtered view of the live registry — literally the call startSession makes
+// (filterToolsForCurrentMode, prompt.go is the single source of that filter).
+// Runtime tool toggles push this set, so they can never advertise a tool the
+// active mode disallows.
+func liveToolSetProvider(subs *subsystems) func() []agentic.Tool {
+	return func() []agentic.Tool {
+		if subs.toolRegistry == nil {
+			return nil
+		}
+		return filterToolsForCurrentMode(subs, subs.toolRegistry.All())
+	}
+}
+
+// toolRegistryFor exposes the registry to commands without ever handing out a
+// typed-nil pointer dressed as a live registry (a nil interface and a nil
+// *tools.ToolRegistry must both read as "no registry").
+func toolRegistryFor(subs *subsystems) core.ToolRegistry {
+	if subs.toolRegistry == nil {
+		return nil
+	}
+	return subs.toolRegistry
+}
+
+// skillRegistryFor is the same guard for the skill registry: commands (the
+// /config root page reads the skills summary) nil-check the interface, which a
+// typed-nil *skills.SkillRegistry would defeat and then panic on.
+func skillRegistryFor(subs *subsystems) core.SkillRegistry {
+	if subs.skillRegistry == nil {
+		return nil
+	}
+	return subs.skillRegistry
 }
 
 // makeToolTeardown returns the /tools:name:off hook tearing integrations

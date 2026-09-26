@@ -172,8 +172,15 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 
 func registerVerifyTool(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) {
 	if cfg.Tools.Enabled.Verify {
-		reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
+		reg.Register(makeVerifyTool(projectDir))
 	}
+}
+
+// makeVerifyTool builds the verify tool for both the startup registration and
+// the runtime factory (/config → Tools, /tools:verify:on): enablement is gated
+// by the caller, so the tool itself never depends on the flag it toggles.
+func makeVerifyTool(projectDir string) agentic.Tool {
+	return &tools.VerifyTool{ProjectDir: projectDir}
 }
 
 func registerPythonTool(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) {
@@ -195,11 +202,17 @@ func registerRunCodeTool(reg *tools.ToolRegistry, projectDir string, cfg *config
 	if !cfg.Tools.Enabled.RunCode {
 		return
 	}
+	reg.Register(makeRunCodeTool(reg, projectDir, cfg))
+}
+
+// makeRunCodeTool builds the run_code tool for both the startup registration
+// and the runtime factory (/config → Tools, /tools:run_code:on).
+func makeRunCodeTool(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) agentic.Tool {
 	var dispatchDir string
 	if projectDir != "" {
 		dispatchDir = filepath.Join(projectDir, ".goa", "dispatch")
 	}
-	reg.Register(&tools.RunCodeTool{
+	return &tools.RunCodeTool{
 		TimeoutSeconds:    cfg.Tools.RunCode.TimeoutSeconds,
 		MaxProgramBytes:   cfg.Tools.RunCode.MaxProgramBytes,
 		MaxLogResultBytes: cfg.Tools.RunCode.MaxLogResultBytes,
@@ -210,7 +223,7 @@ func registerRunCodeTool(reg *tools.ToolRegistry, projectDir string, cfg *config
 		Jail:        cfg.Tools.RunCode.Jail == nil || *cfg.Tools.RunCode.Jail,
 		Registry:    reg,
 		DispatchDir: dispatchDir,
-	})
+	}
 }
 
 // registerSmartSearchTool registers BM25 relevance-ranked code search. It
@@ -338,9 +351,22 @@ func registerWebFetchTool(reg *tools.ToolRegistry, sessionStore *core.SessionSto
 	if !cfg.Tools.Enabled.WebFetch {
 		return
 	}
+	if tool, ok := makeWebFetchTool(sessionStore, cfg, projectDir); ok {
+		reg.Register(tool)
+	}
+}
+
+// makeWebFetchTool builds the webfetch tool for both the startup registration
+// and the runtime factory (/config → Tools, /tools:webfetch:on). The
+// tools.webfetch feature switch is honoured (it gates the whole feature, not
+// the toggle), while tools.enabled.webfetch is the flag the caller flips.
+func makeWebFetchTool(sessionStore *core.SessionStore, cfg *config.Config, projectDir string) (agentic.Tool, bool) {
+	if cfg == nil {
+		return nil, false
+	}
 	wc := cfg.Tools.WebFetch
 	if !wc.Enabled {
-		return
+		return nil, false
 	}
 
 	cacheDir := wc.Cache.Dir
@@ -379,7 +405,7 @@ func registerWebFetchTool(reg *tools.ToolRegistry, sessionStore *core.SessionSto
 			MaxInputLines: wc.Summary.MaxInputLines,
 		},
 	}
-	reg.Register(tool)
+	return tool, true
 }
 
 // registerSessionQueryTools registers the read-only session query tools
@@ -395,11 +421,20 @@ func hasConfiguredModel(cfg *config.Config) bool {
 	return cfg.ActiveProvider != "" && cfg.ActiveModel != ""
 }
 
+// attachWebFetchSummarizer points the REGISTERED webfetch tool's summarizer at
+// the sub-agent pool (startup path: the pool does not exist yet when the tool
+// is registered).
 func attachWebFetchSummarizer(reg *tools.ToolRegistry, pool tools.AgentPool) {
 	if t, ok := reg.Get("webfetch"); ok {
-		if wt, ok := t.(*tools.WebFetchTool); ok && wt.Summarizer != nil {
-			wt.Summarizer.Pool = pool
-		}
+		attachWebFetchSummarizerTo(t, pool)
+	}
+}
+
+// attachWebFetchSummarizerTo wires the summarizer pool on a webfetch instance,
+// wherever it came from (startup registration or the runtime factory).
+func attachWebFetchSummarizerTo(t agentic.Tool, pool tools.AgentPool) {
+	if wt, ok := t.(*tools.WebFetchTool); ok && wt.Summarizer != nil {
+		wt.Summarizer.Pool = pool
 	}
 }
 

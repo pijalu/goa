@@ -400,6 +400,39 @@ func (am *AgentManager) CurrentAgent() *agentic.Agent {
 	return am.activeAgent
 }
 
+// DeferredStatus reports whether name names a deferred tool that is not yet
+// loaded on the active agent's live registry (with the loader's name). It lets
+// command surfaces and tests assert that a runtime tool-set push (tool toggle,
+// MCP connect, plugin load) did not disturb the deferred loaded-tail.
+// Nil-safe: no active agent reports ("", false).
+func (am *AgentManager) DeferredStatus(name string) (string, bool) {
+	agent := am.CurrentAgent()
+	if agent == nil {
+		return "", false
+	}
+	return agent.DeferredStatus(name)
+}
+
+// LoadedDeferred returns the deferred tools already exposed on the active
+// agent's registry, in load order (append-only). Nil-safe.
+func (am *AgentManager) LoadedDeferred() []string {
+	agent := am.CurrentAgent()
+	if agent == nil {
+		return nil
+	}
+	return agent.LoadedDeferred()
+}
+
+// LoadDeferredTools exposes deferred tools by name on the active agent's live
+// registry (the tool_search loader's append-only operation). Nil-safe.
+func (am *AgentManager) LoadDeferredTools(names []string) []string {
+	agent := am.CurrentAgent()
+	if agent == nil {
+		return nil
+	}
+	return agent.LoadDeferredTools(names)
+}
+
 // IsBusy reports whether the agent is unavailable for a new user turn: either
 // a manager-owned turn is in flight (IsRunning) or the agent is executing an
 // externally driven turn — e.g. a goal continuation turn from GoalDriver,
