@@ -107,6 +107,12 @@ type subsystems struct {
 	// /tools:ask_user_question:on) — a runtime instance without the hook could
 	// never reach the user.
 	clarifyFn ask.ClarifyFunc
+	// cfgReport carries the loader's self-healing report (heals, dropped
+	// layers, defaults fallback) from startup LoadConfig into the TUI app,
+	// which announces the issues and offers a confirmed repair
+	// (bugs.md 2026-09-26: goa always aims to start, self-healing with user
+	// guidance). Nil when nothing was reported.
+	cfgReport *config.LoadReport
 	// sessionUsageFn supplies cumulative token stats to plugins (goa.sessionUsage).
 	// Wired in New() once the App (which owns the counters) exists.
 	sessionUsageFn func() map[string]any

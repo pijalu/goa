@@ -499,3 +499,71 @@ func TestConfigSet_ActivityWarnAboveWindowRejected(t *testing.T) {
 		})
 	}
 }
+
+// TestConfigSet_PersistsCanonicalSeconds is the regression test for the
+// 2026-09-26 poisoning bug: /config accepted bare seconds ("60") — the UI
+// speaks plain seconds (BUG-5) — but persisted the RAW string into the home
+// config, which the next start then rejected ("missing unit in duration").
+// The file must always receive the canonical committed value ("60s"), the
+// live session must follow, and a reload must accept the file.
+func TestConfigSet_PersistsCanonicalSeconds(t *testing.T) {
+	ctx, _, _ := stallTimingContext(t)
+
+	if err := applyConfigSet(*ctx, "execution.activity_timeout", "60"); err != nil {
+		t.Fatalf("applyConfigSet(timeout): %v", err)
+	}
+	if err := applyConfigSet(*ctx, "execution.activity_warn_after", "45"); err != nil {
+		t.Fatalf("applyConfigSet(warn): %v", err)
+	}
+
+	if got := ctx.Config.Execution.ActivityTimeout; got != "60s" {
+		t.Errorf("live activity_timeout = %q, want 60s", got)
+	}
+	if got := ctx.Config.Execution.ActivityWarnAfter; got != "45s" {
+		t.Errorf("live activity_warn_after = %q, want 45s", got)
+	}
+
+	checkPersistedCanonicalStall(t, ctx)
+	checkReloadedCanonicalStall(t, ctx)
+}
+
+// checkPersistedCanonicalStall asserts the RAW on-disk bytes after the two
+// bare-second sets: canonical "60s"/"45s" must be present and no bare value
+// may survive the write.
+func checkPersistedCanonicalStall(t *testing.T, ctx *core.Context) {
+	t.Helper()
+	saver := ctx.ConfigSaver.(*config.CascadeLoader)
+	raw, err := os.ReadFile(saver.HomeConfigPath())
+	if err != nil {
+		t.Fatalf("read home config: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{"activity_timeout: 60s", "activity_warn_after: 45s"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("persisted file must contain %q, got:\n%s", want, text)
+		}
+	}
+	// Anchored on the newline: "60s\n" must not satisfy a check for "60\n".
+	if strings.Contains(text, "activity_timeout: 60\n") || strings.Contains(text, "activity_warn_after: 45\n") {
+		t.Errorf("raw unit-less values were persisted:\n%s", text)
+	}
+}
+
+// checkReloadedCanonicalStall asserts the persisted file reloads cleanly and
+// the live stream options reflect the committed timings.
+func checkReloadedCanonicalStall(t *testing.T, ctx *core.Context) {
+	t.Helper()
+	saver := ctx.ConfigSaver.(*config.CascadeLoader)
+	reloaded, err := saver.Load()
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if reloaded.Execution.ActivityTimeout != "60s" || reloaded.Execution.ActivityWarnAfter != "45s" {
+		t.Errorf("reloaded = (%q, %q), want (60s, 45s)",
+			reloaded.Execution.ActivityTimeout, reloaded.Execution.ActivityWarnAfter)
+	}
+	live := liveStreamOptions(t, ctx)
+	if live.IdleTimeout != 60*time.Second || live.ActivityWarnAfter != 45*time.Second {
+		t.Errorf("live options = warn %s / window %s, want 45s / 60s", live.ActivityWarnAfter, live.IdleTimeout)
+	}
+}

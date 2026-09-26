@@ -179,11 +179,13 @@ func TestSanitizeDanglingModelRefsWarns(t *testing.T) {
 	}
 }
 
-// TestLoadDanglingModelRefsGenuineErrorStillFatal verifies that healing
+// TestLoadDanglingModelRefsGenuineErrorForcesFallback verifies that healing
 // dangling model references does not mask genuine config errors: a config
-// with an invalid execution.mode must still fail validation even while its
-// dangling team member model is healed.
-func TestLoadDanglingModelRefsGenuineErrorStillFatal(t *testing.T) {
+// with an invalid execution.mode cannot be used — the loader falls back to
+// the defaults and reports the genuine problem as FallbackErr (bugs.md
+// 2026-09-26: goa always aims to start) while the dangling ref is still
+// healed so a later fix works cleanly.
+func TestLoadDanglingModelRefsGenuineErrorForcesFallback(t *testing.T) {
 	homeDir, projectDir, cleanup := setupTestConfig(t)
 	defer cleanup()
 	t.Setenv("HOME", homeDir)
@@ -203,11 +205,17 @@ teams:
       review: "agent"
 `)
 
-	_, err := NewCascadeLoader(projectDir, "", nil).Load()
-	if err == nil {
-		t.Fatal("Load with a genuine config error (bad execution.mode) must fail even when dangling model refs are healed")
+	cfg, rep, err := NewCascadeLoader(projectDir, "", nil).LoadWithReport()
+	if err != nil {
+		t.Fatalf("Load must not fail hard (defaults fallback), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "execution.mode") {
-		t.Errorf("error = %v, want it to mention the genuine execution.mode problem", err)
+	if cfg == nil {
+		t.Fatal("cfg must never be nil when defaults can load")
+	}
+	if !rep.UsedDefaults {
+		t.Fatal("UsedDefaults = false, want the defaults fallback for a genuine config error (bad execution.mode)")
+	}
+	if rep.FallbackErr == nil || !strings.Contains(rep.FallbackErr.Error(), "execution.mode") {
+		t.Errorf("FallbackErr = %v, want it to mention the genuine execution.mode problem", rep.FallbackErr)
 	}
 }

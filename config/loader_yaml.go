@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -107,6 +108,44 @@ func valueToYAMLNode(value any) (*yaml.Node, error) {
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: ""}, nil
 	}
 	return doc.Content[0], nil
+}
+
+// bareDurationPattern matches a bare non-negative integer ("60"): plain
+// seconds exactly as the /config UI speaks them. yaml.v3 decodes both the
+// unquoted `60` and the quoted "60" into the same Go string, so one pattern
+// covers both spellings.
+var bareDurationPattern = regexp.MustCompile(`^[0-9]+$`)
+
+// sanitizeBareStallDurations corrects stall-timing values written without a
+// time unit ("60" instead of "60s"). The /config UI deliberately speaks
+// plain seconds (bugs.md BUG-5), so hand-edits copy that style into the
+// config file — where units are required — and the next start died with
+// "missing unit in duration". Bare integers have exactly one sane reading
+// (seconds), so heal instead of refusing: correct the value in memory with a
+// visible stderr warning naming the file and the correction. Values that are
+// not bare integers ("60s", "2m", "abc") pass through untouched; "abc"-style
+// garbage keeps belonging to Config.Validate.
+//
+// Layer-scoped like the pair heal: applied per cascade layer before the
+// merge, so cross-layer combinations stay coherent and the pair check sees
+// the corrected values.
+func sanitizeBareStallDurations(exec *ExecutionConfig, source string) bool {
+	healed := false
+	if bareDurationPattern.MatchString(exec.ActivityTimeout) {
+		exec.ActivityTimeout += "s"
+		warnBareStallDuration(source, "execution.activity_timeout", exec.ActivityTimeout)
+		healed = true
+	}
+	if bareDurationPattern.MatchString(exec.ActivityWarnAfter) {
+		exec.ActivityWarnAfter += "s"
+		warnBareStallDuration(source, "execution.activity_warn_after", exec.ActivityWarnAfter)
+		healed = true
+	}
+	return healed
+}
+
+func warnBareStallDuration(source, key, corrected string) {
+	fmt.Fprintf(os.Stderr, "Warning: %s in %s has no time unit — corrected to %q (config files require durations like %q; the /config UI accepts plain seconds)\n", key, source, corrected, corrected)
 }
 
 // sanitizeActivityPairLayer corrects a contradictory stall-timing pair WITHIN

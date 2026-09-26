@@ -404,21 +404,30 @@ func MustGetwd() string {
 }
 
 // LoadConfig loads configuration from the cascade loader, running the first-run
-// wizard when necessary.
-func LoadConfig(loader *config.CascadeLoader, projectDir string) *config.Config {
-	cfg, err := loader.Load()
-	if err != nil {
+// wizard when necessary. Invalid layers no longer abort startup: they are
+// dropped or answered by the defaults fallback and reported back so the TUI
+// can announce them and offer a confirmed repair (bugs.md 2026-09-26: goa
+// always aims to start, self-healing with user guidance).
+func LoadConfig(loader *config.CascadeLoader, projectDir string) (*config.Config, *config.LoadReport) {
+	cfg, rep, err := loader.LoadWithReport()
+	if err != nil || cfg == nil {
 		fatalExitf("Config error: %v\n", err)
+	}
+	if rep.UsedDefaults {
+		// Non-TUI modes only see stderr; the TUI additionally surfaces this
+		// through announceConfigIssues in the chat.
+		fmt.Fprintf(os.Stderr, "Warning: %s — the default configuration is in effect\n",
+			config.FallbackProblemSummary(rep))
 	}
 
 	if !cfg.FirstRun {
-		return cfg
+		return cfg, rep
 	}
 
-	return handleFirstRun(loader, cfg, projectDir)
+	return handleFirstRun(loader, cfg, projectDir, rep)
 }
 
-func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir string) *config.Config {
+func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir string, rep *config.LoadReport) (*config.Config, *config.LoadReport) {
 	fmt.Println("⟡  First run detected — launching setup wizard")
 	result, err := config.RunSetupWizard(projectDir, loader)
 	if err != nil {
@@ -429,7 +438,7 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 		os.Exit(0)
 	}
 	if !result.ConfigWritten {
-		return cfg
+		return cfg, rep
 	}
 
 	fmt.Println("Configuration saved to ~/.goa/config.yaml")
@@ -437,5 +446,6 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 	if err != nil {
 		fatalExitf("Reload config error: %v\n", err)
 	}
-	return cfg
+	// The wizard just wrote a valid configuration — nothing left to report.
+	return cfg, &config.LoadReport{}
 }

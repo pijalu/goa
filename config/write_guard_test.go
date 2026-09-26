@@ -11,10 +11,10 @@ import (
 	"testing"
 )
 
-// TestValidateConfigBytes pins the writer-side backstop: marshaled bytes must
-// parse AND carry no contradictory stall pair before any config write lands.
-// Shape concerns (unparseable durations) are deliberately NOT rejected here —
-// partial layer documents are legal and Config.Validate owns shapes.
+// TestValidateConfigBytes pins the writer-side backstop: marshaled bytes
+// must parse, carry no contradictory stall pair, AND pass the duration-shape
+// checks the loader enforces before any config write lands (bugs.md
+// 2026-09-26: goa must not save config it cannot load).
 func TestValidateConfigBytes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -57,8 +57,16 @@ func TestValidateConfigBytes(t *testing.T) {
 			errPart: "does not parse",
 		},
 		{
-			name: "unparseable durations are a shape concern, not a pair violation",
-			body: "execution:\n  activity_timeout: soon\n  activity_warn_after: later\n",
+			name:    "unparseable durations are refused (loader would reject them)",
+			body:    "execution:\n  activity_timeout: soon\n  activity_warn_after: later\n",
+			wantErr: true,
+			errPart: "invalid",
+		},
+		{
+			name:    "bare stall value without a unit is refused",
+			body:    "execution:\n  activity_timeout: \"60\"\n",
+			wantErr: true,
+			errPart: "invalid",
 		},
 	}
 	for _, tt := range tests {
@@ -226,5 +234,92 @@ func TestSave_RollsBackContradictoryConfig(t *testing.T) {
 	}
 	if string(raw) != string(prev) {
 		t.Errorf("home config not restored byte for byte (got %d bytes, want %d)", len(raw), len(prev))
+	}
+}
+
+// TestSaveHomeField_HealsBareStallOnUnrelatedWrite covers the reported
+// poisoning shape: a home config carrying bare "60"/"45" stall values (no
+// units). An UNRELATED settings write must not be wedged by the file and
+// must not preserve the poison: the guard canonicalizes the bare values in
+// the document (same heal the loader applies at startup), so the file on
+// disk becomes loadable — while garbage that nothing can interpret is still
+// refused.
+func TestSaveHomeField_HealsBareStallOnUnrelatedWrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	broken := "execution:\n  activity_timeout: \"60\"\n  activity_warn_after: \"45\"\n"
+	cfgDir := filepath.Join(home, ".goa")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("seed config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(broken), 0o644); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	restore := captureStderr(t)
+	cl := NewCascadeLoader(t.TempDir(), "", nil)
+	err := cl.SaveHomeField([]string{"execution", "retries"}, 12)
+	captured := restore()
+	if err != nil {
+		t.Fatalf("SaveHomeField on a file with bare stall values: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(cfgDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{`activity_timeout: "60s"`, `activity_warn_after: "45s"`, "retries: 12"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("healed file must contain %q, got:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "activity_timeout: \"60\"\n") || strings.Contains(text, "activity_warn_after: \"45\"\n") {
+		t.Errorf("bare unit-less values survived the write:\n%s", text)
+	}
+	if !strings.Contains(captured, "has no time unit") {
+		t.Errorf("the canonicalization must warn on stderr, got:\n%s", captured)
+	}
+
+	// The healed file loads cleanly.
+	if _, err := cl.Load(); err != nil {
+		t.Fatalf("load healed config: %v", err)
+	}
+}
+
+// TestSaveHomeField_RefusesGarbageStallValue pins the refusal half of the
+// guard: a stall-key write whose value nothing can interpret ("abc") is
+// refused and the previous bytes stay untouched — an explicit but meaningless
+// choice is never silently rewritten, and never persisted.
+func TestSaveHomeField_RefusesGarbageStallValue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	prev := "execution:\n  activity_timeout: 45s\n"
+	cfgDir := filepath.Join(home, ".goa")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("seed config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(prev), 0o644); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	cl := NewCascadeLoader(t.TempDir(), "", nil)
+	err := cl.SaveHomeField([]string{"execution", "activity_timeout"}, "abc")
+	if err == nil {
+		t.Fatal("SaveHomeField accepted a stall value no unit can fix")
+	}
+	if !strings.Contains(err.Error(), "refusing to write") {
+		t.Errorf("error %q does not say the write was refused", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(cfgDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(raw) != prev {
+		t.Errorf("home config modified by the refused write:\n got %q\nwant %q", raw, prev)
 	}
 }

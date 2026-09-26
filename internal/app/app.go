@@ -278,6 +278,13 @@ func (a *App) Run() bool {
 	// applies on the next request; stopped on shutdown (no goroutine leaks).
 	a.subs.startConfigWatcher()
 	engine.RunLoops() // launch the commandLoop (sole state owner) + renderLoop
+	// Self-healing disclosure (bugs.md 2026-09-26): announce what the loader
+	// healed/dropped and, when a layer could not be used, offer the confirmed
+	// repair now — after the loops are live (the clarify card needs the
+	// commandLoop) and before the title hook. Blocks until the user answers;
+	// the session keeps running on the default/healed configuration either way.
+	a.announceConfigIssues()
+	a.offerConfigRepair()
 	// Startup-done hook: fires the title transition when the async loads
 	// (plugins + history) complete, or at the 5s fallback — whichever first.
 	a.startTitleStartupHook()
@@ -482,12 +489,13 @@ func runApp() bool {
 	defer prof.stopProfiling()
 
 	loader := config.NewCascadeLoader(projectDir, cliFlags["config"], cliFlags)
-	cfg := LoadConfig(loader, projectDir)
+	cfg, cfgReport := LoadConfig(loader, projectDir)
 	// Bug6: when no config layer provides an active model, fall back to the
 	// most-used model from the persistent usage stats (project scope first).
 	applyUsageBasedDefaultModel(cfg, projectDir)
 	enableModelsDevCatalog()
 	subs := InitSubsystems(cfg, loader, projectDir, runtimeOpts)
+	subs.cfgReport = cfgReport
 	switch {
 	case runtimeOpts.DreamMode():
 		runDream(subs, runtimeOpts)

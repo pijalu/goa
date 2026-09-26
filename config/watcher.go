@@ -211,15 +211,24 @@ func (w *ConfigWatcher) debounceEvent(timer *time.Timer, timerC <-chan time.Time
 // reload re-reads the writable layers and, when content changed since the last
 // successful reload, reloads the cascade. A broken edit is logged and the last
 // good config is kept (nothing is published); the next fix triggers a reload.
+// Self-healing note (bugs.md 2026-09-26): an invalid file no longer fails the
+// load — it forces a defaults fallback or drops the layer — so the watcher
+// keeps the last-good config whenever the report shows drops or a fallback,
+// instead of silently hot-swapping the running session to defaults.
 func (w *ConfigWatcher) reload() {
 	current := w.readContents()
 	if w.unchanged(current) {
 		return
 	}
 
-	cfg, err := w.cl.Reload()
+	cfg, rep, err := w.cl.LoadWithReport()
 	if err != nil {
 		w.warn("config hot-reload failed, keeping last-good config: %v", err)
+		return
+	}
+	if rep.UsedDefaults || len(rep.Dropped) > 0 {
+		w.warn("config hot-reload found invalid config, keeping last-good config: %s",
+			FallbackProblemSummary(rep))
 		return
 	}
 

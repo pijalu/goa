@@ -169,7 +169,7 @@ func testActivityWarnAfterLayerPair(t *testing.T) {
 			yaml: "execution:\n  activity_timeout: 30s\n",
 		},
 		{
-			name:    "unparseable value still rejected (by Validate)",
+			name:    "unparseable value falls back to defaults (Validate rejects it)",
 			yaml:    "execution:\n  activity_timeout: soon\n  activity_warn_after: 30s\n",
 			wantErr: "activity_timeout",
 		},
@@ -177,11 +177,11 @@ func testActivityWarnAfterLayerPair(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			restore := captureStderr(t)
-			_, err := loadHomeLayerOnly(t, tt.yaml)
+			_, rep, err := loadHomeLayerOnly(t, tt.yaml)
 			captured := restore()
 			switch {
 			case tt.wantErr != "":
-				requireLoadErrorNames(t, err, tt.wantErr, tt.yaml)
+				requireFallbackNames(t, rep, err, tt.wantErr, tt.yaml)
 			case tt.wantHealed:
 				requireNoLoadError(t, err, tt.yaml)
 				requireHealWarning(t, captured)
@@ -189,17 +189,6 @@ func testActivityWarnAfterLayerPair(t *testing.T) {
 				requireNoLoadError(t, err, tt.yaml)
 			}
 		})
-	}
-}
-
-// requireLoadErrorNames requires a load failure whose message names the key.
-func requireLoadErrorNames(t *testing.T, err error, wantMsg, yamlText string) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("Load() = nil, want an error for %q", yamlText)
-	}
-	if !strings.Contains(err.Error(), wantMsg) {
-		t.Errorf("error must name %s, got: %v", wantMsg, err)
 	}
 }
 
@@ -249,8 +238,8 @@ func captureStderr(t *testing.T) (restore func() string) {
 }
 
 // loadHomeLayerOnly writes the YAML as the ONLY config layer (isolated HOME and
-// project dir) and loads the cascade.
-func loadHomeLayerOnly(t *testing.T, yamlText string) (*Config, error) {
+// project dir) and loads the cascade with its self-healing report.
+func loadHomeLayerOnly(t *testing.T, yamlText string) (*Config, *LoadReport, error) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -261,5 +250,22 @@ func loadHomeLayerOnly(t *testing.T, yamlText string) (*Config, error) {
 	if err := os.WriteFile(filepath.Join(home, ".goa", "config.yaml"), []byte(yamlText), 0o644); err != nil {
 		t.Fatalf("write home config: %v", err)
 	}
-	return NewCascadeLoader(t.TempDir(), "", nil).Load()
+	return NewCascadeLoader(t.TempDir(), "", nil).LoadWithReport()
+}
+
+// requireFallbackNames requires the self-healed outcome for a config the
+// loader cannot accept: no hard error, the defaults fallback, and a
+// FallbackErr naming the offending key (bugs.md 2026-09-26: goa always aims
+// to start).
+func requireFallbackNames(t *testing.T, rep *LoadReport, err error, wantMsg, yamlText string) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("Load() = %v, want a defaults fallback (no hard error) for %q", err, yamlText)
+	}
+	if rep == nil || !rep.UsedDefaults {
+		t.Fatalf("UsedDefaults = false, want the defaults fallback for %q", yamlText)
+	}
+	if rep.FallbackErr == nil || !strings.Contains(rep.FallbackErr.Error(), wantMsg) {
+		t.Errorf("FallbackErr = %v, want it to mention %q for %q", rep.FallbackErr, wantMsg, yamlText)
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/pijalu/goa/internal"
@@ -133,22 +134,97 @@ func NewCascadeLoader(projectDir, explicitConfigPath string, cliFlags map[string
 	}
 }
 
+// LayerProblem describes a config layer that could not be loaded and was
+// skipped: the cascade continues with the remaining layers and the embedded
+// defaults supply everything the layer would have set.
+type LayerProblem struct {
+	Source string
+	Err    error
+}
+
+func (p LayerProblem) Error() string {
+	return fmt.Sprintf("%s: %v", p.Source, p.Err)
+}
+
+// LoadReport describes every self-healing step applied while loading the
+// cascade, so the UI can tell the user exactly what happened to their
+// configuration (bugs.md 2026-09-26: goa always aims to start, self-healing
+// with user guidance).
+type LoadReport struct {
+	// Healed lists config sources corrected in memory (bare stall values,
+	// contradictory pairs). The files on disk are untouched.
+	Healed []string
+	// Dropped lists layers that could not be loaded at all and were skipped.
+	Dropped []LayerProblem
+	// FallbackErr is the merged-config validation failure that forced the
+	// defaults fallback.
+	FallbackErr error
+	// UsedDefaults is true when the merged config was invalid and goa started
+	// on the default configuration instead.
+	UsedDefaults bool
+}
+
+// Empty reports whether loading needed no self-healing at all.
+func (r *LoadReport) Empty() bool {
+	return len(r.Healed) == 0 && len(r.Dropped) == 0 && r.FallbackErr == nil && !r.UsedDefaults
+}
+
+// FallbackProblemSummary condenses a report's fallback/drop problems into one
+// log-worthy line (the watcher, the bootstrap warning and the TUI banner use
+// it).
+func FallbackProblemSummary(rep *LoadReport) string {
+	if rep.UsedDefaults && rep.FallbackErr != nil {
+		return "falling back to defaults: " + rep.FallbackErr.Error()
+	}
+	if rep.UsedDefaults {
+		return "falling back to defaults"
+	}
+	parts := make([]string, 0, len(rep.Dropped))
+	for _, p := range rep.Dropped {
+		parts = append(parts, p.Error())
+	}
+	return "ignored: " + strings.Join(parts, "; ")
+}
+
 // Load implements the full configuration cascade.
 func (cl *CascadeLoader) Load() (*Config, error) {
+	cfg, _, err := cl.LoadWithReport()
+	return cfg, err
+}
+
+// LoadWithReport loads the cascade and reports every self-healing step. A
+// layer that cannot be loaded is DROPPED (its keys fall back to the
+// remaining layers and the defaults) and the load proceeds; when even the
+// merged result fails validation, goa falls back to the default
+// configuration instead of refusing to start. The returned error is non-nil
+// only when goa cannot start at all (e.g. the embedded defaults themselves
+// are broken).
+func (cl *CascadeLoader) LoadWithReport() (*Config, *LoadReport, error) {
+	rep := &LoadReport{}
+	cfg, err := cl.loadCascade(true, rep)
+	if err == nil {
+		return cfg, rep, nil
+	}
+	// The merged config is invalid even after the layer heals: start on the
+	// defaults (flags/env still apply) and let the UI offer a repair.
+	rep.FallbackErr = err
+	rep.UsedDefaults = true
+	cfg, err = cl.loadCascade(false, rep)
+	if err != nil {
+		return nil, rep, err
+	}
+	return cfg, rep, nil
+}
+
+func (cl *CascadeLoader) loadCascade(useLayers bool, rep *LoadReport) (*Config, error) {
 	cfg, err := cl.loadDefaults()
 	if err != nil {
 		return nil, err
 	}
 
-	homeCfg, err := cl.loadHomeConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-	cfg = homeCfg
-
-	cfg, err = cl.loadProjectConfig(cfg)
-	if err != nil {
-		return nil, err
+	if useLayers {
+		cl.mergeHomeLayer(cfg, rep)
+		cl.mergeProjectLayers(cfg, rep)
 	}
 
 	// Fetch remote provider registries before env interpolation so that
@@ -221,52 +297,73 @@ func (cl *CascadeLoader) loadDefaults() (*Config, error) {
 	return cfg, nil
 }
 
-func (cl *CascadeLoader) loadHomeConfig(cfg *Config) (*Config, error) {
+// mergeHomeLayer merges ~/.goa/config.yaml into the cascade. A layer that
+// cannot be loaded (unreadable, unparseable, or structurally broken) is
+// DROPPED with a visible warning and recorded in the report — its keys fall
+// back to the defaults and the UI offers a repair (bugs.md 2026-09-26: goa
+// must start, self-healing with user guidance).
+func (cl *CascadeLoader) mergeHomeLayer(cfg *Config, rep *LoadReport) {
 	homeConfigPath := filepath.Join(cl.homeDir, ".goa", "config.yaml")
 	if _, err := os.Stat(homeConfigPath); os.IsNotExist(err) {
-		return cfg, nil // no home config
+		return // no home config
 	}
-	if err := cl.mergeFile(cfg, homeConfigPath); err != nil {
-		return nil, fmt.Errorf("loading home config: %w", err)
+	if healed := cl.mergeFile(cfg, homeConfigPath, rep); healed {
+		rep.Healed = append(rep.Healed, homeConfigPath)
 	}
-	return cfg, nil
 }
 
-func (cl *CascadeLoader) loadProjectConfig(cfg *Config) (*Config, error) {
+// mergeProjectLayers merges the project and local cascade layers
+// (.goa/config.yaml, .goa/config.local.yaml), or the explicit --config file.
+// Broken layers are dropped and reported like the home layer.
+func (cl *CascadeLoader) mergeProjectLayers(cfg *Config, rep *LoadReport) {
 	if cl.configPath != "" {
-		if err := cl.mergeFile(cfg, cl.configPath); err != nil {
-			return nil, fmt.Errorf("loading --config: %w", err)
+		if healed := cl.mergeFile(cfg, cl.configPath, rep); healed {
+			rep.Healed = append(rep.Healed, cl.configPath)
 		}
-		return cfg, nil
+		return
 	}
 
 	projectPath := filepath.Join(cl.projectDir, ".goa", "config.yaml")
-	if err := cl.mergeProjectFile(cfg, projectPath); err != nil {
-		return nil, err
+	if healed := cl.mergeProjectFile(cfg, projectPath, rep); healed {
+		rep.Healed = append(rep.Healed, projectPath)
 	}
 
 	localPath := filepath.Join(cl.projectDir, ".goa", "config.local.yaml")
-	if err := cl.mergeProjectFile(cfg, localPath); err != nil {
-		return nil, err
+	if healed := cl.mergeProjectFile(cfg, localPath, rep); healed {
+		rep.Healed = append(rep.Healed, localPath)
 	}
-	return cfg, nil
 }
 
-func (cl *CascadeLoader) mergeProjectFile(cfg *Config, path string) error {
+// dropLayer records an unloadable layer: warn on stderr and remember it for
+// the startup report.
+func dropLayer(rep *LoadReport, path string, err error) {
+	wrapped := &internal.ConfigError{Key: path, Err: err}
+	rep.Dropped = append(rep.Dropped, LayerProblem{Source: path, Err: wrapped})
+	fmt.Fprintf(os.Stderr, "Warning: ignoring invalid config %s: %v — defaults apply for its settings\n", path, err)
+}
+
+func (cl *CascadeLoader) mergeProjectFile(cfg *Config, path string, rep *LoadReport) (healed bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // file is optional
+			return false // file is optional
 		}
-		return fmt.Errorf("read %s: %w", path, err)
+		dropLayer(rep, path, err)
+		return false
 	}
 	layer := &Config{}
 	if err := yaml.Unmarshal(data, layer); err != nil {
-		return &internal.ConfigError{Key: path, Err: fmt.Errorf("unmarshal: %w", err)}
+		dropLayer(rep, path, fmt.Errorf("unmarshal: %w", err))
+		return false
 	}
-	sanitizeActivityPairLayer(&layer.Execution, path)
+	if sanitizeBareStallDurations(&layer.Execution, path) {
+		healed = true
+	}
+	if sanitizeActivityPairLayer(&layer.Execution, path) {
+		healed = true
+	}
 	cfg.DeepMerge(layer)
-	return nil
+	return healed
 }
 
 // Config returns the current config (used by ConfigProvider interface).
@@ -281,19 +378,27 @@ func (cl *CascadeLoader) Config() *Config {
 	return cfg
 }
 
-// mergeFile reads a YAML file and deep-merges it into the config.
-func (cl *CascadeLoader) mergeFile(cfg *Config, path string) error {
+// mergeFile reads a YAML file and deep-merges it into the config. Unloadable
+// files are dropped (recorded in rep) instead of failing the whole cascade.
+func (cl *CascadeLoader) mergeFile(cfg *Config, path string, rep *LoadReport) (healed bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		dropLayer(rep, path, err)
+		return false
 	}
 	layer := &Config{}
 	if err := yaml.Unmarshal(data, layer); err != nil {
-		return &internal.ConfigError{Key: path, Err: fmt.Errorf("unmarshal: %w", err)}
+		dropLayer(rep, path, fmt.Errorf("unmarshal: %w", err))
+		return false
 	}
-	sanitizeActivityPairLayer(&layer.Execution, path)
+	if sanitizeBareStallDurations(&layer.Execution, path) {
+		healed = true
+	}
+	if sanitizeActivityPairLayer(&layer.Execution, path) {
+		healed = true
+	}
 	cfg.DeepMerge(layer)
-	return nil
+	return healed
 }
 
 // Save writes the given config to ~/.goa/config.yaml.
@@ -324,6 +429,10 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 		saveCfg.Skills.Sticky = st
 		saveCfg.Skills.StickyOff = stOff
 	}
+	// Heal bare stall values in memory exactly like the loader would at
+	// startup: Save() must land a loadable file or fail — never persist the
+	// poison (bugs.md 2026-09-26).
+	sanitizeBareStallDurations(&saveCfg.Execution, cl.HomeConfigPath())
 
 	data, err := yaml.Marshal(saveCfg)
 	if err != nil {
@@ -407,13 +516,24 @@ func (cl *CascadeLoader) SaveHomeProvidersAndModels(cfg *Config) error {
 	saveCfg := homeCfg.DeepCopy()
 	saveCfg.FirstRun = false
 	saveCfg.ConfigDir = ""
+	// Heal bare stall values in memory exactly like the loader would at
+	// startup, so the write lands loadable instead of being refused (or
+	// persisting the poison) when the file carried a hand-edited "60".
+	sanitizeBareStallDurations(&saveCfg.Execution, pathYaml)
 
 	out, err := yaml.Marshal(saveCfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
+	prev, hadPrev := existingConfigBytes(pathYaml)
 	if err := os.WriteFile(pathYaml, out, 0644); err != nil {
 		return fmt.Errorf("write home config: %w", err)
+	}
+	// Same backstop as field writes: a provider catalog carrying an
+	// unparseable duration must not poison the home file (bugs.md 2026-09-26).
+	if err := validateConfigBytes(out, "home"); err != nil {
+		rollbackConfigFile(pathYaml, prev, hadPrev)
+		return fmt.Errorf("%w; the previous home config was restored", err)
 	}
 	return nil
 }
@@ -452,13 +572,19 @@ func (cl *CascadeLoader) SaveProjectProvidersAndModels(cfg *Config) error {
 	saveCfg := projectCfg.DeepCopy()
 	saveCfg.FirstRun = false
 	saveCfg.ConfigDir = ""
+	sanitizeBareStallDurations(&saveCfg.Execution, pathYaml)
 
 	out, err := yaml.Marshal(saveCfg)
 	if err != nil {
 		return fmt.Errorf("marshal project config: %w", err)
 	}
+	prev, hadPrev := existingConfigBytes(pathYaml)
 	if err := os.WriteFile(pathYaml, out, 0644); err != nil {
 		return fmt.Errorf("write project config: %w", err)
+	}
+	if err := validateConfigBytes(out, "project"); err != nil {
+		rollbackConfigFile(pathYaml, prev, hadPrev)
+		return fmt.Errorf("%w; the previous project config was restored", err)
 	}
 	return nil
 }

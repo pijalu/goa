@@ -141,7 +141,7 @@ func TestConfigWatcher_BrokenYAMLKeepsLastGood(t *testing.T) {
 	writeConfig(t, w.cl.HomeConfigPath(), "active_model: [unclosed\n  bad: :::")
 	expectNoChange(t, w, 600*time.Millisecond)
 
-	if !strings.Contains(logs.String(), "config hot-reload failed") {
+	if !strings.Contains(logs.String(), "config hot-reload found invalid config") {
 		t.Errorf("expected a warning log about the broken edit, got: %q", logs.String())
 	}
 }
@@ -164,7 +164,7 @@ active_model: model-fixed
 	if cfg.ActiveModel != "model-fixed" {
 		t.Errorf("ActiveModel = %q, want %q", cfg.ActiveModel, "model-fixed")
 	}
-	if !strings.Contains(logs.String(), "config hot-reload failed") {
+	if !strings.Contains(logs.String(), "config hot-reload found invalid config") {
 		t.Errorf("expected a warning log about the broken edit, got: %q", logs.String())
 	}
 }

@@ -234,7 +234,13 @@ func applyConfigSet(ctx core.Context, key, value string) error {
 	if !commitConfigSet(ctx, key, value, path, warnDropped) {
 		return nil
 	}
-	if !persistConfigSet(ctx, key, value, path, warnDropped) {
+	// Persist the CANONICAL committed value, not the raw input: the stall
+	// setters parse bare seconds ("60") into durations ("60s"), and writing
+	// the raw string would save a value the next load rejects (bugs.md
+	// 2026-09-26: goa must not save config it cannot load — even though the
+	// writer guard now canonicalizes/refuses as a backstop, the UI must say
+	// and save the same thing).
+	if !persistConfigSet(ctx, key, persistedValueForKey(ctx.Config, key, value), path, warnDropped) {
 		return nil
 	}
 	// Changing the active model may also change the provider: persist that
@@ -330,6 +336,31 @@ func applyStallPairPolicy(ctx core.Context, key, value string, candidate *config
 	}
 	candidate.Execution.ActivityWarnAfter = ""
 	return false, true
+}
+
+// persistedValueForKey returns the value to WRITE TO DISK for a committed
+// change: the canonical form the loader accepts. The stall-timing keys parse
+// bare seconds into durations in the live config, so the committed value is
+// what belongs in the file. Every other key is stored verbatim by its setter,
+// so the raw input is already canonical.
+func persistedValueForKey(cfg *config.Config, key, raw string) string {
+	switch key {
+	case "execution.activity_timeout":
+		return canonicalStallValue(cfg.Execution.ActivityTimeout, raw)
+	case "execution.activity_warn_after":
+		return canonicalStallValue(cfg.Execution.ActivityWarnAfter, raw)
+	}
+	return raw
+}
+
+// canonicalStallValue prefers the committed (parsed) value and falls back to
+// the raw input when the commit left nothing parseable behind (e.g. the key
+// was cleared) — the writer guard has the final say either way.
+func canonicalStallValue(committed, raw string) string {
+	if committed != "" {
+		return committed
+	}
+	return raw
 }
 
 // deleteStaleWarnLead removes the stranded warning lead from the home config

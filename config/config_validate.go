@@ -142,15 +142,33 @@ func (c *Config) validateActiveProvider(ve *internal.ValidationError) {
 	ve.Add(fmt.Sprintf("active_provider: provider %q not found in providers list", c.ActiveProvider))
 }
 
+// durationUnitsHint is appended to duration parse errors: the config FILE
+// format requires time units, but the /config UI speaks plain seconds
+// ("60"), so a hand-edit copying the UI's style produces a value goa cannot
+// parse (bugs.md 2026-09-26: "if units are required — show them"). The hint
+// names the expected shape instead of leaving the user with only
+// time.ParseDuration's "missing unit" wording.
+const durationUnitsHint = " (the config file requires a unit — use \"60s\", \"90s\", \"2m\")"
+
+// durationShapeHint builds the guidance appended to a duration parse error.
+// A bare integer — exactly what the plain-seconds /config UI invites — gets
+// the corrected value spelled out; anything else gets the generic examples.
+func durationShapeHint(value string) string {
+	if bareDurationPattern.MatchString(value) {
+		return fmt.Sprintf(" (the config file requires a unit — did you mean %q?)", value+"s")
+	}
+	return durationUnitsHint
+}
+
 func (c *Config) validateTimeout(ve *internal.ValidationError) {
 	if c.Execution.ActivityTimeout != "" {
 		if _, err := time.ParseDuration(c.Execution.ActivityTimeout); err != nil {
-			ve.Add(fmt.Sprintf("execution.activity_timeout: cannot parse %q as duration: %v", c.Execution.ActivityTimeout, err))
+			ve.Add(fmt.Sprintf("execution.activity_timeout: cannot parse %q as duration: %v%s", c.Execution.ActivityTimeout, err, durationShapeHint(c.Execution.ActivityTimeout)))
 		}
 	}
 	if c.Execution.ActivityWarnAfter != "" {
 		if _, err := time.ParseDuration(c.Execution.ActivityWarnAfter); err != nil {
-			ve.Add(fmt.Sprintf("execution.activity_warn_after: cannot parse %q as duration: %v", c.Execution.ActivityWarnAfter, err))
+			ve.Add(fmt.Sprintf("execution.activity_warn_after: cannot parse %q as duration: %v%s", c.Execution.ActivityWarnAfter, err, durationShapeHint(c.Execution.ActivityWarnAfter)))
 		}
 	}
 	// The stall warning must land INSIDE the retry window, but that relationship
@@ -270,8 +288,25 @@ func (c *Config) validateProviderRetryDelay(ve *internal.ValidationError, p Prov
 		return
 	}
 	if _, err := time.ParseDuration(p.MaxRetryDelay); err != nil {
-		ve.Add(fmt.Sprintf("providers.%s.max_retry_delay: cannot parse %q as duration: %v", p.ID, p.MaxRetryDelay, err))
+		ve.Add(fmt.Sprintf("providers.%s.max_retry_delay: cannot parse %q as duration: %v%s", p.ID, p.MaxRetryDelay, err, durationShapeHint(p.MaxRetryDelay)))
 	}
+}
+
+// durationShapeError collects every duration-typed value in c whose shape the
+// loader rejects — the same checks Validate runs for durations (stall pair,
+// provider idle timeouts, provider retry-delay caps). The writer guard uses
+// it so a config file goa writes can never carry a value the next load would
+// refuse (bugs.md 2026-09-26, bare stall values).
+func durationShapeError(c *Config) error {
+	var ve internal.ValidationError
+	c.validateTimeout(&ve)
+	for _, p := range c.Providers {
+		c.validateProviderRetryDelay(&ve, p)
+	}
+	if ve.HasErrors() {
+		return &ve
+	}
+	return nil
 }
 
 // validateProviderRetryPolicy validates the optional per-provider retry_policy
