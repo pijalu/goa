@@ -58,12 +58,31 @@ active without asking:
 
 ## Test approach & validation
 
-New/updated tests (RED demonstrated by restoring the pre-fix default-off set, which made the
-skills tests report "7 entries, want all 9", `map[dream:true telegram:true]` loaded and a
-sticky body injected):
+RED evidence (precise): restoring the pre-fix default-off set
+(`DefaultOnEmbeddedSkill` telegram exception + hidden-skill exemption) made these
+fail — `TestDefaultEmbeddedOffNames_CoversEveryEmbeddedSkill`
+("default-off set has 7 entries, want all 9 embedded skills"),
+`TestShippedEmbeddedSkills_AllOffByDefault` ("no embedded skill may load by
+default, got map[dream:true telegram:true]"; "no sticky body may be injected by
+default, got 1 block(s)"; `Get(telegram)`/`Get(dream)` succeeded),
+`TestEmbeddedSkill_OptInDream` ("only dream should be on, got
+map[dream:true telegram:true]") and internal/app's precondition
+`TestReloadSkills_PicksUpEmbeddedEnabled` ("telegram must be OFF by default").
+`TestNoStickyBodiesByDefault` fails under the same revert (1 injected block).
+Two named tests are regression GUARDS rather than RED probes, because their
+assertions are true in both states: `TestConfigMenu_SkillsShowEmbeddedOffByDefault`
+asserts the displayed state for an empty opt-in list (the menu showed telegram
+and dream "off" only because the opt-in list is empty; the pre-fix loader would
+have listed them as loaded), and
+`TestSkillToggle_ReportsRestartWhenNotApplied` covers code that did not exist
+before this change (`skillToggleApplied`/`skillToggleResult`) — pre-fix the
+flash claimed success unconditionally, which is exactly the "silent no-op"
+the test forbids.
+
+New/updated tests:
 
 - `skills/embedded_default_test.go`: `TestDefaultEmbeddedOffNames_CoversEveryEmbeddedSkill`,
-  `TestShippedEmbeddedSkills_AllOffByDefault` (nothing loads; `StickyBodies()` empty;
+  `TestShippedEmbeddedSkills_AllOffByDefault` (nothing loads; `StickyBodies()` empty; also `TestNoStickyBodiesByDefault`;
   `Get` misses for review/telegram/dream), `TestEmbeddedSkill_OptInTelegram` (opt-in loads it
   **with** its sticky body), `TestEmbeddedSkill_OptInDream`,
   `TestHiddenEmbeddedSkill_ResolvableWhenOptedIn`, `TestLegacyTelegramDisableStillHonored`,

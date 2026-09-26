@@ -305,3 +305,33 @@ func TestEmbeddedDefaultOff_FileSkillsUnaffected(t *testing.T) {
 		t.Error("file-based skill must load even with the embedded default-off set active")
 	}
 }
+
+// TestNoStickyBodiesByDefault is the focused gate for the reported symptom: the
+// telegram skill is a STICKY knowledge skill, so while it was default-ON its body
+// was persisted into every agent's history. With the shipped default-off set
+// StickyBodies() must be empty, and it must contain the opted-in skill only when
+// the user asks for it.
+func TestNoStickyBodiesByDefault(t *testing.T) {
+	shipped := func(optIn ...string) *SkillRegistry {
+		reg := NewSkillRegistry(nil)
+		reg.SetEmbeddedFS(EmbeddedSkillsFS)
+		reg.SetEmbeddedDefaultDisabled(DefaultEmbeddedOffNames(EmbeddedSkillsFS))
+		reg.SetEmbeddedEnabled(optIn)
+		if err := reg.LoadAll(); err != nil {
+			t.Fatalf("LoadAll: %v", err)
+		}
+		return reg
+	}
+
+	if bodies := shipped("").StickyBodies(); len(bodies) != 0 {
+		t.Fatalf("no sticky instruction may be injected by default, got %d block(s): %v", len(bodies), bodies)
+	}
+	// The embedded sticky skill still exists and injects exactly once when asked.
+	bodies := shipped("telegram").StickyBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("opted-in telegram must inject exactly one sticky block, got %d", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "name=\"telegram\"") {
+		t.Errorf("unexpected sticky block: %q", bodies[0])
+	}
+}
