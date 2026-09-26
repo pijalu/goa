@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -108,36 +109,42 @@ func valueToYAMLNode(value any) (*yaml.Node, error) {
 	return doc.Content[0], nil
 }
 
-// checkActivityPairLayer validates the stall-timing pair WITHIN a single cascade
-// layer: when one file/config source sets BOTH execution.activity_timeout and
-// execution.activity_warn_after, the warning lead must be shorter than the retry
-// window — a contradictory explicit pair in one source is a configuration
-// mistake, and reporting it at load time (naming the file) is far cheaper than
-// silently deriving a different lead at runtime.
+// sanitizeActivityPairLayer corrects a contradictory stall-timing pair WITHIN
+// a single cascade layer: when one file/config source sets BOTH
+// execution.activity_timeout and execution.activity_warn_after and the warning
+// lead is NOT shorter than the retry window, the layer's warn override is
+// dropped — with a visible stderr warning naming the file — so startup
+// proceeds and the stall warning falls back to the cascade default or the
+// runtime's derived two-thirds lead. Rejecting the pair outright orphaned
+// existing installs the moment the check landed (observed: a real
+// ~/.goa/config.yaml with the 45s/45s pair refused to start, and the fatal
+// message never even reached the terminal).
 //
-// The check is deliberately layer-scoped, NOT applied to the merged Config:
+// The heal is deliberately layer-scoped, NOT applied to the merged Config:
 // the two keys cascade independently, so a home pin of activity_timeout: 30s
 // combined with the shipped activity_warn_after: 30s is a perfectly valid
-// install and must not refuse to start (rejecting the merged pair was observed
-// to break startup against a real ~/.goa/config.yaml). Cross-layer combinations
-// are therefore accepted and resolved at use: Agent.effectiveStallWarnAfter
-// derives two thirds of the effective window whenever the configured lead is
-// unset, at, or beyond it.
-func checkActivityPairLayer(exec ExecutionConfig, source string) error {
+// install and must not be rewritten (cross-layer combinations are accepted and
+// resolved at use: Agent.effectiveStallWarnAfter derives two thirds of the
+// effective window whenever the configured lead is unset, at, or beyond it).
+// Invalid duration shapes are ignored here — Config.Validate reports them with
+// its own wording. Returns true when a correction was applied.
+func sanitizeActivityPairLayer(exec *ExecutionConfig, source string) bool {
 	if exec.ActivityTimeout == "" || exec.ActivityWarnAfter == "" {
-		return nil
+		return false
 	}
 	timeout, err := time.ParseDuration(exec.ActivityTimeout)
 	if err != nil {
-		return nil // shape errors are reported by Config.Validate with its own wording
+		return false // shape errors are reported by Config.Validate with its own wording
 	}
 	warn, err := time.ParseDuration(exec.ActivityWarnAfter)
 	if err != nil {
-		return nil
+		return false
 	}
-	if warn >= timeout {
-		return fmt.Errorf("execution.activity_warn_after (%s) must be shorter than execution.activity_timeout (%s) in %s",
-			exec.ActivityWarnAfter, exec.ActivityTimeout, source)
+	if warn < timeout {
+		return false
 	}
-	return nil
+	exec.ActivityWarnAfter = ""
+	fmt.Fprintf(os.Stderr, "Warning: execution.activity_warn_after (%s) is not shorter than execution.activity_timeout (%s) in %s — dropping the override so the stall warning leads the auto-retry (derived 2/3 of the window)\n",
+		warn, timeout, source)
+	return true
 }

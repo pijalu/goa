@@ -264,9 +264,7 @@ func (cl *CascadeLoader) mergeProjectFile(cfg *Config, path string) error {
 	if err := yaml.Unmarshal(data, layer); err != nil {
 		return &internal.ConfigError{Key: path, Err: fmt.Errorf("unmarshal: %w", err)}
 	}
-	if err := checkActivityPairLayer(layer.Execution, path); err != nil {
-		return &internal.ConfigError{Key: path, Err: err}
-	}
+	sanitizeActivityPairLayer(&layer.Execution, path)
 	cfg.DeepMerge(layer)
 	return nil
 }
@@ -293,9 +291,7 @@ func (cl *CascadeLoader) mergeFile(cfg *Config, path string) error {
 	if err := yaml.Unmarshal(data, layer); err != nil {
 		return &internal.ConfigError{Key: path, Err: fmt.Errorf("unmarshal: %w", err)}
 	}
-	if err := checkActivityPairLayer(layer.Execution, path); err != nil {
-		return &internal.ConfigError{Key: path, Err: err}
-	}
+	sanitizeActivityPairLayer(&layer.Execution, path)
 	cfg.DeepMerge(layer)
 	return nil
 }

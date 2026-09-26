@@ -5,9 +5,11 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -89,9 +91,10 @@ func TestMergeExecution_ActivityWarnAfter(t *testing.T) {
 // TestValidate_ActivityWarnAfter covers the validation contract for the stall
 // timing pair in BOTH scopes:
 //
-//   - a single cascade layer that explicitly sets both keys must be consistent
-//     (warn < timeout) — a contradictory explicit pair in one file is a
-//     configuration mistake and is reported at load time, naming the file;
+//   - a single cascade layer that explicitly sets both keys with a
+//     contradictory lead (warn >= timeout) is AUTO-CORRECTED at load: the
+//     layer's warn override is dropped with a visible stderr warning naming
+//     the file, and startup proceeds;
 //   - the MERGED config is only checked for parseability. The two keys cascade
 //     independently, so a home/project pin of activity_timeout: 30s under the
 //     shipped activity_warn_after: 30s is a legitimate install and must not
@@ -133,28 +136,33 @@ func testActivityWarnAfterMergedConfig(t *testing.T) {
 	}
 }
 
-// testActivityWarnAfterLayerPair covers the per-layer pair check: a single
-// config source that sets BOTH keys must be self-consistent, while a source
-// that sets only one of them combines freely with the other layers.
+// testActivityWarnAfterLayerPair covers the per-layer pair heal: a single
+// config source that sets BOTH keys with a contradictory (warn >= timeout)
+// pair is AUTO-CORRECTED at load — the layer's warn override is dropped with a
+// visible stderr warning naming the file — while a source that sets only one
+// of the keys combines freely with the other layers. Refusing to start on the
+// pair orphaned existing installs (bugs.md: the real ~/.goa/config.yaml with
+// 45s/45s that goa itself wrote).
 func testActivityWarnAfterLayerPair(t *testing.T) {
 	tests := []struct {
-		name    string
-		yaml    string
-		wantMsg string
+		name       string
+		yaml       string
+		wantErr    string // non-empty: load must fail and the message must name this key
+		wantHealed bool   // contradictory pair: load succeeds and the warn override is dropped
 	}{
 		{
-			name: "consistent explicit pair accepted",
+			name: "consistent explicit pair accepted untouched",
 			yaml: "execution:\n  activity_timeout: 45s\n  activity_warn_after: 30s\n",
 		},
 		{
-			name:    "lead equal to the window rejected",
-			yaml:    "execution:\n  activity_timeout: 30s\n  activity_warn_after: 30s\n",
-			wantMsg: "activity_warn_after",
+			name:       "lead equal to the window autocorrected",
+			yaml:       "execution:\n  activity_timeout: 30s\n  activity_warn_after: 30s\n",
+			wantHealed: true,
 		},
 		{
-			name:    "lead beyond the window rejected",
-			yaml:    "execution:\n  activity_timeout: 30s\n  activity_warn_after: 90s\n",
-			wantMsg: "activity_warn_after",
+			name:       "lead beyond the window autocorrected",
+			yaml:       "execution:\n  activity_timeout: 30s\n  activity_warn_after: 90s\n",
+			wantHealed: true,
 		},
 		{
 			name: "only the window pinned (cross-layer combination) accepted",
@@ -163,20 +171,80 @@ func testActivityWarnAfterLayerPair(t *testing.T) {
 		{
 			name:    "unparseable value still rejected (by Validate)",
 			yaml:    "execution:\n  activity_timeout: soon\n  activity_warn_after: 30s\n",
-			wantMsg: "activity_timeout",
+			wantErr: "activity_timeout",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			restore := captureStderr(t)
 			_, err := loadHomeLayerOnly(t, tt.yaml)
-			if tt.wantMsg == "" {
-				if err != nil {
-					t.Fatalf("Load() = %v, want nil for %q", err, tt.yaml)
-				}
-				return
+			captured := restore()
+			switch {
+			case tt.wantErr != "":
+				requireLoadErrorNames(t, err, tt.wantErr, tt.yaml)
+			case tt.wantHealed:
+				requireNoLoadError(t, err, tt.yaml)
+				requireHealWarning(t, captured)
+			default:
+				requireNoLoadError(t, err, tt.yaml)
 			}
-			assertLoadErrorMentions(t, err, tt.wantMsg, tt.yaml)
 		})
+	}
+}
+
+// requireLoadErrorNames requires a load failure whose message names the key.
+func requireLoadErrorNames(t *testing.T, err error, wantMsg, yamlText string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("Load() = nil, want an error for %q", yamlText)
+	}
+	if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("error must name %s, got: %v", wantMsg, err)
+	}
+}
+
+// requireNoLoadError requires the cascade to load.
+func requireNoLoadError(t *testing.T, err error, yamlText string) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("Load() = %v, want nil for %q", err, yamlText)
+	}
+}
+
+// requireHealWarning asserts the contradictory-pair heal warned on stderr and
+// named the offending file. The merged warn may legitimately equal the window
+// afterwards (a cross-layer combination) — the runtime resolves that at use by
+// deriving 2/3 of the window, so only the layer heal + warning are asserted.
+func requireHealWarning(t *testing.T, captured string) {
+	t.Helper()
+	if !strings.Contains(captured, "Warning: execution.activity_warn_after") ||
+		!strings.Contains(captured, "config.yaml") {
+		t.Errorf("heal must warn on stderr naming the file, got:\n%s", captured)
+	}
+}
+
+// captureStderr redirects the package's stderr into a pipe; the returned
+// restore stops capturing and returns everything written in between. Used to
+// assert the visible warnings the config heals emit during Load.
+func captureStderr(t *testing.T) (restore func() string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	var once sync.Once
+	var out string
+	return func() string {
+		once.Do(func() {
+			os.Stderr = orig
+			_ = w.Close()
+			b, _ := io.ReadAll(r)
+			_ = r.Close()
+			out = string(b)
+		})
+		return out
 	}
 }
 
@@ -194,15 +262,4 @@ func loadHomeLayerOnly(t *testing.T, yamlText string) (*Config, error) {
 		t.Fatalf("write home config: %v", err)
 	}
 	return NewCascadeLoader(t.TempDir(), "", nil).Load()
-}
-
-// assertLoadErrorMentions requires a load failure whose message names the key.
-func assertLoadErrorMentions(t *testing.T, err error, wantMsg, yamlText string) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("Load() = nil, want an error for %q", yamlText)
-	}
-	if !strings.Contains(err.Error(), wantMsg) {
-		t.Errorf("error must name %s, got: %v", wantMsg, err)
-	}
 }
