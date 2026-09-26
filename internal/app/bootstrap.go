@@ -398,8 +398,7 @@ func collectBoolFlag(flags map[string]string, key string, value bool) {
 func MustGetwd() string {
 	dir, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatalExitf("Error: %v\n", err)
 	}
 	return dir
 }
@@ -409,8 +408,7 @@ func MustGetwd() string {
 func LoadConfig(loader *config.CascadeLoader, projectDir string) *config.Config {
 	cfg, err := loader.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
-		os.Exit(1)
+		fatalExitf("Config error: %v\n", err)
 	}
 
 	if !cfg.FirstRun {
@@ -424,8 +422,7 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 	fmt.Println("⟡  First run detected — launching setup wizard")
 	result, err := config.RunSetupWizard(projectDir, loader)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Setup wizard error: %v\n", err)
-		os.Exit(1)
+		fatalExitf("Setup wizard error: %v\n", err)
 	}
 	if result.Cancelled {
 		fmt.Println("Setup skipped. Edit ~/.goa/config.yaml manually, then restart.")
@@ -438,8 +435,7 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 	fmt.Println("Configuration saved to ~/.goa/config.yaml")
 	cfg, err = loader.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Reload config error: %v\n", err)
-		os.Exit(1)
+		fatalExitf("Reload config error: %v\n", err)
 	}
 	return cfg
 }

@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/pijalu/goa/internal"
@@ -20,6 +21,18 @@ import (
 // setupCrashLog and is used directly by handleShutdown so a panic is persisted
 // even if the stderr-tee path has not flushed yet.
 var crashLogFile *os.File
+
+// crashTeeCleanup is the stderr tee's teardown (restore fd 2, drain the pipe
+// into the crash log and the terminal) captured by setupCrashLog. It doubles
+// as the SYNCHRONOUS FLUSH primitive: running it guarantees that every byte
+// already written to stderr has reached both the crash file and the real
+// terminal before it returns.
+var crashTeeCleanup func()
+
+// crashTeeOnce makes the flush idempotent: the fatal paths may flush while
+// Main's deferred cleanup later runs again (the cleanup is documented safe to
+// call more than once, but the flush itself must drain exactly once).
+var crashTeeOnce sync.Once
 
 // setupCrashLog opens the crash log destination and redirects process stderr
 // into a tee so both runtime fatal errors (e.g. "concurrent map writes") and
@@ -44,11 +57,37 @@ func setupCrashLog(projectDir string) func() {
 	// While the full-screen TUI owns the terminal, captured stderr stays
 	// off the screen (tui.OwnsScreen) — it would corrupt the frame.
 	cleanup := teeStderr(f, tui.OwnsScreen)
+	crashTeeCleanup = cleanup
 	return func() {
 		log.SetOutput(origLog)
 		cleanup()
 		crashLogFile = nil
 	}
+}
+
+// flushStderrTee synchronously drains the stderr tee: every byte already
+// written to os.Stderr reaches the crash log AND the real terminal before it
+// returns. The tee forwards through a pipe + drain goroutine, so a fatal path
+// that prints and immediately os.Exit(1)s would otherwise race the goroutine
+// and the message would never appear anywhere the user looks (observed as a
+// totally silent startup death on config load errors).
+func flushStderrTee() {
+	if crashTeeCleanup == nil {
+		return
+	}
+	crashTeeOnce.Do(crashTeeCleanup)
+}
+
+// fatalExitf reports a fatal startup error and exits: the message goes to
+// stderr, flushStderrTee guarantees it actually reaches the terminal and the
+// crash log despite the tee's asynchronous drain, then the process exits with
+// status 1. Every stderr-print + os.Exit(1) startup path must go through this
+// helper — a bare os.Exit right after Fprintf(os.Stderr, ...) is exactly the
+// race that silently swallowed the config error.
+func fatalExitf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format, args...)
+	flushStderrTee()
+	os.Exit(1)
 }
 
 // writeCrashLog writes panic details directly to the crash log file. It is

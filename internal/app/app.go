@@ -472,14 +472,12 @@ func runApp() bool {
 		internal.SetGoaHome(home)
 	}
 	if err := runtimeOpts.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatalExitf("Error: %v\n", err)
 	}
 	runtimeOpts = applyProfilingDefaults(runtimeOpts)
 	prof, err := startProfiling(runtimeOpts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatalExitf("Error: %v\n", err)
 	}
 	defer prof.stopProfiling()
 
@@ -556,10 +554,14 @@ func runUpdateCheck(subs *subsystems, opts RuntimeOptions) {
 func handleShutdown() {
 	if r := recover(); r != nil {
 		stack := debug.Stack()
-		// Persist directly to the crash log file: the stderr tee forwards
-		// through a pipe goroutine that os.Exit would not wait for.
+		// Persist directly to the crash log file: writeCrashLog bypasses the
+		// tee's asynchronous pipe drain, which os.Exit would cut short.
 		writeCrashLog(r, stack)
 		fmt.Fprintf(os.Stderr, "Panic: %v\n\n%s\n", r, stack)
+		// The terminal echo rides the same pipe drain — flush synchronously so
+		// the panic message is actually visible before exiting (the file write
+		// above alone does not put it on the user's screen).
+		flushStderrTee()
 		os.Exit(1)
 	}
 }

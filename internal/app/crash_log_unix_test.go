@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -190,6 +191,70 @@ func TestStderrSink_WriteDropsOnFullTTY(t *testing.T) {
 	if !strings.Contains(string(data), "captured-stderr-line") {
 		t.Fatalf("crash log missing the captured write: %q", data)
 	}
+}
+
+// TestFlushStderrTee_DeliversPendingBytesBeforeExit pins the silent-startup-death
+// regression: a fatal path writes to stderr (captured into the tee's pipe) and
+// must be able to flush SYNCHRONOUSLY — when flushStderrTee returns, the bytes
+// are already on both sinks (crash log + the real terminal). Before the fix,
+// bootstrap printed the config error and called os.Exit(1) while the bytes
+// were still sitting in the pipe, so the process died with no visible message.
+// Serial: mutates process-wide fd 2 and package flush state.
+func TestFlushStderrTee_DeliversPendingBytesBeforeExit(t *testing.T) {
+	// Point the process's real fd 2 at a pipe we observe: the tee's "original
+	// stderr" dup then refers to this pipe, so the terminal echo becomes
+	// readable here (mirrors TestTeeStderr_GatedWhileTUIOwnsScreen).
+	origFd, err := unix.Dup(unix.Stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = unix.Dup2(origFd, unix.Stderr)
+		_ = unix.Close(origFd)
+	}()
+	ttyR, ttyW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttyR.Close()
+	defer ttyW.Close()
+	if err := unix.Dup2(int(ttyW.Fd()), unix.Stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Create(filepath.Join(t.TempDir(), "tee.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Install the tee as setupCrashLog would, preserving prior flush state.
+	prevCleanup := crashTeeCleanup
+	t.Cleanup(func() {
+		crashTeeCleanup = prevCleanup
+		crashTeeOnce = sync.Once{} // fresh literal: never copy an existing Once
+	})
+	crashTeeCleanup = teeStderr(f, nil)
+	crashTeeOnce = sync.Once{}
+
+	// The fatal-path pattern: write, flush, and only then would os.Exit run.
+	fmt.Fprint(os.Stderr, "flush-marker-deadbeef\n")
+	flushStderrTee()
+
+	// After flush RETURNS (no sleeps): the crash log has the bytes…
+	data, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "flush-marker-deadbeef") {
+		t.Fatalf("flush did not deliver stderr to the crash log:\n%s", data)
+	}
+	// …and so does the terminal side.
+	if got := readPipeUntil(t, ttyR, "flush-marker-deadbeef"); !strings.Contains(got, "flush-marker-deadbeef") {
+		t.Fatalf("flush did not deliver stderr to the terminal, got %q", got)
+	}
+
+	// The flush is idempotent: a second call must not re-run the cleanup.
+	flushStderrTee() // must not panic/error on already-closed descriptors
 }
 
 // readPipeUntil reads from r until want appears or the deadline expires,

@@ -38,8 +38,7 @@ func runMCPCLI(args []string) bool {
 	loader := config.NewCascadeLoader(projectDir, "", nil)
 	cfg, err := loader.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "goa mcp: load config: %v\n", err)
-		os.Exit(1)
+		fatalExitf("goa mcp: load config: %v\n", err)
 	}
 
 	mgr := mcp.NewManager(nil)
@@ -54,8 +53,7 @@ func runMCPCLI(args []string) bool {
 
 	cmd := &commands.MCPCommand{}
 	if err := cmd.Run(ctx, rest); err != nil {
-		fmt.Fprintf(os.Stderr, "goa mcp: %v\n", err)
-		os.Exit(1)
+		fatalExitf("goa mcp: %v\n", err)
 	}
 	return true
 }
