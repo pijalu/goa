@@ -28,6 +28,108 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
+## Silent startup death: fatal config errors never reach the console (goa exits with no TUI, no message)
+Observed: with a home config that fails load validation (see stall-pair entry
+below), `goa` at HEAD `474d70c` exits in <100ms with rc=1, no TUI and NO visible
+message (reproduced under a pty: 4 bytes of output). The real error — "Config
+error: loading home config: ... execution.activity_warn_after (45s) must be
+shorter than execution.activity_timeout (45s)" — only survives in
+`<workspace>/.goa/crash.log`. Root cause: `setupCrashLog` re-points stderr into
+an async tee (`teeStderr` in `internal/app/crash_log_unix.go`: pipe + drain
+goroutine); the bootstrap fatal path prints the message to that tee and then
+calls `os.Exit(1)`, killing the goroutine before it flushes to the real
+terminal. `handleShutdown` already works around this for panics by writing
+directly to the crash file (`writeCrashLog`), but ordinary fatal errors do not.
+Expected: ANY startup fatal error is visible on the console (and in the crash
+log) before the process exits. Fix: give the stderr tee a synchronous delivery
+guarantee — add a `flushStderrTee()` (drain + wait) invoked by a single
+`fatalExitf` helper used by every `os.Exit` path in `internal/app`
+(bootstrap.go, app.go, mcp_cli.go), or make the tee write synchronously to the
+original stderr. Test: unit test the tee (write → flush → bytes on the original
+writer, no goroutine dependency) + a fatal-path test asserting the message hits
+both crash file and original stderr; validate with a pty run of the built
+binary against a bad `GOA_HOME` config asserting rc!=0 AND the message on the
+pty.
+
+## Contradictory stall-timing pair in one layer refuses to start — must autocorrect
+Observed: commit `da8120b` added `checkActivityPairLayer` (config/loader_yaml.go):
+when ONE cascade layer sets both `execution.activity_timeout` and
+`execution.activity_warn_after` with warn >= timeout, config load returns an
+error and goa refuses to start. A real ~/.goa/config.yaml (timeout 45s + warn
+"45s", see next entry for how it got there) made every launch die silently.
+The runtime itself already defines graceful semantics for at-or-above values
+(`effectiveStallWarnAfter` falls back to 2/3 of the window; field doc says so),
+so a hard startup refusal is disproportionate and breaks existing installs on
+upgrade.
+Expected: an explicit contradictory pair within one layer is AUTO-CORRECTED at
+load — the layer's warn value is dropped (falls back to the cascade default,
+e.g. the shipped 30s inside 45s) with a visible warning naming the file and the
+correction — and startup proceeds. Fix: change the layer check from error →
+sanitize+warn (mutate the layer config, log to console + crash log). Keep
+invalid duration shapes as errors (Config.Validate). Test: table-driven loader
+tests (valid pair / warn==timeout / warn>timeout / cross-layer combination):
+load succeeds, warn corrected, warning surfaced; validate goa starts under a
+pty with the user's real pair.
+
+## /config writes configs it never validated (wrote the contradictory 45s/45s pair)
+Observed: setting `execution.activity_timeout` (or warn) via /config persists
+through `applyConfigSet` → `SaveHomeField` with NO pair validation — only the
+single value's duration shape is checked. Setting stall timeout to 45s while
+`activity_warn_after: "45s"` was already in the same file produced a home
+config that later loads reject: goa wrote a config goa cannot start with.
+Expected: goa must never write an unvalidated config. Two guards: (a) the
+/config set path validates the stall pair on the merged in-memory config and
+auto-corrects the warn value (same rule as load-time sanitization), flashing
+what it corrected; (b) writer-level invariant in `saveField` (config/
+loader_fields.go): keep the previous bytes, write, reload + validate the
+written file, restore the old bytes and return an error if validation fails.
+Test: setter test — set timeout equal to an existing warn → warn auto-corrected
+and persisted pair valid; writer test — force an invalid pair → saveField
+returns error and file content is byte-identical to before.
+
+## Edit tool renderer drops file names (batch edits show "edit ...", result header hidden)
+Observed: export goa-export-20260926-194900.zip. (a) The model calls edit in
+batch form `{"edits":[{path, old_string, new_string, operation}]}` — top level
+has NO `path` — so `EditFileRenderer.RenderCall` shows `✓ edit ...`.
+(b) `RenderResult` renders only the first unified-diff hunk body:
+`extractDiff`/`parseHunkHeader` discard everything before the `@@` header,
+including the tool result's first line `[edit: creaves/TODO.md] 1 edits
+applied — match: exact match (resolved: ...)` — so the file name appears
+nowhere in the TUI for either the call or the result.
+Expected: the call title shows the target path(s) (first path + "(+N more)" for
+batch), and the result rendering keeps the `[edit: <path>] N edits applied —
+match: ...` header line (muted) above the diff. Fix both in
+tools/edit_renderer.go; table-driven renderer tests for batch call titles and
+header-preserving result render; validate in the filmstrip/interactive shell
+per guideline 5.
+
+## Stall-timing values are displayed/entered with a glued unit ("60s" instead of "60")
+Observed: the /config retry-settings labels and the stall-timing input prompts
+prefill Go-duration strings ("45s", "2m0s", "30s"); the user reads/edits these
+as plain seconds and expects "60", not "60s". Entering a bare number ("60") is
+rejected by `validateDurationValue` (time.ParseDuration requires a unit), so
+the input is formatted in a unit the user did not choose.
+Expected: stall-timing UI speaks plain seconds — labels and prompt prefills
+render whole-second values as bare numbers ("45", "120"), and the setters
+accept a bare number as seconds ("60" → 60s) alongside explicit durations;
+persisted values stay canonical ("45s"). Fix: format helper + unitless-parse in
+the stall setters (config_menu_retry.go, config_cli_setters.go); table-driven
+tests for label formatting and setter parsing ("60"→60s, "60s"→60s, "2m"→2m,
+garbage→error).
+
+## Clarification cards with options give no way to type a custom answer
+Observed: `App.clarify` routes option-carrying questions exclusively to the
+selector overlay (`clarifyWithOptionList`): arrow keys + Enter pick a listed
+option, Esc cancels. The user cannot express an answer that is not one of the
+proposed options (the free-text main-input path exists only for option-less
+cards).
+Expected: a clarification/user question ALWAYS allows the user to express
+another option — the selector offers an explicit "type your own answer"
+affix that opens the main input line for free text (Esc still cancels).
+Fix: extend `clarifyWithOptionList` with a custom-reply entry routed through
+`requestMainInput`; renderer/TUI test driving the selector → custom path and
+asserting the typed answer reaches the waiting tool caller.
+
 ## Provider 400: tool arguments must be valid JSON
 Observed: `Error: 400 - Error from provider (Console Go): Upstream request failed:
 [invalid_request_error] arguments must be valid JSON - /Users/muaddib/dev/goa/.goa/exports/goa-export-20260907-090335.zip`
