@@ -135,61 +135,6 @@ Gate (run separately, post-change): `go vet ./...` clean · `staticcheck ./...`
 `go test -count=1 -race -cover ./...` → 87 packages ok, 0 FAIL (exit 0),
 `internal/agentic` 87.9%. Issue entry ready to archive per guideline 4.
 
-## Tools are disabled "out of the blue" (unsynchronized registry + lost deferred loads)
-Observed, two independent defects:
-
-- **C1 — `tools.ToolRegistry` has no synchronization.** `tools/registry.go`
-  keeps a plain `map[string]agentic.Tool` behind `Register` / `Unregister` /
-  `RegisterGroup` / `UnregisterGroup` (writers: the TUI goroutine through
-  `/config` and `/tools`, MCP connect/disconnect, plugin load) while `All()` /
-  `Get()` / `AllDocumented()` iterate the same map from other goroutines. The
-  agent path reads the live registry on every request: `ToolSearchTool.Schema()`
-  and `ExecuteWithResult` call `deferredTools()` → `t.reg.All()`
-  (`tools/tool_search.go:181-202`), and `All()` itself calls `Schema()` on every
-  registered tool. Concurrent write + iterate/lookup is a data race; a lost
-  `Register` (or a group unregister racing a re-register) shows up as a tool that
-  was available disappearing.
-- **C2 — a tool-set update discards the deferred loaded-tail.**
-  `Agent.SetTools` rebuilds the agent-side registry
-  (`internal/agentic/agent_config.go:110-111` → `NewToolRegistry(tools)`), which
-  throws away the append-only loaded-tail (`loadedOrder` / `loadedSchemas`,
-  `internal/agentic/tool_registry.go:224-249`). Any runtime tool-set push
-  (`/config` or `/tools` toggle → `refreshToolRegistry`, MCP register/unregister
-  → `core/commands/mcp.go:443`, plugin load) silently reverts tools the model had
-  loaded with `tool_search` to "deferred, not loaded", so the next call is
-  answered by the deferred-status redirect instead of executing the tool.
-
-Expected: registry reads and writes are safe from any goroutine, and a tool-set
-update preserves the loaded tail (append-only, provider-cache stable) so tools
-the model loaded stay callable and no tool silently disappears.
-
-### Fix plan (test approach + validation)
-1. **C1** — make `tools.ToolRegistry` concurrency-safe: an `RWMutex` guarding
-   the tool/doc maps and the group list, with **snapshot-then-release** reads
-   (`All`, `AllDocumented`, `Match`, `Get`, `Register`, `Unregister`,
-   `RegisterGroup`, `UnregisterGroup`). `All()` must copy name→tool under the
-   read lock and call `Schema()` only after releasing it — `ToolSearchTool` is
-   itself registered, and its `Schema()` re-enters `All()` (a non-reentrant lock
-   must never be held across `Schema()`).
-   *Test*: `TestToolRegistry_ConcurrentRegisterAndAll` — N goroutines
-   registering/unregistering disposable tools while others call `All()`/`Get()`;
-   must be clean under `-race` (RED before the fix: race report). Plus
-   `TestToolRegistry_AllIsSnapshot` (a `Register` during iteration is not visible
-   to the in-flight `All`, the next call sees it) and
-   `TestToolRegistry_AllWhileSchemaReenters` (a registered tool whose `Schema()`
-   calls `All()` does not deadlock).
-2. **C2** — preserve the deferred loaded-tail across `Agent.SetTools`: expose
-   `LoadedDeferred() []string` on `ToolLookup`/`ToolRegistry` (append order) and
-   re-apply it to the freshly built registry in `Agent.SetTools` (unknown /
-   no-longer-deferred names are skipped by `LoadDeferred`, so a tool that was
-   genuinely removed is not resurrected).
-   *Test*: `TestAgentSetTools_PreservesDeferredLoadedTail` — registry with
-   deferral active, `LoadDeferred(["x"])`, then `SetTools(same set)` →
-   `DeferredStatus("x")` reports loaded (callable) and `Schemas()` still ends
-   with x's schema; a removed tool is not restored.
-3. **Gate**: `go test -count=1 -race ./tools/... ./internal/agentic/...` plus the
-   separate vet/staticcheck/gocognit/gocyclo/race-cover runs; archive + commit.
-
 ## Enabling a tool during a session does not enable it
 Observed: `/config → Tools → <name>` (`core/commands/config_tools.go:73-101`)
 flips `tools.enabled.<name>` and saves it, but `applyToolToggle` only acts in the
