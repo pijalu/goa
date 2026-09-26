@@ -5,9 +5,11 @@
 package agentic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -55,9 +57,9 @@ func (*probeLoader) Schema() ToolSchema {
 
 func (*probeLoader) Execute(input string) (string, error) { return "", nil }
 
-// deferralProbeRegistry builds a registry with threshold-1 eager tools, one
+// deferralProbeTools builds a tool set with threshold-1 eager tools, one
 // loader, and exactly DeferralThreshold deferred tools so deferral activates.
-func deferralProbeRegistry() *ToolRegistry {
+func deferralProbeTools() []Tool {
 	tools := []Tool{
 		&probeEagerTool{name: "read"},
 		&probeEagerTool{name: "write"},
@@ -68,7 +70,12 @@ func deferralProbeRegistry() *ToolRegistry {
 	for i := 0; i < DeferralThreshold; i++ {
 		tools = append(tools, &probeDeferredTool{name: "d" + string(rune('0'+i))})
 	}
-	return NewToolRegistry(tools)
+	return tools
+}
+
+// deferralProbeRegistry builds a registry from deferralProbeTools().
+func deferralProbeRegistry() *ToolRegistry {
+	return NewToolRegistry(deferralProbeTools())
 }
 
 func schemaNames(schemas []ToolSchema) []string {
@@ -246,6 +253,129 @@ func TestDeferralAllSchemas(t *testing.T) {
 	all := reg.AllSchemas()
 	if len(all) != 2+1+DeferralThreshold {
 		t.Errorf("AllSchemas() = %d, want full set %d", len(all), 2+1+DeferralThreshold)
+	}
+}
+
+// --- SetTools tail preservation (bugs.md C2) -----------------------------
+
+// newDeferralProbeAgent builds an agent whose registry has deferral active.
+func newDeferralProbeAgent(tools []Tool) *Agent {
+	return NewAgent(Config{
+		Model:              testModel(provider.ApiOpenAICompletions),
+		SystemPrompt:       "test",
+		Tools:              tools,
+		ContextCompression: ContextCompressionConfig{MaxTokens: 0},
+	})
+}
+
+// Every runtime tool-set push (AgentManager.SetTools from /config, /tools, MCP
+// connect/disconnect, plugin load) rebuilds the agent registry. The deferred
+// loaded-tail must survive that rebuild: otherwise tools the model pulled with
+// tool_search silently revert to "deferred, not loaded", and the next call is
+// answered by the deferred-status redirect instead of executing (bugs.md "Tools
+// are disabled out of the blue", C2).
+func TestAgentSetTools_PreservesDeferredLoadedTail(t *testing.T) {
+	agent := newDeferralProbeAgent(deferralProbeTools())
+
+	if _, unloaded := agent.reg.DeferredStatus("d0"); !unloaded {
+		t.Fatal("precondition: d0 should start deferred and unloaded")
+	}
+	if got := agent.reg.LoadDeferred([]string{"d0", "d5"}); !reflect.DeepEqual(got, []string{"d0", "d5"}) {
+		t.Fatalf("LoadDeferred = %v, want [d0 d5]", got)
+	}
+	before := marshalSchemas(agent.reg.Schemas())
+
+	// The same set pushed at runtime (toggle, MCP reconnect, …).
+	agent.SetTools(deferralProbeTools())
+
+	for _, name := range []string{"d0", "d5"} {
+		if _, unloaded := agent.reg.DeferredStatus(name); unloaded {
+			t.Errorf("DeferredStatus(%q) unloaded = true after SetTools; the loaded-tail was discarded", name)
+		}
+	}
+	if got := agent.reg.LoadedDeferred(); !reflect.DeepEqual(got, []string{"d0", "d5"}) {
+		t.Errorf("LoadedDeferred() = %v, want [d0 d5] (load order preserved)", got)
+	}
+
+	// Cache stability: the request payload must be byte-identical across the
+	// rebuild, otherwise the provider prefix cache is evicted.
+	after := marshalSchemas(agent.reg.Schemas())
+	if len(after) != len(before) {
+		t.Fatalf("Schemas() = %d entries after SetTools, want %d", len(after), len(before))
+	}
+	for i := range before {
+		if !bytes.Equal(before[i], after[i]) {
+			t.Errorf("Schemas()[%d] changed across SetTools:\n before=%s\n after=%s", i, before[i], after[i])
+		}
+	}
+
+	// And the loaded tool is callable again: no deferred redirect.
+	if _, err := agent.runTool(context.Background(), "d0", `{}`); err != nil {
+		t.Errorf("d0 call after SetTools failed: %v", err)
+	}
+}
+
+// SetTools must be safe when the agent has no registry yet (nil, or a typed-nil
+// *ToolRegistry): the loaded-tail snapshot is nil-safe and a fresh registry is
+// installed.
+func TestAgentSetTools_NilRegistryTailSnapshotIsSafe(t *testing.T) {
+	var nilReg *ToolRegistry
+	if got := nilReg.LoadedDeferred(); got != nil {
+		t.Errorf("(*ToolRegistry)(nil).LoadedDeferred() = %v, want nil", got)
+	}
+
+	for _, setup := range []struct {
+		name string
+		set  func(a *Agent)
+	}{
+		{"interface nil", func(a *Agent) { a.reg = nil }},
+		{"typed nil", func(a *Agent) { a.reg = (*ToolRegistry)(nil) }},
+	} {
+		t.Run(setup.name, func(t *testing.T) {
+			agent := newDeferralProbeAgent(deferralProbeTools())
+			setup.set(agent)
+			agent.SetTools(deferralProbeTools())
+			if agent.reg == nil {
+				t.Fatal("SetTools did not install a registry")
+			}
+			if got := len(agent.reg.Schemas()); got != 3 {
+				t.Errorf("Schemas() = %d, want 3 (2 eager + loader)", got)
+			}
+		})
+	}
+}
+
+// A tool that was genuinely removed is not resurrected by the tail replay:
+// LoadDeferred skips names that are unknown or no longer deferred.
+func TestAgentSetTools_DoesNotResurrectRemovedTool(t *testing.T) {
+	agent := newDeferralProbeAgent(deferralProbeTools())
+	agent.reg.LoadDeferred([]string{"d3"})
+	if _, unloaded := agent.reg.DeferredStatus("d3"); unloaded {
+		t.Fatal("precondition: d3 should be loaded")
+	}
+
+	// Drop d3, keep the deferred count at the threshold with d8.
+	next := deferralProbeTools()
+	for i, tool := range next {
+		if tool.Schema().Name == "d3" {
+			next[i] = &probeDeferredTool{name: "d8"}
+		}
+	}
+	agent.SetTools(next)
+
+	if _, ok := agent.reg.Get("d3"); ok {
+		t.Error("d3 is still resolvable after being removed from the tool set")
+	}
+	if got := agent.reg.LoadedDeferred(); len(got) != 0 {
+		t.Errorf("LoadedDeferred() = %v, want empty (d3 no longer exists)", got)
+	}
+	for _, s := range agent.reg.Schemas() {
+		if s.Name == "d3" {
+			t.Error("removed tool d3 still ships a schema")
+		}
+	}
+	if _, unloaded := agent.reg.DeferredStatus("d8"); !unloaded {
+		t.Error("precondition: the new tool d8 should be deferred and unloaded")
 	}
 }
 

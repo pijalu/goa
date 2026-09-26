@@ -5,7 +5,10 @@
 package tools
 
 import (
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal/agentic"
 )
@@ -112,6 +115,187 @@ func TestToolRegistryUnregister(t *testing.T) {
 	reg.Unregister("gamma")
 	if len(reg.All()) != 1 {
 		t.Fatalf("All = %d, want 1 after unregistering unknown", len(reg.All()))
+	}
+}
+
+// reentrantTool derives its schema from the live registry, exactly like
+// ToolSearchTool (Schema → nameCatalog → deferredTools → reg.All). Register and
+// the read paths must never hold the registry lock across Schema().
+type reentrantTool struct {
+	name string
+	reg  *ToolRegistry
+}
+
+func (t *reentrantTool) Schema() agentic.ToolSchema {
+	_ = t.reg.All()
+	return agentic.ToolSchema{Name: t.name, Description: "reentrant"}
+}
+func (t *reentrantTool) Execute(string) (string, error) { return "ok", nil }
+func (t *reentrantTool) IsRetryable(error) bool         { return false }
+
+// reentrantDocTool re-enters the registry from a doc accessor, which
+// AllDocumented must call outside its snapshot lock.
+type reentrantDocTool struct {
+	testDocTool
+	reg *ToolRegistry
+}
+
+func (t *reentrantDocTool) ShortDoc() string {
+	_ = t.reg.All()
+	return t.shortDoc
+}
+
+// registryRace* size the C1 concurrency test.
+const (
+	registryRaceWriters    = 4
+	registryRaceReaders    = 4
+	registryRaceIterations = 150
+)
+
+// churnRegistry registers and unregisters disposable tools and group tools,
+// the way the TUI /config and /tools paths, MCP connect/disconnect, and
+// plugin load write to the live registry.
+func churnRegistry(reg *ToolRegistry, worker int) {
+	for i := 0; i < registryRaceIterations; i++ {
+		name := fmt.Sprintf("w%d-t%d", worker, i)
+		reg.Register(&testDocTool{testTool: testTool{name: name}, shortDoc: "s"})
+		reg.RegisterGroup("plug__", []agentic.Tool{&testTool{name: "plug__" + name}})
+		reg.Unregister(name)
+		reg.UnregisterGroup("plug__")
+	}
+}
+
+// readRegistry performs the reads the agent path does on every request
+// (tool_search → deferredTools → All, plus lookup and match).
+func readRegistry(reg *ToolRegistry, t *testing.T) {
+	for i := 0; i < registryRaceIterations; i++ {
+		if len(reg.All()) == 0 {
+			t.Error("All() returned an empty snapshot while 'stable' is registered")
+			return
+		}
+		if _, ok := reg.Get("stable"); !ok {
+			t.Error("Get('stable') lost the tool registered before the race")
+			return
+		}
+		_ = reg.Match("mcp__server__read")
+		_ = reg.AllDocumented()
+	}
+}
+
+// TestToolRegistry_ConcurrentRegisterAndAll is the RED test for the
+// unsynchronized registry: writers (TUI /config, /tools, MCP connect, plugin
+// load) register/unregister while the agent path reads the live registry on
+// every request (tool_search → deferredTools → All). Before the RWMutex the
+// -race build reports a data race (and All can observe a torn map); after the
+// fix it must be clean and the stable tool must always survive.
+func TestToolRegistry_ConcurrentRegisterAndAll(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(&testTool{name: "stable"})
+	reg.RegisterGroup("mcp__server__", []agentic.Tool{&testTool{name: "mcp__server__read"}})
+
+	var wg sync.WaitGroup
+	for w := 0; w < registryRaceWriters; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			churnRegistry(reg, w)
+		}(w)
+	}
+	for r := 0; r < registryRaceReaders; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			readRegistry(reg, t)
+		}()
+	}
+	wg.Wait()
+
+	if _, ok := reg.Get("stable"); !ok {
+		t.Fatal("Get('stable') = false after the race; a Register was lost")
+	}
+}
+
+// TestToolRegistry_AllIsSnapshot pins the snapshot-then-release contract: a
+// returned slice is immutable from the caller's point of view and never sees
+// mutations that happen after it was taken.
+func TestToolRegistry_AllIsSnapshot(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(&testTool{name: "alpha"})
+
+	first := reg.All()
+	if len(first) != 1 {
+		t.Fatalf("All() = %d tools, want 1", len(first))
+	}
+
+	reg.Register(&testTool{name: "beta"})
+	if len(first) != 1 {
+		t.Errorf("in-flight All() slice grew to %d — it aliases the live map", len(first))
+	}
+	if got := len(reg.All()); got != 2 {
+		t.Errorf("All() after Register = %d tools, want 2", got)
+	}
+
+	reg.Unregister("alpha")
+	if len(first) != 1 || first[0].Schema().Name != "alpha" {
+		t.Errorf("snapshot taken before Unregister was mutated: %v", first)
+	}
+}
+
+// TestToolRegistry_AllDocumentedSnapshotAndOrder pins deterministic, stable
+// output (map iteration order is random) and snapshot semantics.
+func TestToolRegistry_AllDocumentedSnapshotAndOrder(t *testing.T) {
+	reg := NewToolRegistry()
+	for _, n := range []string{"zeta", "alpha", "mid"} {
+		reg.Register(&testDocTool{testTool: testTool{name: n}, shortDoc: n + " doc"})
+	}
+
+	first := reg.AllDocumented()
+	if len(first) != 3 {
+		t.Fatalf("AllDocumented() = %d, want 3", len(first))
+	}
+	want := []string{"alpha", "mid", "zeta"}
+	for i, w := range want {
+		if got := first[i].Tool.(agentic.Tool).Schema().Name; got != w {
+			t.Errorf("AllDocumented()[%d] = %q, want %q (stable order)", i, got, w)
+		}
+	}
+
+	reg.Register(&testDocTool{testTool: testTool{name: "zzz"}, shortDoc: "zzz doc"})
+	if len(first) != 3 {
+		t.Errorf("in-flight AllDocumented() slice grew to %d", len(first))
+	}
+}
+
+// TestToolRegistry_AllWhileSchemaReenters guards the non-reentrant lock: a
+// registered tool whose Schema() (or doc accessor) calls back into the
+// registry must not deadlock Register, All, or AllDocumented.
+func TestToolRegistry_AllWhileSchemaReenters(t *testing.T) {
+	reg := NewToolRegistry()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reg.Register(&reentrantTool{name: "tool_search", reg: reg})
+		reg.Register(&reentrantDocTool{
+			testDocTool: testDocTool{testTool: testTool{name: "docs"}, shortDoc: "d"},
+			reg:         reg,
+		})
+		for i := 0; i < 25; i++ {
+			for _, tool := range reg.All() {
+				_ = tool.Schema()
+			}
+			_ = reg.AllDocumented()
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: the registry lock is held across a call into a registered tool")
+	}
+
+	if _, ok := reg.Get("tool_search"); !ok {
+		t.Error("re-entrant tool was not registered")
 	}
 }
 

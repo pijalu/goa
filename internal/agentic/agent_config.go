@@ -104,11 +104,33 @@ func (a *Agent) ReasoningEffort() ReasoningEffort {
 // SetTools replaces the tool set available to the agent for subsequent turns.
 // The updated list takes effect on the next provider call without losing the
 // current conversation history.
+//
+// The rebuilt registry preserves the deferred loaded-tail: tools the model
+// pulled with tool_search stay loaded (append-only, provider-cache stable)
+// instead of silently reverting to "deferred, not loaded" — which made the
+// next call to such a tool hit the deferred-status redirect (bugs.md "Tools
+// are disabled out of the blue", C2). Names that are no longer deferred in the
+// new set are skipped by LoadDeferred, so a genuinely removed tool is not
+// resurrected.
 func (a *Agent) SetTools(tools []Tool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	loaded := loadedDeferredOf(a.reg)
 	a.cfg.Tools = tools
 	a.reg = NewToolRegistry(tools)
+	if len(loaded) > 0 {
+		a.reg.LoadDeferred(loaded)
+	}
+}
+
+// loadedDeferredOf snapshots the loaded-tail of a registry for re-application
+// to a rebuilt one. Nil-safe (an Agent may be constructed without a registry
+// in tests).
+func loadedDeferredOf(reg ToolLookup) []string {
+	if reg == nil {
+		return nil
+	}
+	return reg.LoadedDeferred()
 }
 
 // Tools returns a copy of the agent's current tool set. Use with SetTools to

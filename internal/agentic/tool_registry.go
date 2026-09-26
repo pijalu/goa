@@ -65,6 +65,12 @@ type ToolLookup interface {
 	// yet been loaded, and the loader tool name for the redirect hint.
 	// unloaded is false for eager tools, unknown names, and loaded tools.
 	DeferredStatus(name string) (loaderName string, unloaded bool)
+	// LoadedDeferred returns the names of the deferred tools loaded this
+	// session, in load order (the append-only loaded-tail). It lets a caller
+	// that rebuilds the tool set (Agent.SetTools) re-apply the tail to the
+	// fresh registry instead of silently reverting loaded tools to deferred.
+	// Empty when deferral is inactive or nothing has been loaded.
+	LoadedDeferred() []string
 }
 
 // ToolRegistry manages the collection of tools available to an Agent.
@@ -246,6 +252,23 @@ func (r *ToolRegistry) LoadDeferred(names []string) []string {
 		loaded = append(loaded, n)
 	}
 	return loaded
+}
+
+// LoadedDeferred returns the names of the deferred tools loaded this session,
+// in load order (the append-only loaded-tail). The returned slice is a copy:
+// callers may retain or mutate it freely.
+func (r *ToolRegistry) LoadedDeferred() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.loadedOrder) == 0 {
+		return nil
+	}
+	out := make([]string, len(r.loadedOrder))
+	copy(out, r.loadedOrder)
+	return out
 }
 
 // DeferredStatus reports whether name names a deferred tool that has not yet

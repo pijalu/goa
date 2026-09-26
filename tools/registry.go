@@ -7,13 +7,27 @@ package tools
 import (
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/pijalu/goa/internal/agentic"
 )
 
 // ToolRegistry wraps agentic.ToolRegistry with Documentable lookup and group
 // registration for dynamic tool namespaces (MCP, plugins).
+//
+// It is safe for concurrent use by multiple goroutines: every read is a
+// snapshot taken under a read lock and released before any tool code runs
+// (see All/AllDocumented/Match). Registered tools are written from the TUI
+// goroutine (/config, /tools), MCP connect/disconnect, and plugin load, while
+// the agent path reads the live registry on every request
+// (ToolSearchTool.Schema/ExecuteWithResult → deferredTools → All).
+//
+// The lock must never be held across a call into a registered tool: a tool's
+// Schema() can re-enter the registry (ToolSearchTool.Schema() derives its
+// deferred-tool listing from the live registry via All), which would deadlock
+// a non-reentrant mutex.
 type ToolRegistry struct {
+	mu       sync.RWMutex
 	tools    map[string]agentic.Tool
 	docTools map[string]Documentable // tools that implement Documentable
 	groups   []*ToolGroup
@@ -28,10 +42,15 @@ func NewToolRegistry() *ToolRegistry {
 	}
 }
 
-// RegisterGroup registers all tools under a shared namespace prefix.
+// RegisterGroup registers all tools under a shared namespace prefix. The group
+// entry is published first so a concurrent Match sees the namespace, then the
+// tools are registered individually (Register is itself synchronized and
+// resolves Schema() outside the lock).
 func (r *ToolRegistry) RegisterGroup(prefix string, tools []agentic.Tool) {
 	group := &ToolGroup{Prefix: prefix, Tools: tools}
+	r.mu.Lock()
 	r.groups = append(r.groups, group)
+	r.mu.Unlock()
 	for _, t := range tools {
 		r.Register(t)
 	}
@@ -39,23 +58,35 @@ func (r *ToolRegistry) RegisterGroup(prefix string, tools []agentic.Tool) {
 
 // UnregisterGroup removes all tools whose names match the prefix.
 func (r *ToolRegistry) UnregisterGroup(prefix string) {
+	r.mu.RLock()
+	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		if strings.HasPrefix(name, prefix) {
-			r.Unregister(name)
+			names = append(names, name)
 		}
 	}
-	filtered := r.groups[:0]
+	r.mu.RUnlock()
+	for _, name := range names {
+		r.Unregister(name)
+	}
+	r.mu.Lock()
+	kept := make([]*ToolGroup, 0, len(r.groups))
 	for _, g := range r.groups {
 		if g.Prefix != prefix {
-			filtered = append(filtered, g)
+			kept = append(kept, g)
 		}
 	}
-	r.groups = filtered
+	r.groups = kept
+	r.mu.Unlock()
 }
 
 // Match reports whether name matches any registered group prefix.
 func (r *ToolRegistry) Match(name string) bool {
-	for _, g := range r.groups {
+	r.mu.RLock()
+	groups := make([]*ToolGroup, len(r.groups))
+	copy(groups, r.groups)
+	r.mu.RUnlock()
+	for _, g := range groups {
 		if g.Match(name) {
 			return true
 		}
@@ -64,29 +95,42 @@ func (r *ToolRegistry) Match(name string) bool {
 }
 
 // Register adds a tool to the registry. If the tool implements Documentable,
-// it's also registered for documentation lookup.
+// it's also registered for documentation lookup. Schema() is resolved before
+// the lock is taken: it may re-enter the registry.
 func (r *ToolRegistry) Register(tool agentic.Tool) {
 	name := tool.Schema().Name
+	r.mu.Lock()
 	r.tools[name] = tool
 	if doc, ok := tool.(Documentable); ok {
 		r.docTools[name] = doc
 	}
+	r.mu.Unlock()
 }
 
 // Get retrieves a tool by name.
 func (r *ToolRegistry) Get(name string) (agentic.Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
 	return t, ok
 }
 
 // Unregister removes a tool from the registry.
 func (r *ToolRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	delete(r.tools, name)
 	delete(r.docTools, name)
 }
 
-// All returns all registered tools in a stable order.
+// All returns all registered tools in a stable alphabetical order. The name →
+// tool mapping is copied under the read lock and the lock is released before
+// returning, so the caller iterates a snapshot that no concurrent
+// Register/Unregister can mutate (an in-flight All never sees a half-updated
+// map, and never observes a registration that happens while it runs).
 func (r *ToolRegistry) All() []agentic.Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	names := sortedKeys(r.tools)
 	result := make([]agentic.Tool, len(names))
 	for i, name := range names {
@@ -95,16 +139,32 @@ func (r *ToolRegistry) All() []agentic.Tool {
 	return result
 }
 
-// AllDocumented returns all tools implementing Documentable.
+// AllDocumented returns all tools implementing Documentable. The doc entries
+// are snapshotted under the read lock; the document accessors are called after
+// it is released (ShortDoc/LongDoc/Examples may re-enter the registry).
 func (r *ToolRegistry) AllDocumented() []DocumentedTool {
-	result := make([]DocumentedTool, 0, len(r.docTools))
+	type docEntry struct {
+		name string
+		tool agentic.Tool
+		doc  Documentable
+	}
+	r.mu.RLock()
+	entries := make([]docEntry, 0, len(r.docTools))
 	for name, doc := range r.docTools {
-		result = append(result, DocumentedTool{
-			Tool:     r.tools[name],
-			ShortDoc: doc.ShortDoc(),
-			LongDoc:  doc.LongDoc(),
-			Examples: doc.Examples(),
-		})
+		entries = append(entries, docEntry{name: name, tool: r.tools[name], doc: doc})
+	}
+	r.mu.RUnlock()
+	// Sorted by name: map iteration order is random, and callers (docs
+	// rendering) must produce byte-stable output.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
+	result := make([]DocumentedTool, len(entries))
+	for i, e := range entries {
+		result[i] = DocumentedTool{
+			Tool:     e.tool,
+			ShortDoc: e.doc.ShortDoc(),
+			LongDoc:  e.doc.LongDoc(),
+			Examples: e.doc.Examples(),
+		}
 	}
 	return result
 }
