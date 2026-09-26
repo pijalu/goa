@@ -613,7 +613,10 @@ type clarifyResult struct {
 // Answer discipline mirrors Pi's login dialog: a card WITH options is answered
 // by picking from a navigable option list (selector overlay — arrow keys +
 // enter, esc cancels); a card without options keeps the free-text main input
-// line. The card bubble stays in the conversation as context either way.
+// line. Every option list also carries an explicit "type your own answer"
+// entry that opens the free-text input — a clarification must always leave
+// room for an answer the option list did not offer (bugs.md BUG-6). The card
+// bubble stays in the conversation as context either way.
 func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 	resCh := make(chan clarifyResult, 1)
 
@@ -630,18 +633,10 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 		// ("Clarification 2 of 5"); otherwise fall back to the card title.
 		// Stuffing the full question text here ballooned the editor title for a
 		// long series of questions and gave no sense of progress.
-		prompt := card.Title()
-		if label := card.ProgressLabel(); label != "" {
-			prompt = strings.TrimSpace(prompt + " — " + label)
-		}
-		if prompt == "" {
-			prompt = card.Question()
-		}
-		// Seed the editor empty so the previous message text doesn't linger.
 		if inp := a.subs.getInput(); inp != nil {
 			inp.SetText("")
 		}
-		a.requestMainInputWithCancel(prompt, func(text string) {
+		a.requestMainInputWithCancel(clarifyInputPrompt(card), func(text string) {
 			resCh <- clarifyResult{text, true}
 		}, func() {
 			resCh <- clarifyResult{"", false}
@@ -655,11 +650,30 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 	return r.text, r.ok
 }
 
+// clarifyInputPrompt builds the main-input prompt for a free-text clarify
+// answer: the card title plus the compact batch-progress cue ("Clarification
+// 2 of 5"), falling back to the question text. The full question stays in
+// the card bubble — a long question in the editor title gave no sense of
+// progress and crowded the input line.
+func clarifyInputPrompt(card *tui.ClarifyCard) string {
+	prompt := card.Title()
+	if label := card.ProgressLabel(); label != "" {
+		prompt = strings.TrimSpace(prompt + " — " + label)
+	}
+	if prompt == "" {
+		prompt = card.Question()
+	}
+	return prompt
+}
+
 // clarifyWithOptionList answers an option-carrying ClarifyCard through a
 // navigable selector overlay (Pi showAuthSelect style) instead of the
 // free-text main input. The selector title carries the card title plus the
 // compact batch-progress cue; the highlighted row is the one whose label or
 // number the user confirms with Enter; Esc/Ctrl+C cancels (ok==false).
+// A trailing "type your own answer" entry routes to the free-text main
+// input, so an option list never boxes the user in (bugs.md BUG-6); Esc
+// there still cancels the whole clarification.
 // Runs on the commandLoop (via clarify's apply). Falls back to the free-text
 // input path when no engine is wired.
 func (a *App) clarifyWithOptionList(card *tui.ClarifyCard, resCh chan<- clarifyResult) {
@@ -676,7 +690,7 @@ func (a *App) clarifyWithOptionList(card *tui.ClarifyCard, resCh chan<- clarifyR
 		title = card.Question()
 	}
 	options := card.Options()
-	items := make([]tui.SelectorItem, 0, len(options))
+	items := make([]tui.SelectorItem, 0, len(options)+1)
 	for _, opt := range options {
 		items = append(items, tui.SelectorItem{
 			Value:         opt,
@@ -684,15 +698,47 @@ func (a *App) clarifyWithOptionList(card *tui.ClarifyCard, resCh chan<- clarifyR
 			PreserveOrder: true,
 		})
 	}
+	// The custom-answer affix: always the last row, always available.
+	items = append(items, tui.SelectorItem{
+		Value:         clarifyCustomAnswer,
+		Label:         clarifyCustomLabel,
+		PreserveOrder: true,
+	})
 	selCh := engine.ShowSelector(title, items, "")
 	go func() {
 		sel := <-selCh
-		// Deliver on the commandLoop so the wake-up is serialized with the
-		// rest of the UI state, mirroring how SelectOptionFunc callbacks are
-		// marshalled in commandcontext.go.
-		a.apply(func() { resCh <- clarifyResult{sel, sel != ""} })
+		if sel != clarifyCustomAnswer {
+			// Deliver on the commandLoop so the wake-up is serialized with the
+			// rest of the UI state, mirroring how SelectOptionFunc callbacks are
+			// marshalled in commandcontext.go.
+			a.apply(func() { resCh <- clarifyResult{sel, sel != ""} })
+			return
+		}
+		// The user rejected every listed option: open the free-text main
+		// input line. Esc (or Ctrl+C) cancels the clarification entirely.
+		a.apply(func() {
+			if inp := a.subs.getInput(); inp != nil {
+				inp.SetText("")
+			}
+			a.requestMainInputWithCancel(clarifyInputPrompt(card), func(text string) {
+				resCh <- clarifyResult{text, true}
+			}, func() {
+				resCh <- clarifyResult{"", false}
+			})
+			if a.subs.tuiEngine != nil {
+				a.subs.tuiEngine.RequestRender()
+			}
+		})
 	}()
 }
+
+// The "type your own answer" sentinel appended to every clarify selector.
+// The __-prefix follows the selector sentinel convention ("__add__",
+// "__delete__X") so it can never collide with a real option.
+const (
+	clarifyCustomAnswer = "__clarify_custom__"
+	clarifyCustomLabel  = "✎ Type your own answer"
+)
 
 // clearMainInputRequest clears any pending main-input request and restores the
 // input editor title. Called after the value is consumed or the request is

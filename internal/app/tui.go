@@ -200,6 +200,11 @@ func (a *App) attachInputHandlers(inp *tui.Editor, engine *tui.TUI) {
 
 func (a *App) handleEscape() {
 	subs := a.subs
+	// ESC also cancels an active main-input request (clarify custom answer,
+	// /goal objective prompt, …): the request's onCancel delivers its cancel
+	// result before the interrupt sequence below tears the turn down. No-op
+	// (returns false) when no request is pending.
+	a.cancelPendingMainInput()
 	if subs.agentMgr != nil {
 		subs.agentMgr.Interrupt()
 		// ESC is a hard stop (S1): input queued as steering mid-turn
