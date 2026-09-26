@@ -142,3 +142,96 @@ func TestConvertGoogleParts_SanitizesMalformedToolArguments(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, json.Valid(args), "functionCall args must be valid JSON, got %q", string(args))
 }
+
+// barePathToolCallMessage builds the goa 400 failure mode: a tool call whose
+// arguments are a bare filesystem path — not JSON at all (the provider echoed
+// it back: "arguments must be valid JSON - /…/goa-export-….zip"). Unlike a
+// truncated call this cannot be repaired; it must degrade to valid JSON.
+func barePathToolCallMessage() schema.Message {
+	return schema.Message{
+		Role: schema.RoleAssistant,
+		Content: []schema.ContentBlock{{
+			Type:          schema.ContentBlockToolCall,
+			ToolCallID:    "call_export_1",
+			ToolName:      "export",
+			ToolArguments: `/Users/muaddib/dev/goa/.goa/exports/goa-export-20260907-090335.zip`,
+		}},
+	}
+}
+
+// TestConvertResponsesAssistant_SanitizesMalformedToolArguments is the
+// regression test for the responses-API 400 "arguments must be valid JSON":
+// convertResponsesAssistant used to replay b.ToolArguments verbatim, so a
+// poisoned historical tool call failed EVERY subsequent /responses request
+// (openai, codex and azure share this builder).
+func TestConvertResponsesAssistant_SanitizesMalformedToolArguments(t *testing.T) {
+	items := convertResponsesAssistant(malformedToolCallMessage())
+	require.Len(t, items, 1)
+	fc := items[0]
+	assert.Equal(t, "function_call", fc["type"])
+	args, ok := fc["arguments"].(string)
+	require.True(t, ok, "function_call arguments must serialize as a string")
+	assert.True(t, json.Valid([]byte(args)), "arguments must be valid JSON, got %q", args)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(args), &parsed))
+	assert.Equal(t, "/tmp/a.md", parsed["path"], "repair must preserve the model's intent")
+	assert.Equal(t, "b", parsed["new_string"])
+}
+
+// TestConvertResponsesAssistant_BarePathArgumentsDegradeToValidJSON pins the
+// unrecoverable shape: a bare path degrades to "{}" — valid JSON — instead of
+// poisoning the session with a permanent 400.
+func TestConvertResponsesAssistant_BarePathArgumentsDegradeToValidJSON(t *testing.T) {
+	items := convertResponsesAssistant(barePathToolCallMessage())
+	require.Len(t, items, 1)
+	args, ok := items[0]["arguments"].(string)
+	require.True(t, ok)
+	assert.True(t, json.Valid([]byte(args)), "arguments must be valid JSON, got %q", args)
+}
+
+// requireResponsesFunctionCallArgsValid walks a built /responses body and
+// asserts every function_call item carries valid-JSON arguments.
+func requireResponsesFunctionCallArgsValid(t *testing.T, body []byte) {
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(body, &req))
+	input, ok := req["input"].([]any)
+	require.True(t, ok, "responses body must carry an input array")
+	for i, it := range input {
+		item, ok := it.(map[string]any)
+		require.True(t, ok)
+		if item["type"] != "function_call" {
+			continue
+		}
+		args, ok := item["arguments"].(string)
+		require.True(t, ok, "input[%d] function_call arguments must be a string", i)
+		assert.True(t, json.Valid([]byte(args)),
+			"input[%d] function_call arguments must be valid JSON, got %q", i, args)
+	}
+}
+
+// TestBuildResponsesRequest_MalformedHistoricalToolCallDoesNotPoisonRequest
+// exercises the full /responses request-build path (shared by the openai,
+// codex and azure variants) with a poisoned history: a truncated tool call
+// AND a bare-path tool call, each followed by its error tool result. Every
+// function_call item in the marshaled request must carry valid JSON.
+func TestBuildResponsesRequest_MalformedHistoricalToolCallDoesNotPoisonRequest(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAIResponses)
+	require.NotNil(t, p)
+
+	ctx := schema.Context{
+		Messages: []schema.Message{
+			schema.NewUserMessage("export the session"),
+			barePathToolCallMessage(),
+			schema.NewToolResultMessage("call_export_1", "export",
+				"Error: [export error: invalid_input]\nCannot parse parameters: invalid character '/' looking for beginning of value", true),
+			malformedToolCallMessage(),
+			schema.NewToolResultMessage("chatcmpl-tool-06aa7ecf", "edit",
+				"Error: [edit error: invalid_input]\nCannot parse parameters: unexpected end of JSON input", true),
+		},
+	}
+	body, err := p.BuildRequest(
+		schema.Model{ID: "gpt-5", Api: schema.ApiOpenAIResponses},
+		ctx, schema.StreamOptions{MaxTokens: 1024}, schema.VariantProfile{})
+	require.NoError(t, err)
+	requireResponsesFunctionCallArgsValid(t, body)
+}

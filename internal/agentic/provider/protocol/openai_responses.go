@@ -277,7 +277,7 @@ func convertResponsesAssistant(msg schema.Message) []map[string]any {
 			"type":      "function_call",
 			"call_id":   normalizeResponsesToolCallID(b.ToolCallID),
 			"name":      b.ToolName,
-			"arguments": b.ToolArguments,
+			"arguments": schema.SafeToolArguments(b.ToolArguments),
 		})
 	}
 	return out
