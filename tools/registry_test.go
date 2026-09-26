@@ -216,28 +216,120 @@ func TestToolRegistry_ConcurrentRegisterAndAll(t *testing.T) {
 }
 
 // TestToolRegistry_AllIsSnapshot pins the snapshot-then-release contract: a
-// returned slice is immutable from the caller's point of view and never sees
-// mutations that happen after it was taken.
+// returned slice is immutable from the caller's point of view, never sees
+// mutations that happen after it was taken, and is never torn by a writer
+// racing it. Unsynchronized, the map read inside All() races Register — the
+// -race build reports it (RED before the RWMutex).
 func TestToolRegistry_AllIsSnapshot(t *testing.T) {
 	reg := NewToolRegistry()
 	reg.Register(&testTool{name: "alpha"})
+	reg.Register(&testTool{name: "stable"})
 
+	// Deterministic half: a Register after the snapshot is invisible to that
+	// snapshot and visible to the next call.
 	first := reg.All()
-	if len(first) != 1 {
-		t.Fatalf("All() = %d tools, want 1", len(first))
+	if len(first) != 2 {
+		t.Fatalf("All() = %d tools, want 2", len(first))
 	}
-
 	reg.Register(&testTool{name: "beta"})
-	if len(first) != 1 {
+	if len(first) != 2 {
 		t.Errorf("in-flight All() slice grew to %d — it aliases the live map", len(first))
 	}
-	if got := len(reg.All()); got != 2 {
-		t.Errorf("All() after Register = %d tools, want 2", got)
+	if got := len(reg.All()); got != 3 {
+		t.Errorf("All() after Register = %d tools, want 3", got)
 	}
+	reg.Unregister("beta")
 
-	reg.Unregister("alpha")
-	if len(first) != 1 || first[0].Schema().Name != "alpha" {
-		t.Errorf("snapshot taken before Unregister was mutated: %v", first)
+	// Concurrent half: a writer churning the registry must never tear a
+	// snapshot nor make an untouched tool disappear from it.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < registryRaceIterations; i++ {
+			name := fmt.Sprintf("snap-%d", i)
+			reg.Register(&testTool{name: name})
+			reg.Unregister(name)
+		}
+	}()
+	for i := 0; i < registryRaceIterations; i++ {
+		seen := make(map[string]bool)
+		for _, tool := range reg.All() {
+			if tool == nil {
+				t.Error("All() snapshot contained a nil tool (torn map read)")
+				break
+			}
+			seen[tool.Schema().Name] = true
+		}
+		if !seen["alpha"] || !seen["stable"] {
+			t.Errorf("All() snapshot lost a registered tool while a writer ran: %v", seen)
+			break
+		}
+	}
+	wg.Wait()
+}
+
+// groupWriter churns a namespaced group and checks its own invariants: the
+// group's tool is matchable while the group exists and not after its removal.
+func groupWriter(reg *ToolRegistry, t *testing.T, prefix string) {
+	for i := 0; i < registryRaceIterations; i++ {
+		name := fmt.Sprintf("%st%d", prefix, i)
+		reg.RegisterGroup(prefix, []agentic.Tool{&testTool{name: name}})
+		if !reg.Match(name) {
+			t.Errorf("Match(%q) = false right after RegisterGroup", name)
+			return
+		}
+		reg.UnregisterGroup(prefix)
+		if reg.Match(name) {
+			t.Errorf("Match(%q) = true after UnregisterGroup removed the group", name)
+			return
+		}
+	}
+}
+
+// groupReader hammers the group list and the tool map while groups come and go.
+func groupReader(reg *ToolRegistry, t *testing.T, probe string) {
+	for i := 0; i < registryRaceIterations; i++ {
+		if !reg.Match(probe) {
+			t.Errorf("Match(%q) = false; the base group was lost", probe)
+			return
+		}
+		_ = reg.All()
+		_ = reg.AllDocumented()
+	}
+}
+
+// TestToolRegistry_GroupOpsConcurrent pins group safety: RegisterGroup and
+// UnregisterGroup may run while readers iterate Match/All, the group list is
+// never observed half-filtered, and a group tool is always matchable between
+// its registration and its group's removal.
+func TestToolRegistry_GroupOpsConcurrent(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(&testTool{name: "stable"})
+	reg.RegisterGroup("base__", []agentic.Tool{&testTool{name: "base__read"}})
+
+	var wg sync.WaitGroup
+	for w := 0; w < 2; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			groupWriter(reg, t, fmt.Sprintf("grp%d__", w))
+		}(w)
+	}
+	for r := 0; r < 2; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			groupReader(reg, t, "base__read")
+		}()
+	}
+	wg.Wait()
+
+	if !reg.Match("base__read") {
+		t.Error("the base group no longer matches after the race")
+	}
+	if _, ok := reg.Get("base__read"); !ok {
+		t.Error("base__read disappeared from the registry")
 	}
 }
 

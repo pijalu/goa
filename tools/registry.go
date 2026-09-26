@@ -15,17 +15,22 @@ import (
 // ToolRegistry wraps agentic.ToolRegistry with Documentable lookup and group
 // registration for dynamic tool namespaces (MCP, plugins).
 //
-// It is safe for concurrent use by multiple goroutines: every read is a
-// snapshot taken under a read lock and released before any tool code runs
-// (see All/AllDocumented/Match). Registered tools are written from the TUI
-// goroutine (/config, /tools), MCP connect/disconnect, and plugin load, while
-// the agent path reads the live registry on every request
+// This is the app's *mutable live* registry: tools and namespaces are added and
+// removed in place at runtime (unlike the agent-side agentic.ToolRegistry, which
+// is an immutable snapshot rebuilt by Agent.SetTools). Because of that it is
+// safe for concurrent use by multiple goroutines: every read is a snapshot taken
+// under a read lock and released before any tool code runs (see
+// All/AllDocumented/Match). Registered tools are written from the TUI goroutine
+// (/config, /tools), MCP connect/disconnect, and plugin load, while the agent
+// path reads the live registry on every request
 // (ToolSearchTool.Schema/ExecuteWithResult → deferredTools → All).
 //
-// The lock must never be held across a call into a registered tool: a tool's
-// Schema() can re-enter the registry (ToolSearchTool.Schema() derives its
-// deferred-tool listing from the live registry via All), which would deadlock
-// a non-reentrant mutex.
+// The lock must never be held across a call into a registered tool — or into any
+// code outside this type: a tool's Schema() can re-enter the registry
+// (ToolSearchTool.Schema() derives its deferred-tool listing from the live
+// registry via All()), which would deadlock a non-reentrant mutex. That makes
+// mu a leaf lock, so it can never participate in a lock cycle with a caller's
+// own mutex (plugins' completionsMu, acp_driver's mu, the TUI/subsystems locks).
 type ToolRegistry struct {
 	mu       sync.RWMutex
 	tools    map[string]agentic.Tool
