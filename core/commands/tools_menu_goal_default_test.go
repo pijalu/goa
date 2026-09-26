@@ -5,6 +5,7 @@
 package commands
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/config"
@@ -47,6 +48,30 @@ func TestToolsMenu_GoalShowsOnWithShippedDefaults(t *testing.T) {
 	}
 	if *goalRow != "on" {
 		t.Errorf("/config → Tools goal row = %q, want \"on\" with the shipped defaults", *goalRow)
+	}
+}
+
+// TestConfigKeyCompletions_GoalDefaultWording pins the /config:set help text for
+// tools.enabled.goal: it must state the shipped default (true), not the old
+// "default false" that disagreed with the embedded config.
+func TestConfigKeyCompletions_GoalDefaultWording(t *testing.T) {
+	comps := configKeyCompletions("tools.enabled.goal")
+	var goal *core.ArgCompletion
+	for i := range comps {
+		if comps[i].Value == "tools.enabled.goal" {
+			goal = &comps[i]
+			break
+		}
+	}
+	if goal == nil {
+		t.Fatal("configKeyCompletions has no tools.enabled.goal entry")
+	}
+	if strings.Contains(goal.Description, "default false") {
+		t.Errorf("help text still claims the old default: %q", goal.Description)
+	}
+	if !strings.Contains(goal.Description, "default true") {
+		t.Errorf("help text = %q, want it to state the shipped default ("+
+			"default true)", goal.Description)
 	}
 }
 

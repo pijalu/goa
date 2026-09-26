@@ -10,6 +10,9 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/internal/agentic"
+	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/tools"
 )
 
 // TestGoalTool_CreateGateFollowsLiveConfig pins the requirement that the goal
@@ -66,6 +69,105 @@ func TestMakeToolFactory_GoalCreateGateFollowsLiveConfig(t *testing.T) {
 	cfg.Tools.Enabled.SetEnabled("goal", true)
 	if _, err := tool.Execute(`{"action":"create","objective":"allowed"}`); err != nil {
 		t.Fatalf("runtime goal tool must follow the live flag flip: %v", err)
+	}
+}
+
+// TestGoalToolEnabledLive_ConfigMenuPath is the same-session, no-restart
+// contract on the REAL tool instance the agent holds: the tool is registered
+// once (registerGoalTools, enabled=false), handed to the agent through the
+// production StartSession path, and must accept `create` after the in-session
+// config flip the /config → Tools → goal row and /config:set
+// tools.enabled.goal true both perform — without rebuilding or re-registering
+// the tool.
+func TestGoalToolEnabledLive_ConfigMenuPath(t *testing.T) {
+	cfg := &config.Config{} // goal OFF in this session's live config
+	gm := core.NewGoalManager(t.TempDir())
+	reg := tools.NewToolRegistry()
+	registerGoalTools(reg, gm, goalCreateGate(cfg, RuntimeOptions{}), nil, nil, nil)
+
+	am := core.NewAgentManager(cfg, nil, nil, nil, nil, "")
+	if _, err := am.StartSession(agenticprovider.Model{},
+		agenticprovider.StreamOptions{SessionID: "sess-live-goal"}, "sys", reg.All(), cfg); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	agent := am.CurrentAgent()
+	if agent == nil {
+		t.Fatal("no active agent after StartSession")
+	}
+
+	// The instance the agent holds must be the REGISTERED one, not a copy.
+	registered, ok := reg.Get("goal")
+	if !ok {
+		t.Fatal("goal tool is not registered")
+	}
+	var held agentic.Tool
+	for _, tl := range agent.Tools() {
+		if tl.Schema().Name == "goal" {
+			held = tl
+			break
+		}
+	}
+	if held == nil {
+		t.Fatal("the agent does not hold the goal tool")
+	}
+	if held != registered {
+		t.Fatal("agent holds a different goal tool instance than the registry (rebuilt copy)")
+	}
+
+	if _, err := held.Execute(`{"action":"create","objective":"blocked"}`); err == nil {
+		t.Fatal("create must be blocked while tools.enabled.goal is false")
+	}
+
+	// /config → Tools → goal: setToolEnabled flips the flag on the LIVE config
+	// and the menu pushes the registry's tools to the agent (applyToolToggle →
+	// AgentManager.SetTools). /config:set tools.enabled.goal true writes the same
+	// field through the CLI setter.
+	cfg.Tools.Enabled.SetEnabled("goal", true)
+	_ = am.SetTools(reg.All())
+
+	// The SAME instance, in the SAME session, now accepts create.
+	out, err := held.Execute(`{"action":"create","objective":"live enabled goal"}`)
+	if err != nil {
+		t.Fatalf("create must succeed in-session after the config flip (no restart): %v", err)
+	}
+	if !strings.Contains(out, "live enabled goal") {
+		t.Errorf("create output missing the objective: %q", out)
+	}
+	if gm.Mode.GetActiveGoal() == nil {
+		t.Error("goal must be active after the in-session create")
+	}
+}
+
+// TestGoalTool_CreateGateFollowsLiveConfigOff is the OFF direction of the live
+// gate: with the flag on and no goal left open, turning tools.enabled.goal off
+// in-session must block autonomous create again — with no re-registration.
+func TestGoalTool_CreateGateFollowsLiveConfigOff(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Tools.Enabled.SetEnabled("goal", true) // ON
+	gm := core.NewGoalManager(t.TempDir())
+	tool := newGoalTool(gm, goalCreateGate(cfg, RuntimeOptions{}), nil, nil, nil)
+
+	if _, err := tool.Execute(`{"action":"create","objective":"created while on"}`); err != nil {
+		t.Fatalf("create must be allowed while the flag is on: %v", err)
+	}
+	// Close the goal: otherwise the "a goal exists" clause (not the flag) would
+	// answer for the create below.
+	if _, err := tool.Execute(`{"action":"update","status":"complete","reason":"done for the test"}`); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if gm.Mode.GetGoal().Goal != nil {
+		t.Fatal("precondition: no goal must exist before flipping the flag off")
+	}
+
+	// In-session flip OFF: /config → Tools → goal, /tools:goal:off,
+	// /config:set tools.enabled.goal false.
+	cfg.Tools.Enabled.SetEnabled("goal", false)
+
+	if _, err := tool.Execute(`{"action":"create","objective":"blocked again"}`); err == nil {
+		t.Fatal("create must be blocked again after the flag is turned off in-session")
+	}
+	if gm.Mode.GetGoal().Goal != nil {
+		t.Error("a blocked create must not start a goal")
 	}
 }
 

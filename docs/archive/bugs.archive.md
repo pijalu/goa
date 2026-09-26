@@ -1598,19 +1598,43 @@ shipped default never enabled it.
   force-enable, which the runtime path previously lacked).
 
 **Tests:** `TestDefaultConfig_GoalToolEnabledByDefault` (cascade load of the shipped
-defaults → true; a project pin of `goal: false` still wins),
+defaults → true; a project pin AND a home pin of `goal: false` each still win),
 `TestConfigurableTools_GoalDefaultMatchesEmbeddedConfig` (the registry `Default` equals
-what the embedded config loads — drift guard), `TestGoalTool_CreateGateFollowsLiveConfig`
-(blocked → live flip → `create` succeeds without re-registration),
-`TestMakeToolFactory_GoalCreateGateFollowsLiveConfig` (same contract on the
+what the embedded config loads — drift guard; lives in package config because config
+imports tools), `TestConfigKeyCompletions_GoalDefaultWording` (the
+`/config:set tools.enabled.goal` help no longer says "default false"),
+`TestGoalTool_CreateGateFollowsLiveConfig` (blocked → live flip → `create` succeeds
+without re-registration), `TestGoalTool_CreateGateFollowsLiveConfigOff` (ON → create →
+goal closed → in-session flip OFF → `create` blocked again),
+`TestGoalToolEnabledLive_ConfigMenuPath` (the tool is registered once, handed to the
+agent through the production `StartSession` path; the test asserts the agent holds the
+SAME instance as the registry, then flips the flag as `/config → Tools → goal` and
+`/config:set tools.enabled.goal true` do and asserts `create` succeeds in the same
+session), `TestMakeToolFactory_GoalCreateGateFollowsLiveConfig` (same contract on the
 `/tools:goal:on` factory path), `TestGoalCreateGate_ForceOnByFlag` (`--goal`),
 `TestGoalCreateGate_GatedByConfigAndFlag` (rewired to exercise the production
 `goalCreateGate`; the old test-only `goalToolsEnabled` mirror was deleted), plus
-rendered-output checks `TestToolsMenu_GoalShowsOnWithShippedDefaults` and
+rendered-output checks `TestToolsMenu_GoalShowsOnWithShippedDefaults`,
 `TestToolsGoalToggleOfferedWithShippedDefaults` (`/config → Tools` goal row reads
-"on"; `/tools:goal` offers `:off`, `/tools:` labels it "enabled"). RED recorded by
-mutation: re-capturing the flag makes both live-gate tests fail with `create_disabled`;
-removing the YAML default fails the config and menu tests.
+"on"; `/tools:goal` offers `:off`, `/tools:` labels it "enabled"), and the existing
+internal/app goal tests stay green (registration stays unconditional: one stable `goal`
+tool; `todo_list`/other gated tools untouched, class-level `*_test.go` entries verify
+"not found" for the legacy per-action tools).
+
+**RED evidence (each mutation applied, observed, reverted):**
+- re-capturing the flag as a `bool` at construction → `TestGoalTool_CreateGateFollowsLiveConfig`,
+  `TestMakeToolFactory_GoalCreateGateFollowsLiveConfig`,
+  `TestGoalToolEnabledLive_ConfigMenuPath` all fail with `[goal error: create_disabled]`,
+  and `TestGoalTool_CreateGateFollowsLiveConfigOff` fails with "create must be blocked
+  again after the flag is turned off in-session";
+- `goalCreateGate` dropping `opts.Goal` → `TestGoalCreateGate_ForceOnByFlag` and
+  `TestGoalCreateGate_GatedByConfigAndFlag` fail with "--goal must force-open…";
+- `tools.enabled.goal: false` in the embedded YAML → `TestDefaultConfig_GoalToolEnabledByDefault`
+  ("= false, want true"), `TestConfigurableTools_GoalDefaultMatchesEmbeddedConfig`
+  ("ConfigurableTools() goal Default = true, want false"), and both rendered-output tests
+  (`goal` row "off", offering `goal:on`) fail;
+- completion text back to "(default false)" → `TestConfigKeyCompletions_GoalDefaultWording`
+  fails with "help text still claims the old default".
 
 **Validation:** go vet ./... clean; staticcheck ./... exit 0; gocognit -over 15 . clean;
 gocyclo -over 12 . clean; go test -count=1 -race -cover ./... green (87 packages ok,
