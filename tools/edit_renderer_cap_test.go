@@ -28,10 +28,13 @@ func TestEditRenderResult_CapsColorizeToPreview(t *testing.T) {
 	out := r.RenderResult(sb.String(), tuirender.RenderContext{Expanded: false})
 
 	lines := strings.Split(out, "\n")
-	// Preview is 1000 lines + 1 truncation-hint line.
-	if len(lines) > editDiffPreviewLines+1 {
-		t.Errorf("collapsed render produced %d lines, want <= %d (preview + hint)",
-			len(lines), editDiffPreviewLines+1)
+	// Preview is 1000 lines + 1 header line + 1 truncation-hint line. The
+	// header ("[edit: x.go] edited") is now rendered muted above the diff
+	// instead of being dropped (bugs.md BUG-4) — the cap that matters is
+	// still that the 4000-line BODY collapses to the preview slice.
+	if len(lines) > editDiffPreviewLines+2 {
+		t.Errorf("collapsed render produced %d lines, want <= %d (header + preview + hint)",
+			len(lines), editDiffPreviewLines+2)
 	}
 	// Truncation hint must report the true unshown count (4000 - 1000 = 3000).
 	last := lines[len(lines)-1]

@@ -187,3 +187,87 @@ func TestEditRendererHelpers_UsePartialResets(t *testing.T) {
 		})
 	}
 }
+
+// TestEditFileRenderer_RenderCall_BatchPathFromEdits: batch calls nest the
+// target path inside edits[] (models commonly omit the top-level path), and
+// the call line used to fall back to "..." — the user could not see WHICH
+// file was being edited (bugs.md BUG-4). The title must show the entry path
+// and the queued-edit count.
+func TestEditFileRenderer_RenderCall_BatchPathFromEdits(t *testing.T) {
+	r := NewEditFileRenderer()
+	args := map[string]any{
+		"edits": []any{
+			map[string]any{"path": "src/main.go", "old_string": "a", "new_string": "b"},
+			map[string]any{"path": "src/main.go", "operation": "replace_lines", "start_line": 5.0, "new_content": "c"},
+			map[string]any{"path": "src/main.go", "operation": "delete_lines", "start_line": 9.0, "end_line": 10.0},
+		},
+	}
+	call := ansi.Strip(r.RenderCall(args, tuirender.RenderContext{Cwd: "/tmp"}))
+	if !strings.Contains(call, "edit src/main.go") {
+		t.Errorf("batch call title must name the edits[i].path file, got %q", call)
+	}
+	if !strings.Contains(call, "+2 more edits") {
+		t.Errorf("batch call title must report the queued-edit count, got %q", call)
+	}
+
+	// Top-level path still wins when both shapes are present.
+	args["path"] = "other.go"
+	call = ansi.Strip(r.RenderCall(args, tuirender.RenderContext{Cwd: "/tmp"}))
+	if !strings.Contains(call, "edit other.go") {
+		t.Errorf("top-level path must win over edits[i].path, got %q", call)
+	}
+
+	// No path anywhere: the placeholder is back.
+	call = ansi.Strip(r.RenderCall(map[string]any{}, tuirender.RenderContext{Cwd: "/tmp"}))
+	if !strings.Contains(call, "edit ...") {
+		t.Errorf("missing path must keep the ... placeholder, got %q", call)
+	}
+}
+
+// TestEditFileRenderer_RenderPartial_BatchShowsPath: the streaming preview
+// for a batch must name the file, not just the edit count.
+func TestEditFileRenderer_RenderPartial_BatchShowsPath(t *testing.T) {
+	r := NewEditFileRenderer()
+	args := map[string]any{
+		"edits": []any{
+			map[string]any{"path": "cmd/app.go", "old_string": "a", "new_string": "b"},
+			map[string]any{"path": "cmd/app.go", "old_string": "c", "new_string": "d"},
+		},
+	}
+	partial := ansi.Strip(r.RenderPartial(args, tuirender.RenderContext{Cwd: "/tmp"}))
+	if !strings.Contains(partial, "cmd/app.go") || !strings.Contains(partial, "2 edits") {
+		t.Errorf("batch streaming preview must show path and count, got %q", partial)
+	}
+}
+
+// TestEditFileRenderer_RenderResult_KeepsHeaderPath: the tool result begins
+// with "[edit: <path>] N edits applied — …" above the first @@ hunk; the
+// renderer used to drop everything before the hunk, so the rendered diff no
+// longer named the file it edits (bugs.md BUG-4). The header must survive,
+// including a fuzzy-match note that precedes it.
+func TestEditFileRenderer_RenderResult_KeepsHeaderPath(t *testing.T) {
+	r := NewEditFileRenderer()
+	output := "[edit: internal/app/bootstrap.go] 3 edits applied — match: exact match\n" +
+		"@@ -1,3 +1,3 @@\n a\n-b\n+b1\n c\n"
+	result := ansi.Strip(r.RenderResult(output, tuirender.RenderContext{Expanded: true}))
+	if !strings.Contains(result, "[edit: internal/app/bootstrap.go] 3 edits applied") {
+		t.Errorf("rendered diff must keep the [edit: <path>] header, got %q", result)
+	}
+	if strings.HasPrefix(result, "@") {
+		t.Errorf("header must come before the hunk lines, got %q", result)
+	}
+
+	// A fuzzy note ahead of the header survives too.
+	noted := "Note: matched at 92% similarity\n" + output
+	result = ansi.Strip(r.RenderResult(noted, tuirender.RenderContext{Expanded: true}))
+	if !strings.Contains(result, "matched at 92% similarity") || !strings.Contains(result, "[edit: internal/app/bootstrap.go]") {
+		t.Errorf("preamble lines above the hunk must be kept, got %q", result)
+	}
+
+	// Header-only output (empty hunk body) still renders the summary.
+	headerOnly := "[edit: x.go] 1 edits applied\n@@ -1,0 +1,0 @@\n"
+	result = ansi.Strip(r.RenderResult(headerOnly, tuirender.RenderContext{Expanded: true}))
+	if !strings.Contains(result, "[edit: x.go]") {
+		t.Errorf("header-only result must still name the file, got %q", result)
+	}
+}

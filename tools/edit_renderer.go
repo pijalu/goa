@@ -37,13 +37,45 @@ var (
 	editDiffHunkRe = regexp.MustCompile(`^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@`)
 )
 
-// RenderCall displays "edit <path>" with the path relative to cwd.
+// RenderCall displays "edit <path>" with the path relative to cwd. Batch
+// calls carry the target inside edits[] (the tool accepts both shapes — and
+// models commonly use the nested one), so fall back to the first entry and
+// say how many more edits are queued: the file name is the single most
+// important piece of context on the call line (bugs.md BUG-4).
 func (r *EditFileRenderer) RenderCall(args map[string]any, ctx tuirender.RenderContext) string {
-	path := stringArg(args, "path")
+	path, count := editTargetPath(args)
 	if path == "" {
 		path = "..."
 	}
-	return rToolTitle("edit") + " " + rAccent(formatPathRelativeToCwdOrAbsolute(path, ctx.Cwd))
+	title := rToolTitle("edit") + " " + rAccent(formatPathRelativeToCwdOrAbsolute(path, ctx.Cwd))
+	if count > 1 {
+		title += rMuted(fmt.Sprintf(" (+%d more edits)", count-1))
+	}
+	return title
+}
+
+// editTargetPath resolves the file an edit targets: top-level "path" first,
+// then the per-entry path models commonly nest inside edits[] (the same
+// precedence the tool itself applies). The second return is the number of
+// queued edits (1 for flat calls).
+func editTargetPath(args map[string]any) (string, int) {
+	if p := stringArg(args, "path"); p != "" {
+		return p, 1
+	}
+	edits, ok := args["edits"].([]any)
+	if !ok || len(edits) == 0 {
+		return "", 0
+	}
+	for _, e := range edits {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if p := stringArg(m, "path"); p != "" {
+			return p, len(edits)
+		}
+	}
+	return "", len(edits)
 }
 
 // RenderPartial implements tuirender.StreamingRenderer. While the edit tool
@@ -52,6 +84,9 @@ func (r *EditFileRenderer) RenderCall(args map[string]any, ctx tuirender.RenderC
 // content, or the operation name when the full content is not yet available.
 func (r *EditFileRenderer) RenderPartial(args map[string]any, ctx tuirender.RenderContext) string {
 	if edits, ok := args["edits"].([]any); ok && len(edits) > 0 {
+		if p, _ := editTargetPath(args); p != "" {
+			return rMuted(fmt.Sprintf("  %s — %d edits", formatPathRelativeToCwdOrAbsolute(p, ctx.Cwd), len(edits)))
+		}
 		return rMuted(fmt.Sprintf("  %d edits", len(edits)))
 	}
 	oldStr := stringArg(args, "old_string")
@@ -82,7 +117,7 @@ func (r *EditFileRenderer) RenderResult(output string, ctx tuirender.RenderConte
 		return ""
 	}
 	// Try to locate a unified-diff hunk in the output.
-	diff, err := extractDiff(output)
+	diff, header, err := extractDiff(output)
 	if err != nil {
 		// Not a diff-style result; fall back to plain output (errors are already red by the caller).
 		return rToolOutput(output)
@@ -106,15 +141,15 @@ func (r *EditFileRenderer) RenderResult(output string, ctx tuirender.RenderConte
 		toRender = toRender[:maxLines]
 	}
 	rendered := renderDiffLinesWithWidth(toRender, diff.oldStart, diff.newStart, width)
-	if len(rendered) == 0 {
+	if len(rendered) == 0 && len(header) == 0 {
 		return ""
 	}
 	remaining := len(diff.lines) - len(toRender)
 
-	return r.formatDiffOutput(rendered, ctx.Expanded, maxLines, r.KeyExpand, remaining)
+	return r.formatDiffOutput(header, rendered, ctx.Expanded, maxLines, r.KeyExpand, remaining)
 }
 
-func (r *EditFileRenderer) formatDiffOutput(rendered []string, expanded bool, maxLines int, key string, remaining int) string {
+func (r *EditFileRenderer) formatDiffOutput(header, rendered []string, expanded bool, maxLines int, key string, remaining int) string {
 	if expanded {
 		maxLines = len(rendered)
 	}
@@ -125,8 +160,15 @@ func (r *EditFileRenderer) formatDiffOutput(rendered []string, expanded bool, ma
 	}
 
 	var b strings.Builder
-	for _, line := range display {
-		if b.Len() > 0 {
+	// The tool's summary ("[edit: <path>] N edits applied — …", plus any
+	// fuzzy-match note) sits above the first hunk; keep it — muted — so the
+	// rendered diff still names the file it edits (bugs.md BUG-4).
+	for _, h := range header {
+		b.WriteString(rMuted(h))
+		b.WriteByte('\n')
+	}
+	for i, line := range display {
+		if i > 0 {
 			b.WriteByte('\n')
 		}
 		b.WriteString(line)
@@ -154,8 +196,12 @@ type diffInfo struct {
 	newCount int
 }
 
-// extractDiff finds the first unified-diff hunk in output and parses its header.
-func extractDiff(output string) (diffInfo, error) {
+// extractDiff finds the first unified-diff hunk in output and parses its
+// header. It also returns the non-empty preamble lines above the hunk — the
+// tool's "[edit: <path>] N edits applied …" summary (and any fuzzy-match
+// note) live there; dropping them hid the file name from the rendered diff
+// (bugs.md BUG-4).
+func extractDiff(output string) (diffInfo, []string, error) {
 	lines := strings.Split(output, "\n")
 	for i, line := range lines {
 		matches := editDiffHunkRe.FindStringSubmatch(line)
@@ -163,9 +209,15 @@ func extractDiff(output string) (diffInfo, error) {
 			continue
 		}
 		diff := parseHunkHeader(matches, lines, i)
-		return diff, nil
+		header := make([]string, 0, i)
+		for _, l := range lines[:i] {
+			if strings.TrimSpace(l) != "" {
+				header = append(header, l)
+			}
+		}
+		return diff, header, nil
 	}
-	return diffInfo{}, fmt.Errorf("no diff hunk found")
+	return diffInfo{}, nil, fmt.Errorf("no diff hunk found")
 }
 
 func parseHunkHeader(matches []string, lines []string, hunkIndex int) diffInfo {
