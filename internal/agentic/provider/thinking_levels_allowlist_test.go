@@ -6,6 +6,7 @@ package provider_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
@@ -72,16 +73,27 @@ func TestMimoOpencodeGo_MaxClampedToHigh(t *testing.T) {
 	}
 }
 
-// The override is a family prefix: every mimo member on opencode-go is covered.
+// The override is a family prefix: every mimo member actually registered
+// under opencode-go is covered. The family is enumerated from the live
+// registry instead of a hardcoded id list — the models.dev catalog refreshes
+// drop and rename entries (2026-09-29: mimo-v2-pro and mimo-v2-omni
+// vanished from opencode-go), and a stale list either fails on ids that are
+// no longer served there or silently misses new family members. A non-empty
+// enumeration is still required, so a catalog change that removes the whole
+// family (leaving the override with no target) fails loudly.
 func TestMimoOpencodeGo_PrefixCoversFamily(t *testing.T) {
-	for _, id := range []string{"mimo-v2.6-flash", "mimo-v2-pro", "mimo-v2.5-pro"} {
-		m := models.GetModelForProvider(provider.Provider("opencode-go"), id)
-		if m == nil {
-			t.Errorf("%s: not found in registry", id)
+	const prov = provider.Provider("opencode-go")
+	covered := 0
+	for _, m := range models.GetModels(prov) {
+		if !strings.HasPrefix(m.ID, "mimo-") {
 			continue
 		}
+		covered++
 		if len(m.ThinkingLevelMap) == 0 {
-			t.Errorf("%s: no thinking_level_map after override", id)
+			t.Errorf("%s: no thinking_level_map after override", m.ID)
 		}
+	}
+	if covered == 0 {
+		t.Fatal("no mimo- models registered under opencode-go — the mimo override has no target")
 	}
 }

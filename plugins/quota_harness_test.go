@@ -341,10 +341,16 @@ func (e *quotaTestEnv) callCommand(name string, args ...string) string {
 // returns "" while the VM is busy (only delayed, never lost — production
 // re-renders on goa.ui.refreshSegment). A single immediate render therefore
 // flakes; CI saw exactly that in
-// TestQuota_ZaiEndpointWithPathStillHitsMonitorHost. While the VM is busy,
-// wait (bounded) for the frame to drain and return the first render made
-// with a quiescent VM; renders with an idle VM return as-is, keeping
-// by-design empty segments (no_api_key, …) immediate.
+// TestQuota_ZaiEndpointWithPathStillHitsMonitorHost. A busy skip is reported
+// as ok=false: wait (bounded) for the frame to drain and return the first
+// render that reports itself authoritative; authoritative renders (idle VM,
+// by-design empties included) return as-is, keeping
+// no_api_key-style segments immediate.
+//
+// The busy signal must come from the render's own ok flag, not a fresh
+// vmBusy() sample after the call: a re-sample races the frame drain (render
+// observed busy, VM went idle before the second check) and would return the
+// stale "" immediately — the exact CI flake this harness exists to prevent.
 func (e *quotaTestEnv) renderSegment() string {
 	const (
 		retryBudget = 2 * time.Second
@@ -362,8 +368,8 @@ func (e *quotaTestEnv) renderSegment() string {
 		if render == nil {
 			return ""
 		}
-		out, _ := render()
-		if !vmBusy() {
+		out, ok := render()
+		if ok {
 			return out
 		}
 		if !time.Now().Before(deadline) {
