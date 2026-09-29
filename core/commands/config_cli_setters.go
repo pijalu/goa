@@ -36,6 +36,7 @@ var configSetters = map[string]configSetter{
 	"execution.max_stream_rounds":                    setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxStreamRounds }),
 	"goals.default_turn_budget":                      setInt(func(cfg *config.Config) *int { return &cfg.Goals.DefaultTurnBudget }),
 	"goals.stall_turns":                              setInt(func(cfg *config.Config) *int { return &cfg.Goals.StallTurns }),
+	"goals.verify_timeout":                           setGoalVerifyTimeout,
 	"execution.max_tool_repeat":                      setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
 	"execution.max_consecutive_tool_rounds":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxConsecutiveToolRounds }),
 	"tui.theme":                                      setString(func(cfg *config.Config) *string { return &cfg.TUI.Theme }),
@@ -568,6 +569,25 @@ func setIntRange(getter func(*config.Config) *int, min, max int) configSetter {
 		*getter(cfg) = v
 		return nil
 	}
+}
+
+// setGoalVerifyTimeout parses a duration for goals.verify_timeout: positive,
+// at most config.MaxGoalVerifyTimeout (a longer suite needs a bigger window,
+// but the gate must stay bounded). The canonical duration string is stored so
+// the persisted value always round-trips through the loader.
+func setGoalVerifyTimeout(cfg *config.Config, value string) error {
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return fmt.Errorf("verify_timeout must be a duration (e.g. 90s, 5m): %w", err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("verify_timeout must be positive (got %s)", value)
+	}
+	if d > config.MaxGoalVerifyTimeout {
+		return fmt.Errorf("verify_timeout must be at most %s (got %s)", config.MaxGoalVerifyTimeout, value)
+	}
+	cfg.Goals.VerifyTimeout = d.String()
+	return nil
 }
 
 func setConfigField(cfg *config.Config, path []string, value string) error {

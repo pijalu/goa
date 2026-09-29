@@ -5,10 +5,12 @@
 package commands
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
@@ -257,6 +259,70 @@ func TestSyncRuntimeConfig_GoalLimitsCLI(t *testing.T) {
 		t.Errorf("DefaultTurnBudget = %d, want 25 after rejected set", ctx.Config.Goals.DefaultTurnBudget)
 	}
 }
+
+// TestSyncRuntimeConfig_GoalVerifyTimeoutCLI covers /config:set
+// goals.verify_timeout end-to-end (bugs.md 2026-09-29): the value is applied,
+// canonicalized, persisted, and pushed live into the wired verifier — the
+// path that was missing when the creaves.project verify gate kept using the
+// 2m startup default mid-session. Out-of-contract values are rejected
+// wholesale.
+func TestSyncRuntimeConfig_GoalVerifyTimeoutCLI(t *testing.T) {
+	ctx, _, _, mgr, _ := goalsMenuTestContext(t, nil)
+	out := &strings.Builder{}
+	ctx.OutputBuffer = out
+	ctx.ConfigSaver = &fakeConfigSaver{}
+	tv := &timeoutRecordingVerifier{}
+	mgr.Mode.SetVerifier(tv, true)
+
+	// Happy path: 10m applies live (the creaves.project failure scenario).
+	if err := applyConfigSet(*ctx, "goals.verify_timeout", "10m"); err != nil {
+		t.Fatalf("applyConfigSet verify_timeout: %v", err)
+	}
+	if ctx.Config.Goals.VerifyTimeout != "10m0s" {
+		t.Errorf("VerifyTimeout = %q, want canonical 10m0s", ctx.Config.Goals.VerifyTimeout)
+	}
+	if tv.last != 10*time.Minute {
+		t.Errorf("verifier bound = %v, want 10m (live sync)", tv.last)
+	}
+	// The handler echoes the typed value (what the TUI shows the user; the
+	// persisted canonical form is 10m0s, same convention as the stall keys).
+	if got := out.String(); !strings.Contains(got, "Set goals.verify_timeout = 10m") {
+		t.Errorf("handler output = %q, want confirmation line for goals.verify_timeout", got)
+	}
+
+	// Rejected values leave config and verifier untouched.
+	for _, bad := range []string{"0", "-5s", "abc", "2h"} {
+		if err := applyConfigSet(*ctx, "goals.verify_timeout", bad); err != nil {
+			t.Fatalf("applyConfigSet invalid %q: %v", bad, err)
+		}
+		if ctx.Config.Goals.VerifyTimeout != "10m0s" {
+			t.Errorf("VerifyTimeout = %q after rejected set %q, want unchanged 10m0s", ctx.Config.Goals.VerifyTimeout, bad)
+		}
+		if tv.last != 10*time.Minute {
+			t.Errorf("verifier bound = %v after rejected set %q, want unchanged 10m", tv.last, bad)
+		}
+	}
+
+	// Max boundary is accepted and clamps nothing (exactly 1h).
+	if err := applyConfigSet(*ctx, "goals.verify_timeout", "1h"); err != nil {
+		t.Fatalf("applyConfigSet 1h: %v", err)
+	}
+	if ctx.Config.Goals.VerifyTimeout != "1h0m0s" || tv.last != time.Hour {
+		t.Errorf("1h set: config=%q verifier=%v, want 1h0m0s/1h", ctx.Config.Goals.VerifyTimeout, tv.last)
+	}
+}
+
+// timeoutRecordingVerifier implements the optional live-update hook so the
+// sync path's push can be observed.
+type timeoutRecordingVerifier struct {
+	last time.Duration
+}
+
+func (v *timeoutRecordingVerifier) Verify(context.Context, string) goal.VerifyOutcome {
+	return goal.VerifyOutcome{OK: true}
+}
+
+func (v *timeoutRecordingVerifier) SetVerifyTimeout(d time.Duration) { v.last = d }
 
 // TestSetConfigField_ExecutionLimits verifies the previously missing
 // execution-limit keys are customizable via /config:set like their YAML

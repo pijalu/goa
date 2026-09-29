@@ -129,6 +129,22 @@ func (m *GoalMode) SetVerifier(v CommandVerifier, enabled bool) {
 	m.verifyCommandsEnabled = enabled
 }
 
+// verifyTimeoutSetter is implemented by verifiers whose execution bound can be
+// updated live (goals.verify_timeout via /config:set). Optional: verifiers
+// without the method keep their startup bound.
+type verifyTimeoutSetter interface {
+	SetVerifyTimeout(d time.Duration)
+}
+
+// SetVerifyTimeout pushes an updated verify-command bound into the wired
+// verifier. No-op when no verifier is wired or it does not support live
+// updates. The verifier applies its own default/clamp policy.
+func (m *GoalMode) SetVerifyTimeout(d time.Duration) {
+	if s, ok := m.verifier.(verifyTimeoutSetter); ok {
+		s.SetVerifyTimeout(d)
+	}
+}
+
 // SetJudge wires the independent completion judge (nil disables judging).
 func (m *GoalMode) SetJudge(j GoalJudge) { m.judge = j }
 

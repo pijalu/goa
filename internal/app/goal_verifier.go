@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/internal/ansi"
 )
@@ -19,7 +20,10 @@ import (
 // caller (currently context.Background from the goal tool — see ContextTool
 // note in docs/GOALS.md) cannot cancel it, so the timeout is the only stop;
 // keep it short enough to not stall a turn for ages.
-const defaultGoalVerifyTimeout = 2 * time.Minute
+//
+// Aliased from config so /config:set goals.verify_timeout and the live sync
+// share one source of truth (bugs.md 2026-09-29).
+const defaultGoalVerifyTimeout = config.DefaultGoalVerifyTimeout
 
 // goalVerifyOutputCap caps the combined output returned to the model so a
 // noisy test suite cannot flood the context.
@@ -43,6 +47,21 @@ func newExecCommandVerifier(dir string, timeout time.Duration) *execCommandVerif
 		timeout = defaultGoalVerifyTimeout
 	}
 	return &execCommandVerifier{dir: dir, timeout: timeout}
+}
+
+// SetVerifyTimeout updates the execution bound live (/config:set
+// goals.verify_timeout → syncGoalLimits → GoalMode.SetVerifyTimeout).
+// Zero/negative selects the default; values above the supported ceiling are
+// clamped, matching the config loader's clamp.
+func (v *execCommandVerifier) SetVerifyTimeout(d time.Duration) {
+	if d <= 0 {
+		v.timeout = defaultGoalVerifyTimeout
+		return
+	}
+	if d > config.MaxGoalVerifyTimeout {
+		d = config.MaxGoalVerifyTimeout
+	}
+	v.timeout = d
 }
 
 // verifyShell mirrors the bash tool's shell selection ($SHELL, bash fallback)

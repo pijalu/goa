@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pijalu/goa/config"
 )
 
 // TestExecCommandVerifier_TimeoutEnforced pins the verify-command bound
@@ -61,5 +63,38 @@ func TestExecCommandVerifier_ExitCodePropagates(t *testing.T) {
 	}
 	if !strings.Contains(outcome.Output, "partial") {
 		t.Errorf("output must be preserved for the failure detail, got: %q", outcome.Output)
+	}
+}
+
+// TestExecCommandVerifier_SetVerifyTimeout covers the live bound update
+// (/config:set goals.verify_timeout): the next Verify runs under the new
+// bound; zero/negative restores the default; values above the supported
+// ceiling are clamped to it.
+func TestExecCommandVerifier_SetVerifyTimeout(t *testing.T) {
+	dir := t.TempDir()
+	v := newExecCommandVerifier(dir, 50*time.Millisecond)
+
+	// Raise the bound: a command that outlived 50ms now passes.
+	v.SetVerifyTimeout(2 * time.Second)
+	outcome := v.Verify(context.Background(), "sleep 0.2 && echo done")
+	if !outcome.OK {
+		t.Errorf("command inside the raised bound must pass, got: %q", outcome.Output)
+	}
+	if outcome.TimeoutMs != 2000 {
+		t.Errorf("TimeoutMs = %d, want 2000 (raised bound)", outcome.TimeoutMs)
+	}
+
+	// Clamp above the ceiling.
+	v.SetVerifyTimeout(2 * time.Hour)
+	outcome = v.Verify(context.Background(), "echo hi")
+	if outcome.TimeoutMs != config.MaxGoalVerifyTimeout.Milliseconds() {
+		t.Errorf("TimeoutMs = %d, want clamp to %v", outcome.TimeoutMs, config.MaxGoalVerifyTimeout)
+	}
+
+	// Zero/negative restores the default.
+	v.SetVerifyTimeout(0)
+	outcome = v.Verify(context.Background(), "echo hi")
+	if outcome.TimeoutMs != defaultGoalVerifyTimeout.Milliseconds() {
+		t.Errorf("TimeoutMs = %d, want default %v after zero reset", outcome.TimeoutMs, defaultGoalVerifyTimeout)
 	}
 }

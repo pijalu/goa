@@ -100,7 +100,7 @@ hard ceiling when no compression thresholds are set; `execution.token_warning`
 | `goals.stall_turns` | `5` | Consecutive continuation turns with an unchanged progress fingerprint (todos + git status) before a stall challenge is injected. `0`/`-1` disables. Tuning applies live. |
 | Stall challenge limit *(code)* | `2` | Unanswered stall challenges before the goal auto-blocks for user review. |
 | `goals.max_verify_failures` | `3` | Consecutive machine-verification failures before the goal auto-blocks. `-1` = no cap. Any transition out of `active` or a restart resets the streak. |
-| `goals.verify_timeout` | `"2m"` | Hard bound on a single verify-command execution at goal completion. |
+| `goals.verify_timeout` | `"2m"` | Hard bound on a single verify-command execution at goal completion. Max `1h`; `/config:set goals.verify_timeout` applies live to the running gate. |
 | `goals.done_gate` | `verify` | Completion gate strictness: `verify` / `evidence` / `off`. |
 | `goals.verify_commands` | `true` | Execute recorded verify commands at completion. |
 | `goals.judge` | `off` | Independent semantic completion auditor (`off` / `same` / `model:<id>`). Judge errors fail open. |

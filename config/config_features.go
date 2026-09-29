@@ -88,11 +88,23 @@ type GoalsConfig struct {
 	// /goal:new:reuse). Nil = default (true).
 	FreshContext *bool `yaml:"fresh_context,omitempty"`
 	// VerifyTimeout bounds a single verify-command execution at goal
-	// completion (e.g. "2m", "90s"). Empty/invalid = default (2m). The bound
-	// is displayed to the user in the completion evidence (Bug A:
-	// "the goal complete should have a clear timeout").
+	// completion (e.g. "2m", "90s"). Empty/invalid = default (2m); values
+	// above MaxGoalVerifyTimeout are clamped to the max. Settable at runtime
+	// via /config:set goals.verify_timeout.
 	VerifyTimeout string `yaml:"verify_timeout,omitempty"`
 }
+
+const (
+	// DefaultGoalVerifyTimeout bounds a single goal verify-command execution
+	// when goals.verify_timeout is unset or invalid. Shared by the app
+	// verifier, the /config:set setter, and the live-sync path so every layer
+	// agrees on the fallback.
+	DefaultGoalVerifyTimeout = 2 * time.Minute
+	// MaxGoalVerifyTimeout caps goals.verify_timeout: a long test suite may
+	// need a bigger window than the default, but an unbounded verify run
+	// would stall goal completion forever on a command that never exits.
+	MaxGoalVerifyTimeout = time.Hour
+)
 
 // VerifyCommandsEnabled reports whether machine verification runs (default true).
 func (g GoalsConfig) VerifyCommandsEnabled() bool {
@@ -130,15 +142,29 @@ func (e ExecutionConfig) LoopAutoResumeEnabled() bool {
 }
 
 // VerifyTimeoutOr parses goals.verify_timeout, returning fallback when the
-// value is empty or invalid.
+// value is empty or invalid, and clamping to MaxGoalVerifyTimeout so a
+// hand-edited config cannot pin the verify gate above the supported ceiling.
 func (g GoalsConfig) VerifyTimeoutOr(fallback time.Duration) time.Duration {
-	if g.VerifyTimeout == "" {
+	d, ok := ParseGoalVerifyTimeout(g.VerifyTimeout, fallback)
+	if !ok {
 		return fallback
 	}
-	if d, err := time.ParseDuration(g.VerifyTimeout); err == nil && d > 0 {
-		return d
+	return d
+}
+
+// ParseGoalVerifyTimeout parses a goals.verify_timeout string: empty or
+// invalid yields (fallback, false); a positive duration clamped to
+// MaxGoalVerifyTimeout yields (clamped, true). Shared by the config loader
+// accessor and the /config:set setter.
+func ParseGoalVerifyTimeout(value string, fallback time.Duration) (time.Duration, bool) {
+	if value == "" {
+		return fallback, false
 	}
-	return fallback
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return fallback, false
+	}
+	return min(d, MaxGoalVerifyTimeout), true
 }
 
 // GoalsRetentionConfig controls how long terminal normal goals are kept.

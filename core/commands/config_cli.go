@@ -438,7 +438,7 @@ func syncRuntimeConfig(ctx core.Context, key, value string) error {
 	}
 	// Goal-limit keys sync straight to the goal subsystem; they also do not
 	// require a running agent.
-	if key == "goals.default_turn_budget" || key == "goals.stall_turns" {
+	if key == "goals.default_turn_budget" || key == "goals.stall_turns" || key == "goals.verify_timeout" {
 		syncGoalLimits(ctx)
 		return nil
 	}

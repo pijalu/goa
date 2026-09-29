@@ -794,6 +794,16 @@ func TestGoalsVerifyTimeoutOr(t *testing.T) {
 	if got := bad.Goals.VerifyTimeoutOr(fallback); got != fallback {
 		t.Errorf("invalid verify_timeout = %v, want fallback %v", got, fallback)
 	}
+	// A hand-edited config above the supported ceiling clamps to the max
+	// instead of pinning the verify gate above it (bugs.md 2026-09-29).
+	huge := Config{Goals: GoalsConfig{VerifyTimeout: "24h"}}
+	if got := huge.Goals.VerifyTimeoutOr(fallback); got != MaxGoalVerifyTimeout {
+		t.Errorf("verify_timeout 24h = %v, want clamp to %v", got, MaxGoalVerifyTimeout)
+	}
+	neg := Config{Goals: GoalsConfig{VerifyTimeout: "-5s"}}
+	if got := neg.Goals.VerifyTimeoutOr(fallback); got != fallback {
+		t.Errorf("negative verify_timeout = %v, want fallback %v", got, fallback)
+	}
 }
 
 func boolPtr(b bool) *bool { return &b }

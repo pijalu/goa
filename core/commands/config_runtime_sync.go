@@ -23,15 +23,17 @@ func syncStreamLoopThresholds(ld *core.LoopDetector, exec config.ExecutionConfig
 	ld.SetStreamMinPeriod(exec.StreamLoopMinPeriod)
 }
 
-// syncGoalLimits pushes the two numeric goal limits (goals.default_turn_budget,
-// goals.stall_turns) into the live goal subsystem after a config change. It is
-// nil-safe on every dependency so headless/test contexts degrade to a no-op.
+// syncGoalLimits pushes the goal limits (goals.default_turn_budget,
+// goals.stall_turns, goals.verify_timeout) into the live goal subsystem after
+// a config change. It is nil-safe on every dependency so headless/test
+// contexts degrade to a no-op.
 // The stall watchdog can be tuned or disabled live; enabling it live requires
 // the probe wired at startup (initGoalSystem), so a positive value with no
 // probe keeps the watchdog off until the next session.
 func syncGoalLimits(ctx core.Context) {
 	if ctx.GoalManager != nil {
 		ctx.GoalManager.Mode.SetDefaultTurnBudget(max(ctx.Config.Goals.DefaultTurnBudget, 0))
+		ctx.GoalManager.Mode.SetVerifyTimeout(ctx.Config.Goals.VerifyTimeoutOr(config.DefaultGoalVerifyTimeout))
 	}
 	d := ctx.GoalDriver
 	if d == nil {

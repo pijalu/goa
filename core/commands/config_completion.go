@@ -129,6 +129,7 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"execution.loop_auto_resume_max", "integer consecutive auto-resume cap (0 = default 3)"},
 		{"goals.default_turn_budget", "integer (-1 = unlimited, default 50)"},
 		{"goals.stall_turns", "integer stall-watchdog turns (0/-1 = disabled)"},
+		{"goals.verify_timeout", "duration verify-command bound (default 2m, max 1h)"},
 		{"tui.theme", "dark | light"},
 		{"tui.spinner", "spinner name or none"},
 		{"tui.transparency.show_thinking", "true | false"},
