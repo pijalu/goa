@@ -16,11 +16,11 @@ import (
 )
 
 // shippedDefaultSkillsCfg builds the in-memory skills config exactly as a
-// defaults-only cascade load produces it: the shipped [telegram] list flagged
-// as default-provided.
+// defaults-only cascade load produces it: the shipped [telegram thoughtfull]
+// list flagged as default-provided.
 func shippedDefaultSkillsCfg() *config.Config {
 	return &config.Config{Skills: config.SkillsConfig{
-		Enabled:             []string{"telegram"},
+		Enabled:             []string{"telegram", "thoughtfull"},
 		EnabledFromDefaults: true,
 	}}
 }
@@ -39,8 +39,8 @@ func realEmbeddedRegistry(t *testing.T) *skills.SkillRegistry {
 }
 
 // TestSkillEnabledIn_DefaultProvidedAllowlistIsEmbeddedScoped is the toggle-
-// view regression for the shipped telegram default: the default-provided
-// skills.enabled list turns ONLY the listed embedded skill on; other embedded
+// view regression for the shipped skills default: the default-provided
+// skills.enabled list turns ONLY the listed embedded skills on; other embedded
 // skills stay off (unless opted in), and file-based skills are unaffected by
 // the list (they stay on unless disabled).
 func TestSkillEnabledIn_DefaultProvidedAllowlistIsEmbeddedScoped(t *testing.T) {
@@ -50,6 +50,9 @@ func TestSkillEnabledIn_DefaultProvidedAllowlistIsEmbeddedScoped(t *testing.T) {
 	cfg := shippedDefaultSkillsCfg()
 	if !skillEnabledIn(cfg, "telegram", "embedded", reg) {
 		t.Error("telegram must be on under the shipped default")
+	}
+	if !skillEnabledIn(cfg, "thoughtfull", "embedded", reg) {
+		t.Error("thoughtfull must be on under the shipped default")
 	}
 	if skillEnabledIn(cfg, "refactor", "embedded", reg) {
 		t.Error("refactor must stay default-off")
@@ -182,11 +185,11 @@ func TestPersistSkillToggle_DefaultListNeverPinned(t *testing.T) {
 	}
 }
 
-// TestConfigMenu_SkillsShippedDefaultTelegramOn is the menu-level regression
+// TestConfigMenu_SkillsShippedDefaultsOn is the menu-level regression
 // for the shipped default: with a defaults-only cascade load, the Skills
-// sub-menu reports exactly the telegram skill on and every other embedded
-// skill off.
-func TestConfigMenu_SkillsShippedDefaultTelegramOn(t *testing.T) {
+// sub-menu reports exactly the shipped-on skills (telegram, thoughtfull) on
+// and every other embedded skill off.
+func TestConfigMenu_SkillsShippedDefaultsOn(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -214,7 +217,7 @@ func TestConfigMenu_SkillsShippedDefaultTelegramOn(t *testing.T) {
 	sr.onSel("skills", true)
 
 	total := len(skills.EmbeddedSkillNames(skills.EmbeddedSkillsFS))
-	wantLabel := fmt.Sprintf("1/%d on", total)
+	wantLabel := fmt.Sprintf("2/%d on", total)
 	for _, item := range sr.options {
 		if item.Value == "embedded" && item.Description != wantLabel {
 			t.Errorf("embedded source description = %q, want %q", item.Description, wantLabel)
@@ -229,9 +232,12 @@ func TestConfigMenu_SkillsShippedDefaultTelegramOn(t *testing.T) {
 	if seen["telegram"] != "on" {
 		t.Errorf("telegram must read on under the shipped default, got %q", seen["telegram"])
 	}
+	if seen["thoughtfull"] != "on" {
+		t.Errorf("thoughtfull must read on under the shipped default, got %q", seen["thoughtfull"])
+	}
 	for name, desc := range seen {
-		if name != "telegram" && desc != "off" {
-			t.Errorf("embedded skill %s = %q, want off (only telegram ships on)", name, desc)
+		if name != "telegram" && name != "thoughtfull" && desc != "off" {
+			t.Errorf("embedded skill %s = %q, want off (only telegram and thoughtfull ship on)", name, desc)
 		}
 	}
 }

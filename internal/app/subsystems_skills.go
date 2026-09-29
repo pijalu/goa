@@ -118,11 +118,12 @@ func newSkillRegistry(cfg *config.Config, projectDir string, pluginMgr *plugins.
 	// Embedded skills are OFF by default — including the hidden/internal dream
 	// skill; the user opts individual ones back in via skills.embedded_enabled
 	// (or the global allowlist). File-based skills are never affected by the
-	// default-off set. The one shipped exception is telegram: the embedded
-	// default config lists it in skills.enabled, and that default-provided
-	// list is applied embedded-scoped (SkillGateLists) so it turns telegram on
-	// without ever gating file-based skills. An explicit skills.enabled pin in
-	// a config layer is a real allowlist across all sources.
+	// default-off set. The shipped exceptions are the sticky knowledge skills
+	// telegram and thoughtfull: the embedded default config lists them in
+	// skills.enabled, and that default-provided list is applied
+	// embedded-scoped (SkillGateLists) so it turns them on without ever
+	// gating file-based skills. An explicit skills.enabled pin in a config
+	// layer is a real allowlist across all sources.
 	skillRegistry.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
 	allow, embeddedScoped := cfg.Skills.SkillGateLists()
 	skillRegistry.SetEnabled(allow)

@@ -13,13 +13,14 @@ import (
 	"github.com/pijalu/goa/internal"
 )
 
-// TestShippedDefault_TelegramOnWithoutGatingFileSkills is the end-to-end
-// regression for the shipped telegram default: a defaults-only cascade builds
-// a registry where (a) the embedded telegram skill is loaded with its sticky
-// body, (b) every other embedded skill stays off, and (c) home/project
+// TestShippedDefault_ShippedSkillsOnWithoutGatingFileSkills is the end-to-end
+// regression for the shipped skills default: a defaults-only cascade builds
+// a registry where (a) the shipped-on sticky knowledge skills (telegram,
+// thoughtfull) are loaded with their sticky bodies, (b) every other embedded
+// skill stays off, and (c) home/project
 // file-based skills are unaffected — the default-provided skills.enabled list
 // must never act as a global allowlist.
-func TestShippedDefault_TelegramOnWithoutGatingFileSkills(t *testing.T) {
+func TestShippedDefault_ShippedSkillsOnWithoutGatingFileSkills(t *testing.T) {
 	project := shippedDefaultTestProject(t)
 
 	loader := config.NewCascadeLoader(project, "", nil)
@@ -31,6 +32,17 @@ func TestShippedDefault_TelegramOnWithoutGatingFileSkills(t *testing.T) {
 
 	if _, ok := subs.skillRegistry.Get("telegram"); !ok {
 		t.Error("telegram must load under the shipped default")
+	}
+	thoughtfull, ok := subs.skillRegistry.Get("thoughtfull")
+	if !ok {
+		t.Error("thoughtfull must load under the shipped default")
+	}
+	bodies := subs.skillRegistry.StickyBodies()
+	if thoughtfull != nil && !thoughtfull.IsSticky() {
+		t.Error("the shipped-on thoughtfull skill must be sticky")
+	}
+	if len(bodies) != 2 {
+		t.Errorf("both shipped sticky bodies must be injected, got %d block(s): %v", len(bodies), bodies)
 	}
 	if _, ok := subs.skillRegistry.Get("proj-helper"); !ok {
 		t.Error("project file skills must not be suppressed by the shipped default list")
@@ -44,7 +56,7 @@ func TestShippedDefault_TelegramOnWithoutGatingFileSkills(t *testing.T) {
 	if !ok {
 		t.Fatal("telegram vanished mid-test")
 	}
-	if !telegram.IsSticky() || len(subs.skillRegistry.StickyBodies()) == 0 {
+	if !telegram.IsSticky() || len(bodies) == 0 {
 		t.Error("the shipped-on telegram skill must inject its sticky body")
 	}
 }
@@ -76,6 +88,9 @@ func TestShippedDefault_HomePinReplacesDefault(t *testing.T) {
 	reg := newSkillRegistry(pinned, project, nil, false, nil)
 	if _, ok := reg.Get("telegram"); ok {
 		t.Error("a home skills.enabled pin must replace the shipped default (telegram off)")
+	}
+	if _, ok := reg.Get("thoughtfull"); ok {
+		t.Error("a home skills.enabled pin must replace the shipped default (thoughtfull off)")
 	}
 	if _, ok := reg.Get("refactor"); !ok {
 		t.Error("the pinned skill must load")

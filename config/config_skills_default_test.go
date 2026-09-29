@@ -10,11 +10,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestDefaultConfig_TelegramSkillEnabledByDefault pins the shipped skill
-// policy: the embedded default config lists ONLY telegram in skills.enabled,
-// so the telegraphic-style skill applies out of the box while every other
-// embedded skill stays default-off (opt-in via skills.embedded_enabled).
-func TestDefaultConfig_TelegramSkillEnabledByDefault(t *testing.T) {
+// TestDefaultConfig_ShippedSkillsEnabledByDefault pins the shipped skill
+// policy: the embedded default config lists exactly the shipped-on sticky
+// knowledge skills (telegram, thoughtfull) in skills.enabled, so both apply
+// out of the box while every other embedded skill stays default-off (opt-in
+// via skills.embedded_enabled).
+func TestDefaultConfig_ShippedSkillsEnabledByDefault(t *testing.T) {
 	yamlText, err := DefaultConfigYAML()
 	if err != nil {
 		t.Fatalf("load embedded default: %v", err)
@@ -23,8 +24,15 @@ func TestDefaultConfig_TelegramSkillEnabledByDefault(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(yamlText), &cfg); err != nil {
 		t.Fatalf("unmarshal embedded default: %v", err)
 	}
-	if len(cfg.Skills.Enabled) != 1 || cfg.Skills.Enabled[0] != "telegram" {
-		t.Errorf("embedded default skills.enabled = %v, want [telegram]", cfg.Skills.Enabled)
+	wantEnabled := []string{"telegram", "thoughtfull"}
+	if len(cfg.Skills.Enabled) != len(wantEnabled) {
+		t.Errorf("embedded default skills.enabled = %v, want %v", cfg.Skills.Enabled, wantEnabled)
+	}
+	for i, want := range wantEnabled {
+		if i < len(cfg.Skills.Enabled) && cfg.Skills.Enabled[i] != want {
+			t.Errorf("embedded default skills.enabled = %v, want %v", cfg.Skills.Enabled, wantEnabled)
+			break
+		}
 	}
 	if len(cfg.Skills.Disabled) != 0 {
 		t.Errorf("embedded default must not ship skills.disabled, got %v", cfg.Skills.Disabled)
@@ -38,8 +46,9 @@ func TestDefaultConfig_TelegramSkillEnabledByDefault(t *testing.T) {
 }
 
 // TestCascade_SkillsEnabledFromDefaults verifies a defaults-only cascade
-// carries the shipped telegram default AND the default-provided provenance
-// flag, so the registry wiring can apply it embedded-scoped.
+// carries the shipped skills.enabled default (telegram, thoughtfull) AND the
+// default-provided provenance flag, so the registry wiring can apply it
+// embedded-scoped.
 func TestCascade_SkillsEnabledFromDefaults(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	loader := NewCascadeLoader(t.TempDir(), "", nil)
@@ -47,8 +56,15 @@ func TestCascade_SkillsEnabledFromDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(cfg.Skills.Enabled) != 1 || cfg.Skills.Enabled[0] != "telegram" {
-		t.Errorf("shipped cascade skills.enabled = %v, want [telegram]", cfg.Skills.Enabled)
+	wantEnabled := []string{"telegram", "thoughtfull"}
+	if len(cfg.Skills.Enabled) != len(wantEnabled) {
+		t.Errorf("shipped cascade skills.enabled = %v, want %v", cfg.Skills.Enabled, wantEnabled)
+	}
+	for i, want := range wantEnabled {
+		if i < len(cfg.Skills.Enabled) && cfg.Skills.Enabled[i] != want {
+			t.Errorf("shipped cascade skills.enabled = %v, want %v", cfg.Skills.Enabled, wantEnabled)
+			break
+		}
 	}
 	if !cfg.Skills.EnabledFromDefaults {
 		t.Error("shipped cascade must mark skills.enabled as default-provided")
@@ -91,8 +107,15 @@ func TestCascade_HomeSkillsDisablePinsTelegramOff(t *testing.T) {
 	if len(cfg.Skills.Disabled) != 1 || cfg.Skills.Disabled[0] != "telegram" {
 		t.Errorf("home skills.disabled = %v, want [telegram]", cfg.Skills.Disabled)
 	}
-	if len(cfg.Skills.Enabled) != 1 || cfg.Skills.Enabled[0] != "telegram" {
+	wantEnabled := []string{"telegram", "thoughtfull"}
+	if len(cfg.Skills.Enabled) != len(wantEnabled) {
 		t.Errorf("shipped default enabled list must survive, got %v", cfg.Skills.Enabled)
+	}
+	for i, want := range wantEnabled {
+		if i < len(cfg.Skills.Enabled) && cfg.Skills.Enabled[i] != want {
+			t.Errorf("shipped default enabled list must survive, got %v", cfg.Skills.Enabled)
+			break
+		}
 	}
 }
 

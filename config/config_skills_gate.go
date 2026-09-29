@@ -7,10 +7,10 @@ package config
 // SkillGateLists partitions the merged skills gate for the skill registry.
 //
 // A skills.enabled list that came solely from the embedded shipped defaults
-// is embedded-scoped: it opts the shipped-on built-in (telegram) in WITHOUT
-// activating the global allowlist, which gates every source and would
-// silently suppress the user's home/project/plugin file skills. It is merged
-// with the explicit embedded opt-ins (skills.embedded_enabled).
+// is embedded-scoped: it opts the shipped-on built-ins (telegram, thoughtfull)
+// in WITHOUT activating the global allowlist, which gates every source and
+// would silently suppress the user's home/project/plugin file skills. It is
+// merged with the explicit embedded opt-ins (skills.embedded_enabled).
 //
 // An explicit skills.enabled pin in any config layer is a real allowlist: it
 // applies to every source exactly as documented on SkillsConfig.Enabled.

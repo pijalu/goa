@@ -225,16 +225,17 @@ skills:
   dirs:
     - ".goa/skills"
   embedded: true
-  # Shipped default for the skills allowlist: the embedded `telegram` skill is
-  # ON out of the box — its sticky telegraphic-style body applies with no
-  # config edit. Every other embedded skill stays OFF (opt in via /config →
-  # Skills → Embedded or skills.embedded_enabled). A config layer that
-  # explicitly pins skills.enabled replaces this default list (the user's pin
-  # is never overridden by the defaults), and until then the default list is
-  # applied embedded-scoped, so home/project/plugin file skills are never
-  # suppressed by it.
+  # Shipped default for the skills allowlist: the embedded sticky knowledge
+  # skills `telegram` and `thoughtfull` are ON out of the box — their sticky
+  # bodies apply with no config edit. Every other embedded skill stays OFF
+  # (opt in via /config → Skills → Embedded or skills.embedded_enabled). A
+  # config layer that explicitly pins skills.enabled replaces this default
+  # list (the user's pin is never overridden by the defaults), and until then
+  # the default list is applied embedded-scoped, so home/project/plugin file
+  # skills are never suppressed by it.
   enabled:
     - telegram
+    - thoughtfull
 
 tools:
   # max_inline_bytes caps the model-facing size of any single plain-text tool
