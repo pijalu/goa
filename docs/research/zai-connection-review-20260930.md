@@ -305,8 +305,14 @@ Implementation shape should follow the existing fetcher convention — a new
 
 The endpoint divergence (ZCode uses the Anthropic surface for coding plans) is
 the most interesting open question: it is plausible that the Anthropic surface
-terminates SSE cleanly, which would sidestep D1 entirely for z.ai. That is a
-**hypothesis, not a verified finding** — it would need a live probe.
+terminates SSE cleanly, which would sidestep D1 entirely for z.ai. That was a
+**hypothesis**, and it has now been **live-probed — 69 streaming requests across
+both surfaces, all terminated cleanly** (OpenAI-compat emits `[DONE]` +
+`finish_reason`, Anthropic emits `message_stop` + `stop_reason`; gap between last
+event and close was 0.0 s everywhere, longest stream 64.3 s). The OpenAI-compat
+surface did *not* reproduce the held-open signature from the exports, so the
+Anthropic surface offers no termination advantage and **no migration was made**.
+Evidence and method: `docs/research/zai-sse-probe-20260930.md`.
 
 ---
 

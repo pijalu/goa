@@ -45,20 +45,16 @@ Closed in this round (moved to `docs/archive/`):
 - "z.ai accepts context overflow silently" →
   `docs/archive/bugs-20260930-zai-silent-context-overflow.md`
 - "z.ai Coding Plan quota reset API" →
-  `docs/archive/bugs-20260930-zai-coding-plan-reset.md`
+    `docs/archive/bugs-20260930-zai-coding-plan-reset.md`
+- "Verify the Anthropic-surface hypothesis for z.ai (investigation)" →
+    `docs/archive/bugs-20260930-zai-anthropic-surface-probe.md`
+    (69 live probes, both surfaces terminate cleanly — hypothesis rejected,
+    no provider migration; evidence in `docs/research/zai-sse-probe-20260930.md`)
 
 ---
 
-## 4. Verify the Anthropic-surface hypothesis for z.ai (investigation)
+## Guideline note
 
-**Observed.** ZCode talks to z.ai coding plans over
-`https://api.z.ai/api/anthropic` (Anthropic Messages), while goa and pi use the
-OpenAI-compat `.../api/coding/paas/v4`. Both known-bad streams came from the
-OpenAI-compat surface (zai and opencode-go).
-
-**Hypothesis (unverified).** The Anthropic surface terminates SSE cleanly and
-would sidestep the held-open-stream stall (`docs/archive/bugs-20260930-stall-held-open-complete-answer.md`) for z.ai.
-
-**Plan.** Live-probe both surfaces with an identical prompt and compare whether
-`[DONE]` / a terminal event is always emitted. Record the result in the review
-doc. Do **not** migrate the provider without that evidence.
+All items raised from the 2026-09-30 z.ai review are closed. Re-open an
+investigation only with a reproducible capture (HTTP status, full request body,
+last SSE bytes, inter-event gaps), not from the symptom summary alone.
