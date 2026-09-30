@@ -156,6 +156,12 @@ func (c *Compositor) handleMidTranscriptEdit(scene *Scene, canvas []string, widt
 	if kind != frameDiff && kind != frameFullRepaint {
 		return false
 	}
+	// Canvas collapsed below its own scrollback watermark: the clamped window
+	// holds no transcript row at all. See recoverBlackout.
+	blackedOut := c.windowBlackedOut(len(canvas), height)
+	if blackedOut && c.blackoutSettled(canvas) {
+		return c.recoverBlackout(scene, canvas, width, height)
+	}
 	vt := c.windowTop(len(canvas), height)
 	target := c.scrollTarget(vt, len(canvas))
 	if c.growthAboveWindow(canvas, height) {
@@ -207,6 +213,12 @@ func (c *Compositor) handleMidTranscriptEdit(scene *Scene, canvas []string, widt
 	// A buried in-place edit (no height growth, window unchanged) falls through:
 	// the normal diff path no-ops the unchanged window and does not emit
 	// scrollback, so the stale scrollback is preserved for the later sync.
+	if blackedOut {
+		// First (or still-changing) collapsed frame: painted as an empty window
+		// — a transient shrink must still clear the rows it deleted. Record it
+		// so an IDENTICAL repeat is recognized as settled and recovered.
+		c.armBlackout(canvas)
+	}
 	return false
 }
 
@@ -414,6 +426,15 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 // transcript region. repaintWindow's two-phase layout keeps the chrome band
 // pinned at the screen bottom regardless, so the blanks are truthful empty
 // space, never displaced chrome.
+//
+// The watermark is honored even when the clamp would leave the window empty
+// (vt >= contentEnd): the watermark is the terminal's ground truth about which
+// rows it has already shown, and re-anchoring below it would repaint committed
+// scrollback rows onto the visible screen (the mascot-redraw bug, see
+// TestCompositor_ShrinkBelowWatermarkDoesNotRedrawScrollbackRows). Such an empty
+// window is instead intercepted by Compositor.handleMidTranscriptEdit, which
+// detects the collapse (windowBlackedOut) and re-syncs the scrollback once the
+// canvas settles — see compositor_blackout.go.
 //
 // A deliberate transcript reset (/new, session switch) must call Clear first
 // to zero the watermark; otherwise a from-scratch canvas would be anchored at

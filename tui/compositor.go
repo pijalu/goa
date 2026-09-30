@@ -101,6 +101,18 @@ type Compositor struct {
 	// has settled and the deferred scrollback sync may run exactly once.
 	prevMutationGen uint64
 
+	// blackoutPending holds the collapsed canvas seen on the previous frame when
+	// the watermark clamp left the window with no transcript row (see
+	// compositor_blackout.go). While the canvas keeps moving the blackout frame
+	// is deferred without touching the terminal; when the SAME collapsed canvas
+	// comes back the collapse is settled and the scrollback is re-synced. Reset
+	// by every path that re-bases the frame baseline.
+	blackoutPending []string
+	// blackoutArmed marks that THIS frame armed blackoutPending, so the
+	// end-of-frame baseline bookkeeping keeps it. A frame that did not collapse
+	// clears the armed state, ending the episode.
+	blackoutArmed bool
+
 	// tracer, when non-nil, records one JSONL frame per Render for offline
 	// diagnosis of byte-level rendering bugs. curTrace is the in-progress
 	// record for the current Render, owned by the lock holder; nil when
@@ -265,6 +277,7 @@ func (c *Compositor) RestoreFrame(s FrameState) {
 	c.vt = s.VT
 	c.scrollbackDirty = false
 	c.prevMutationGen = 0
+	c.blackoutPending = nil
 	c.clearGen++
 }
 
@@ -306,6 +319,7 @@ func (c *Compositor) Clear() {
 	c.regionBot = 0
 	c.scrollbackDirty = false // the wipe re-syncs scrollback to the new canvas
 	c.prevMutationGen = 0
+	c.blackoutPending = nil
 	c.clearGen++
 	c.clearRequested = true
 }
@@ -471,6 +485,14 @@ func (c *Compositor) Render(scene *Scene) {
 	c.prevW = width
 	c.prevH = height
 	c.prevMutationGen = scene.MutationGen
+	// A frame that did not collapse ends the blackout episode: the canvas
+	// reaches past the watermark again, so any recorded collapse is over (see
+	// Compositor.armBlackout). A collapsed frame keeps its armed state so the
+	// next identical frame can be recognized as settled.
+	if !c.blackoutArmed {
+		c.blackoutPending = nil
+	}
+	c.blackoutArmed = false
 }
 
 // frameKind classifies a frame so Render dispatches on a single value. The

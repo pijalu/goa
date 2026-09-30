@@ -212,9 +212,19 @@ func (a *App) handleSteeringInjected(injected *event.SteeringInput) {
 	}
 }
 
+// clearChat empties the conversation for a session restore or a fork. Like
+// handleNewSession it MUST reset the compositor transcript: clearing the
+// viewport collapses the canvas to a handful of rows while the scrollback
+// watermark survives (measured: 5 canvas rows against scrollTop 115), and a
+// window clamped to a watermark its canvas no longer reaches paints an empty
+// transcript region. Resetting here makes the fresh canvas render as a first
+// frame instead of relying on the compositor to recover from the collapse.
 func (a *App) clearChat() {
 	if a.subs.chat != nil {
 		a.subs.chat.Clear()
+	}
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.ClearTranscript()
 	}
 }
 
