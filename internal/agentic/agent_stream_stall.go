@@ -2,7 +2,87 @@
 
 package agentic
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/pijalu/goa/internal/agentic/provider"
+)
+
+// roundDeliveredCompleteAnswer reports whether the current stream round has
+// already delivered a finished answer, so that silence afterwards means "the
+// provider is holding the socket open" rather than "the model is producing
+// nothing" (docs/research/zai-connection-review-20260930.md §2).
+//
+// It is deliberately conservative — a false positive here would finalize a
+// genuinely truncated answer and hide a real stall, so every condition must
+// hold:
+//
+//   - visible answer text was actually delivered (thinking-only rounds do not
+//     count: a model that streamed reasoning and then went quiet is still
+//     working, and that silence must keep waiting);
+//   - no tool call is buffered or still streaming — a pending tool call means
+//     the round is mid-work, not finished, and dropping it would lose the
+//     turn's whole purpose;
+//   - the buffered text looks like a finished sentence rather than a fragment
+//     cut mid-word, since a trailing dangling token is the signature of a
+//     truncated stream rather than a completed one.
+//
+// Everything is read under a.mu because the watchdog timer fires on its own
+// goroutine, concurrently with the event loop appending deltas.
+func (a *Agent) roundDeliveredCompleteAnswer() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if len(a.bufferedToolCalls) > 0 || len(a.streamingToolCalls) > 0 || len(a.streamingToolCallsByIndex) > 0 {
+		return false
+	}
+	content := strings.TrimSpace(a.contentBuf.String())
+	if content == "" {
+		return false
+	}
+	return endsLikeFinishedSentence(content)
+}
+
+// endsLikeFinishedSentence reports whether text ends at a sentence boundary.
+// Providers that terminate cleanly stop after punctuation, a closing fence, or
+// trailing whitespace; a stream truncated mid-thought ends on a partial word or
+// an unclosed construct.
+func endsLikeFinishedSentence(content string) bool {
+	switch content[len(content)-1] {
+	case '.', '!', '?', ':', ';', ')', ']', '}', '"', '\'', '`':
+		return true
+	}
+	// A trailing newline is whitespace, already trimmed above, so reaching
+	// here means the text ends on an alphanumeric or an opening bracket:
+	// treat it as an unfinished fragment.
+	return false
+}
+
+// onStreamStall is the event-stall watchdog body: it runs on its own goroutine
+// after stallTimeout of silence and decides how to terminate the stream.
+//
+// A provider that finished its answer but never closed the socket is NOT
+// stalled — it is done. z.ai (glm-5.3-flash) and opencode-go both deliver
+// HTTP 200 plus the complete response, then hold the SSE connection open
+// without ever sending [DONE] or a finish_reason chunk
+// (docs/research/zai-connection-review-20260930.md §2). Treating that silence
+// as a stall threw away a finished answer and replayed the whole turn — four
+// provider calls for one reply in the captured session.
+//
+// So silence after a complete answer ends the stream gracefully and the turn
+// finalizes from the buffered content; silence with no finished answer stays a
+// stall error, which handleStreamFailure treats as transient and retries.
+func (a *Agent) onStreamStall(stream *provider.AssistantMessageEventStream, stallTimeout time.Duration) {
+	if a.roundDeliveredCompleteAnswer() {
+		a.cfg.Logger.Log(Warn, "Stream held open %v after a complete answer; finalizing without the provider's terminator ([DONE]/finish_reason)", stallTimeout)
+		stream.End(nil)
+		return
+	}
+	a.cfg.Logger.Log(Warn, "Stream stalled: no events received for %v", stallTimeout)
+	stream.CloseWithError(fmt.Errorf("stream stalled: no events received from provider for %v", stallTimeout))
+}
 
 func (a *Agent) armThinkingStallTimers(now time.Time, warnAfter, stopAfter time.Duration) {
 	a.mu.Lock()

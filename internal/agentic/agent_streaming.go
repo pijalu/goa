@@ -375,12 +375,12 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 	// re-arm the watchdog: a provider streaming pacing/keep-alive events would
 	// otherwise keep every guard alive forever while the agent appears frozen
 	// (F1b review finding). The watchdog terminates the stream with a stall
-	// error, which handleStreamFailure treats as transient and retries.
+	// error, which handleStreamFailure treats as transient and retries — unless
+	// the round already delivered a complete answer, in which case the silence
+	// is a provider holding the socket open and the turn finalizes from what
+	// was received (see onStreamStall).
 	stallTimeout := a.effectiveEventStallTimeout(opts)
-	watchdog := time.AfterFunc(stallTimeout, func() {
-		a.cfg.Logger.Log(Warn, "Stream stalled: no events received for %v", stallTimeout)
-		stream.CloseWithError(fmt.Errorf("stream stalled: no events received from provider for %v", stallTimeout))
-	})
+	watchdog := time.AfterFunc(stallTimeout, func() { a.onStreamStall(stream, stallTimeout) })
 	defer watchdog.Stop()
 
 	// Quiet-provider notice (F5): after the configured warn lead of silence,
