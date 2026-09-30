@@ -115,7 +115,7 @@ func DetectOpenAICompat(model Model) OpenAICompletionsCompat {
 		RequiresThinkingAsText:                      boolPtr(false),
 		RequiresReasoningContentOnAssistantMessages: boolPtr(fp.isDeepSeek || isDeepSeekModel),
 		ThinkingFormat:                              strPtr(fp.detectThinkingFormat()),
-		ZaiToolStream:                               boolPtr(false),
+		ZaiToolStream:                               boolPtr(fp.supportsToolStream()),
 		SupportsStrictMode:                          boolPtr(fp.supportsStrictMode()),
 		CacheControlFormat:                          strPtr(cacheControlFormat),
 		SendSessionAffinityHeaders:                  boolPtr(false),
@@ -169,6 +169,18 @@ func (fp providerFingerprint) useMaxTokens() bool {
 		return true
 	}
 	return fp.isChutes || fp.isMoonshot || fp.isCloudflareAG || fp.isTogether || fp.isNvidia || fp.isAntLing
+}
+
+// supportsToolStream reports whether requests must carry the top-level
+// "tool_stream": true field (z.ai GLM). It is an ENDPOINT property: the catalog
+// entry is authoritative, and the isZai fingerprint covers a z.ai host reached
+// through a provider id that has no catalog entry. Left hardcoded false, the
+// declared ZaiToolStream compat flag was dead and z.ai never got the field.
+func (fp providerFingerprint) supportsToolStream() bool {
+	if fp.def != nil {
+		return fp.def.Compat.ToolStream
+	}
+	return fp.isZai
 }
 
 func (fp providerFingerprint) detectThinkingFormat() string {

@@ -36,41 +36,12 @@ Closed in this round (moved to `docs/archive/`):
   `docs/archive/bugs-20260930-stall-held-open-complete-answer.md`
 - "`EventStart` is unmapped — no watchdog re-arm + WARN on every request" →
   `docs/archive/bugs-20260930-eventstart-unmapped.md`
+- "`tool_stream: true` is never sent to z.ai" →
+  `docs/archive/bugs-20260930-zai-tool-stream.md`
 
 ---
 
-## 1. `tool_stream: true` is never sent to z.ai (MEDIUM, z.ai-specific)
-
-**Observed.** `ZaiToolStream` is declared in
-`internal/agentic/provider/compat.go:25` and
-`protocol/openai_completions.go:77`, hardcoded `boolPtr(false)` in
-`compat_detect.go:118`, and then never read — nothing writes `tool_stream` into
-the request body. The live body captured in export A
-(`logs/cache_miss_requests.json` → `requests[0].body`) has keys
-`messages, model, prompt_cache_key, prompt_cache_retention, stream,
-stream_options, thinking, tools` — no `tool_stream`.
-
-`pi` sends it (`packages/ai/src/api/openai-completions.ts:851-853`) and its
-generated z.ai catalog sets `compat.zaiToolStream: true` for GLM-4.6 → GLM-5.3.
-
-**Expected.** Requests to z.ai carrying tools include top-level
-`tool_stream: true`, matching pi. Providers without the capability are
-unaffected.
-
-**Fix plan.**
-1. Read `compat.ZaiToolStream` in `buildOpenAIParams` and set
-   `body["tool_stream"] = true` when tools are present and the flag is set.
-2. Set the flag from the endpoint fingerprint (`isZai`), consistent with how
-   `maxTokensField`/`ThinkingFormat` are derived — not left hardcoded false.
-3. Tests: z.ai + tools → `tool_stream: true` present; z.ai without tools →
-   absent; non-z.ai provider → absent (mirrors pi's
-   `openai-completions-tool-choice.test.ts` cases).
-
-**Validation.** Assert against a built z.ai request payload.
-
----
-
-## 2. No `max_tokens` cap on reasoning-capable providers (MEDIUM, z.ai-specific)
+## 1. No `max_tokens` cap on reasoning-capable providers (MEDIUM, z.ai-specific)
 
 **Observed.** No `max_tokens` / `max_completion_tokens` in the captured z.ai body;
 the user model profile sets `thinking_level: xhigh`, `max_tokens: 0`. Export A
@@ -95,7 +66,7 @@ answer cannot be starved by reasoning.
 
 ---
 
-## 3. Shipped `activity_timeout` default is too short for reasoning models (MEDIUM)
+## 2. Shipped `activity_timeout` default is too short for reasoning models (MEDIUM)
 
 **Observed.** `config/user.yaml` pins `activity_timeout: 60s`, but the shipped
 default is `2m` (`provider.DefaultStreamIdleTimeout`). 60s is short for a
@@ -121,7 +92,7 @@ not race on one budget.
 
 ---
 
-## 4. z.ai accepts context overflow silently (LOW, z.ai-specific)
+## 3. z.ai accepts context overflow silently (LOW, z.ai-specific)
 
 **Observed.** `opencode` records the quirk
 (`packages/opencode/src/provider/error.ts:31`): *"z.ai: can accept overflow
@@ -143,7 +114,7 @@ provider error.
 
 ---
 
-## 5. FEATURE — z.ai Coding Plan quota reset API
+## 4. FEATURE — z.ai Coding Plan quota reset API
 
 **Observed.** goa fetches only quota consumption
 (`GET {origin}/api/monitor/usage/quota/limit`). ZCode additionally implements
@@ -175,7 +146,7 @@ render the segment and assert the reset rows appear.
 
 ---
 
-## 6. Verify the Anthropic-surface hypothesis for z.ai (investigation)
+## 5. Verify the Anthropic-surface hypothesis for z.ai (investigation)
 
 **Observed.** ZCode talks to z.ai coding plans over
 `https://api.z.ai/api/anthropic` (Anthropic Messages), while goa and pi use the

@@ -262,6 +262,7 @@ func mergeCompat(c *CompatFlags, o CompatFlags) {
 	// requirement ON (OR semantics), never explicitly clear it
 	// thinking-mode 400: user variant overrides for DeepSeek-class models).
 	c.RequiresReasoningContentOnAssistantMessages = c.RequiresReasoningContentOnAssistantMessages || o.RequiresReasoningContentOnAssistantMessages
+	c.ToolStream = c.ToolStream || o.ToolStream
 	// RemoteCompaction follows set-if-non-empty semantics: a base/override may
 	// raise the capability, but an empty (unspecified) override never clears a
 	// capability already advertised by a lower-precedence profile.

@@ -124,6 +124,54 @@ func TestDetectOpenAICompat_ZaiVariants(t *testing.T) {
 	}
 }
 
+// TestDetectOpenAICompat_ZaiToolStream verifies the tool_stream capability is
+// detected for every z.ai identity (provider name or URL fingerprint). The flag
+// used to be hardcoded false, so it never reached the wire.
+func TestDetectOpenAICompat_ZaiToolStream(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider Provider
+		baseURL  string
+	}{
+		{"coding plan by provider name", ProviderZai, "https://api.z.ai/api/coding/paas/v4"},
+		{"general api by provider name", ProviderZaiApi, "https://api.z.ai/api/paas/v4"},
+		{"coding plan by URL", "custom", "https://api.z.ai/api/coding/paas/v4"},
+		{"CN bigmodel coding by URL", "custom", "https://open.bigmodel.cn/api/coding/paas/v4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			compat := DetectOpenAICompat(Model{Provider: tc.provider, BaseURL: tc.baseURL})
+			if !*compat.ZaiToolStream {
+				t.Error("ZaiToolStream = false, want true for z.ai")
+			}
+		})
+	}
+}
+
+// TestDetectOpenAICompat_ToolStreamOffWithoutZai verifies the capability is
+// z.ai-specific: providers without it keep the flag off so the request builder
+// omits the unknown "tool_stream" field.
+func TestDetectOpenAICompat_ToolStreamOffWithoutZai(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider Provider
+		baseURL  string
+	}{
+		{"openai", ProviderOpenAI, "https://api.openai.com/v1"},
+		{"deepseek", ProviderDeepSeek, "https://api.deepseek.com"},
+		{"opencode-go", ProviderOpenCodeGo, "https://opencode.ai/zen/go/v1"},
+		{"custom non-zai endpoint", ProviderCustom, "https://llm.internal/v1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			compat := DetectOpenAICompat(Model{Provider: tc.provider, BaseURL: tc.baseURL})
+			if *compat.ZaiToolStream {
+				t.Error("ZaiToolStream = true, want false for non-z.ai providers")
+			}
+		})
+	}
+}
+
 func TestDetectOpenAICompat_Poolside(t *testing.T) {
 	cases := []struct {
 		name     string

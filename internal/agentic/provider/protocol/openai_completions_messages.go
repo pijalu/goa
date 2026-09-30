@@ -31,6 +31,25 @@ func applyToolChoice(body map[string]any, tools []map[string]any, toolChoice str
 	}
 }
 
+// applyTools attaches the tool-call surface to the body: the tools array with
+// its tool_choice, plus the z.ai-only "tool_stream": true that opens GLM's
+// dedicated tool-call SSE channel. tool_stream is only meaningful next to a
+// tools array, so it rides along with it and never appears on a NoTools
+// (final-step collapse) request.
+func applyTools(body map[string]any, tools []map[string]any, opts schema.StreamOptions, ctx schema.Context, compat openAICompletionsCompat) {
+	if len(tools) == 0 {
+		if ctx.NoTools {
+			// Final-step collapse (P7): the model must answer text-only.
+			body["tool_choice"] = "none"
+		}
+		return
+	}
+	applyToolChoice(body, tools, opts.ToolChoice, ctx.NoTools)
+	if compat.ZaiToolStream && !ctx.NoTools {
+		body["tool_stream"] = true
+	}
+}
+
 func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.StreamOptions, profile schema.VariantProfile, compat openAICompletionsCompat) map[string]any {
 	messages := convertMessages(model, ctx.Messages, ctx.SystemPrompt, compat)
 	tools := convertTools(ctx.Tools)
@@ -72,12 +91,7 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	if len(tools) > 0 {
-		applyToolChoice(body, tools, opts.ToolChoice, ctx.NoTools)
-	} else if ctx.NoTools {
-		// Final-step collapse (P7): the model must answer text-only.
-		body["tool_choice"] = "none"
-	}
+	applyTools(body, tools, opts, ctx, compat)
 	if compat.SupportsStore {
 		body["store"] = false
 	}

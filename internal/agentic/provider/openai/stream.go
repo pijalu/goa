@@ -133,6 +133,11 @@ func buildParams(model provider.Model, ctx provider.Context, opts provider.Strea
 		if opts.ToolChoice != "" {
 			body["tool_choice"] = opts.ToolChoice
 		}
+		// z.ai GLM: tool_stream opens the dedicated tool-call SSE channel. Only
+		// meaningful next to a tools array, so it rides along with it.
+		if provider.ToBool(compat.ZaiToolStream, false) {
+			body["tool_stream"] = true
+		}
 	} else if ctx.NoTools {
 		// Final-step collapse (P7): the model must answer text-only.
 		body["tool_choice"] = "none"

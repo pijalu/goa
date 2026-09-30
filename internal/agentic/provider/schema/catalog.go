@@ -79,6 +79,11 @@ type ProviderCompat struct {
 	RequiresReasoningContentOnAssistantMessages bool
 	// ToolResultAsUser sends tool results as user messages (local/Gemma/Qwen).
 	ToolResultAsUser bool
+	// ToolStream sends the top-level "tool_stream": true field next to the
+	// tools array, enabling z.ai's dedicated tool-call SSE channel (pi sends
+	// it for GLM-4.6+). The field is unknown to every other OpenAI-compatible
+	// endpoint, so it stays false outside the z.ai catalog entries.
+	ToolStream bool
 	// Local marks providers that need no API key (LM Studio, Ollama).
 	Local bool
 }
@@ -403,7 +408,7 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.z.ai/api/coding/paas/v4",
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai-coding-plan",
 		URLPatterns: []string{"api.z.ai/api/coding", "open.bigmodel.cn/api/coding", "zai-coding", "zai-coding-cn", "zai-coding-plan"},
-		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
+		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true, ToolStream: true},
 		// Long retention by default: sends prompt_cache_key (the agent's cache
 		// session identity) so GLM prefix-cache hits stop depending on
 		// content-keyed routing (server-side evictions observed 2026-08-19).
@@ -415,7 +420,7 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.z.ai/api/paas/v4",
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai",
 		URLPatterns: []string{"api.z.ai", "open.bigmodel.cn"},
-		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
+		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true, ToolStream: true},
 		// Same affinity rationale as the coding entry above (shared endpoint
 		// family; live-probed field acceptance).
 		DefaultCacheRetention: CacheRetentionLong,

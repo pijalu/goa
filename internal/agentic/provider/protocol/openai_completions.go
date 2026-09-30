@@ -118,7 +118,21 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 	// boundary). Without it, long retention silently sent no cache identity.
 	c.SupportsLongCacheRetention = supportsLongCacheRetention(model)
 	c.SupportsPromptCache = profile.Compat.SupportsPromptCache
+	// The provider-layer compat struct never crosses the protocol boundary, so
+	// the tool_stream capability is resolved HERE from the wire-level sources:
+	// the variant profile first (user overrides), then the catalog entry for the
+	// provider/endpoint. Left unset, z.ai would never receive tool_stream:true
+	// and the flag in provider.OpenAICompletionsCompat would stay dead.
+	c.ZaiToolStream = profile.Compat.ToolStream || catalogToolStream(model)
 	return c
+}
+
+// catalogToolStream reports whether the model's provider/endpoint is catalogued
+// with the tool_stream capability (z.ai). Providers matched only by base URL
+// (custom endpoints pointing at a z.ai host) resolve through the URL matcher.
+func catalogToolStream(model schema.Model) bool {
+	def := schema.MatchProviderByNameOrURL(model.Provider, model.BaseURL)
+	return def != nil && def.Compat.ToolStream
 }
 
 // ---------------------------------------------------------------------------

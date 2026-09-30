@@ -49,9 +49,13 @@ type CompatFlags struct {
 	ThinkingExtraBody                           map[string]any `json:"thinking_extra_body,omitempty"`
 	StreamIncludesUsage                         bool           `json:"stream_includes_usage,omitempty"`
 	RequiresEmptyToolArguments                  bool           `json:"requires_empty_tool_arguments,omitempty"`
-	DropNullContent                             bool           `json:"drop_null_content,omitempty"`
-	ImageDetailSupported                        bool           `json:"image_detail_supported,omitempty"`
-	ImageURLScheme                              string         `json:"image_url_scheme,omitempty"`
+	// ToolStream sends the z.ai top-level "tool_stream": true field alongside the
+	// tools array, opening GLM's dedicated tool-call SSE channel. Off by default:
+	// the field is unknown to every other OpenAI-compatible endpoint.
+	ToolStream           bool   `json:"tool_stream,omitempty"`
+	DropNullContent      bool   `json:"drop_null_content,omitempty"`
+	ImageDetailSupported bool   `json:"image_detail_supported,omitempty"`
+	ImageURLScheme       string `json:"image_url_scheme,omitempty"`
 	// SupportsTemperature, when explicitly false, omits the temperature field
 	// from the request. Some endpoints (e.g. kimi-code) reject any temperature
 	// other than their fixed default with HTTP 400 "invalid temperature";
