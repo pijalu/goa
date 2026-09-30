@@ -209,7 +209,10 @@ func TestSave_RollsBackContradictoryConfig(t *testing.T) {
 		t.Fatalf("load defaults: %v", err)
 	}
 
-	// First a legal save: establishes the previous-good bytes on disk.
+	// First a legal save: establishes the previous-good bytes on disk. The
+	// window is pinned so the pair is judged against a known stall (3/4 of
+	// 40s = 30s), not the shipped default.
+	cfg.Execution.ActivityTimeout = "40s"
 	cfg.Execution.ActivityWarnAfter = "20s"
 	if err := cl.Save(cfg); err != nil {
 		t.Fatalf("legal Save: %v", err)
@@ -219,11 +222,12 @@ func TestSave_RollsBackContradictoryConfig(t *testing.T) {
 		t.Fatalf("read legal save: %v", err)
 	}
 
-	// Then the contradictory save: refused, previous bytes restored.
-	cfg.Execution.ActivityWarnAfter = "45s"
+	// Then the contradictory save: a lead past the 30s event stall, refused
+	// with the previous bytes restored.
+	cfg.Execution.ActivityWarnAfter = "40s"
 	err = cl.Save(cfg)
 	if err == nil {
-		t.Fatal("Save accepted a lead equal to the window")
+		t.Fatal("Save accepted a lead beyond the stall window")
 	}
 	if !strings.Contains(err.Error(), "restored") {
 		t.Errorf("error %q does not say the previous home config was restored", err)
@@ -238,7 +242,7 @@ func TestSave_RollsBackContradictoryConfig(t *testing.T) {
 }
 
 // TestSaveHomeField_HealsBareStallOnUnrelatedWrite covers the reported
-// poisoning shape: a home config carrying bare "60"/"45" stall values (no
+// poisoning shape: a home config carrying bare "60"/"30" stall values (no
 // units). An UNRELATED settings write must not be wedged by the file and
 // must not preserve the poison: the guard canonicalizes the bare values in
 // the document (same heal the loader applies at startup), so the file on
@@ -249,7 +253,7 @@ func TestSaveHomeField_HealsBareStallOnUnrelatedWrite(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	broken := "execution:\n  activity_timeout: \"60\"\n  activity_warn_after: \"45\"\n"
+	broken := "execution:\n  activity_timeout: \"60\"\n  activity_warn_after: \"30\"\n"
 	cfgDir := filepath.Join(home, ".goa")
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatalf("seed config dir: %v", err)
@@ -271,12 +275,12 @@ func TestSaveHomeField_HealsBareStallOnUnrelatedWrite(t *testing.T) {
 		t.Fatalf("read back: %v", err)
 	}
 	text := string(raw)
-	for _, want := range []string{`activity_timeout: "60s"`, `activity_warn_after: "45s"`, "retries: 12"} {
+	for _, want := range []string{`activity_timeout: "60s"`, `activity_warn_after: "30s"`, "retries: 12"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("healed file must contain %q, got:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "activity_timeout: \"60\"\n") || strings.Contains(text, "activity_warn_after: \"45\"\n") {
+	if strings.Contains(text, "activity_timeout: \"60\"\n") || strings.Contains(text, "activity_warn_after: \"30\"\n") {
 		t.Errorf("bare unit-less values survived the write:\n%s", text)
 	}
 	if !strings.Contains(captured, "has no time unit") {

@@ -89,8 +89,10 @@ every layer is opt-in except the hard ceiling.
 
 Deprecated fallbacks *(legacy)*: `execution.token_critical` (`90`) maps onto the
 hard ceiling when no compression thresholds are set; `execution.token_warning`
-(`70`), `execution.activity_timeout` (`"30s"`) and `execution.error_threshold`
-(`0.5`) remain in the schema but are not consumed by current runtime paths.
+(`70`) and `execution.error_threshold` (`0.5`) remain in the schema but are not
+consumed by current runtime paths. `execution.activity_timeout` is NOT one of
+them: it is the live stream byte-idle budget (`"5m"`), with the event-stall
+watchdog at `3/4` of it — see the stall-timing section in `CONFIGURATION.md`.
 
 ## Goals (budgets & watchdogs)
 

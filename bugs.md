@@ -40,32 +40,8 @@ Closed in this round (moved to `docs/archive/`):
   `docs/archive/bugs-20260930-zai-tool-stream.md`
 - "No `max_tokens` cap on reasoning-capable providers" →
   `docs/archive/bugs-20260930-reasoning-max-tokens-cap.md`
-
----
-
-## 2. Shipped `activity_timeout` default is too short for reasoning models (MEDIUM)
-
-**Observed.** `config/user.yaml` pins `activity_timeout: 60s`, but the shipped
-default is `2m` (`provider.DefaultStreamIdleTimeout`). 60s is short for a
-reasoning model — export A request 17 legitimately ran 80.7s. The same key also
-drives *two* racing guards (byte-level `idleTimeoutReader` and the event-level
-watchdog), both wired from `execution.activity_timeout` at
-`provider/manager_streamopts.go:38-46`.
-
-**Expected.** The default tolerates long reasoning turns, and the two guards do
-not race on one budget.
-
-**Fix plan.**
-1. Raise the shipped default stall window to comfortably exceed a long reasoning
-   turn; keep it configurable.
-2. Document the reasoning-model trade-off in `docs/CONFIGURATION.md`.
-3. Ensure the byte-level reader and the event watchdog cannot both fire on the
-   same silence window (single owner, or event watchdog strictly inside the byte
-   budget).
-4. Test: assert the byte guard does not pre-empt the event watchdog for the same
-   silence interval.
-
-**Validation.** Unit tests on timeout resolution + watchdog ordering.
+- "Shipped `activity_timeout` default too short for reasoning models" →
+  `docs/archive/bugs-20260930-activity-timeout-reasoning-window.md`
 
 ---
 

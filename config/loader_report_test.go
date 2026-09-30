@@ -68,14 +68,14 @@ func TestLoadWithReport_FallsBackToDefaultsOnGarbageStallValue(t *testing.T) {
 	if rep.FallbackErr == nil || !strings.Contains(rep.FallbackErr.Error(), "activity_timeout") {
 		t.Errorf("FallbackErr must name activity_timeout, got: %v", rep.FallbackErr)
 	}
-	if got := cfg.Execution.ActivityTimeout; got != "45s" {
+	if got := cfg.Execution.ActivityTimeout; got != "5m" {
 		t.Errorf("fallback config must carry the default window, got %q", got)
 	}
 }
 
 func TestLoadWithReport_HealsBareStallValues(t *testing.T) {
 	home := isolatedHome(t)
-	if err := os.WriteFile(homeConfigPath(home), []byte("execution:\n  activity_timeout: 60\n  activity_warn_after: 45\n"), 0o644); err != nil {
+	if err := os.WriteFile(homeConfigPath(home), []byte("execution:\n  activity_timeout: 60\n  activity_warn_after: 30\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	restore := captureStderr(t)
@@ -91,8 +91,8 @@ func TestLoadWithReport_HealsBareStallValues(t *testing.T) {
 	if len(rep.Healed) == 0 || !strings.Contains(strings.Join(rep.Healed, ";"), "config.yaml") {
 		t.Errorf("Healed must name config.yaml, got: %v", rep.Healed)
 	}
-	if cfg.Execution.ActivityTimeout != "60s" || cfg.Execution.ActivityWarnAfter != "45s" {
-		t.Errorf("healed values = %q/%q, want 60s/45s", cfg.Execution.ActivityTimeout, cfg.Execution.ActivityWarnAfter)
+	if cfg.Execution.ActivityTimeout != "60s" || cfg.Execution.ActivityWarnAfter != "30s" {
+		t.Errorf("healed values = %q/%q, want 60s/30s", cfg.Execution.ActivityTimeout, cfg.Execution.ActivityWarnAfter)
 	}
 	if !strings.Contains(captured, "Warning:") {
 		t.Errorf("heal must warn on stderr, got:\n%s", captured)
@@ -117,7 +117,7 @@ func TestLoadWithReport_DropsUnparseableYAMLLayer(t *testing.T) {
 	if !strings.HasSuffix(rep.Dropped[0].Source, "config.yaml") {
 		t.Errorf("Dropped[0].Source = %q, want the home config path", rep.Dropped[0].Source)
 	}
-	if cfg.Execution.ActivityTimeout != "45s" {
+	if cfg.Execution.ActivityTimeout != "5m" {
 		t.Errorf("defaults must apply for the dropped layer, got %q", cfg.Execution.ActivityTimeout)
 	}
 	if !strings.Contains(captured, "Warning: ignoring invalid config") {
@@ -154,7 +154,7 @@ func repairHomeWith(t *testing.T, yamlText string) (cl *CascadeLoader, path stri
 }
 
 func TestRepairLayerFile_BarePairRepairedWithBackup(t *testing.T) {
-	cl, path, original := repairHomeWith(t, "execution:\n  activity_timeout: \"60\"\n  activity_warn_after: \"45\"\n")
+	cl, path, original := repairHomeWith(t, "execution:\n  activity_timeout: \"60\"\n  activity_warn_after: \"30\"\n")
 	restore := captureRepairStderr(t)
 	backup, err := cl.RepairLayerFile(path)
 	captured := restore()
@@ -175,7 +175,7 @@ func TestRepairLayerFile_BarePairRepairedWithBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read repaired: %v", err)
 	}
-	for _, want := range []string{"60s", "45s"} {
+	for _, want := range []string{"60s", "30s"} {
 		if !strings.Contains(string(repaired), want) {
 			t.Errorf("repaired file must contain %q, got:\n%s", want, repaired)
 		}
@@ -188,8 +188,8 @@ func TestRepairLayerFile_BarePairRepairedWithBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repaired file must load: %v", err)
 	}
-	if cfg.Execution.ActivityTimeout != "60s" || cfg.Execution.ActivityWarnAfter != "45s" {
-		t.Errorf("loaded values = %q/%q, want 60s/45s", cfg.Execution.ActivityTimeout, cfg.Execution.ActivityWarnAfter)
+	if cfg.Execution.ActivityTimeout != "60s" || cfg.Execution.ActivityWarnAfter != "30s" {
+		t.Errorf("loaded values = %q/%q, want 60s/30s", cfg.Execution.ActivityTimeout, cfg.Execution.ActivityWarnAfter)
 	}
 }
 
@@ -219,7 +219,7 @@ func TestRepairLayerFile_RemovesGarbageStallKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repaired file must load: %v", err)
 	}
-	if cfg.Execution.ActivityTimeout != "45s" {
+	if cfg.Execution.ActivityTimeout != "5m" {
 		t.Errorf("default must apply after key removal, got %q", cfg.Execution.ActivityTimeout)
 	}
 }

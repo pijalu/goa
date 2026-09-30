@@ -143,24 +143,24 @@ func TestLoad_BareStallValuesHealed(t *testing.T) {
 	tests := []loadHealCase{
 		{
 			name:       "reported pair (quoted bare values) healed",
-			yaml:       "execution:\n  activity_timeout: \"60\"\n  activity_warn_after: \"45\"\n",
+			yaml:       "execution:\n  activity_timeout: \"60\"\n  activity_warn_after: \"30\"\n",
 			wantTime:   "60s",
-			wantWarn:   "45s",
+			wantWarn:   "30s",
 			wantHealed: true,
 		},
 		{
 			name:       "unquoted bare scalars healed the same way",
-			yaml:       "execution:\n  activity_timeout: 60\n  activity_warn_after: 45\n",
+			yaml:       "execution:\n  activity_timeout: 60\n  activity_warn_after: 30\n",
 			wantTime:   "60s",
-			wantWarn:   "45s",
+			wantWarn:   "30s",
 			wantHealed: true,
 		},
 		{
 			name:     "bare window pinned, warn supplied by the cascade default",
 			yaml:     "execution:\n  activity_timeout: 60\n",
 			wantTime: "60s",
-			wantWarn: "30s",
-			// The layer's bare window is healed; the warn default (30s) is
+			wantWarn: "3m20s",
+			// The layer's bare window is healed; the warn default (3m20s) is
 			// supplied by the cascade after the merge.
 			wantHealed: true,
 		},

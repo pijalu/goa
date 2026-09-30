@@ -214,7 +214,17 @@ func streamResultUsage(stream *schema.AssistantMessageEventStream) *schema.Usage
 
 func selectTransport(opts schema.StreamOptions) transport.Transport {
 	if opts.Transport == schema.TransportWebSocket {
-		return &transport.WebSocketTransport{HeaderTimeout: 20 * time.Second}
+		// The WebSocket message-idle guard is the byte-level backstop for this
+		// transport, so it gets the SAME byte budget the SSE reader resolves
+		// (provider.DefaultStreamIdleTimeout when unset) — not its own fixed
+		// 2m default. The agent's event watchdog owns the silence window at 3/4
+		// of that budget, and a backstop that expired EARLIER than the watchdog
+		// would pre-empt the warn-then-retry path (bugs.md #2).
+		idle := opts.IdleTimeout
+		if idle <= 0 {
+			idle = DefaultStreamIdleTimeout
+		}
+		return &transport.WebSocketTransport{HeaderTimeout: 20 * time.Second, IdleTimeout: idle}
 	}
 	return transport.Default()
 }

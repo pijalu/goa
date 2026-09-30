@@ -331,7 +331,7 @@ func applyStallPairPolicy(ctx core.Context, key, value string, candidate *config
 	}
 	if key == "execution.activity_warn_after" {
 		writeFmt(ctx, "Refusing to set %s = %s: %s (not applied, not saved)\n", key, value, desc)
-		ctx.Flash(fmt.Sprintf("Rejected %s = %s: the stall warning must be shorter than the auto-retry window", key, value))
+		ctx.Flash(fmt.Sprintf("Rejected %s = %s: the stall warning must be shorter than the auto-retry stall window", key, value))
 		return true, false
 	}
 	candidate.Execution.ActivityWarnAfter = ""

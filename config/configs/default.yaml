@@ -22,14 +22,19 @@ execution:
   token_critical: 90
   loop_warning: 10
   loop_interrupt: 15
-  # Stall timing (see docs/limits): activity_timeout is the silent-stream
-  # window that ends in an automatic retry; activity_warn_after is how long
-  # the provider must be quiet before the user is told "provider quiet for Xs —
-  # still waiting; will auto-retry after Ys of silence". Keep it below
-  # activity_timeout; a value at or above the window falls back to two thirds
-  # of it. Both are editable live via /config → Retry settings and /config:set.
-  activity_timeout: "45s"
-  activity_warn_after: "30s"
+  # Stall timing (see docs/limits and docs/CONFIGURATION.md): activity_timeout
+  # is the byte-idle budget for a stream — the window of complete silence that
+  # ends in an automatic retry. It is deliberately LONG: a reasoning model
+  # emits no bytes at all while it thinks (a captured z.ai request ran 80.7s
+  # before its first token), so a short window kills healthy turns. The event
+  # watchdog fires at 3/4 of it (3m45s) and owns the warn-then-retry path; the
+  # byte-level reader keeps the full 5m as its backstop. activity_warn_after is
+  # how long the provider must be quiet before the user is told "provider quiet
+  # for Xs — still waiting; will auto-retry after Ys of silence". Keep it below
+  # the event stall; a value at or above it falls back to two thirds of it. Both
+  # are editable live via /config → Retry settings and /config:set.
+  activity_timeout: "5m"
+  activity_warn_after: "3m20s"
   error_threshold: 0.5
   worktree_mode: "multi_agent"
   auto_save_model: true

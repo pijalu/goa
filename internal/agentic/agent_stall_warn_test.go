@@ -11,10 +11,10 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// TestStallWarnAfter_DefaultsToTwoThirdsOfWindow: with the shipped defaults
-// (execution.activity_timeout 45s, execution.activity_warn_after unset) the
-// stall warning must fire at 30s — two thirds of the window — so the user is
-// told before the automatic retry at 45s.
+// TestStallWarnAfter_DefaultsToTwoThirdsOfWindow: with no explicit lead
+// (execution.activity_warn_after unset) the stall warning must fire at two
+// thirds of the EVENT stall — three quarters of the byte budget — so the user
+// is told before the automatic retry, and before the byte-level guard, too.
 func TestStallWarnAfter_DefaultsToTwoThirdsOfWindow(t *testing.T) {
 	a := NewAgent(Config{})
 	cases := []struct {
@@ -24,22 +24,26 @@ func TestStallWarnAfter_DefaultsToTwoThirdsOfWindow(t *testing.T) {
 		reason string
 	}{
 		{
-			name:   "shipped 45s window derives 30s",
+			name:   "45s byte budget derives 22.5s",
 			opts:   provider.StreamOptions{IdleTimeout: 45 * time.Second},
-			want:   30 * time.Second,
-			reason: "two thirds of the configured window",
+			want:   22500 * time.Millisecond,
+			reason: "two thirds of the 33.75s event stall",
 		},
 		{
-			name:   "provider default 2m window stays proportional",
+			name:   "provider default budget stays proportional",
 			opts:   provider.StreamOptions{},
-			want:   provider.DefaultStreamIdleTimeout * 2 / 3,
-			reason: "no explicit window → provider default, still two thirds",
+			want:   provider.EventStallTimeout(provider.DefaultStreamIdleTimeout) * 2 / 3,
+			reason: "no explicit window → provider default, still two thirds of its event stall",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := a.effectiveStallWarnAfter(tc.opts); got != tc.want {
+			got := a.effectiveStallWarnAfter(tc.opts)
+			if got != tc.want {
 				t.Errorf("effectiveStallWarnAfter(%+v) = %s, want %s (%s)", tc.opts, got, tc.want, tc.reason)
+			}
+			if stall := a.effectiveEventStallTimeout(tc.opts); got >= stall {
+				t.Errorf("derived lead %s must stay strictly inside the %s event stall", got, stall)
 			}
 		})
 	}
@@ -59,7 +63,8 @@ func TestStallWarnAfter_ExplicitOverride(t *testing.T) {
 // window would never precede the retry it announces (and could never fire at
 // all), so the agent derives two thirds instead. This is the case a
 // configuration-layer cross-check must NOT reject: activity_timeout is commonly
-// pinned (e.g. 30s) while activity_warn_after keeps the shipped 30s default.
+// pinned (e.g. 30s) by a home or project layer while activity_warn_after keeps
+// the cascade default.
 func TestStallWarnAfter_IgnoredAtOrBeyondStallWindow(t *testing.T) {
 	a := NewAgent(Config{})
 	cases := []struct {
@@ -81,33 +86,37 @@ func TestStallWarnAfter_IgnoredAtOrBeyondStallWindow(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			want := tc.opts.IdleTimeout * 2 / 3
+			stall := a.effectiveEventStallTimeout(tc.opts)
+			want := stall * 2 / 3
 			if got := a.effectiveStallWarnAfter(tc.opts); got != want {
 				t.Errorf("effectiveStallWarnAfter(%+v) = %s, want the derived %s", tc.opts, got, want)
 			}
-			if got := a.effectiveStallWarnAfter(tc.opts); got >= tc.opts.IdleTimeout {
-				t.Errorf("derived lead %s must stay strictly inside the %s window", got, tc.opts.IdleTimeout)
+			if got := a.effectiveStallWarnAfter(tc.opts); got >= stall {
+				t.Errorf("derived lead %s must stay strictly inside the %s event stall", got, stall)
 			}
 		})
 	}
 }
 
-// TestQuietWarningMessage_ByDefaultReports30sAnd45s pins the exact
-// user-visible text for the shipped defaults:
+// TestQuietWarningMessage_ByDefaultReportsShippedTiming pins the exact
+// user-visible text for the shipped defaults: the lead comes from
+// execution.activity_warn_after (3m20s) and the reported deadline is the event
+// stall the watchdog actually retries on (3m45s = three quarters of the 5m
+// byte budget):
 //
-//	provider quiet for 30s — still waiting; will auto-retry after 45s of silence
+//	provider quiet for 3m20s — still waiting; will auto-retry after 3m45s of silence
 //
 // It also asserts the message carries the values the agent actually uses (the
 // lead from effectiveStallWarnAfter and the window from
 // effectiveEventStallTimeout) rather than hard-coded numbers.
-func TestQuietWarningMessage_ByDefaultReports30sAnd45s(t *testing.T) {
-	shipped := provider.StreamOptions{IdleTimeout: 45 * time.Second}
+func TestQuietWarningMessage_ByDefaultReportsShippedTiming(t *testing.T) {
+	shipped := provider.StreamOptions{IdleTimeout: 5 * time.Minute, ActivityWarnAfter: 200 * time.Second}
 
-	agent, obs := quietTestAgent(t, provider.Api("test-stall-warn-message"), 45*time.Second)
+	agent, obs := quietTestAgent(t, provider.Api("test-stall-warn-message"), 5*time.Minute)
 	warnAfter := agent.effectiveStallWarnAfter(shipped)
 	stall := agent.effectiveEventStallTimeout(shipped)
-	if warnAfter != 30*time.Second || stall != 45*time.Second {
-		t.Fatalf("shipped timing = warn %s / retry %s, want 30s / 45s", warnAfter, stall)
+	if warnAfter != 200*time.Second || stall != 225*time.Second {
+		t.Fatalf("shipped timing = warn %s / retry %s, want 3m20s / 3m45s", warnAfter, stall)
 	}
 
 	agent.emitQuietWarning(warnAfter, stall)
@@ -118,7 +127,7 @@ func TestQuietWarningMessage_ByDefaultReports30sAnd45s(t *testing.T) {
 			msgs = append(msgs, e.Text)
 		}
 	}
-	want := "provider quiet for 30s — still waiting; will auto-retry after 45s of silence"
+	want := "provider quiet for 3m20s — still waiting; will auto-retry after 3m45s of silence"
 	if len(msgs) != 1 || msgs[0] != want {
 		t.Fatalf("quiet warning = %q, want exactly %q", msgs, want)
 	}
@@ -138,7 +147,7 @@ func TestQuietWarningMessage_FollowsConfiguredTiming(t *testing.T) {
 			got = e.Text
 		}
 	}
-	want := "provider quiet for 20s — still waiting; will auto-retry after 1m0s of silence"
+	want := "provider quiet for 20s — still waiting; will auto-retry after 45s of silence"
 	if got != want {
 		t.Fatalf("quiet warning = %q, want %q", got, want)
 	}

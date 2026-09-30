@@ -78,19 +78,22 @@ type ExecutionConfig struct {
 	TokenCritical int                    `yaml:"token_critical"`
 	LoopWarning   int                    `yaml:"loop_warning"`
 	LoopInterrupt int                    `yaml:"loop_interrupt"`
-	// ActivityTimeout bounds the maximum gap between stream events when the
-	// active provider has no explicit idle_timeout (drives the byte-idle and
-	// event-stall watchdogs, e.g. "45s"). Empty falls back to the 2-minute
-	// default. The stall warning that precedes the automatic retry fires
-	// ActivityWarnAfter into this window.
+	// ActivityTimeout is the byte-idle budget for a stream: the maximum gap
+	// between stream bytes when the active provider has no explicit
+	// idle_timeout. It drives the byte-idle reader (the full budget) and, at
+	// three quarters of it, the event-stall watchdog that owns the
+	// warn-then-retry path. Empty falls back to the 5-minute provider
+	// default. It is deliberately long: reasoning models emit no bytes while
+	// they think. The stall warning that precedes the automatic retry fires
+	// ActivityWarnAfter into the window.
 	ActivityTimeout string `yaml:"activity_timeout"`
 	// ActivityWarnAfter is the stall-warning lead time: how long the provider
 	// must stay silent before the agent emits the user-facing "provider quiet
 	// for Xs — still waiting; will auto-retry after Ys of silence" notice
-	// (X = this value, Y = the effective stall window). It must be shorter than
+	// (X = this value, Y = the effective event stall). It must be shorter than
 	// that window; empty/zero — or a value at or above it — falls back to two
 	// thirds of the window, so the warning always precedes the retry.
-	// Default: "30s" inside a "45s" activity_timeout.
+	// Default: "3m20s" inside a "5m" activity_timeout (event stall 3m45s).
 	ActivityWarnAfter string                `yaml:"activity_warn_after"`
 	ErrorThreshold    float64               `yaml:"error_threshold"`
 	WorktreeMode      internal.WorktreeMode `yaml:"worktree_mode"`

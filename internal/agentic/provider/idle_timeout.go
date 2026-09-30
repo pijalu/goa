@@ -18,7 +18,51 @@ var ErrStreamIdle = errors.New("stream idle timeout: no data received from LLM")
 
 // DefaultStreamIdleTimeout is the maximum time to wait between bytes from a
 // streaming LLM response before treating the connection as stalled.
-const DefaultStreamIdleTimeout = 2 * time.Minute
+//
+// Five minutes, not two: it doubles as the shipped execution.activity_timeout
+// fallback, and a reasoning model legitimately emits no bytes at all while it
+// thinks — a captured z.ai export-A request ran 80.7s of pure silence before
+// its first token (bugs.md #2). A two-minute window killed healthy reasoning
+// turns, so the default now clears a long thinking phase with margin. Callers
+// that need a tighter bound pin providers[].idle_timeout (per stream) or
+// execution.activity_timeout (per agent).
+const DefaultStreamIdleTimeout = 5 * time.Minute
+
+// eventStallNumerator / eventStallDenominator split one silence budget in two:
+// the event-level stall watchdog fires at this fraction of the byte-idle
+// budget, and the byte-level guard keeps the remainder as backstop.
+const (
+	eventStallNumerator   = 3
+	eventStallDenominator = 4
+)
+
+// EventStallTimeout returns the event-level stall budget for a byte-idle
+// budget: strictly inside it, never equal to it.
+//
+// Two guards used to be armed on the SAME budget — the byte-level
+// idleTimeoutReader (reset by every byte, keep-alive comments included) and the
+// agent's event watchdog (reset only by mapped events) — so a stream that went
+// completely silent raced them: whichever timer the scheduler woke first
+// decided the error the user saw, and the byte guard could pre-empt the
+// watchdog that owns the warn-then-retry path (bugs.md #2).
+//
+// The event watchdog now owns the silence window because it is the guard with
+// the recovery semantics (it knows whether the round already delivered a
+// complete answer). The byte guard remains the outer backstop for total
+// silence, keeping the full byte budget. A non-positive budget falls back to
+// DefaultStreamIdleTimeout, matching the reader's own default.
+func EventStallTimeout(byteBudget time.Duration) time.Duration {
+	if byteBudget <= 0 {
+		byteBudget = DefaultStreamIdleTimeout
+	}
+	stall := byteBudget * eventStallNumerator / eventStallDenominator
+	if stall <= 0 {
+		// Sub-nanosecond budgets: keep the split strictly inside by
+		// construction rather than collapsing both guards onto zero.
+		return byteBudget
+	}
+	return stall
+}
 
 // NewIdleTimeoutReader wraps r so that Read returns ErrStreamIdle if no data
 // arrives within timeout. A zero or negative timeout disables the guard and

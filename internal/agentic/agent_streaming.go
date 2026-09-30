@@ -214,9 +214,13 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 }
 
 // effectiveEventStallTimeout returns the maximum wall-clock time the agent
-// waits between stream events before declaring the stream stalled. It derives
-// from opts.IdleTimeout (which the HTTP layer uses as a byte-level idle guard);
-// a zero or negative value falls back to the default idle timeout (2 minutes).
+// waits between stream events before declaring the stream stalled. It is
+// derived from opts.IdleTimeout — the BYTE-idle budget the HTTP layer arms the
+// idleTimeoutReader with — but is deliberately shorter: the event watchdog
+// owns the silence window (it is the guard that warns and then retries), while
+// the byte guard stays armed at the full budget as the backstop for a socket
+// that delivers nothing at all. A zero or negative value falls back to the
+// default byte budget (5 minutes).
 //
 // Unlike the byte-level idle timeout — reset by every byte, including SSE
 // keep-alive comments (": ping") and empty lines — this timeout is reset only
@@ -224,17 +228,15 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 // This prevents indefinite hangs when a provider sends periodic keep-alive
 // bytes but never delivers a meaningful response.
 func (a *Agent) effectiveEventStallTimeout(opts provider.StreamOptions) time.Duration {
-	if opts.IdleTimeout > 0 {
-		return opts.IdleTimeout
-	}
-	return provider.DefaultStreamIdleTimeout
+	return provider.EventStallTimeout(opts.IdleTimeout)
 }
 
 // stallWarnNumerator / stallWarnDenominator express the fallback stall-warning
-// lead as a fraction of the stall window: two thirds, so the shipped pairing is
-// "provider quiet for 30s — still waiting; will auto-retry after 45s of
-// silence" (30s of the 45s execution.activity_timeout), and the warning stays
-// proportionally placed inside the 2-minute fallback window.
+// lead as a fraction of the EVENT stall window: two thirds, so an unset
+// execution.activity_warn_after still lands strictly inside the watchdog and
+// the warning always precedes the automatic retry. With the shipped pairing
+// (activity_timeout 5m → event stall 3m45s → derived lead 2m30s) the user is
+// warned a minute before the retry instead of on the same tick.
 const (
 	stallWarnNumerator   = 2
 	stallWarnDenominator = 3
@@ -387,9 +389,9 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 	// tell the user the provider is quiet and when the watchdog will act —
 	// without this, a content→silence gap is just a dead spinner until the
 	// stall fires minutes later, which reads as "stuck". The lead is
-	// execution.activity_warn_after (30s by default) inside the
-	// execution.activity_timeout window (45s by default); see
-	// effectiveStallWarnAfter.
+	// execution.activity_warn_after (3m20s by default) inside the
+	// execution.activity_timeout window (5m by default, of which the event
+	// watchdog uses the first 3m45s); see effectiveStallWarnAfter.
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
 	quietAfter := a.effectiveStallWarnAfter(opts)

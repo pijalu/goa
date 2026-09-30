@@ -24,8 +24,8 @@ import (
 func stallTimingContext(t *testing.T) (*core.Context, *selectRecorder, *inputRecorder) {
 	t.Helper()
 	ctx, sr, ir := stallTimingContextWithHomeConfig(t, "")
-	if ctx.Config.Execution.ActivityTimeout != "45s" || ctx.Config.Execution.ActivityWarnAfter != "30s" {
-		t.Fatalf("precondition: shipped stall timing = (%q, %q), want (45s, 30s)",
+	if ctx.Config.Execution.ActivityTimeout != "5m" || ctx.Config.Execution.ActivityWarnAfter != "3m20s" {
+		t.Fatalf("precondition: shipped stall timing = (%q, %q), want (5m, 3m20s)",
 			ctx.Config.Execution.ActivityTimeout, ctx.Config.Execution.ActivityWarnAfter)
 	}
 	return ctx, sr, ir
@@ -92,10 +92,11 @@ func liveStreamOptions(t *testing.T, ctx *core.Context) agenticprovider.StreamOp
 func TestConfigSet_ActivityWarnAfterAppliesAndPersists(t *testing.T) {
 	ctx, _, _ := stallTimingContext(t)
 
-	// Shipped defaults already reach the live session.
+	// Shipped defaults already reach the live session: the 5m byte budget and
+	// the 3m20s warning lead.
 	live := liveStreamOptions(t, ctx)
-	if live.ActivityWarnAfter != 30*time.Second || live.IdleTimeout != 45*time.Second {
-		t.Fatalf("live options = warn %s / window %s, want 30s / 45s", live.ActivityWarnAfter, live.IdleTimeout)
+	if live.ActivityWarnAfter != 200*time.Second || live.IdleTimeout != 5*time.Minute {
+		t.Fatalf("live options = warn %s / window %s, want 3m20s / 5m", live.ActivityWarnAfter, live.IdleTimeout)
 	}
 
 	if err := applyConfigSet(*ctx, "execution.activity_warn_after", "20s"); err != nil {
@@ -130,10 +131,15 @@ func TestConfigSet_ActivityWarnAfterAppliesAndPersists(t *testing.T) {
 
 // TestConfigSet_ActivityTimeoutPushesLiveOptions: the retry window itself must
 // also be settable from /config and pushed into the running session, so the
-// user can retune 45s/30s live.
+// user can retune the shipped 5m/3m20s pair live.
 func TestConfigSet_ActivityTimeoutPushesLiveOptions(t *testing.T) {
 	ctx, _, _ := stallTimingContext(t)
 
+	// Start from a lead that still fits the new 60s window (its event stall is
+	// 45s), so the window change is the only thing under test.
+	if err := applyConfigSet(*ctx, "execution.activity_warn_after", "20s"); err != nil {
+		t.Fatalf("applyConfigSet(warn): %v", err)
+	}
 	if err := applyConfigSet(*ctx, "execution.activity_timeout", "60s"); err != nil {
 		t.Fatalf("applyConfigSet: %v", err)
 	}
@@ -151,8 +157,8 @@ func TestConfigSet_ActivityTimeoutPushesLiveOptions(t *testing.T) {
 	if live.IdleTimeout != 60*time.Second {
 		t.Errorf("running session window = %s, want 60s (must apply without restart)", live.IdleTimeout)
 	}
-	if live.ActivityWarnAfter != 30*time.Second {
-		t.Errorf("warning lead = %s, want the configured 30s (window change must not disturb it)", live.ActivityWarnAfter)
+	if live.ActivityWarnAfter != 20*time.Second {
+		t.Errorf("warning lead = %s, want the configured 20s (window change must not disturb it)", live.ActivityWarnAfter)
 	}
 }
 
@@ -173,15 +179,17 @@ func TestRetrySettingsMenu_ShowsStallTiming(t *testing.T) {
 	if !ok {
 		t.Fatalf("retry settings menu is missing the retry-window entry: %+v", sr.options)
 	}
-	if windowDesc != "45 (warn at 30)" {
-		t.Errorf("retry-window description = %q, want \"45 (warn at 30)\"", windowDesc)
+	// The window shown is the EVENT stall the agent retries on (3/4 of the 5m
+	// byte budget = 225s), with the configured lead inside it.
+	if windowDesc != "225 (warn at 200)" {
+		t.Errorf("retry-window description = %q, want \"225 (warn at 200)\"", windowDesc)
 	}
 	warnDesc, ok := descriptions["stall_warn"]
 	if !ok {
 		t.Fatalf("retry settings menu is missing the stall-warning entry: %+v", sr.options)
 	}
-	if warnDesc != "30" {
-		t.Errorf("stall-warning description = %q, want \"30\"", warnDesc)
+	if warnDesc != "200" {
+		t.Errorf("stall-warning description = %q, want \"200\"", warnDesc)
 	}
 
 	// Editing the warning lead from the menu persists it and re-renders with the
@@ -207,8 +215,8 @@ func TestRetrySettingsMenu_ShowsStallTiming(t *testing.T) {
 }
 
 // TestRetrySettingsMenu_DerivesWarningWhenUnset: with no explicit lead the menu
-// must show the value the agent would derive (two thirds of the window) rather
-// than an empty field.
+// must show the value the agent would derive (two thirds of the EVENT stall)
+// rather than an empty field.
 func TestRetrySettingsMenu_DerivesWarningWhenUnset(t *testing.T) {
 	ctx, sr, _ := stallTimingContext(t)
 	ctx.Config.Execution.ActivityWarnAfter = ""
@@ -225,11 +233,11 @@ func TestRetrySettingsMenu_DerivesWarningWhenUnset(t *testing.T) {
 			windowDesc = item.Description
 		}
 	}
-	if windowDesc != "45 (warn at 30)" {
-		t.Errorf("derived window description = %q, want \"45 (warn at 30)\"", windowDesc)
+	if windowDesc != "225 (warn at 150)" {
+		t.Errorf("derived window description = %q, want \"225 (warn at 150)\"", windowDesc)
 	}
-	if warnDesc != "30 (derived: 2/3 of 45)" {
-		t.Errorf("derived warning description = %q, want \"30 (derived: 2/3 of 45)\"", warnDesc)
+	if warnDesc != "150 (derived: 2/3 of 225)" {
+		t.Errorf("derived warning description = %q, want \"150 (derived: 2/3 of 225)\"", warnDesc)
 	}
 }
 
@@ -290,8 +298,8 @@ func TestRetrySettingsMenu_PrefillsPlainSeconds(t *testing.T) {
 	_ = menu.showRoot()
 	sr.onSel("retry", true)
 	sr.onSel("stall_timeout", true)
-	if ir.current != "45" {
-		t.Errorf("window prompt prefill = %q, want \"45\"", ir.current)
+	if ir.current != "300" {
+		t.Errorf("window prompt prefill = %q, want \"300\" (5m in plain seconds)", ir.current)
 	}
 	ir.onSub("60", true)
 	if got := ctx.Config.Execution.ActivityTimeout; got != "60s" {
@@ -304,8 +312,10 @@ func TestRetrySettingsMenu_PrefillsPlainSeconds(t *testing.T) {
 	}
 
 	sr.onSel("stall_warn", true)
+	// The shipped 3m20s lead no longer fits the 60s window (its event stall is
+	// 45s), so the prompt offers the value the agent would derive: 2/3 of 45s.
 	if ir.current != "30" {
-		t.Errorf("warning prompt prefill = %q, want \"30\"", ir.current)
+		t.Errorf("warning prompt prefill = %q, want \"30\" (derived 2/3 of the 45s event stall)", ir.current)
 	}
 }
 
@@ -333,7 +343,7 @@ func TestConfigKeyCompletions_StallTiming(t *testing.T) {
 func TestRetrySettingsRootLabel_ShowsStallRetry(t *testing.T) {
 	ctx, _, _ := stallTimingContext(t)
 	label := retrySettingsLabel(ctx.Config)
-	if label != "5 retries, 45 (warn at 30) stall retry" {
+	if label != "5 retries, 225 (warn at 200) stall retry" {
 		t.Errorf("retrySettingsLabel = %q, want the stall timing in plain seconds", label)
 	}
 }
@@ -380,10 +390,11 @@ func drainFlashes(t *testing.T, ctx *core.Context) []string {
 
 // assertStaleWarnLeadGone verifies the drop landed everywhere: memory, home
 // file (override deleted, not merely healed), reload, and the live session.
-func assertStaleWarnLeadGone(t *testing.T, ctx *core.Context) {
+// wantTimeout is the window the test shrank to.
+func assertStaleWarnLeadGone(t *testing.T, ctx *core.Context, wantTimeout string) {
 	t.Helper()
-	if got := ctx.Config.Execution.ActivityTimeout; got != "45s" {
-		t.Errorf("config activity_timeout = %q, want 45s", got)
+	if got := ctx.Config.Execution.ActivityTimeout; got != wantTimeout {
+		t.Errorf("config activity_timeout = %q, want %s", got, wantTimeout)
 	}
 	if got := ctx.Config.Execution.ActivityWarnAfter; got != "" {
 		t.Errorf("config activity_warn_after = %q, want empty (stale lead dropped)", got)
@@ -398,48 +409,51 @@ func assertStaleWarnLeadGone(t *testing.T, ctx *core.Context) {
 	if strings.Contains(string(raw), "activity_warn_after") {
 		t.Errorf("home config still contains the stale lead:\n%s", raw)
 	}
-	// Reload merges the cascade: with the home override deleted the lead
-	// falls back to the shipped default 30s — legal (inside the 45s window).
-	// The point is the stale 45s override is GONE, not that the effective
-	// lead is unset.
+	// Reload merges the cascade: with the home override deleted the lead falls
+	// back to the shipped default. The point is the stale override is GONE, not
+	// that the effective lead is unset.
 	reloaded, err := ctx.ConfigSaver.(*config.CascadeLoader).Load()
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if reloaded.Execution.ActivityTimeout != "45s" {
-		t.Errorf("reloaded activity_timeout = %s, want 45s", reloaded.Execution.ActivityTimeout)
+	if reloaded.Execution.ActivityTimeout != wantTimeout {
+		t.Errorf("reloaded activity_timeout = %s, want %s", reloaded.Execution.ActivityTimeout, wantTimeout)
 	}
-	if reloaded.Execution.ActivityWarnAfter == "45s" {
+	if reloaded.Execution.ActivityWarnAfter == "40s" {
 		t.Errorf("reloaded activity_warn_after = %q, want the stale override gone", reloaded.Execution.ActivityWarnAfter)
 	}
 
-	// Live session: new window, no lead — the agent derives 2/3 (30s of 45s).
+	// Live session: new window, no lead — the agent derives 2/3 of the event
+	// stall.
 	live := liveStreamOptions(t, ctx)
-	if live.IdleTimeout != 45*time.Second {
-		t.Errorf("running session window = %s, want 45s", live.IdleTimeout)
+	if live.IdleTimeout.String() != wantTimeout {
+		t.Errorf("running session window = %s, want %s", live.IdleTimeout, wantTimeout)
 	}
 	if live.ActivityWarnAfter != 0 {
-		t.Errorf("running session lead = %s, want 0 (unset: the agent derives 2/3 of the window)", live.ActivityWarnAfter)
+		t.Errorf("running session lead = %s, want 0 (unset: the agent derives 2/3 of the event stall)", live.ActivityWarnAfter)
 	}
 }
 
 // TestConfigSet_ActivityTimeoutDropsStaleWarnLead: shrinking the retry window
-// below the persisted warning lead must drop the lead — in memory AND on disk,
-// in one /config set — leaving the runtime to derive 2/3 of the new window
-// (bugs.md: goa must never keep or persist a contradictory stall pair).
+// so the persisted warning lead no longer fits must drop the lead — in memory
+// AND on disk, in one /config set — leaving the runtime to derive 2/3 of the
+// new event stall (bugs.md: goa must never keep or persist a contradictory
+// stall pair). The seeded 40s lead is shorter than a 50s window but LONGER
+// than its 37.5s event stall, so this also pins the split: "fits the byte
+// budget" is no longer enough for the lead to survive.
 func TestConfigSet_ActivityTimeoutDropsStaleWarnLead(t *testing.T) {
 	ctx, _, _ := stallTimingContextWithHomeConfig(t,
-		"execution:\n  activity_timeout: 60s\n  activity_warn_after: 45s\n")
-	if ctx.Config.Execution.ActivityTimeout != "60s" || ctx.Config.Execution.ActivityWarnAfter != "45s" {
-		t.Fatalf("precondition: loaded pair = (%s, %s), want (60s, 45s)",
+		"execution:\n  activity_timeout: 60s\n  activity_warn_after: 40s\n")
+	if ctx.Config.Execution.ActivityTimeout != "60s" || ctx.Config.Execution.ActivityWarnAfter != "40s" {
+		t.Fatalf("precondition: loaded pair = (%s, %s), want (60s, 40s)",
 			ctx.Config.Execution.ActivityTimeout, ctx.Config.Execution.ActivityWarnAfter)
 	}
 	drainFlashes(t, ctx)
 
-	if err := applyConfigSet(*ctx, "execution.activity_timeout", "45s"); err != nil {
+	if err := applyConfigSet(*ctx, "execution.activity_timeout", "50s"); err != nil {
 		t.Fatalf("applyConfigSet: %v", err)
 	}
-	assertStaleWarnLeadGone(t, ctx)
+	assertStaleWarnLeadGone(t, ctx, "50s")
 
 	// The drop must be announced, not silent.
 	announced := false
@@ -457,19 +471,19 @@ func TestConfigSet_ActivityTimeoutDropsStaleWarnLead(t *testing.T) {
 // memory, home file (which must not even appear), and the live session.
 func assertWarnSetRefused(t *testing.T, ctx *core.Context) {
 	t.Helper()
-	if got := ctx.Config.Execution.ActivityWarnAfter; got != "30s" {
-		t.Errorf("config activity_warn_after = %q, want 30s (refusal must not change it)", got)
+	if got := ctx.Config.Execution.ActivityWarnAfter; got != "3m20s" {
+		t.Errorf("config activity_warn_after = %q, want 3m20s (refusal must not change it)", got)
 	}
-	if got := ctx.Config.Execution.ActivityTimeout; got != "45s" {
-		t.Errorf("config activity_timeout = %q, want 45s", got)
+	if got := ctx.Config.Execution.ActivityTimeout; got != "5m" {
+		t.Errorf("config activity_timeout = %q, want 5m", got)
 	}
 	homePath := ctx.ConfigSaver.(*config.CascadeLoader).HomeConfigPath()
 	if _, err := os.Stat(homePath); err == nil {
 		t.Error("refused /config set created a home config file")
 	}
 	live := liveStreamOptions(t, ctx)
-	if live.ActivityWarnAfter != 30*time.Second || live.IdleTimeout != 45*time.Second {
-		t.Errorf("running session options = lead %s / window %s, want 30s / 45s",
+	if live.ActivityWarnAfter != 200*time.Second || live.IdleTimeout != 5*time.Minute {
+		t.Errorf("running session options = lead %s / window %s, want 3m20s / 5m",
 			live.ActivityWarnAfter, live.IdleTimeout)
 	}
 	rejected := false
@@ -484,10 +498,12 @@ func assertWarnSetRefused(t *testing.T, ctx *core.Context) {
 }
 
 // TestConfigSet_ActivityWarnAboveWindowRejected: an explicitly typed warning
-// lead at or beyond the retry window is REFUSED — nothing changes in memory,
-// on disk, or in the running session — and the rejection is visible (flash).
+// lead at or beyond the stall window the agent retries on is REFUSED — nothing
+// changes in memory, on disk, or in the running session — and the rejection is
+// visible (flash). The shipped 5m budget means the boundary is the 3m45s event
+// stall, not 5m: a 4m lead fits the byte budget but could never fire.
 func TestConfigSet_ActivityWarnAboveWindowRejected(t *testing.T) {
-	for _, warn := range []string{"90s", "45s"} { // beyond AND exactly at the window
+	for _, warn := range []string{"4m", "3m45s"} { // beyond AND exactly at the event stall
 		t.Run(warn, func(t *testing.T) {
 			ctx, _, _ := stallTimingContext(t)
 			drainFlashes(t, ctx)
@@ -512,15 +528,15 @@ func TestConfigSet_PersistsCanonicalSeconds(t *testing.T) {
 	if err := applyConfigSet(*ctx, "execution.activity_timeout", "60"); err != nil {
 		t.Fatalf("applyConfigSet(timeout): %v", err)
 	}
-	if err := applyConfigSet(*ctx, "execution.activity_warn_after", "45"); err != nil {
+	if err := applyConfigSet(*ctx, "execution.activity_warn_after", "30"); err != nil {
 		t.Fatalf("applyConfigSet(warn): %v", err)
 	}
 
 	if got := ctx.Config.Execution.ActivityTimeout; got != "60s" {
 		t.Errorf("live activity_timeout = %q, want 60s", got)
 	}
-	if got := ctx.Config.Execution.ActivityWarnAfter; got != "45s" {
-		t.Errorf("live activity_warn_after = %q, want 45s", got)
+	if got := ctx.Config.Execution.ActivityWarnAfter; got != "30s" {
+		t.Errorf("live activity_warn_after = %q, want 30s", got)
 	}
 
 	checkPersistedCanonicalStall(t, ctx)
@@ -528,7 +544,7 @@ func TestConfigSet_PersistsCanonicalSeconds(t *testing.T) {
 }
 
 // checkPersistedCanonicalStall asserts the RAW on-disk bytes after the two
-// bare-second sets: canonical "60s"/"45s" must be present and no bare value
+// bare-second sets: canonical "60s"/"30s" must be present and no bare value
 // may survive the write.
 func checkPersistedCanonicalStall(t *testing.T, ctx *core.Context) {
 	t.Helper()
@@ -538,13 +554,13 @@ func checkPersistedCanonicalStall(t *testing.T, ctx *core.Context) {
 		t.Fatalf("read home config: %v", err)
 	}
 	text := string(raw)
-	for _, want := range []string{"activity_timeout: 60s", "activity_warn_after: 45s"} {
+	for _, want := range []string{"activity_timeout: 60s", "activity_warn_after: 30s"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("persisted file must contain %q, got:\n%s", want, text)
 		}
 	}
 	// Anchored on the newline: "60s\n" must not satisfy a check for "60\n".
-	if strings.Contains(text, "activity_timeout: 60\n") || strings.Contains(text, "activity_warn_after: 45\n") {
+	if strings.Contains(text, "activity_timeout: 60\n") || strings.Contains(text, "activity_warn_after: 30\n") {
 		t.Errorf("raw unit-less values were persisted:\n%s", text)
 	}
 }
@@ -558,12 +574,12 @@ func checkReloadedCanonicalStall(t *testing.T, ctx *core.Context) {
 	if err != nil {
 		t.Fatalf("reload persisted config: %v", err)
 	}
-	if reloaded.Execution.ActivityTimeout != "60s" || reloaded.Execution.ActivityWarnAfter != "45s" {
-		t.Errorf("reloaded = (%q, %q), want (60s, 45s)",
+	if reloaded.Execution.ActivityTimeout != "60s" || reloaded.Execution.ActivityWarnAfter != "30s" {
+		t.Errorf("reloaded = (%q, %q), want (60s, 30s)",
 			reloaded.Execution.ActivityTimeout, reloaded.Execution.ActivityWarnAfter)
 	}
 	live := liveStreamOptions(t, ctx)
-	if live.IdleTimeout != 60*time.Second || live.ActivityWarnAfter != 45*time.Second {
-		t.Errorf("live options = warn %s / window %s, want 45s / 60s", live.ActivityWarnAfter, live.IdleTimeout)
+	if live.IdleTimeout != 60*time.Second || live.ActivityWarnAfter != 30*time.Second {
+		t.Errorf("live options = warn %s / window %s, want 30s / 60s", live.ActivityWarnAfter, live.IdleTimeout)
 	}
 }

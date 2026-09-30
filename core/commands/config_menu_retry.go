@@ -58,19 +58,20 @@ func (m *configMenu) retrySettingHandlers() map[string]func(*configMenu) {
 	}
 }
 
-// activeActivityTimeout returns the effective silent-stream window: the
-// explicit execution.activity_timeout, else the 2-minute fallback the agent
-// uses when the key is empty.
+// activeActivityTimeout returns the effective event-stall window the agent
+// retries on: the configured execution.activity_timeout narrowed to the
+// watchdog's share of the byte budget, else the provider default. The byte
+// guard keeps the full budget as its backstop.
 func activeActivityTimeout(cfg *config.Config) time.Duration {
 	if d, err := time.ParseDuration(cfg.Execution.ActivityTimeout); err == nil && d > 0 {
-		return d
+		return agenticprovider.EventStallTimeout(d)
 	}
-	return agenticprovider.DefaultStreamIdleTimeout
+	return agenticprovider.EventStallTimeout(agenticprovider.DefaultStreamIdleTimeout)
 }
 
 // activityTimeoutLabel renders the auto-retry window and the warning that
 // precedes it, mirroring the values the agent actually uses. Stall-timing
-// values display as plain seconds (bugs.md): "45 (warn at 30)", not "45s".
+// values display as plain seconds (bugs.md): "225 (warn at 200)", not "3m45s".
 func activityTimeoutLabel(cfg *config.Config) string {
 	window := activeActivityTimeout(cfg)
 	return fmt.Sprintf("%s (warn at %s)",

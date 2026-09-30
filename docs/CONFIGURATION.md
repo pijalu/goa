@@ -106,7 +106,8 @@ execution:
   token_critical: 90                  # % of budget → critical
   loop_warning: 10                    # Consecutive same-tool calls before warning
   loop_interrupt: 15                 # Consecutive same-tool calls → interrupt
-  activity_timeout: 30s              # No output → warning
+  activity_timeout: 5m               # Byte-idle budget per stream (event watchdog retries at 3/4: 3m45s)
+  activity_warn_after: 3m20s         # Stall warning lead, must be inside the event stall
   error_threshold: 0.5               # Error rate % → mode auto-downgrade
   worktree_mode: multi_agent         # always | multi_agent
   auto_save_model: true              # Persist model changes to project .goa (home only as fallback); false = legacy home-only
@@ -452,6 +453,51 @@ export OPENAI_API_KEY="sk-..."
 ```
 
 Env vars support `${VAR}` and `${VAR:-default}` interpolation in config values.
+
+## Stall Timing (provider silence)
+
+`execution.activity_timeout` is the **byte-idle budget** of a stream: the window
+of *complete* silence — not one single byte — after which goa stops waiting. It
+is deliberately long, because a **reasoning model emits nothing at all while it
+thinks**. A captured z.ai request ran 80.7s of pure silence before its first
+token; the earlier shipped window of 45s (with a 2-minute fallback) cut healthy
+reasoning turns short. The shipped default is `5m`.
+
+That one budget is split between two guards, so they never race on it:
+
+| Guard | Reset by | Deadline | Role |
+|---|---|---|---|
+| Stall warning (`execution.activity_warn_after`) | any visible event | `3m20s` (derived `2/3` of the event stall when unset) | tells the user the provider is quiet, and when the retry runs |
+| **Event-stall watchdog** | mapped stream events only (text/thinking deltas, tool calls, done) | `3/4` of the byte budget = `3m45s` | **owns** the window: warns, then retries; a round that already delivered a complete answer is finalized instead of replayed |
+| Byte-idle reader | *any* byte, SSE keep-alive comments (`: ping`) included | the full `5m` | backstop for a socket that delivers nothing at all |
+
+So a completely silent stream is terminated by the watchdog (with the
+warn-then-retry path, and a `stream stalled` error the retry logic understands),
+never by the byte reader racing it. A stream that sends keep-alive bytes but no
+*events* only the watchdog can catch.
+
+The warning lead must land **strictly inside the event stall** — a lead between
+the event stall and the byte budget could never fire. Goa refuses such a pair
+at load time (per cascade layer) and when set through `/config:set`; otherwise
+it derives two thirds of the event stall.
+
+**Tuning.** Lower the values on a fast local model, raise them on a slow
+reasoning model:
+
+```yaml
+execution:
+  activity_timeout: "2m"        # local 7B on a fast GPU
+  activity_warn_after: "45s"    # must be < 1m30s (the 2m window's event stall)
+
+execution:
+  activity_timeout: "10m"       # a slow reasoning model with long thinking phases
+  activity_warn_after: ""       # let goa derive it (two thirds of the event stall)
+```
+
+A per-provider `providers[].idle_timeout` overrides the byte budget for that
+provider only; the same `3/4` split applies. Both keys are editable live at
+`/config` → Retry settings or with `/config:set execution.activity_timeout=…`
+(the running session picks them up without a restart).
 
 ## Provider Custom Registry
 

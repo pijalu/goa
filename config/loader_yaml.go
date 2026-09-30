@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 )
 
 func deleteYamlNode(node *yaml.Node, path []string) {
@@ -151,10 +153,10 @@ func warnBareStallDuration(source, key, corrected string) {
 // sanitizeActivityPairLayer corrects a contradictory stall-timing pair WITHIN
 // a single cascade layer: when one file/config source sets BOTH
 // execution.activity_timeout and execution.activity_warn_after and the warning
-// lead is NOT shorter than the retry window, the layer's warn override is
-// dropped — with a visible stderr warning naming the file — so startup
-// proceeds and the stall warning falls back to the cascade default or the
-// runtime's derived two-thirds lead. Rejecting the pair outright orphaned
+// lead is NOT shorter than the event stall the agent retries on, the layer's
+// warn override is dropped — with a visible stderr warning naming the file — so
+// startup proceeds and the stall warning falls back to the cascade default or
+// the runtime's derived two-thirds lead. Rejecting the pair outright orphaned
 // existing installs the moment the check landed (observed: a real
 // ~/.goa/config.yaml with the 45s/45s pair refused to start, and the fatal
 // message never even reached the terminal).
@@ -179,12 +181,13 @@ func sanitizeActivityPairLayer(exec *ExecutionConfig, source string) bool {
 
 // ActivityPairViolation reports whether a config's stall-timing pair is
 // contradictory — BOTH keys set, both parseable, and the warning lead at or
-// beyond the retry window — returning a human-readable description when it
-// is. Empty or unparseable values are NOT a violation: shape errors belong to
-// Config.Validate, and half-set pairs are legitimate (the keys cascade
-// independently; the runtime derives the lead at use). Shared by the
-// load-time heal (sanitizeActivityPairLayer) and the write-path guard
-// (validateConfigBytes) so both sides agree on what "contradictory" means.
+// beyond the event stall derived from the retry window — returning a
+// human-readable description when it is. Empty or unparseable values are NOT a
+// violation: shape errors belong to Config.Validate, and half-set pairs are
+// legitimate (the keys cascade independently; the runtime derives the lead at
+// use). Shared by the load-time heal (sanitizeActivityPairLayer) and the
+// write-path guard (validateConfigBytes) so both sides agree on what
+// "contradictory" means.
 func ActivityPairViolation(exec ExecutionConfig) (string, bool) {
 	if exec.ActivityTimeout == "" || exec.ActivityWarnAfter == "" {
 		return "", false
@@ -197,8 +200,13 @@ func ActivityPairViolation(exec ExecutionConfig) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if warn < timeout {
+	// Compare against the EVENT stall (three quarters of activity_timeout),
+	// not the raw byte budget: that is the deadline the agent actually retries
+	// on, so a lead between the two could never fire. EventStallTimeout is the
+	// single source of that split — the agent calls the same function.
+	stall := agenticprovider.EventStallTimeout(timeout)
+	if warn < stall {
 		return "", false
 	}
-	return fmt.Sprintf("execution.activity_warn_after (%s) is not shorter than execution.activity_timeout (%s)", warn, timeout), true
+	return fmt.Sprintf("execution.activity_warn_after (%s) is not shorter than the %s stall window of execution.activity_timeout (%s)", warn, stall, timeout), true
 }
