@@ -9,6 +9,13 @@
 // provider silently disappears from /quota.
 
 var hq = require("../lib/http-quota.js");
+// The Coding Plan RESET surface (status/opportunity/use) lives in its own
+// module (bugs.md #7) and rides along on every successful monitor fetch, the
+// same way Codex carries its reset-credit count: /quota, /quota:resets and the
+// status segment then read it from the cached snapshot with no second fetch on
+// the command path. The require cache makes this the SAME instance plugin.js
+// drives, so a cooldown set by one call is honored by the other.
+var codingPlan = require("./zai-coding-plan.js");
 
 var desc = {
 	auth: hq.apiKeyAuth().auth,
@@ -117,7 +124,21 @@ function originOf(u) {
 }
 
 function fetch(ctx) {
-	return hq.runFetch(desc, ctx);
+	var out = hq.runFetch(desc, ctx);
+	if (out && !out.error) {
+		// Ride the reset status along. A clean status is attached; a THROTTLED
+		// one is attached too, because the retry boundary it carries is state
+		// the UI must show rather than re-poll away. Every other failure
+		// degrades silently: the consumption quota is the primary surface and
+		// must never be taken down by the reset API (missing dual credentials,
+		// 404 on an account without a Coding Plan, ...). The status is
+		// re-attempted on the next refresh.
+		var st = codingPlan.status(ctx);
+		if (st && (!st.error || st.throttled)) {
+			out.codingPlan = st;
+		}
+	}
+	return out;
 }
 
 module.exports = {
@@ -125,5 +146,8 @@ module.exports = {
 	auth: { type: "api_key" },
 	refreshInterval: 300000,
 	quotaEndpoint: true,
-	fetch: fetch
+	fetch: fetch,
+	// The reset surface this fetcher rides, so plugin.js can drive the
+	// claim/consume calls without re-resolving the module.
+	codingPlan: codingPlan
 };

@@ -44,42 +44,12 @@ Closed in this round (moved to `docs/archive/`):
   `docs/archive/bugs-20260930-activity-timeout-reasoning-window.md`
 - "z.ai accepts context overflow silently" →
   `docs/archive/bugs-20260930-zai-silent-context-overflow.md`
+- "z.ai Coding Plan quota reset API" →
+  `docs/archive/bugs-20260930-zai-coding-plan-reset.md`
 
 ---
 
-## 4. FEATURE — z.ai Coding Plan quota reset API
-
-**Observed.** goa fetches only quota consumption
-(`GET {origin}/api/monitor/usage/quota/limit`). ZCode additionally implements
-the Coding Plan **reset** surface: `/api/v1/coding-plan/reset/{status,opportunity,use,history/read}`.
-
-Contract details to preserve:
-- envelope `{code,msg,data}`; **`code 3301` = throttled** and its `next_try_at`
-  must pass through verbatim or the client re-polls into the limit;
-- bare HTTP 429 maps to the same cooldown;
-- `idempotency_key` mandatory, ≤64 chars, on both mutating calls;
-- dual auth: `zcodejwttoken` (Bearer) **plus** family OAuth token
-  (`oauth:zai:access_token`) sent raw, **no** cross-family fallback.
-
-**Expected.** `/quota` surfaces available 5-hour / week resets, and the client
-respects the server's retry boundary.
-
-**Fix plan.**
-1. Add `plugins/bundled/provider-quota/fetchers/zai-coding-plan.js` registered in
-   `plugin.js`, reusing `lib/http-quota.js`.
-2. Fetch reset status alongside the monitor quota; expose via `/quota :resets`
-   and the status-bar segment.
-3. Honour `next_try_at` on `3301` and on HTTP 429; persist the cooldown.
-4. Tests: mapping of `available_*_resets` / `latest_*_history`; throttle path
-   preserves `next_try_at`; idempotency key validation; no cross-family
-   credential fallback.
-
-**Validation.** Follow the existing `plugins/quota_*_test.go` harness pattern;
-render the segment and assert the reset rows appear.
-
----
-
-## 5. Verify the Anthropic-surface hypothesis for z.ai (investigation)
+## 4. Verify the Anthropic-surface hypothesis for z.ai (investigation)
 
 **Observed.** ZCode talks to z.ai coding plans over
 `https://api.z.ai/api/anthropic` (Anthropic Messages), while goa and pi use the

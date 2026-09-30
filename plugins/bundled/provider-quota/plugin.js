@@ -26,9 +26,19 @@ var _fetchers = {};       // id -> fetcher module
 var _cache = {};          // id -> last quota result
 var _lastFetch = {};      // id -> ms epoch of last fetch
 var _fallbackId = "local";
+// _resetSurfaces holds the provider RESET surfaces (quota credits that clear
+// an exhausted window), keyed by the fetcher id whose quota they belong to.
+// A surface is not a fetcher: it has no plan/limits of its own and never
+// contributes a row to /quota — the owning fetcher rides its status along and
+// the commands below drive the claim/consume calls.
+var _resetSurfaces = {};
 
 function register(id, mod) {
 	_fetchers[id] = mod;
+}
+
+function registerResetSurface(fetcherId, mod) {
+	_resetSurfaces[fetcherId] = mod;
 }
 
 // Load the built-in fetchers.
@@ -41,6 +51,11 @@ register("minimax", require("./fetchers/minimax.js"));
 register("openrouter", require("./fetchers/openrouter.js"));
 register("opencode", require("./fetchers/opencode.js"));
 register(_fallbackId, require("./fetchers/local.js"));
+
+// The z.ai Coding Plan reset surface (status/opportunity/use/history-read,
+// bugs.md #7). The require cache hands zai.js and plugin.js the SAME instance,
+// so a cooldown persisted by one is honored by the other.
+registerResetSurface("zai", require("./fetchers/zai-coding-plan.js"));
 
 // --- Provider config resolution ------------------------------------------
 
@@ -315,7 +330,28 @@ function statusRender() {
 		}
 		return { text: "[∞]", color: "ok" };
 	}
-	return colorizedSegment(entry);
+	return withCodingPlanResets(colorizedSegment(entry), entry);
+}
+
+// withCodingPlanResets appends the available Coding Plan reset count to the
+// z.ai quota segment ("[38%|62%]+1↻"). A present-but-throttled status renders
+// nothing extra: a cooldown is not quota, and the retry boundary already
+// shows up on /quota:resets. Non-object segments (the no-color host fallback)
+// get the same suffix in plain text.
+function withCodingPlanResets(seg, entry) {
+	if (!seg) {
+		return seg;
+	}
+	var cp = entry && entry.codingPlan;
+	var n = cp && !cp.throttled ? cp.availableCount : 0;
+	if (!n) {
+		return seg;
+	}
+	var suffix = "+" + n + "↻";
+	if (typeof seg === "string") {
+		return seg + " " + suffix;
+	}
+	return { text: seg.text + " " + suffix, color: seg.color };
 }
 
 // colorizedSegment builds "[8%|24%]" (or "[8%|24%|85%]" when the provider
@@ -469,7 +505,7 @@ function quotaCommand(args) {
 		case "auth-status":
 			return renderAuthStatus();
 		case "resets":
-			return quotaResetsCommand();
+			return quotaResetsCommand(arg);
 		case "reset":
 			return quotaResetCommand(arg);
 		case "login":
@@ -574,6 +610,119 @@ function codexDetailsSection() {
 	return renderResetsTable(d);
 }
 
+// --- z.ai Coding Plan resets (status / opportunity / use) -------------------
+
+// zaiResetSurface returns the z.ai Coding Plan reset module when the loaded
+// surface exposes the full call set, else null (older build).
+function zaiResetSurface() {
+	var s = _resetSurfaces.zai;
+	if (!s || typeof s.status !== "function" || typeof s.useReset !== "function") {
+		return null;
+	}
+	return s;
+}
+
+// codingPlanRow renders the one-line /quota summary of available Coding Plan
+// resets ("N available (5h 1 · week 1)"). Empty when the snapshot carries no
+// status, when nothing is available, or while the API is throttling — a
+// cooldown is state, not quota, and belongs on /quota:resets.
+function codingPlanRow(display, cp) {
+	if (!cp || cp.throttled) {
+		return "";
+	}
+	var five = cp.availableFiveHour ? cp.availableFiveHour.length : 0;
+	var week = cp.availableWeek ? cp.availableWeek.length : 0;
+	if (five + week === 0) {
+		return "";
+	}
+	return "| " + display + " | Coding Plan Resets | " + (five + week) +
+		" available (" + five + " × 5h · " + week + " × week) | — | — | `/quota:reset` |";
+}
+
+// renderZaiCodingPlanSection renders the /quota:resets block for z.ai:
+// available 5-hour / week resets with their expiries, the last-used history,
+// and — when the server is throttling — the retry boundary it handed us.
+// Empty when z.ai is not configured or its status is unavailable.
+function renderZaiCodingPlanSection() {
+	if (!zaiResetSurface()) {
+		return "";
+	}
+	var cp = refreshZaiCodingPlan();
+	if (!cp) {
+		return "";
+	}
+	if (cp.throttled) {
+		return "## z.ai Coding Plan Resets\n\n" +
+			"Throttled by the API — next attempt " + cooldownText(cp) + ".";
+	}
+	var out = ["## z.ai Coding Plan Resets", ""];
+	out.push("| Reset | Available | Earliest expiry | Last used |");
+	out.push("| --- | ---: | --- | --- |");
+	out.push(codingPlanLine("5-hour", cp.availableFiveHour, cp.latestFiveHourUsedAtMs));
+	out.push(codingPlanLine("Week", cp.availableWeek, cp.latestWeekUsedAtMs));
+	if (cp.hasUnreadHistory) {
+		out.push("");
+		out.push("Unread reset history — `/quota:resets:read` clears the marker.");
+	}
+	out.push("");
+	out.push("Use one with `/quota:reset[:week]` · claim a new one with `/quota:reset:claim`.");
+	return out.join("\n");
+}
+
+// codingPlanLine renders one reset-type row of the Coding Plan table.
+function codingPlanLine(label, list, lastUsedMs) {
+	var items = Array.isArray(list) ? list : [];
+	return "| " + label + " | " + items.length + " | " +
+		(items.length > 0 ? expiryText(earliestExpiry(items)) : "—") + " | " +
+		(lastUsedMs > 0 ? format.durationUntil(lastUsedMs) + " ago" : "never") + " |";
+}
+
+// earliestExpiry returns the soonest expiry of a reset list, or 0 when empty.
+function earliestExpiry(items) {
+	var best = 0;
+	for (var i = 0; i < items.length; i++) {
+		var ms = numMs(items[i].expireAtMs);
+		if (ms > 0 && (best === 0 || ms < best)) {
+			best = ms;
+		}
+	}
+	return best;
+}
+
+// cooldownText renders a throttle boundary as relative time, keeping the
+// server's own next_try_at when it sent one (that value is the retry boundary
+// the backend enforces; see fetchers/zai-coding-plan.js).
+function cooldownText(cp) {
+	var ms = cp.cooldownUntil > 0 ? cp.cooldownUntil : 0;
+	if (ms === 0) {
+		return "shortly";
+	}
+	var rel = format.durationUntil(ms);
+	return rel === "" ? "shortly" : "in " + rel;
+}
+
+// refreshZaiCodingPlan force-refreshes zai (which rides the reset status
+// along with the monitor quota) and returns the fresh status, or null when the
+// provider is unconfigured or the reset API is unreachable.
+function refreshZaiCodingPlan() {
+	if (!providerConfigured("zai")) {
+		return null;
+	}
+	refreshDue("zai", true);
+	var entry = _cache.zai;
+	if (!entry || entry.error) {
+		return null;
+	}
+	return entry.codingPlan || null;
+}
+
+// numMs coerces a value to a number (0 when absent/unparsable). The values it
+// sees here — reset expiries — are timestamps, hence the name.
+function numMs(v) {
+	var n = Number(v);
+	return isNaN(n) ? 0 : n;
+}
+
 // renderSessionTable renders the per-session token table from
 // goa.sessionUsage as a markdown table.
 function renderSessionTable() {
@@ -624,6 +773,13 @@ function appendProviderRows(rows, id) {
 		for (var j = 0; j < entry.lines.length; j++) {
 			rows.push("| " + display + " | " + entry.lines[j].label + " | " + entry.lines[j].value + " | — | — | — |");
 		}
+	}
+	// Reset-credit row: the z.ai snapshot rides its Coding Plan reset status
+	// along, so the available 5-hour / week resets show in the main table
+	// (bugs.md #7) instead of hiding behind /quota:resets only.
+	var cpRow = codingPlanRow(display, entry.codingPlan);
+	if (cpRow !== "") {
+		rows.push(cpRow);
 	}
 }
 
@@ -699,6 +855,7 @@ function renderJSON() {
 			limits: e.limits || [],
 			resetsCount: typeof e.resetsCount === "number" ? e.resetsCount : null,
 			resets: e.details || null,
+			codingPlan: e.codingPlan || null,
 			fetchedAt: e._fetchedAt || 0
 		};
 	}
@@ -751,13 +908,39 @@ function codexResetFetcher() {
 	return f;
 }
 
-// quotaResetsCommand implements /quota:resets: force-refresh codex usage,
-// then fetch the details endpoint. On a details error, degrade to count-only
-// (the count arrives via the usage snapshot's resetsCount).
-function quotaResetsCommand() {
+// quotaResetsCommand implements /quota:resets: force-refresh codex usage, then
+// fetch the details endpoint. On a details error, degrade to count-only (the
+// count arrives via the usage snapshot's resetsCount). Every configured reset
+// surface gets a section: Codex rate-limit credits, then the z.ai Coding Plan
+// resets. `/quota:resets:read` clears the Coding Plan unread-history marker.
+function quotaResetsCommand(arg) {
+	if (arg === "read") {
+		return codingPlanHistoryReadCommand();
+	}
+	var out = [];
+	var codex = codexResetsSection();
+	if (codex !== "") {
+		out.push(codex);
+	}
+	var zai = renderZaiCodingPlanSection();
+	if (zai !== "") {
+		if (out.length > 0) {
+			out.push("");
+		}
+		out.push(zai);
+	}
+	if (out.length === 0) {
+		return "No reset credits are supported for the configured providers.";
+	}
+	return out.join("\n");
+}
+
+// codexResetsSection is the Codex half of /quota:resets: force-refresh usage,
+// then the details endpoint, degrading to the count-only note on error.
+function codexResetsSection() {
 	var f = codexResetFetcher();
 	if (!f) {
-		return "Codex rate-limit resets are not supported by this plugin build.";
+		return "";
 	}
 	refreshDue("codex", true);
 	var details = f.resetCredits();
@@ -765,6 +948,35 @@ function quotaResetsCommand() {
 		return renderResetsCountOnly(details.error);
 	}
 	return renderResetsTable(details);
+}
+
+// codingPlanHistoryReadCommand implements `/quota:resets:read`: POST the
+// read-cursor clear off the command path (provider HTTP must never block the
+// input line), then report the outcome.
+function codingPlanHistoryReadCommand() {
+	var s = zaiResetSurface();
+	if (!s || typeof s.markHistoryRead !== "function") {
+		return "z.ai Coding Plan resets are not supported by this plugin build.";
+	}
+	if (!providerConfigured("zai")) {
+		return "No z.ai provider is configured.";
+	}
+	goa.setTimeout(function() { codingPlanHistoryReadOnce(zaiResetSurface()); }, 0);
+	return "Clearing the z.ai reset-history marker…";
+}
+
+// codingPlanHistoryReadOnce performs the read-cursor clear and reports it,
+// re-fetching z.ai so the next render shows the marker gone.
+function codingPlanHistoryReadOnce(s) {
+	var out = s.markHistoryRead(sessionContext("zai"));
+	if (out && out.error) {
+		goa.output("Could not clear the z.ai reset-history marker (" + out.error + ").");
+		return;
+	}
+	delete _cache.zai;
+	refreshDue("zai", true);
+	goa.ui.refreshSegment("quota");
+	goa.output("✔ z.ai reset-history marker cleared.");
 }
 
 // renderResetsTable renders the reset-credit details as markdown:
@@ -816,6 +1028,13 @@ function renderResetsCountOnly(err) {
 function quotaResetCommand(creditId) {
 	if (_resetInFlight) {
 		return "A rate-limit reset is already in progress — wait for its result.";
+	}
+	// Route by ACTIVE provider: the command means "reset my current provider's
+	// quota", and each provider has its own credit facility (z.ai Coding Plan
+	// resets vs Codex rate-limit credits). Without this an active z.ai user
+	// typing /quota:reset would be offered Codex credits they do not have.
+	if (activeFetcherId() === "zai") {
+		return codingPlanResetCommand(creditId);
 	}
 	var f = codexResetFetcher();
 	if (!f) {
@@ -920,19 +1139,23 @@ function consumeResetOnce(creditId) {
 		default:
 			// Transport/unknown: offerResetRetry owns the flag — it stays
 			// true when a retry is scheduled, false once the flow ends.
-			offerResetRetry(out && out.error ? out.error : "unknown error", creditId);
+			offerResetRetry(out && out.error ? out.error : "unknown error", function() {
+				scheduleConsumeReset(creditId);
+			});
 	}
 }
 
 // offerResetRetry asks whether to resend the SAME request after a failure;
 // declining consumes nothing. The fetcher keeps the idempotency key until a
-// terminal outcome either way (server dedupes double-redeems).
-function offerResetRetry(err, creditId) {
+// terminal outcome either way (server dedupes double-redeems). retry is a
+// zero-arg scheduler callback supplied by the caller (the surface that owns
+// the call), so one retry path serves every reset facility.
+function offerResetRetry(err, retry) {
 	var res = confirmReset("Reset failed",
-		"The reset request failed (" + err + ").\n\nTry again with the same request?");
+  		"The reset request failed (" + err + ").\n\nTry again with the same request?");
 	if (res && !res.cancelled && !res.error) {
 		goa.output("Retrying your rate-limit reset…");
-		scheduleConsumeReset(creditId); // stays in flight through the retry
+		retry(); // stays in flight through the retry
 		return;
 	}
 	_resetInFlight = false;
@@ -967,6 +1190,104 @@ function setCachedResetsCount(n) {
 		}
 		entry.lines.push({ label: "Rate Limit Resets", value: n + " available" });
 	}
+}
+
+// --- z.ai Coding Plan reset flow (claim / use) -------------------------------
+
+// codingPlanResetCommand implements /quota:reset for an active z.ai provider.
+// arg is "claim" (ask the server whether a new grant is available), "week"
+// (consume the weekly reset) or empty (consume a 5-hour reset). It reuses the
+// shared confirm + single-flight machinery: a reset spends a real credit, so
+// it is confirmed and serialized exactly like a Codex redemption.
+function codingPlanResetCommand(arg) {
+	var s = zaiResetSurface();
+	if (!s || typeof s.requestOpportunity !== "function") {
+		return "z.ai Coding Plan resets are not supported by this plugin build.";
+	}
+	if (!providerConfigured("zai")) {
+		return "No z.ai provider is configured.";
+	}
+	var st = s.status(sessionContext("zai"));
+	if (st && st.error === "auth_required") {
+		return "z.ai Coding Plan credentials missing (" + (st.reason || "auth_required") +
+			") — set the zcode JWT and log in with `/login zai:oauth`.";
+	}
+	// A throttled status is the server's own instruction: answer from the
+	// persisted boundary instead of sending a call it just refused.
+	if (st && st.throttled) {
+		return "z.ai Coding Plan API throttled — next attempt " + cooldownText(st) + ".";
+	}
+	if (arg === "claim") {
+		_resetInFlight = true;
+		goa.setTimeout(function() { codingPlanClaimOnce(s); }, 0);
+		return "Asking z.ai for a Coding Plan reset grant…";
+	}
+	var type = s.normalizeResetType(arg === "week" || arg === "weekly" ? "WEEK" : "FIVE_HOUR");
+	if (type.error) {
+		return "Unknown reset type `" + arg + "` — use `/quota:reset` (5-hour), `/quota:reset:week`, or `/quota:reset:claim`.";
+	}
+	var available = st && !st.error ? (st.availableFiveHour || []).length + (st.availableWeek || []).length : 0;
+	if (available === 0) {
+		return "No z.ai Coding Plan resets available — `/quota:reset:claim` asks the server for one.";
+	}
+	var body = "This consumes one z.ai Coding Plan reset to clear your " +
+		(type.value === "WEEK" ? "weekly" : "5-hour") + " usage window now.\n\n" +
+		"Available now: " + available + ".";
+	var res = confirmReset("Use a Coding Plan reset?", body);
+	if (!res || res.cancelled) {
+		return "Cancelled — no reset consumed.";
+	}
+	if (res.error) {
+		return "Cannot ask for confirmation (" + res.error + ") — no reset consumed.";
+	}
+	_resetInFlight = true;
+	goa.setTimeout(function() { codingPlanUseOnce(s, type.value); }, 0);
+	return "Resetting your z.ai usage…";
+}
+
+// codingPlanClaimOnce performs one opportunity (grant) claim and reports it.
+// The surface persists the server's next_try_at on a throttle, so a denied
+// claim tells the user when to come back instead of inviting another poll.
+function codingPlanClaimOnce(s) {
+	var out = s.requestOpportunity(sessionContext("zai"));
+	_resetInFlight = false;
+	if (out && out.error) {
+		if (out.throttled) {
+			goa.output("z.ai Coding Plan claim throttled — next attempt " + cooldownText(out) + ".");
+			return;
+		}
+		goa.output("Could not claim a Coding Plan reset (" + out.error + ").");
+		return;
+	}
+	delete _cache.zai;
+	refreshDue("zai", true);
+	goa.ui.refreshSegment("quota");
+	goa.output("Coding Plan reset granted — run /quota:resets to see your available resets.");
+}
+
+// codingPlanUseOnce performs one consume call and reports the outcome. A
+// success invalidates the cache and re-fetches so the message and the segment
+// carry the refreshed availability; a throttle reports the boundary; a
+// transport error offers a retry that REUSES the retained idempotency key
+// (the server dedupes a double-consume).
+function codingPlanUseOnce(s, type) {
+	var out = s.useReset(sessionContext("zai"), type);
+	if (out && out.used) {
+		_resetInFlight = false;
+		delete _cache.zai;
+		refreshDue("zai", true);
+		goa.ui.refreshSegment("quota");
+		goa.output("✔ z.ai " + (type === "WEEK" ? "weekly" : "5-hour") + " quota reset used.");
+		return;
+	}
+	if (out && out.throttled) {
+		_resetInFlight = false;
+		goa.output("z.ai Coding Plan API throttled — next attempt " + cooldownText(out) + ".");
+		return;
+	}
+	offerResetRetry(out && out.error ? out.error : "unknown error", function() {
+		goa.setTimeout(function() { codingPlanUseOnce(s, type); }, 0);
+	});
 }
 
 // --- Reset-credit helpers (resolution + completion) -------------------------
@@ -1199,12 +1520,25 @@ function resetUsageNote() {
 // QUOTA_SUBS lists the static /quota subcommands offered by the completer.
 // Values carry no leading colon: the TUI engine prepends "/quota:".
 var QUOTA_SUBS = [
-	{ value: "refresh", description: "Force-refresh all provider quotas" },
-	{ value: "json", description: "Machine-readable JSON output" },
-	{ value: "auth-status", description: "Show per-provider auth state" },
-	{ value: "resets", description: "List Codex rate-limit reset credits" },
-	{ value: "reset", description: "Consume one Codex rate-limit reset credit" }
+{ value: "refresh", description: "Force-refresh all provider quotas" },
+{ value: "json", description: "Machine-readable JSON output" },
+{ value: "auth-status", description: "Show per-provider auth state" },
+{ value: "resets", description: "List available reset credits (Codex, z.ai Coding Plan)" },
+{ value: "reset", description: "Use one available reset credit" }
 ];
+
+// QUOTA_RESET_ARGUMENTS are the nested `/quota:<sub>:<arg>` candidates. They
+// live at their own command level, never in the bare list (which stays
+// colon-free), and the z.ai reset arguments are offered only for an active
+// z.ai provider: they mean nothing for a Codex account, and offering them
+// everywhere would teach a command that cannot run.
+var QUOTA_RESET_ARGUMENTS = {
+	resets: [{ value: "read", description: "Clear the z.ai Coding Plan reset-history marker" }],
+	reset: [
+		{ value: "week", description: "Use one z.ai weekly Coding Plan reset" },
+		{ value: "claim", description: "Ask z.ai for a new Coding Plan reset grant" }
+	]
+};
 
 // completeMatches filters candidate completions by prefix ("" keeps all).
 function completeMatches(items, prefix) {
@@ -1243,6 +1577,20 @@ function providerEntries(purpose) {
 	return out;
 }
 
+// resetArgEntries builds the `/quota:reset:` candidate list: the cached Codex
+// credits first (soonest expiry first), then the z.ai Coding Plan arguments
+// when z.ai is the active provider.
+function resetArgEntries() {
+	var out = resetCreditEntries();
+	if (activeFetcherId() !== "zai" || !zaiResetSurface()) {
+		return out;
+	}
+	for (var i = 0; i < QUOTA_RESET_ARGUMENTS.reset.length; i++) {
+		out.push(QUOTA_RESET_ARGUMENTS.reset[i]);
+	}
+	return out;
+}
+
 // quotaComplete provides /quota argument completions. prefix is everything
 // after "/quota:" — "", "re", "login:o", "reset:abc" — mirroring the engine's
 // nested-level convention (a parent path plus colon re-queries its children).
@@ -1257,8 +1605,12 @@ function quotaComplete(prefix) {
 		}
 		if (sub === "reset") {
 			// /quota:reset:<partial> → available credit ids, soonest expiry
-			// first, so the default pick is the credit about to expire.
-			return completeMatches(resetCreditEntries(), rest);
+			// first, so the default pick is the credit about to expire; with
+			// z.ai active the Coding Plan arguments join the level.
+			return completeMatches(resetArgEntries(), rest);
+		}
+		if (sub === "resets") {
+			return completeMatches(QUOTA_RESET_ARGUMENTS.resets, rest);
 		}
 		return [];
 	}
@@ -1288,8 +1640,12 @@ goa.registerCommand({
 		"  /quota:refresh         Force-refresh all provider quotas\n" +
 		"  /quota:json            Machine-readable JSON output\n" +
 		"  /quota:auth-status     Show per-provider auth state\n" +
-		"  /quota:resets          List Codex rate-limit reset credit details\n" +
+		"  /quota:resets          List available reset credits (Codex, z.ai Coding Plan)\n" +
+		"  /quota:resets:read     Clear the z.ai Coding Plan reset-history marker\n" +
 		"  /quota:reset[:<id>]    Consume one Codex rate-limit reset credit (unique id prefix ok)\n" +
+		"  /quota:reset           Use a z.ai 5-hour Coding Plan reset (active provider z.ai)\n" +
+		"  /quota:reset:week      Use a z.ai weekly Coding Plan reset\n" +
+		"  /quota:reset:claim     Ask z.ai for a new Coding Plan reset grant\n" +
 		"  /quota:login:<id>      OAuth login (plugin-owned providers only)\n" +
 		"  /quota:logout:<id>     Clear plugin-owned OAuth tokens\n" +
 		"  /quota:<id>            Force-refresh one provider",

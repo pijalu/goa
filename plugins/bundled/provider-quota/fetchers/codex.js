@@ -5,6 +5,7 @@
 
 var hq = require("../lib/http-quota.js");
 var format = require("../lib/format.js");
+var ids = require("../lib/ids.js");
 
 // WHAM_BASE is the ChatGPT backend-api root; every Codex quota URL derives
 // from it (usage + the two rate-limit-reset-credits endpoints).
@@ -190,16 +191,16 @@ var OUTCOME_ALIASES = {
 };
 
 // _pendingResetKey is the module-scope redeem_request_id (UUID-v4 from
-// Math.random bytes — fine for redeem ids). Retained from the first attempt
-// until a TERMINAL outcome (all four mapped outcomes); "try again" reuses it
-// so the server dedupes double-redeems. Deliberately NOT cleared when the
-// user cancels a retry — only a terminal outcome clears it.
+// lib/ids.js). Retained from the first attempt until a TERMINAL outcome (all
+// four mapped outcomes); "try again" reuses it so the server dedupes
+// double-redeems. Deliberately NOT cleared when the user cancels a retry —
+// only a terminal outcome clears it.
 var _pendingResetKey = null;
 
 // pendingResetKey returns the retained redeem id, minting one on first use.
 function pendingResetKey() {
 	if (!_pendingResetKey) {
-		_pendingResetKey = uuidV4();
+		_pendingResetKey = ids.uuidV4();
 	}
 	return _pendingResetKey;
 }
@@ -207,25 +208,6 @@ function pendingResetKey() {
 // clearPendingResetKey drops the retained id after a terminal outcome.
 function clearPendingResetKey() {
 	_pendingResetKey = null;
-}
-
-// uuidV4 renders a random v4 UUID string without crypto dependencies.
-function uuidV4() {
-	var bytes = [];
-	for (var i = 0; i < 16; i++) {
-		bytes.push(Math.floor(Math.random() * 256));
-	}
-	bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
-	bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10xx
-	var hex = [];
-	for (var j = 0; j < 16; j++) {
-		hex.push((bytes[j] + 0x100).toString(16).slice(1));
-	}
-	return hex.slice(0, 4).join("") + "-" +
-		hex.slice(4, 6).join("") + "-" +
-		hex.slice(6, 8).join("") + "-" +
-		hex.slice(8, 10).join("") + "-" +
-		hex.slice(10, 16).join("");
 }
 
 // resetCredits GETs the details endpoint and returns the tolerant detail map
