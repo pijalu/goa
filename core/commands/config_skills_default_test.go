@@ -229,11 +229,18 @@ func TestConfigMenu_SkillsShippedDefaultsOn(t *testing.T) {
 	for _, o := range sr.options {
 		seen[o.Value] = o.Description
 	}
-	if seen["telegram"] != "on" {
-		t.Errorf("telegram must read on under the shipped default, got %q", seen["telegram"])
-	}
-	if seen["thoughtfull"] != "on" {
-		t.Errorf("thoughtfull must read on under the shipped default, got %q", seen["thoughtfull"])
+	assertShippedDefaultEmbedStates(t, seen)
+}
+
+// assertShippedDefaultEmbedStates checks the per-skill states read in the
+// embedded sub-menu: only telegram and thoughtfull ship on, everything else
+// embedded reads off.
+func assertShippedDefaultEmbedStates(t *testing.T, seen map[string]string) {
+	t.Helper()
+	for _, name := range []string{"telegram", "thoughtfull"} {
+		if seen[name] != "on" {
+			t.Errorf("%s must read on under the shipped default, got %q", name, seen[name])
+		}
 	}
 	for name, desc := range seen {
 		if name != "telegram" && name != "thoughtfull" && desc != "off" {

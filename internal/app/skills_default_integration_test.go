@@ -11,6 +11,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/skills"
 )
 
 // TestShippedDefault_ShippedSkillsOnWithoutGatingFileSkills is the end-to-end
@@ -30,34 +31,35 @@ func TestShippedDefault_ShippedSkillsOnWithoutGatingFileSkills(t *testing.T) {
 	}
 	subs := InitSubsystems(cfg, loader, project, RuntimeOptions{})
 
-	if _, ok := subs.skillRegistry.Get("telegram"); !ok {
-		t.Error("telegram must load under the shipped default")
-	}
-	thoughtfull, ok := subs.skillRegistry.Get("thoughtfull")
-	if !ok {
-		t.Error("thoughtfull must load under the shipped default")
-	}
 	bodies := subs.skillRegistry.StickyBodies()
-	if thoughtfull != nil && !thoughtfull.IsSticky() {
-		t.Error("the shipped-on thoughtfull skill must be sticky")
-	}
-	if len(bodies) != 2 {
-		t.Errorf("both shipped sticky bodies must be injected, got %d block(s): %v", len(bodies), bodies)
-	}
-	if _, ok := subs.skillRegistry.Get("proj-helper"); !ok {
-		t.Error("project file skills must not be suppressed by the shipped default list")
-	}
+	assertStickyShippedOn(t, subs.skillRegistry, bodies)
 	for _, name := range []string{"refactor", "review", "dream", "debug"} {
 		if _, ok := subs.skillRegistry.Get(name); ok {
 			t.Errorf("embedded skill %q must stay default-off", name)
 		}
 	}
-	telegram, ok := subs.skillRegistry.Get("telegram")
-	if !ok {
-		t.Fatal("telegram vanished mid-test")
+}
+
+// assertStickyShippedOn checks the two shipped-on skills load, are sticky and
+// inject their bodies, and that unrelated project file skills are not gated by
+// the default-provided skills.enabled list.
+func assertStickyShippedOn(t *testing.T, reg *skills.SkillRegistry, bodies []string) {
+	t.Helper()
+	for _, name := range []string{"telegram", "thoughtfull"} {
+		s, ok := reg.Get(name)
+		if !ok {
+			t.Errorf("%s must load under the shipped default", name)
+			continue
+		}
+		if !s.IsSticky() {
+			t.Errorf("the shipped-on %s skill must be sticky", name)
+		}
 	}
-	if !telegram.IsSticky() || len(bodies) == 0 {
-		t.Error("the shipped-on telegram skill must inject its sticky body")
+	if len(bodies) != 2 {
+		t.Errorf("both shipped sticky bodies must be injected, got %d block(s): %v", len(bodies), bodies)
+	}
+	if _, ok := reg.Get("proj-helper"); !ok {
+		t.Error("project file skills must not be suppressed by the shipped default list")
 	}
 }
 
