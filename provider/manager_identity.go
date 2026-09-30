@@ -165,6 +165,7 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 			mdl.Api = api
 		}
 		applyResolvedEndpoint(&mdl, *pCfg)
+		applyContextWindowFloor(&mdl, prov)
 		return mdl, nil
 	}
 
@@ -180,17 +181,20 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 			mdl.Api = api
 		}
 		applyResolvedEndpoint(&mdl, *pCfg)
+		applyContextWindowFloor(&mdl, prov)
 		return mdl, nil
 	}
 
-	return agenticprovider.Model{
+	mdl := agenticprovider.Model{
 		ID:         modelName,
 		Name:       modelName,
 		Api:        api,
 		Provider:   prov,
 		BaseURL:    modelEndpointURL(api, providerEndpoint(*pCfg)),
 		InputTypes: []string{"text"},
-	}, nil
+	}
+	applyContextWindowFloor(&mdl, prov)
+	return mdl, nil
 }
 
 // lookupProviderModel resolves a model name against the registry: provider-exact

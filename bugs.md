@@ -42,28 +42,8 @@ Closed in this round (moved to `docs/archive/`):
   `docs/archive/bugs-20260930-reasoning-max-tokens-cap.md`
 - "Shipped `activity_timeout` default too short for reasoning models" →
   `docs/archive/bugs-20260930-activity-timeout-reasoning-window.md`
-
----
-
-## 3. z.ai accepts context overflow silently (LOW, z.ai-specific)
-
-**Observed.** `opencode` records the quirk
-(`packages/opencode/src/provider/error.ts:31`): *"z.ai: can accept overflow
-silently (needs token-count/context-window checks)"*. Goa's z.ai profile has
-`context_window: 0`, so there is no proactive guard, and `OnContextError`
-compression only triggers on an actual context-length error that z.ai may never
-raise.
-
-**Expected.** Overflow is detected by token count before the request, not only by
-provider error.
-
-**Fix plan.**
-1. Resolve the real context window for z.ai models (registry / probe) so the
-   existing threshold check has a bound.
-2. Test: a z.ai request projected over the window triggers compression instead of
-   being sent.
-
-**Validation.** Unit tests on the projection + threshold path.
+- "z.ai accepts context overflow silently" →
+  `docs/archive/bugs-20260930-zai-silent-context-overflow.md`
 
 ---
 

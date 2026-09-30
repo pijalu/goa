@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
 // addModel adds a model to the built-in registry and the prefix-lookup slice.
@@ -73,6 +74,30 @@ func GetModels(providerName provider.Provider) []provider.Model {
 		result = append(result, m)
 	}
 	return result
+}
+
+// ResolveContextWindow returns the best-known context window, in tokens, for a
+// model id served by a provider: the provider-exact registry entry, else the
+// global (first-wins) registry entry, else the provider's declared floor
+// (ProviderDef.DefaultContextWindow).
+//
+// The floor is what makes the pre-flight context guard possible at all for a
+// provider that accepts over-window requests SILENTLY (z.ai, bugs.md #3): a
+// model id the embedded catalog does not know would otherwise resolve to
+// ContextWindow 0, which disables every token-count threshold and leaves
+// compression waiting for a context-length error the provider never raises.
+//
+// Returns 0 when nothing is known, which callers must keep honoring as "no
+// bound" — an explicit model-config context_window is the user's override and
+// is applied by the caller, not here.
+func ResolveContextWindow(prov provider.Provider, modelID string) int {
+	if m := GetModelForProvider(prov, modelID); m != nil && m.ContextWindow > 0 {
+		return m.ContextWindow
+	}
+	if def := schema.LookupProviderDef(prov); def != nil {
+		return def.DefaultContextWindow
+	}
+	return 0
 }
 
 // AllModels returns all built-in models.

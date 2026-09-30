@@ -95,6 +95,20 @@ func mergeRegistryModel(m agenticprovider.Model, pCfg config.ProviderConfig, mCf
 	return mdl
 }
 
+// applyContextWindowFloor binds a resolved model that carries no context window
+// of its own to the best window known for its provider (registry entry, else the
+// provider's declared floor — see models.ResolveContextWindow). Without a bound
+// every token-count threshold is inert, so an over-window request is only caught
+// by the provider raising a context-length error. z.ai never does (it accepts
+// the overflow silently), which is why the floor exists. A model-config
+// context_window is applied by the caller before this and therefore always wins.
+func applyContextWindowFloor(mdl *agenticprovider.Model, prov agenticprovider.Provider) {
+	if mdl.ContextWindow > 0 {
+		return
+	}
+	mdl.ContextWindow = models.ResolveContextWindow(prov, mdl.ID)
+}
+
 // buildFallbackModel constructs a Model from provider/model config.
 // First tries prefix-based model lookup, then checks for a provider-prefixed
 // known model (e.g., "google/gemma-4-e4b"), and finally falls back to a

@@ -38,6 +38,10 @@ func (pm *ProviderManager) ResolveActiveModel() (agenticprovider.Model, error) {
 		// Fallback: construct a minimal Model for custom/local providers.
 		mdl = buildFallbackModel(*pCfg, mCfg, modelName)
 	}
+	// Both paths leave the window at 0 when neither the registry nor the user
+	// config knows it; bind it to the provider's best-known window so the
+	// pre-flight token-count guard has a bound (see applyContextWindowFloor).
+	applyContextWindowFloor(&mdl, mdl.Provider)
 
 	return mdl, nil
 }

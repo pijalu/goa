@@ -234,6 +234,17 @@ type ProviderDef struct {
 	// z.ai was live-probed HTTP 200 with prompt_cache_key and
 	// prompt_cache_retention.
 	DefaultCacheRetention CacheRetention
+	// DefaultContextWindow is the provider's context-window floor, applied when
+	// a model resolved for this provider declares none (an id the embedded
+	// models.dev snapshot does not carry yet). Zero means "no floor" — the
+	// pre-flight context guard then has no bound, which is unsafe only for
+	// providers that accept a request past their window WITHOUT raising an
+	// error: there the overflow is silent and the only recovery (OnContextError
+	// compression) never fires. Declare a floor on such providers, set to the
+	// SMALLEST window the provider currently serves for a tool-calling chat
+	// model: a floor above the real window would let compression fire too late,
+	// which is exactly the silent overflow this field exists to prevent.
+	DefaultContextWindow int
 }
 
 // NeedsAPIKey reports whether this provider requires an API key.
@@ -248,6 +259,19 @@ var zaiPeakHours = []PeakWindow{
 		Weekdays: []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday},
 	},
 }
+
+// zaiContextWindowFloor is the context-window floor applied to a Z.ai model the
+// embedded models.dev snapshot does not know yet. Z.ai accepts a request that
+// overflows its window WITHOUT raising a context-length error (bugs.md #3,
+// 2026-09-30: opencode's provider/error.ts — "z.ai: can accept overflow
+// silently (needs token-count/context-window checks)"), so the pre-flight
+// token-count guard is the only thing that can catch it and it needs a bound.
+// 131072 is the smallest window Z.ai serves for a tool-calling CHAT model
+// (GLM-4.5 / 4.5-Air / 4.5-Flash); the 1M models (GLM-5.2+) resolve with their
+// real value from the registry, so this floor only ever applies to ids with no
+// registry entry. Conservative on purpose: an undeclared model must be
+// compacted early, never after a silent overflow.
+const zaiContextWindowFloor = 131072
 
 // PeakStatusAt classifies t relative to the provider's peak windows: PeakOn
 // inside a window, PeakNear within peakNearMargin minutes before its start or
@@ -414,6 +438,8 @@ var providerCatalog = []ProviderDef{
 		// content-keyed routing (server-side evictions observed 2026-08-19).
 		DefaultCacheRetention: CacheRetentionLong,
 		PeakHours:             zaiPeakHours,
+		// Silent-overflow guard: an unknown z.ai model id still gets a bound.
+		DefaultContextWindow: zaiContextWindowFloor,
 	},
 	{
 		ID: "zai-api", Name: "Z.ai", Provider: ProviderZaiApi,
@@ -425,6 +451,9 @@ var providerCatalog = []ProviderDef{
 		// family; live-probed field acceptance).
 		DefaultCacheRetention: CacheRetentionLong,
 		PeakHours:             zaiPeakHours,
+		// Same silent-overflow floor: both entries serve the same GLM models
+		// from the same platform, which accepts over-window requests silently.
+		DefaultContextWindow: zaiContextWindowFloor,
 	},
 	{
 		ID: "poolside", Name: "Poolside", Provider: ProviderPoolside,
