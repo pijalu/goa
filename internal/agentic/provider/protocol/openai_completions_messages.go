@@ -70,11 +70,11 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 	// P21 (DS2): the wire request must always be explicit and reconstructable.
 	// An explicit request value always wins; when the request omits max_tokens,
 	// the provider catalog's default_max_tokens is materialized (DeepSeek
-	// 256000 — dsh adapter DEFAULT_MAX_TOKENS). model.MaxTokens (the models.dev
-	// output limit) is deliberately not used here: it is a model hard limit,
-	// not an adapter default cap (dsh llm README: "defaultMaxTokens is an
-	// adapter-configured per-request output cap, not a model hard limit").
-	maxTokens, defaultSource := resolveRequestMaxTokens(opts, model)
+	// 256000 — dsh adapter DEFAULT_MAX_TOKENS). A reasoning-capable model with
+	// no configured cap falls back to its own output ceiling (bugs.md #4):
+	// reasoning and the answer share one budget, so an uncapped request can
+	// spend the whole response on reasoning and emit no answer.
+	maxTokens, defaultSource := resolveRequestMaxTokens(opts, model, model.Reasoning)
 	if maxTokens > 0 {
 		body[compat.MaxTokensField] = maxTokens
 	}
@@ -106,20 +106,38 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 	return body
 }
 
+// FallbackReasoningMaxTokens bounds the response of a reasoning-capable model
+// whose output ceiling is unknown to the catalog (models.dev Limit.Output
+// missing). Reasoning and the answer share one budget, so an uncapped request
+// can emit reasoning only and never an answer (pi hazard, packages/ai/src/
+// types.ts:834-840; bugs.md #4 — z.ai export A spent 4268 reasoning tokens
+// before its first tool call). Last-resort cap only: an explicit request value
+// wins, then the provider catalog default_max_tokens, then the model's own
+// output ceiling.
+const FallbackReasoningMaxTokens = 16384
+
 // resolveRequestMaxTokens returns the output-token cap to send on the wire
 // and the source it was resolved from. An explicit request value always wins
 // (dsh: "an explicit cap wins"); when absent, the per-provider catalog
 // default_max_tokens is materialized so the wire request is explicit and
-// reconstructable (P21, DS2). The returned source is "" for an explicit
-// value; the caller omits the field when the returned value is 0.
-func resolveRequestMaxTokens(opts schema.StreamOptions, model schema.Model) (int, string) {
+// reconstructable (P21, DS2); when that is unset too, a reasoning-capable model
+// caps itself at its known output ceiling so reasoning cannot starve the
+// answer (bugs.md #4). The returned source is "" for an explicit value; the
+// caller omits the field when the returned value is 0.
+func resolveRequestMaxTokens(opts schema.StreamOptions, model schema.Model, reasoningCapable bool) (int, string) {
 	if opts.MaxTokens > 0 {
 		return opts.MaxTokens, ""
 	}
 	if def := schema.LookupProviderDef(model.Provider); def != nil && def.DefaultMaxTokens > 0 {
 		return def.DefaultMaxTokens, "provider"
 	}
-	return 0, ""
+	if !reasoningCapable {
+		return 0, ""
+	}
+	if model.MaxTokens > 0 {
+		return model.MaxTokens, "reasoning-ceiling"
+	}
+	return FallbackReasoningMaxTokens, "reasoning-fallback"
 }
 
 func applyThinking(body map[string]any, model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile, compat openAICompletionsCompat) {

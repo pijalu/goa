@@ -38,31 +38,8 @@ Closed in this round (moved to `docs/archive/`):
   `docs/archive/bugs-20260930-eventstart-unmapped.md`
 - "`tool_stream: true` is never sent to z.ai" →
   `docs/archive/bugs-20260930-zai-tool-stream.md`
-
----
-
-## 1. No `max_tokens` cap on reasoning-capable providers (MEDIUM, z.ai-specific)
-
-**Observed.** No `max_tokens` / `max_completion_tokens` in the captured z.ai body;
-the user model profile sets `thinking_level: xhigh`, `max_tokens: 0`. Export A
-request 17 spent 4 268 reasoning tokens before its first tool call and ran 80.7s.
-
-`pi` documents the hazard (`packages/ai/src/types.ts:834-840`): reasoning and the
-answer share `max_tokens`, so without a budget a reasoning-heavy turn can consume
-the whole response and emit no answer.
-
-**Expected.** Reasoning-capable providers receive an explicit output cap so the
-answer cannot be starved by reasoning.
-
-**Fix plan.**
-1. Send `max_completion_tokens` (or `max_tokens`, per the existing
-   `MaxTokensField` compat) for reasoning-capable providers when unset.
-2. Derive the default from the model's known output ceiling; make it
-   configurable and skip when the user set an explicit value.
-3. Tests: z.ai reasoning model with no configured cap → cap present; explicit
-   user cap wins; non-reasoning providers unchanged.
-
-**Validation.** Payload assertion tests.
+- "No `max_tokens` cap on reasoning-capable providers" →
+  `docs/archive/bugs-20260930-reasoning-max-tokens-cap.md`
 
 ---
 
