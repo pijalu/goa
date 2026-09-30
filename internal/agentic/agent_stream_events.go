@@ -13,6 +13,7 @@ import (
 type streamEventHandler func(*Agent, context.Context, *provider.AssistantMessageEventStream, provider.AssistantMessageEvent) (done bool, toolCallsEncountered bool, err error)
 
 var streamEventHandlers = map[provider.EventType]streamEventHandler{
+	provider.EventStart:         (*Agent).handleStreamStart,
 	provider.EventTextDelta:     (*Agent).handleStreamTextDelta,
 	provider.EventThinkingDelta: (*Agent).handleStreamThinkingDelta,
 	provider.EventToolCallEnd:   (*Agent).handleStreamToolCallEnd,
@@ -20,6 +21,23 @@ var streamEventHandlers = map[provider.EventType]streamEventHandler{
 	provider.EventToolCallDelta: (*Agent).handleStreamToolCallDelta,
 	provider.EventDone:          (*Agent).handleStreamDone,
 	provider.EventError:         (*Agent).handleStreamError,
+}
+
+// handleStreamStart absorbs the stream-open lifecycle event.
+//
+// Every protocol pushes EventStart as the first event of a stream
+// (openai/completions openai_responses anthropic google bedrock mistral), so
+// leaving it unmapped made it a per-request WARN blaming the provider for a
+// goa-internal event, and kept it from re-arming the stall/quiet guards
+// (bugs.md #2). Mapping it fixes both — presence in streamEventHandlers is
+// what noteStreamEventProgress keys on.
+//
+// It deliberately does NOT call markGenStart: genSawEvent is the empty-response
+// guard in agent_turn_lifecycle ("the stream produced a real output event"), and
+// a stream that opens and then carries nothing must still be routed to the retry
+// path. EventStart also carries nothing to render, so there is no state to touch.
+func (a *Agent) handleStreamStart(_ context.Context, _ *provider.AssistantMessageEventStream, _ provider.AssistantMessageEvent) (bool, bool, error) {
+	return false, false, nil
 }
 
 func (a *Agent) handleStreamTextDelta(ctx context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
