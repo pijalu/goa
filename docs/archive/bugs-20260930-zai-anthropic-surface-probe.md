@@ -73,9 +73,10 @@ without touching the provider.
 The coding-plan OpenAI-compat endpoint rejects array/object message content
 (`content: [{"type":"text","text":…}]`) with `400 {"code":"1210","message":"Invalid API parameter"}`
 — string content is required (verified live, with and without `tools`, and
-independent of `max_tokens`). Goa sends string content for text turns, so no
-code change is needed; noted so future multimodal use of that endpoint checks this
-first.
+independent of `max_tokens`). Goa sends string content for text turns
+(`buildUserContent`, `openai_completions_messages.go:209`), so no code change is
+needed; an image/multimodal turn on that endpoint would fail with `400`/`1210`,
+which nothing in goa currently guards or documents.
 
 ## Evidence
 

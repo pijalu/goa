@@ -55,10 +55,14 @@ already treats a complete answer as a soft end-of-stream, which covers reading
 
 The coding-plan OpenAI-compat endpoint rejects the OpenAI array/object content
 form for messages with **`400 {"code":"1210","message":"Invalid API parameter"}`**
-when `content` is `[{"type":"text","text":…}]` (verified live, both with and
-without `tools`). String `content` is accepted. Goa already sends string content
-for text turns, so no action required — recorded so future multimodal work on
-that endpoint checks this first.
+when `content` is `[{"type":"text","text":…}]` (verified live, with and without
+`tools`, and independent of `max_tokens`). String `content` is accepted.
+
+Goa is unaffected for text turns: `buildUserContent`
+(`internal/agentic/provider/protocol/openai_completions_messages.go:209`) returns
+a plain string unless the message carries an image block. An image/multimodal
+turn on the z.ai coding endpoint would therefore fail with `400`/`1210`; recorded
+here because nothing else in goa guards or documents that limit.
 
 ## Probe details
 
