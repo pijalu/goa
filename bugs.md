@@ -28,33 +28,4 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-Review evidence: `docs/research/zai-connection-review-20260930.md`
-(two diagnostic bundles, `zai`/`glm-5.3-flash` and `opencode-go`/`space-bunny-free`).
-
-Closed in this round (moved to `docs/archive/`):
-- "Stall watchdog discards already-complete streams" →
-  `docs/archive/bugs-20260930-stall-held-open-complete-answer.md`
-- "`EventStart` is unmapped — no watchdog re-arm + WARN on every request" →
-  `docs/archive/bugs-20260930-eventstart-unmapped.md`
-- "`tool_stream: true` is never sent to z.ai" →
-  `docs/archive/bugs-20260930-zai-tool-stream.md`
-- "No `max_tokens` cap on reasoning-capable providers" →
-  `docs/archive/bugs-20260930-reasoning-max-tokens-cap.md`
-- "Shipped `activity_timeout` default too short for reasoning models" →
-  `docs/archive/bugs-20260930-activity-timeout-reasoning-window.md`
-- "z.ai accepts context overflow silently" →
-  `docs/archive/bugs-20260930-zai-silent-context-overflow.md`
-- "z.ai Coding Plan quota reset API" →
-    `docs/archive/bugs-20260930-zai-coding-plan-reset.md`
-- "Verify the Anthropic-surface hypothesis for z.ai (investigation)" →
-    `docs/archive/bugs-20260930-zai-anthropic-surface-probe.md`
-    (69 live probes, both surfaces terminate cleanly — hypothesis rejected,
-    no provider migration; evidence in `docs/research/zai-sse-probe-20260930.md`)
-
----
-
-## Guideline note
-
-All items raised from the 2026-09-30 z.ai review are closed. Re-open an
-investigation only with a reproducible capture (HTTP status, full request body,
-last SSE bytes, inter-event gaps), not from the symptom summary alone.
+_No open items._
