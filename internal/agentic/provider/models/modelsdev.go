@@ -364,7 +364,7 @@ type modelsDevProviderInfo struct {
 	API  string   `json:"api"`  // base URL (e.g. "https://api.tensorx.ai/v1")
 	NPM  string   `json:"npm"`  // AI-SDK package hint for wire protocol
 	Name string   `json:"name"` // display name
-	Env  []string `json:"env"` // API-key env var names the provider reads
+	Env  []string `json:"env"`  // API-key env var names the provider reads
 }
 
 // modelsDevProviderEntry is a full models.dev provider entry: the provider

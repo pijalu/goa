@@ -18,7 +18,8 @@ import (
 // one silence budget is split between two guards, and they must never race on
 // it. The warning leads, the event watchdog owns the window (it is the guard
 // that retries), and the byte-level reader keeps the whole budget as backstop:
-//   warn < event stall < byte budget
+//
+//	warn < event stall < byte budget
 func TestStallGuards_SingleOwnerOrdering(t *testing.T) {
 	a := NewAgent(Config{})
 	cases := []struct {
