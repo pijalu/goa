@@ -120,6 +120,104 @@ func TestQuotaZaiCodingPlan_StatusMapsAvailableAndHistory(t *testing.T) {
 	}
 }
 
+// TestQuotaZaiCodingPlan_MissingCredentialsSurfaceOnRead is the READ half of
+// the missing-resets bug (the claim half is pinned by
+// TestQuotaZaiCodingPlan_MissingCredentialsExplainThemselves below).
+//
+// An account holding resets showed NOTHING: the fetcher's status failed with
+// coding_plan_reset_zcode_jwt_required, zai.js dropped the failed status, and
+// both renderers returned "". The user could not tell "no resets" from "resets
+// hidden behind an unconfigured credential" — and /quota is the surface they
+// actually look at. A failed status must surface its reason and the exact
+// config that fixes it.
+func TestQuotaZaiCodingPlan_MissingCredentialsSurfaceOnRead(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	// A z.ai provider with an API key but NO reset credentials: the API key
+	// authenticates the monitor (consumption) half, never the reset surface.
+	env.setProvider("z.ai", map[string]any{
+		"provider": "zai", "apiKey": "k",
+		"endpoint": "https://api.z.ai/api/coding/paas/v4",
+	})
+	env.setActiveProvider("z.ai")
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, zaiMonitorBody)
+
+	env.load(t)
+	resets := env.callCommand("quota", "resets")
+	if !strings.Contains(resets, "Coding Plan Resets") {
+		t.Fatalf("/quota:resets must still show the section header so the gap is legible:\n%s", resets)
+	}
+	for _, want := range []string{"zcode_jwt_required", "zcodeJwt"} {
+		if !strings.Contains(resets, want) {
+			t.Errorf("/quota:resets missing %q (the user cannot act on a bare failure):\n%s", want, resets)
+		}
+	}
+
+	// The bare /quota table carries the same diagnosis, so the row is not
+	// simply absent from the summary the user actually looks at.
+	env.callCommand("quota", "refresh")
+	full := env.callCommand("quota")
+	if !strings.Contains(full, "zcode_jwt_required") {
+		t.Fatalf("/quota must explain the missing reset credential:\n%s", full)
+	}
+	// The consumption half is unaffected: a reset-API failure never takes down
+	// the primary quota row.
+	if !strings.Contains(full, "Z.ai") {
+		t.Fatalf("/quota lost the z.ai consumption row:\n%s", full)
+	}
+}
+
+// TestQuotaZaiCodingPlan_StatusBarStaysQuietWithoutCredentials verifies the
+// status-bar segment does NOT advertise resets it could not fetch: the count
+// suffix appears only for a real, successful status.
+func TestQuotaZaiCodingPlan_StatusBarStaysQuietWithoutCredentials(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("z.ai", map[string]any{
+		"provider": "zai", "apiKey": "k",
+		"endpoint": "https://api.z.ai/api/coding/paas/v4",
+	})
+	env.setActiveProvider("z.ai")
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, zaiMonitorBody)
+
+	env.load(t)
+	seg := env.renderSegment()
+	if strings.Contains(seg, "↻") {
+		t.Fatalf("status segment must not claim resets it could not fetch: %q", seg)
+	}
+}
+
+// TestQuotaZaiCodingPlan_MissingFamilyTokenExplainsItself pins that the OTHER
+// half of the dual credential names itself: with zcodeJwt present but no family
+// OAuth token, the message must blame the MaaS credential, not the JWT.
+func TestQuotaZaiCodingPlan_MissingFamilyTokenExplainsItself(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	// zcodeJwt present, family OAuth token absent → the MaaS credential is the
+	// missing one, and the message must say so.
+	env.setProvider("z.ai", map[string]any{
+		"provider": "zai", "apiKey": "k", "zcodeJwt": "zjwt-1",
+		"endpoint": "https://api.z.ai/api/coding/paas/v4",
+	})
+	env.setActiveProvider("z.ai")
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, zaiMonitorBody)
+
+	env.load(t)
+	resets := env.callCommand("quota", "resets")
+	if !strings.Contains(resets, "maas_jwt_required") {
+		t.Fatalf("/quota:resets must name the missing MaaS credential:\n%s", resets)
+	}
+}
+
+// TestQuotaZaiCodingPlan_UnconfiguredProviderRendersNothingExtra is the
+// negative control for the two tests above: with no z.ai provider at all there
+// is nothing to diagnose, so no reset section may appear. Without this the
+// explanation would fire for users who never configured z.ai.
+func TestQuotaZaiCodingPlan_UnconfiguredProviderRendersNothingExtra(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.load(t)
+	if out := env.callCommand("quota", "resets"); strings.Contains(out, "Coding Plan Resets") {
+		t.Fatalf("an unconfigured z.ai must not render a reset section:\n%s", out)
+	}
+}
+
 // TestQuotaZaiCodingPlan_StatusSurfacesInResetsAndQuota is the user-visible
 // half of bugs.md #7: /quota:resets lists the available 5-hour / week resets
 // with their history, and the bare /quota table carries the count row.
@@ -727,4 +825,111 @@ func codingPlanKeys(t *testing.T, posts []HTTPRequest) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestQuotaZaiCodingPlan_GoaLoginUnblocksResets is the end-to-end payoff of the
+// z.ai OAuth flow: a single `/login:zai:oauth` must be enough for /quota to
+// show the account's real reset credits, with NO extra config.
+//
+// Before it, the only way to make this work was hand-pasting both credentials
+// into providers[].extra — so a user holding resets saw "unavailable" with no
+// path forward. Here the ONLY credential source is goa.auth.oauthToken, exactly
+// as the real bridge serves it after a login.
+func TestQuotaZaiCodingPlan_GoaLoginUnblocksResets(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	// A plain z.ai provider: API key for consumption, no reset credentials in
+	// config — the shape every real user has.
+	env.setProvider("z.ai", map[string]any{
+		"provider": "zai", "apiKey": "k",
+		"endpoint": "https://api.z.ai/api/coding/paas/v4",
+	})
+	env.setActiveProvider("z.ai")
+	// The managed credential, as pluginOAuthToken returns it after a login.
+	env.setOAuthToken("zai", map[string]any{
+		"accessToken": "biz-token",
+		"zcodeJwt":    "zcode-jwt",
+		"accountId":   "u-1",
+	})
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, zaiMonitorBody)
+	env.respond("coding-plan/reset/status", 200, zaiStatusBody)
+
+	env.load(t)
+
+	resets := env.callCommand("quota", "resets")
+	for _, want := range []string{"Coding Plan Resets", "| 5-hour | 2 |", "| Week | 1 |"} {
+		if !strings.Contains(resets, want) {
+			t.Fatalf("/quota:resets missing %q after a Goa login:\n%s", want, resets)
+		}
+	}
+	// The z.ai reset surface must no longer report the credential gap. (Scoped
+	// to that reason code: the unrelated Codex line above legitimately says
+	// "unavailable" for its own absent login.)
+	if strings.Contains(resets, "zcode_jwt_required") || strings.Contains(resets, "maas_jwt_required") {
+		t.Fatalf("/quota:resets still reports the credential gap:\n%s", resets)
+	}
+
+	env.callCommand("quota", "refresh")
+	full := env.callCommand("quota")
+	if !strings.Contains(full, "3 available (2 × 5h · 1 × week)") {
+		t.Fatalf("/quota must carry the reset count row after a Goa login:\n%s", full)
+	}
+}
+
+// TestQuotaZaiCodingPlan_ManagedJwtPairedWithManagedToken pins that BOTH
+// credentials come from the one managed login. Half-authenticating (managed
+// token but a JWT from elsewhere) must not be treated as authenticated: the
+// pair is minted together, and a mismatch is what the backend rejects.
+func TestQuotaZaiCodingPlan_ManagedJwtPairedWithManagedToken(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("z.ai", map[string]any{
+		"provider": "zai", "apiKey": "k",
+		"endpoint": "https://api.z.ai/api/coding/paas/v4",
+	})
+	env.setActiveProvider("z.ai")
+	// A managed token that carries NO zcode JWT: the other half is missing, so
+	// the reset surface must still refuse rather than send a token-only request.
+	env.setOAuthToken("zai", map[string]any{"accessToken": "biz-token"})
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, zaiMonitorBody)
+	env.respond("coding-plan/reset/status", 200, zaiStatusBody)
+
+	env.load(t)
+	resets := env.callCommand("quota", "resets")
+	if !strings.Contains(resets, "zcode_jwt_required") {
+		t.Fatalf("a managed token without the JWT must still report the JWT gap:\n%s", resets)
+	}
+	if strings.Contains(resets, "| 5-hour | 2 |") {
+		t.Fatalf("must not render resets it could not authenticate for:\n%s", resets)
+	}
+}
+
+// TestQuotaZaiCodingPlan_ConfigOverridesManagedLogin pins precedence: an explicit
+// config credential still wins over the managed one, so a user debugging a
+// second account is not silently overridden by their stored login.
+func TestQuotaZaiCodingPlan_ConfigOverridesManagedLogin(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("z.ai", map[string]any{
+		"provider": "zai", "apiKey": "k",
+		"endpoint": "https://api.z.ai/api/coding/paas/v4",
+		"zcodeJwt": "config-jwt",
+	})
+	env.setActiveProvider("z.ai")
+	env.setOAuthToken("zai", map[string]any{
+		"accessToken": "managed-token", "zcodeJwt": "managed-jwt",
+	})
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, zaiMonitorBody)
+	env.respond("coding-plan/reset/status", 200, zaiStatusBody)
+
+	// Force a synchronous fetch: the plugin primes its cache asynchronously at
+	// load, so the reset request (and its headers) only become observable after
+	// an explicit refresh.
+	env.load(t)
+	env.callCommand("quota", "resets")
+
+	seen := env.seenAuthHeaders()
+	if !strings.Contains(seen, "config-jwt") {
+		t.Fatalf("config zcodeJwt must win over the managed one; headers=%q", seen)
+	}
+	if strings.Contains(seen, "managed-jwt") {
+		t.Fatalf("managed JWT leaked past the config override: %q", seen)
+	}
 }

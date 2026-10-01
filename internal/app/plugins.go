@@ -232,12 +232,31 @@ func codexOAuthTokens(store *authstore.Store) (string, *oauth.Tokens, bool) {
 	return "", nil, false
 }
 
+// pluginOAuthToken serves a Goa-managed OAuth credential to a trusted plugin.
+//
+// Two provider families are served:
+//
+//   - Codex (openai/codex/openai-codex): refreshed through the Codex token
+//     source before being handed out, so a plugin never sees a stale token.
+//   - z.ai / BigModel Coding Plan: served straight from the auth store. There is
+//     no refresh exchange — the broker mints both credentials only at login, and
+//     the reset surface needs them as a PAIR (business access token + the zcode
+//     JWT), so they are returned together in one call.
+//
+// The Coding Plan families are deliberately NOT cross-resolved: a zai login
+// never satisfies a bigmodel request or vice versa. They are different
+// identities and the business API validates the token against the account's
+// family, so handing over the other family's token would fail downstream in a
+// way that looks like a server bug.
 func pluginOAuthToken(ctx context.Context, store *authstore.Store, provider string) (map[string]any, error) {
-	if provider != "openai" && provider != "codex" && provider != "openai-codex" {
-		return nil, fmt.Errorf("unsupported OAuth provider: %s", provider)
-	}
 	if store == nil {
 		return nil, fmt.Errorf("goa auth store unavailable")
+	}
+	if isCodingPlanOAuthProvider(provider) {
+		return codingPlanOAuthToken(store, provider)
+	}
+	if provider != "openai" && provider != "codex" && provider != "openai-codex" {
+		return nil, fmt.Errorf("unsupported OAuth provider: %s", provider)
 	}
 	storeKey, tokens, ok := codexOAuthTokens(store)
 	if !ok {
@@ -258,6 +277,58 @@ func pluginOAuthToken(ctx context.Context, store *authstore.Store, provider stri
 		}
 	}
 	return map[string]any{"accessToken": current.AccessToken, "accountId": current.AccountID}, nil
+}
+
+// isCodingPlanOAuthProvider reports whether provider names a Coding Plan family
+// that /login stores under its own auth-store key.
+func isCodingPlanOAuthProvider(provider string) bool {
+	switch provider {
+	case "zai", "z.ai", "zai-coding", "zai-coding-plan", "bigmodel":
+		return true
+	default:
+		return false
+	}
+}
+
+// codingPlanOAuthToken returns the stored Coding Plan credential pair. The
+// zcodeJwt travels with the access token because the Coding Plan reset API
+// requires both in the same request; splitting them across two bridge calls
+// would let a plugin pair a fresh token with a stale JWT (or vice versa).
+//
+// An absent credential is an error, not an empty result: the plugin treats an
+// error as "no credential" and falls back to config, which is the correct
+// degradation — and a silent empty map would look like a broken login.
+func codingPlanOAuthToken(store *authstore.Store, provider string) (map[string]any, error) {
+	key := codingPlanStoreKey(provider)
+	tokens, ok := store.GetOAuth(key)
+	if !ok || tokens == nil || tokens.AccessToken == "" {
+		return nil, fmt.Errorf("OAuth login required for %s (use /login:%s:oauth)", key, key)
+	}
+	out := map[string]any{
+		"accessToken": tokens.AccessToken,
+		"accountId":   tokens.AccountID,
+	}
+	if tokens.ZcodeJWT != "" {
+		out["zcodeJwt"] = tokens.ZcodeJWT
+	}
+	if tokens.AccountName != "" {
+		out["accountName"] = tokens.AccountName
+	}
+	if !tokens.ExpiresAt.IsZero() {
+		out["expiresAt"] = tokens.ExpiresAt.Unix()
+	}
+	return out, nil
+}
+
+// codingPlanStoreKey normalizes a Coding Plan provider alias onto its auth-store
+// key, matching normalizeProviderID on the /login side.
+func codingPlanStoreKey(provider string) string {
+	switch provider {
+	case "z.ai", "zai-coding", "zai-coding-plan":
+		return "zai"
+	default:
+		return provider
+	}
 }
 
 // pluginSegmentColor maps a semantic segment color name to the active theme's
@@ -303,6 +374,15 @@ func pluginConfigFor(s *subsystems) map[string]any {
 // by provider id. API keys are included — plugin bridges run in-process with
 // the same trust level as Goa itself (plugins are explicitly trusted on
 // install), so key access is gated by plugin trust, not masking.
+//
+// Provider Extra keys are merged in as well, UNDER the structural fields. Some
+// provider APIs need credentials that do not fit ProviderConfig's fixed shape:
+// the z.ai Coding Plan RESET surface is dual-auth (a zcode business JWT plus the
+// family OAuth access token), and the quota plugin reads both off this entry.
+// Without the merge those keys could never arrive, so resolveAuth() always
+// failed and /quota rendered no reset section for an account that had resets.
+// Structural fields win a collision: an extra named apiKey or endpoint must not
+// rewrite the identity every fetcher resolves on.
 func pluginProvidersMap(s *subsystems) map[string]any {
 	out := map[string]any{}
 	for _, p := range s.cfg.Providers {
@@ -314,14 +394,17 @@ func pluginProvidersMap(s *subsystems) map[string]any {
 		if apiKey == "" && s.providerMgr != nil {
 			apiKey = s.providerMgr.ResolveAPIKey(p.ID)
 		}
-		out[p.ID] = map[string]any{
-			"id":       p.ID,
-			"name":     p.Name,
-			"provider": p.Provider,
-			"apiKey":   apiKey,
-			"baseUrl":  p.BaseURL,
-			"endpoint": p.Endpoint,
+		entry := map[string]any{}
+		for k, v := range p.Extra {
+			entry[k] = v
 		}
+		entry["id"] = p.ID
+		entry["name"] = p.Name
+		entry["provider"] = p.Provider
+		entry["apiKey"] = apiKey
+		entry["baseUrl"] = p.BaseURL
+		entry["endpoint"] = p.Endpoint
+		out[p.ID] = entry
 	}
 	return out
 }

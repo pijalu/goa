@@ -43,6 +43,20 @@ type Tokens struct {
 	// one (OpenAI Codex: chatgpt_account_id JWT claim). Empty for providers
 	// without account identity.
 	AccountID string `json:"account_id,omitempty"`
+	// AccountName carries the human-readable account label when the issuer
+	// returns one (z.ai: user.name, falling back to the email). Display-only —
+	// never sent as a credential.
+	AccountName string `json:"account_name,omitempty"`
+	// ZcodeJWT carries the z.ai/zcode business JWT returned alongside the OAuth
+	// token (data.token on the login exchange). It is a SECOND, independent
+	// credential: the Coding Plan reset API requires it as `Authorization`
+	// alongside the business access token in `X-Bigmodel-Authorization`, and the
+	// two are not interchangeable. Empty for providers that issue no such token.
+	//
+	// It is stored rather than re-derived because the exchange that mints it is
+	// the ONLY place it appears — a later refresh returns the access token
+	// alone, so dropping it would silently disable the reset surface.
+	ZcodeJWT string `json:"zcode_jwt,omitempty"`
 }
 
 // IsExpired returns true if the token is expired or expires within 5 minutes.

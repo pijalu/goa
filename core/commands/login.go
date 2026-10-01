@@ -112,7 +112,7 @@ func (c *LoginCommand) LongHelp() string {
 // Goa can select must always be giveable a credential (bugs.md "Vercel AI
 // Gateway: no way to add an API key"). openai-codex is the canonical Codex
 // entry; codex is kept as a credential alias of "openai".
-var curatedLoginProviders = []string{"copilot", "github", "openai", "openai-codex", "codex", "anthropic", "kimi"}
+var curatedLoginProviders = []string{"copilot", "github", "openai", "openai-codex", "codex", "anthropic", "kimi", "zai", "bigmodel"}
 
 // curatedLoginNames are the display names of the curated entries. Aliases that
 // share an auth-store key are named after the credential they store.
@@ -124,6 +124,8 @@ var curatedLoginNames = map[string]string{
 	"codex":        "OpenAI Codex (alias)",
 	"anthropic":    "Anthropic",
 	"kimi":         "Moonshot",
+	"zai":          "Z.ai Coding Plan",
+	"bigmodel":     "BigModel Coding Plan",
 }
 
 // loginProvider is one sign-on option advertised by /login.
@@ -262,10 +264,13 @@ func completeAuthKinds(provider, prefix string) []core.ArgCompletion {
 
 // normalizeProviderID maps login aliases onto the canonical auth-store key.
 // /login:codex and /login:openai-codex share the "openai" Codex credential.
+// "z.ai" is a branding spelling of the same "zai" Coding Plan credential.
 func normalizeProviderID(provider string) string {
 	switch strings.ToLower(provider) {
 	case "codex", "openai-codex":
 		return "openai"
+	case "z.ai", "zai-coding", "zai-coding-plan", "zai-coding-cn":
+		return "zai"
 	default:
 		return strings.ToLower(provider)
 	}
@@ -657,6 +662,12 @@ func supportedAuthKinds(provider string) []string {
 		return []string{"oauth"}
 	case "codex", "openai", "openai-codex":
 		return []string{"apikey", "oauth"}
+	case "zai", "z.ai", "bigmodel":
+		// The Coding Plan families accept BOTH: the API key drives inference
+		// and the consumption quota, the OAuth login mints the second credential
+		// the Coding Plan RESET surface needs (a plain API key can never
+		// authenticate there). They are independent, so both kinds are offered.
+		return []string{"apikey", "oauth"}
 	case "anthropic":
 		return []string{"apikey"}
 	case "kimi":
@@ -682,9 +693,51 @@ func (c *LoginCommand) newOAuthFlow(provider string) oauthFlow {
 		// Default to the browser login; the device-code variant is selected by
 		// the explicit ":device" suffix in handleOAuth.
 		return &codexBrowserFlow{login: oauth.LoginCodexBrowser, loginUI: oauth.LoginCodexBrowserUI}
+	case "zai":
+		return &zaiBrowserFlow{
+			login: oauth.LoginZai,
+			loginUI: func(ctx context.Context, ui oauth.ZaiUIOpts) (*oauth.Tokens, error) {
+				return oauth.LoginZaiUI(ctx, ui)
+			},
+		}
+	case "bigmodel":
+		// The CN family shares the broker but mints its business token on
+		// open.bigmodel.cn, so it gets its own entry rather than a parameter.
+		return &zaiBrowserFlow{
+			login: oauth.LoginBigModel,
+			loginUI: func(ctx context.Context, ui oauth.ZaiUIOpts) (*oauth.Tokens, error) {
+				return oauth.LoginBigModelUI(ctx, ui)
+			},
+		}
 	default:
 		return nil
 	}
+}
+
+// zaiBrowserFlow wraps the z.ai / BigModel Coding Plan OAuth login.
+//
+// Unlike the Codex flow there is NO local callback listener: the flow opens a
+// broker transaction, hands the user a URL, and polls until the browser
+// authorization lands. That is what makes it work over SSH/headless, where a
+// localhost redirect could never come back — the same reason ZCode ships a
+// dedicated CLI flow rather than reusing its desktop deep-link one.
+type zaiBrowserFlow struct {
+	login   func(ctx context.Context) (*oauth.Tokens, error)
+	loginUI func(ctx context.Context, ui oauth.ZaiUIOpts) (*oauth.Tokens, error)
+}
+
+func (f *zaiBrowserFlow) Run(ctx context.Context, w uiWriter, _ prompter) (*oauth.Tokens, error) {
+	if f.loginUI != nil && w != nil {
+		opts := oauth.ZaiUIOpts{}
+		opts.NotifyURL = func(u string) {
+			w.Writef("Open this URL to sign in to your z.ai Coding Plan:\n%s\n(%s)\nWaiting for authorization...\n",
+				ansi.Hyperlink(u, u), clickHint(u))
+		}
+		bridge := plugins.NewBrowserBridge()
+		opts.OpenURL = func(u string) { _ = bridge.OpenURL(u) }
+		return f.loginUI(ctx, opts)
+	}
+	return f.login(ctx)
 }
 
 // codexBrowserFlow wraps the oauth package browser login so the command layer

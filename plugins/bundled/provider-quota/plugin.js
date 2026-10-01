@@ -625,9 +625,19 @@ function zaiResetSurface() {
 // codingPlanRow renders the one-line /quota summary of available Coding Plan
 // resets ("N available (5h 1 · week 1)"). Empty when the snapshot carries no
 // status, when nothing is available, or while the API is throttling — a
-// cooldown is state, not quota, and belongs on /quota:resets.
+// cooldown is state, not quota, and belongs on /quota:resets. A FAILED status
+// renders its reason instead (see codingPlanFailureLine): reporting "0
+// available" for a fetch that never authenticated is a false reading of the
+// account, not an absence of resets.
 function codingPlanRow(display, cp) {
-	if (!cp || cp.throttled) {
+	if (!cp) {
+		return "";
+	}
+	if (cp.error && !cp.throttled) {
+		return "| " + display + " | Coding Plan Resets | " +
+			resetFailureSummary(resetFailureReason(cp)) + " | — | — | — |";
+	}
+	if (cp.throttled) {
 		return "";
 	}
 	var five = cp.availableFiveHour ? cp.availableFiveHour.length : 0;
@@ -637,6 +647,46 @@ function codingPlanRow(display, cp) {
 	}
 	return "| " + display + " | Coding Plan Resets | " + (five + week) +
 		" available (" + five + " × 5h · " + week + " × week) | — | — | `/quota:reset` |";
+}
+
+// resetFailureReason returns the most specific failure code available. An auth
+// failure carries the generic "auth_required" in `error` and the actionable
+// wire-level reason in `reason` ("coding_plan_reset_zcode_jwt_required"); the
+// generic code alone cannot be acted on, so `reason` wins when present.
+function resetFailureReason(cp) {
+	return String((cp && cp.reason) || (cp && cp.error) || "");
+}
+
+// RESET_FAILURE_HELP maps a reset-surface failure reason to the one action
+// that fixes it. The reasons are stable wire-level codes, so the mapping is a
+// lookup rather than prose: an unmapped reason still renders its raw code, so
+// a new backend code degrades to "unhelpful but honest" instead of blank.
+var RESET_FAILURE_HELP = {
+	coding_plan_reset_zcode_jwt_required:
+		"set providers[].extra.zcodeJwt (the zcode business JWT)",
+	coding_plan_reset_maas_jwt_required:
+		"set providers[].extra.accessToken (the z.ai/bigmodel OAuth access token)"
+};
+
+// resetFailureSummary renders a reset-surface failure as a short table cell:
+// the stable reason code plus the remedy.
+function resetFailureSummary(reason) {
+	var help = RESET_FAILURE_HELP[reason];
+	return help ? "unavailable — " + reason + " (" + help + ")" : "unavailable — " + reason;
+}
+
+// codingPlanFailureLine renders the /quota:resets explanation for a status
+// that failed to load. Without it the reset table rendered "| 5-hour | 0 |",
+// which reads as "you have no resets" when the truth is "we could not ask".
+function codingPlanFailureLine(cp) {
+	if (!cp || !cp.error || cp.throttled) {
+		return "";
+	}
+	var reason = resetFailureReason(cp);
+	var help = RESET_FAILURE_HELP[reason];
+	return "Reset status unavailable — `" + reason + "`" +
+		(help ? ". Fix: " + help + "." : "") +
+		" Resets you hold are NOT counted above.";
 }
 
 // renderZaiCodingPlanSection renders the /quota:resets block for z.ai:
@@ -655,7 +705,14 @@ function renderZaiCodingPlanSection() {
 		return "## z.ai Coding Plan Resets\n\n" +
 			"Throttled by the API — next attempt " + cooldownText(cp) + ".";
 	}
+	var failLine = codingPlanFailureLine(cp);
 	var out = ["## z.ai Coding Plan Resets", ""];
+	// A failed status has no honest table to draw: every cell would be a
+	// fabricated zero. Say so instead.
+	if (failLine) {
+		out.push(failLine);
+		return out.join("\n");
+	}
 	out.push("| Reset | Available | Earliest expiry | Last used |");
 	out.push("| --- | ---: | --- | --- |");
 	out.push(codingPlanLine("5-hour", cp.availableFiveHour, cp.latestFiveHourUsedAtMs));

@@ -583,13 +583,22 @@ no dedicated sign-on flow (e.g. /login:vercel:apikey).
   /login                          → List stored providers + the sign-on surface
   /login:<provider>               → Default (or only) sign-on flow for a provider
   /login:<provider>:apikey        → Store an API key for a provider
-  /login:<provider>:oauth         → Start OAuth sign-in (copilot/github/openai-codex)
+  /login:<provider>:oauth         → Start OAuth sign-in (copilot/github/openai-codex/zai/bigmodel)
   /login:<provider>:oauth:device  → Headless device-code sign-in
   /login:<provider>:<token>       → Legacy form: stored as an API key
 
 Credential resolution order: provider `api_key` in config → auth store
 (~/.goa/tokens.json) → the provider's catalog environment variable (e.g.
 AI_GATEWAY_API_KEY for vercel, OPENROUTER_API_KEY for openrouter).
+
+z.ai / BigModel Coding Plan: `/login:zai:oauth` (alias `z.ai`, or
+`/login:bigmodel:oauth`) opens a browser authorization and stores BOTH Coding
+Plan credentials — the business access token and the zcode JWT. The flow polls
+for the result rather than listening on a local callback, so it also completes
+over SSH/headless. These are what the Coding Plan reset-credit surface needs
+(`/quota:resets`); the API key alone cannot authenticate there. Sign-in is
+independent of the API key: use both, one for inference, the other for reset
+credits. See PLUGINS.md → "z.ai Coding Plan reset credits".
 ```
 
 ### `/logout` — Clear provider tokens

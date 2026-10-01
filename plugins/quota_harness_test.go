@@ -37,6 +37,9 @@ type quotaTestEnv struct {
 	// oauthTokens maps provider id → Goa-managed token returned by
 	// goa.auth.oauthToken (nil/absent ⇒ auth unavailable, as before).
 	oauthTokens map[string]map[string]any
+	// seenHeaders captures the headers of the most recently matched HTTP
+	// request, so tests can assert on the exact credentials sent on the wire.
+	seenHeaders map[string]string
 	// completions stores JS completers registered via goa.registerCompletion,
 	// keyed by command name (drives the completion tests like the app does).
 	completions map[string]func(prefix string) []Completion
@@ -259,6 +262,7 @@ func (e *quotaTestEnv) load(t *testing.T) *JSBridge {
 		defer e.mu.Unlock()
 		for _, r := range e.responders {
 			if strings.Contains(req.URL, r.substr) {
+				e.recordRequest(req)
 				return HTTPResponse{Status: r.status, Body: r.body, Headers: r.headers}
 			}
 		}
@@ -441,11 +445,36 @@ func (e *quotaTestEnv) mockDo() func(*HTTPBridge, HTTPRequest) HTTPResponse {
 		defer e.mu.Unlock()
 		for _, r := range e.responders {
 			if strings.Contains(req.URL, r.substr) {
+				e.recordRequest(req)
 				return HTTPResponse{Status: r.status, Body: r.body, Headers: r.headers}
 			}
 		}
 		return HTTPResponse{Status: 404, Body: `{"error":"no mock"}`, Headers: map[string]string{}}
 	}
+}
+
+// recordRequest captures the headers of a matched request so a test can assert
+// on the exact credentials a fetcher put on the wire (e.g. that the zcode JWT
+// and the family token are the ones the config override names).
+func (e *quotaTestEnv) recordRequest(req HTTPRequest) {
+	if e.seenHeaders == nil {
+		e.seenHeaders = map[string]string{}
+	}
+	for k, v := range req.Headers {
+		e.seenHeaders[strings.ToLower(k)] = v
+	}
+}
+
+// seenAuthHeaders returns the recorded header block of the most recent request,
+// flattened for substring assertions. Empty when no request was matched yet.
+func (e *quotaTestEnv) seenAuthHeaders() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var b strings.Builder
+	for k, v := range e.seenHeaders {
+		b.WriteString(k + ": " + v + "\n")
+	}
+	return b.String()
 }
 
 // readFileUnder reads a file inside the quota plugin dir.

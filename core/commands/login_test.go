@@ -725,3 +725,110 @@ func contains(s []string, v string) bool {
 	}
 	return false
 }
+
+// --- z.ai / BigModel Coding Plan OAuth wiring ---
+
+// TestSupportedAuthKinds_ZaiHasBoth pins that the Coding Plan families offer
+// BOTH kinds. The API key alone cannot authenticate the reset surface, so
+// advertising only apikey would leave the user with no way to sign in.
+func TestSupportedAuthKinds_ZaiHasBoth(t *testing.T) {
+	for _, provider := range []string{"zai", "bigmodel"} {
+		kinds := supportedAuthKinds(provider)
+		if len(kinds) != 2 || kinds[0] != "apikey" || kinds[1] != "oauth" {
+			t.Errorf("%s kinds = %v, want [apikey oauth]", provider, kinds)
+		}
+	}
+}
+
+// TestNormalizeProviderID_ZaiAliases pins that the branding spellings resolve to
+// one auth-store key. Splitting them would let a user sign in as "z.ai" and
+// then find the reset surface looking for "zai" and finding nothing.
+func TestNormalizeProviderID_ZaiAliases(t *testing.T) {
+	for _, alias := range []string{"zai", "z.ai", "Z.AI", "zai-coding", "zai-coding-plan", "zai-coding-cn"} {
+		if got := normalizeProviderID(alias); got != "zai" {
+			t.Errorf("normalizeProviderID(%q) = %q, want %q", alias, got, "zai")
+		}
+	}
+	if got := normalizeProviderID("bigmodel"); got != "bigmodel" {
+		t.Errorf("normalizeProviderID(bigmodel) = %q, want bigmodel", got)
+	}
+}
+
+// TestNewOAuthFlow_ZaiAndBigModelResolve proves both families get a real flow
+// (not nil), which is what /login:zai:oauth dispatches into.
+func TestNewOAuthFlow_ZaiAndBigModelResolve(t *testing.T) {
+	cmd := &LoginCommand{}
+	for _, provider := range []string{"zai", "bigmodel"} {
+		if cmd.newOAuthFlow(provider) == nil {
+			t.Errorf("newOAuthFlow(%q) = nil, want a Coding Plan flow", provider)
+		}
+	}
+}
+
+// TestZaiBrowserFlow_PersistsBothCredentials is the wiring payoff: the tokens
+// the flow returns — including the zcode JWT — must reach the auth store intact,
+// since that store is the only source the quota plugin reads later.
+func TestZaiBrowserFlow_PersistsBothCredentials(t *testing.T) {
+	store := mustStore(t)
+	expected := &oauth.Tokens{
+		AccessToken: "business-token",
+		ZcodeJWT:    "zcode-jwt",
+		AccountID:   "u-1",
+		TokenType:   "Bearer",
+	}
+	cmd := &LoginCommand{
+		Store:       store,
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: expected} },
+	}
+	if err := cmd.Run(core.Context{}, []string{"z.ai", "oauth"}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	// Stored under the CANONICAL key, not the typed alias.
+	got, ok := store.GetOAuth("zai")
+	if !ok {
+		t.Fatal("no zai credential stored")
+	}
+	if got.AccessToken != "business-token" {
+		t.Errorf("AccessToken = %q, want business-token", got.AccessToken)
+	}
+	if got.ZcodeJWT != "zcode-jwt" {
+		t.Errorf("ZcodeJWT = %q, want zcode-jwt — the reset surface cannot authenticate without it", got.ZcodeJWT)
+	}
+}
+
+// TestLoginListAdvertisesZaiOAuth pins the discoverability half: /login must
+// actually offer the Coding Plan OAuth, otherwise the flow is unreachable.
+func TestLoginListAdvertisesZaiOAuth(t *testing.T) {
+	for _, want := range []string{"zai", "bigmodel"} {
+		entry := findLoginProvider(t, want)
+		if !entry.Curated {
+			t.Errorf("%s must be curated so it is listed as a sign-on option", want)
+		}
+		if !containsKind(entry.Kinds, "oauth") {
+			t.Errorf("%s kinds = %v, want oauth advertised", want, entry.Kinds)
+		}
+	}
+}
+
+// findLoginProvider returns the sign-on entry for id, failing the test when it
+// is absent.
+func findLoginProvider(t *testing.T, id string) loginProvider {
+	t.Helper()
+	for _, p := range loginProviderList() {
+		if p.ID == id {
+			return p
+		}
+	}
+	t.Fatalf("loginProviderList is missing %q", id)
+	return loginProvider{}
+}
+
+// containsKind reports whether kinds lists kind.
+func containsKind(kinds []string, kind string) bool {
+	for _, k := range kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}

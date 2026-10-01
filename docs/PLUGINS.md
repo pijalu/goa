@@ -804,6 +804,65 @@ source lives at `plugins/bundled/provider-quota/`.
 - Refreshes data on a background timer (every 60s) and on explicit request
   (`Ctrl+Shift+Q` or `/quota:refresh`).
 
+#### z.ai Coding Plan reset credits
+
+Beyond consumption, a z.ai Coding Plan account holds *reset credits* that clear
+an exhausted 5-hour or weekly window. `/quota:resets` lists them,
+`/quota:reset[:week]` consumes one, and `/quota:reset:claim` asks for a new
+grant.
+
+This surface is **dual-authenticated** and needs credentials the plain z.ai API
+key does not provide:
+
+| Credential | Header | Source |
+| --- | --- | --- |
+| zcode business JWT | `Authorization: Bearer …` | `/login:zai:oauth` |
+| family OAuth access token | `X-Bigmodel-Authorization` (raw, no Bearer) | `/login:zai:oauth` |
+
+**Sign in once:** `/login:zai:oauth` (or `/login:bigmodel:oauth` for the CN
+family) mints BOTH credentials in a single browser authorization and stores them
+in Goa's auth store. `/quota:resets` then works with no further configuration.
+
+The two accounts are independent: `api_key` powers the consumption row (it
+authenticates the monitor API), while the reset surface needs the OAuth pair.
+When the pair is missing, `/quota` says so explicitly rather than reporting zero
+available resets — a fetch that never authenticated must not read as an account
+that holds none.
+
+The family token is resolved strictly for the account's own family (`zai` vs
+`bigmodel`, decided by the endpoint) with **no cross-family fallback**: it is a
+different identity, and the API validates it against the account's family.
+
+#### Reading the credential from a plugin
+
+`goa.auth.oauthToken(family)` (permission `oauth-token`) returns the managed
+pair in ONE call, so a plugin never has to pair a fresh token with a stale JWT:
+
+```js
+var cred = goa.auth.oauthToken("zai");   // {accessToken, zcodeJwt, accountId}
+if (cred && !cred.error) { /* cred.accessToken + cred.zcodeJwt */ }
+```
+
+An absent login is returned as an error (`OAuth login required for zai (use
+/login:zai:oauth)`), which is the signal to fall back to config.
+
+Provider `extra` keys are ALSO passed through to `goa.config().providers[…]`,
+under the structural fields (`id`, `name`, `provider`, `apiKey`, `baseUrl`,
+`endpoint`), which always win a name collision — an escape hatch for a second
+account or a CI token that should override the stored login. See
+`pluginProvidersMap` in `internal/app/plugins.go`.
+
+```yaml
+providers:
+  - id: z.ai
+    provider: zai
+    api_key: ${ZAI_API_KEY}       # consumption quota (the monitor API)
+    endpoint: https://api.z.ai/api/coding/paas/v4
+    extra:                       # optional override of the /login credential
+      zcodeJwt: ${ZCODE_JWT}
+      accessToken: ${ZAI_OAUTH}
+```
+
 ### Architecture (for plugin authors to study)
 
 ```

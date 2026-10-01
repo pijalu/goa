@@ -126,15 +126,16 @@ function originOf(u) {
 function fetch(ctx) {
 	var out = hq.runFetch(desc, ctx);
 	if (out && !out.error) {
-		// Ride the reset status along. A clean status is attached; a THROTTLED
-		// one is attached too, because the retry boundary it carries is state
-		// the UI must show rather than re-poll away. Every other failure
-		// degrades silently: the consumption quota is the primary surface and
-		// must never be taken down by the reset API (missing dual credentials,
-		// 404 on an account without a Coding Plan, ...). The status is
-		// re-attempted on the next refresh.
+		// Ride the reset status along. The status is attached even when it
+		// FAILED: the consumption quota is the primary surface and must never be
+		// taken down by the reset API, but dropping the failure silently is what
+		// made an account holding resets look like an account with none — /quota
+		// rendered no reset section and no reason (missing dual credentials, 404
+		// on an account without a Coding Plan, ...). The renderers key off
+		// st.error to explain the gap instead of showing nothing, and the status
+		// is re-attempted on the next refresh.
 		var st = codingPlan.status(ctx);
-		if (st && (!st.error || st.throttled)) {
+		if (st) {
 			out.codingPlan = st;
 		}
 	}

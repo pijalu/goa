@@ -261,14 +261,20 @@ function unwrap(body, onData) {
 //   zcode_jwt missing → coding_plan_reset_zcode_jwt_required
 //   family token missing → coding_plan_reset_maas_jwt_required
 // Both map to auth_required for the caller's error surface.
+//
+// The Goa-managed credential is fetched ONCE and used for both halves: the pair
+// is minted together by a single /login, so reading them separately could pair a
+// fresh access token with a stale JWT (or the reverse) and produce a confusing
+// server-side rejection.
 function resolveAuth(ctx) {
 	var config = (ctx && ctx.config) || {};
 	var family = familyOf(config);
-	var zcodeJwt = trim(zcodeJwtOf(config));
+	var managed = goaOAuthCredential(family);
+	var zcodeJwt = trim(zcodeJwtOf(config, managed));
 	if (!zcodeJwt) {
 		return authError("coding_plan_reset_zcode_jwt_required");
 	}
-	var familyToken = familyAccessToken(config, family);
+	var familyToken = familyAccessToken(config, family, managed);
 	if (!familyToken) {
 		return authError("coding_plan_reset_maas_jwt_required");
 	}
@@ -318,37 +324,45 @@ function mintIfAbsent(key, mint) {
 
 // familyAccessToken reads the account's OWN family OAuth access token, in
 // order: the provider config, the plugin storage key ZCode uses
-// (`oauth:<family>:access_token`), then Goa's managed OAuth when the host
-// serves that provider. There is deliberately no fallback to the OTHER family:
+// (`oauth:<family>:access_token`), then Goa's managed OAuth credential from
+// /login:<family>:oauth. There is deliberately no fallback to the OTHER family:
 // that token is a different identity, and the reset API validates the token
 // against the family of the account.
-function familyAccessToken(config, family) {
+function familyAccessToken(config, family, managed) {
 	return trim(
 		config.accessToken ||
 		goa.storage.get(OAUTH_TOKEN_KEY_PREFIX + family + ":access_token") ||
-		goaOAuthToken(family)
+		(managed ? managed.accessToken : "")
 	);
 }
 
-// goaOAuthToken reads a Goa-managed OAuth token, returning "" when the host
-// has no such provider (the bridge errors for unsupported providers — that is
-// an absent credential here, not a failure to report).
-function goaOAuthToken(family) {
+// goaOAuthCredential reads the Goa-managed Coding Plan credential for a family,
+// returning null when there is none.
+//
+// This is the /login:zai:oauth path: Goa mints BOTH credentials in one login and
+// hands them back together ({accessToken, zcodeJwt}). Returning null when the
+// bridge errors is correct here — "no managed credential" is exactly the absent
+// state this function models, and resolveAuth turns it into the specific
+// missing-credential reason for /quota to display.
+function goaOAuthCredential(family) {
 	if (!goa.auth || typeof goa.auth.oauthToken !== "function") {
-		return "";
+		return null;
 	}
 	var tok = goa.auth.oauthToken(family);
 	if (!tok || tok.error || !tok.accessToken) {
-		return "";
+		return null;
 	}
-	return tok.accessToken;
+	return tok;
 }
 
-// zcodeJwtOf reads the zcode business JWT from the provider config, falling
-// back to plugin storage (so it can be set once via /quota:login-style flows
-// without editing config).
-function zcodeJwtOf(config) {
-	return config.zcodeJwt || config.zcodejwttoken || goa.storage.get(ZCODE_JWT_KEY) || "";
+// zcodeJwtOf reads the zcode business JWT, in precedence order: the provider
+// config (an explicit override always wins), the plugin storage key ZCode uses,
+// then Goa's managed credential from /login — which is what makes
+// `/login:zai:oauth` sufficient on its own, with no config editing.
+function zcodeJwtOf(config, managed) {
+	return config.zcodeJwt || config.zcodejwttoken ||
+		goa.storage.get(ZCODE_JWT_KEY) ||
+		(managed ? trim(managed.zcodeJwt) : "") || "";
 }
 
 // --- validation -------------------------------------------------------------
