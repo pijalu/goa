@@ -84,6 +84,23 @@ type ProviderCompat struct {
 	// it for GLM-4.6+). The field is unknown to every other OpenAI-compatible
 	// endpoint, so it stays false outside the z.ai catalog entries.
 	ToolStream bool
+	// OmitsStreamTerminator marks a provider that finishes a generation WITHOUT
+	// sending any end-of-stream marker — no finish_reason, no [DONE], no
+	// message_stop — after having delivered the complete answer.
+	//
+	// z.ai and opencode-go both do this (docs/research/
+	// zai-connection-review-20260930.md §2; and the 2026-10-02 creaves.project
+	// export, whose request 20 ended with neither while 19 earlier rounds all
+	// carried both). When set, the stall watchdog falls back to judging the
+	// delivered answer by its structure instead of discarding a finished turn.
+	//
+	// This is a property of the provider's SSE framing, not of the model or of
+	// the conversation language: the same endpoint omits the terminator for
+	// every model and in every language. It is deliberately NOT the default,
+	// because where a provider does send a terminator the protocol is
+	// authoritative and a shape heuristic could only introduce a false
+	// "finished" verdict on a genuinely hung stream.
+	OmitsStreamTerminator bool
 	// Local marks providers that need no API key (LM Studio, Ollama).
 	Local bool
 }
@@ -371,7 +388,7 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://opencode.ai/zen/go/v1",
 		DefaultModel: "deepseek-v4-flash", EnvKeys: []string{"OPENCODE_API_KEY"},
 		URLPatterns: []string{"opencode.ai/zen/go"},
-		Compat:      ProviderCompat{NonStandard: true},
+		Compat:      ProviderCompat{NonStandard: true, OmitsStreamTerminator: true},
 		Extra: map[string]any{
 			"reasoning_key":               "reasoning_content",
 			"thinking_extra_body":         true,
@@ -432,7 +449,7 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.z.ai/api/coding/paas/v4",
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai-coding-plan",
 		URLPatterns: []string{"api.z.ai/api/coding", "open.bigmodel.cn/api/coding", "zai-coding", "zai-coding-cn", "zai-coding-plan"},
-		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true, ToolStream: true},
+		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true, ToolStream: true, OmitsStreamTerminator: true},
 		// Long retention by default: sends prompt_cache_key (the agent's cache
 		// session identity) so GLM prefix-cache hits stop depending on
 		// content-keyed routing (server-side evictions observed 2026-08-19).
@@ -446,7 +463,7 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.z.ai/api/paas/v4",
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai",
 		URLPatterns: []string{"api.z.ai", "open.bigmodel.cn"},
-		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true, ToolStream: true},
+		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true, ToolStream: true, OmitsStreamTerminator: true},
 		// Same affinity rationale as the coding entry above (shared endpoint
 		// family; live-probed field acceptance).
 		DefaultCacheRetention: CacheRetentionLong,

@@ -15,19 +15,29 @@ import (
 // provider is holding the socket open" rather than "the model is producing
 // nothing" (docs/research/zai-connection-review-20260930.md §2).
 //
-// It is deliberately conservative — a false positive here would finalize a
-// genuinely truncated answer and hide a real stall, so every condition must
-// hold:
+// Two tiers, in the order the evidence supports:
 //
-//   - visible answer text was actually delivered (thinking-only rounds do not
-//     count: a model that streamed reasoning and then went quiet is still
-//     working, and that silence must keep waiting);
-//   - no tool call is buffered or still streaming — a pending tool call means
-//     the round is mid-work, not finished, and dropping it would lose the
-//     turn's whole purpose;
-//   - the buffered text looks like a finished sentence rather than a fragment
-//     cut mid-word, since a trailing dangling token is the signature of a
-//     truncated stream rather than a completed one.
+//  1. PROTOCOL TERMINATOR — finish_reason / [DONE] / message_stop, whatever the
+//     protocol calls it. When the provider declares the round finished, holding
+//     the socket open afterwards is a transport artifact, not more work. This is
+//     language-agnostic and authoritative, and it is the same signal opencode
+//     keys its loop exit on (session/prompt.ts: `finish` present and not
+//     tool-calls/unknown).
+//
+//  2. STRUCTURAL COMPLETION — for the providers that stream a complete answer
+//     and never send a terminator at all (z.ai, opencode-go; see
+//     zai-connection-review-20260930.md §2, where requests 19-21 all ended with
+//     status 200, no [DONE], no finish_reason and no usage block). Here there is
+//     no protocol evidence to go on, so the round is judged on structure: the
+//     answer closed a markdown fence or ended in terminal punctuation.
+//
+// Tier 2 is deliberately a LAST RESORT and is the only place any text-shape
+// test survives. It cannot be made language-neutral — a CJK answer has no
+// sentence-final period, and a Hebrew/Arabic one has different marks — so it is
+// scoped to providers that demonstrably need it rather than applied to every
+// round, and a false negative there costs one bounded stall retry, not a
+// discarded answer. The announcement guard (classifyPrematureStop) remains the
+// separate check for work a model promised but did not deliver.
 //
 // Everything is read under a.mu because the watchdog timer fires on its own
 // goroutine, concurrently with the event loop appending deltas.
@@ -36,6 +46,16 @@ func (a *Agent) roundDeliveredCompleteAnswer() bool {
 	defer a.mu.Unlock()
 
 	if len(a.bufferedToolCalls) > 0 || len(a.streamingToolCalls) > 0 || len(a.streamingToolCallsByIndex) > 0 {
+		return false
+	}
+	// Tier 1: the provider declared the round finished. Authoritative.
+	if a.roundSawProtocolTerminator {
+		return true
+	}
+	// Tier 2: no terminator. Only trust the text shape when this provider is
+	// known to omit one, otherwise a genuinely hung stream would be mistaken
+	// for a finished answer and its partial output silently accepted.
+	if !a.cfg.ProviderOmitsStreamTerminator {
 		return false
 	}
 	content := strings.TrimSpace(a.contentBuf.String())
@@ -48,7 +68,9 @@ func (a *Agent) roundDeliveredCompleteAnswer() bool {
 // endsLikeFinishedSentence reports whether text ends at a sentence boundary.
 // Providers that terminate cleanly stop after punctuation, a closing fence, or
 // trailing whitespace; a stream truncated mid-thought ends on a partial word or
-// an unclosed construct.
+// an unclosed construct. Latin-script punctuation only — see the tier-2 note on
+// roundDeliveredCompleteAnswer for why this is a provider-scoped last resort
+// rather than a general rule.
 func endsLikeFinishedSentence(content string) bool {
 	switch content[len(content)-1] {
 	case '.', '!', '?', ':', ';', ')', ']', '}', '"', '\'', '`':

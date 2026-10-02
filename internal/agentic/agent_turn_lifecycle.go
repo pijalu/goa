@@ -223,6 +223,7 @@ func (a *Agent) resetStreamRoundState() {
 	a.streamingToolCalls = nil
 	a.streamingToolCallsByIndex = nil
 	a.toolCallDeltasThisRound = 0
+	a.roundSawProtocolTerminator = false
 }
 
 // checkStreamLoop detects immediate repetition of a suffix within the current

@@ -13,6 +13,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/perms"
 )
@@ -442,6 +443,24 @@ type Config struct {
 	// The main interactive agent leaves it false so that provider truncation
 	// under load is surfaced instead of silently swallowed.
 	AllowEmptyResponse bool
+
+	// ProviderOmitsStreamTerminator marks a provider that ends a generation
+	// WITHOUT sending any protocol terminator — no finish_reason, no [DONE],
+	// no message_stop — while still having delivered the complete answer.
+	//
+	// z.ai and opencode-go both do this (docs/research/
+	// zai-connection-review-20260930.md §2: requests 19-21 ended status 200
+	// with no [DONE], no finish_reason and no usage block). For those, and
+	// only those, roundDeliveredCompleteAnswer falls back to judging the answer
+	// by its shape when the stall window expires, instead of discarding a
+	// finished answer and replaying the whole turn.
+	//
+	// It is a per-provider capability, not a per-model or per-language one:
+	// the omission is in the provider's SSE framing and is identical whatever
+	// language the user is working in. Providers that DO send a terminator must
+	// leave this false so that a hung stream is never mistaken for a finished
+	// answer — that mistake is the one this field exists to prevent.
+	ProviderOmitsStreamTerminator bool
 }
 
 func newCacheContextID() string {
@@ -486,7 +505,28 @@ func NewAgent(cfg Config) *Agent {
 	if cfg.Model.ContextWindow > 0 {
 		a.contextWindow.Store(int64(cfg.Model.ContextWindow))
 	}
+	// Resolve the provider's terminator-omission capability once, here, rather
+	// than at every stall decision: it is a property of the endpoint, fixed for
+	// the agent's lifetime. Deriving it from the catalog keeps the knowledge in
+	// one place (next to the other wire quirks) and makes it apply to every
+	// agent built for that provider without each call site opting in.
+	if !cfg.ProviderOmitsStreamTerminator {
+		cfg.ProviderOmitsStreamTerminator = providerOmitsStreamTerminator(cfg.Model)
+		a.cfg.ProviderOmitsStreamTerminator = cfg.ProviderOmitsStreamTerminator
+	}
 	return a
+}
+
+// providerOmitsStreamTerminator reports whether the catalog declares that this
+// model's provider finishes a generation without any end-of-stream marker.
+//
+// MatchProviderByNameOrURL is used rather than a bare identity lookup because
+// "custom" IS a catalog entry (with no quirks of its own): a custom provider
+// pointed at a known host must be resolved from that endpoint, and the generic
+// identity deliberately defers to the URL there.
+func providerOmitsStreamTerminator(model provider.Model) bool {
+	def := schema.MatchProviderByNameOrURL(model.Provider, model.BaseURL)
+	return def != nil && def.Compat.OmitsStreamTerminator
 }
 
 // SetHistory replaces the conversation history.

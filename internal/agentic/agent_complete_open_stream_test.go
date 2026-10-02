@@ -88,6 +88,11 @@ func TestAgent_CompleteAnswerHeldOpenStream_FinalizesWithoutReplay(t *testing.T)
 			MaxRetries:  3,
 			IdleTimeout: 400 * time.Millisecond, // shrink the stall watchdog for the test
 		},
+		// This provider reproduces z.ai / opencode-go, which never send a
+		// terminator even on a complete answer. Without the capability the
+		// watchdog must (correctly) treat the held-open socket as a stall, so
+		// the flag is what makes "complete answer, no terminator" decidable.
+		ProviderOmitsStreamTerminator: true,
 	})
 
 	var transcript []string
@@ -202,28 +207,53 @@ func indexOf(haystack, needle string) int {
 // case matters as much as the positive one.
 func TestRoundDeliveredCompleteAnswer_Boundaries(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		content   string
-		thinking  string
-		tools     []provider.ContentBlock
-		streaming int
-		want      bool
+		name string
+		// terminator simulates the provider's own end-of-generation marker
+		// (finish_reason / [DONE] / message_stop) having arrived.
+		terminator bool
+		// omitsTerminator marks a provider the catalog declares as never
+		// sending one (z.ai, opencode-go).
+		omitsTerminator bool
+		content         string
+		thinking        string
+		tools           []provider.ContentBlock
+		streaming       int
+		want            bool
 	}{
-		{name: "finished sentence", content: "Evidence is complete.", want: true},
-		{name: "finished question", content: "Should I edit the file?", want: true},
-		{name: "closed code fence", content: "Done:\n```go\nfmt.Println()\n```", want: true},
-		{name: "trailing whitespace trimmed", content: "All good.   ", want: true},
-		{name: "truncated mid-word", content: "Evidence is comp", want: false},
-		{name: "truncated mid-thought", content: "The next step is to", want: false},
-		{name: "unclosed bracket", content: "call foo(", want: false},
-		{name: "empty content", content: "", want: false},
-		{name: "whitespace only", content: "   \n ", want: false},
-		{name: "thinking only is not an answer", content: "", thinking: "reasoning...", want: false},
-		{name: "pending buffered tool call", content: "Calling a tool.", tools: []provider.ContentBlock{{Type: provider.ContentBlockToolCall, ToolName: "read"}}, want: false},
-		{name: "tool call still streaming", content: "Calling a tool.", streaming: 1, want: false},
+		// Tier 1: the protocol terminator is authoritative and
+		// language-agnostic — a Chinese or Arabic answer counts identically,
+		// because nothing about the text is consulted.
+		{name: "terminator wins over any text shape", terminator: true, content: "证据已完整。", want: true},
+		{name: "terminator with no text at all", terminator: true, want: true},
+		{name: "terminator is blocked by a pending tool call", terminator: true, content: "Calling.", tools: []provider.ContentBlock{{Type: provider.ContentBlockToolCall, ToolName: "read"}}, want: false},
+		{name: "terminator is blocked by a streaming tool call", terminator: true, content: "Calling.", streaming: 1, want: false},
+
+		// Tier 2: no terminator, but the provider is declared to omit one, so
+		// the answer is judged by structure (Latin punctuation only).
+		{name: "no terminator, omits one: finished sentence", omitsTerminator: true, content: "Evidence is complete.", want: true},
+		{name: "no terminator, omits one: finished question", omitsTerminator: true, content: "Should I edit the file?", want: true},
+		{name: "no terminator, omits one: closed code fence", omitsTerminator: true, content: "Done:\n```go\nfmt.Println()\n```", want: true},
+		{name: "no terminator, omits one: trailing whitespace trimmed", omitsTerminator: true, content: "All good.   ", want: true},
+		{name: "no terminator, omits one: truncated mid-word", omitsTerminator: true, content: "Evidence is comp", want: false},
+		{name: "no terminator, omits one: truncated mid-thought", omitsTerminator: true, content: "The next step is to", want: false},
+		{name: "no terminator, omits one: unclosed bracket", omitsTerminator: true, content: "call foo(", want: false},
+		{name: "no terminator, omits one: empty content", omitsTerminator: true, content: "", want: false},
+		{name: "no terminator, omits one: whitespace only", omitsTerminator: true, content: "   \n ", want: false},
+		{name: "no terminator, omits one: thinking is not an answer", omitsTerminator: true, thinking: "reasoning...", want: false},
+
+		// A provider that DOES send a terminator must never be second-guessed
+		// on text shape: a hung stream there is a stall, not a finished answer.
+		// This is the case that keeps the heuristic from being load-bearing.
+		{name: "no terminator, provider sends one: finished sentence is still a stall", content: "Evidence is complete.", want: false},
+		{name: "no terminator, provider sends one: question is still a stall", content: "Should I edit the file?", want: false},
+		{name: "no terminator, provider sends one: closed fence is still a stall", content: "Done:\n```go\nfmt.Println()\n```", want: false},
+
+		{name: "pending buffered tool call", omitsTerminator: true, content: "Calling a tool.", tools: []provider.ContentBlock{{Type: provider.ContentBlockToolCall, ToolName: "read"}}, want: false},
+		{name: "tool call still streaming", omitsTerminator: true, content: "Calling a tool.", streaming: 1, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a := &Agent{}
+			a := &Agent{cfg: Config{ProviderOmitsStreamTerminator: tc.omitsTerminator}}
+			a.roundSawProtocolTerminator = tc.terminator
 			a.contentBuf.WriteString(tc.content)
 			a.thinkingBuf.WriteString(tc.thinking)
 			a.bufferedToolCalls = tc.tools
@@ -235,8 +265,8 @@ func TestRoundDeliveredCompleteAnswer_Boundaries(t *testing.T) {
 			}
 
 			if got := a.roundDeliveredCompleteAnswer(); got != tc.want {
-				t.Errorf("roundDeliveredCompleteAnswer() = %v, want %v (content=%q thinking=%q)",
-					got, tc.want, tc.content, tc.thinking)
+				t.Errorf("roundDeliveredCompleteAnswer() = %v, want %v (terminator=%v omits=%v content=%q thinking=%q)",
+					got, tc.want, tc.terminator, tc.omitsTerminator, tc.content, tc.thinking)
 			}
 		})
 	}

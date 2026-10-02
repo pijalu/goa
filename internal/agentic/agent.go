@@ -228,6 +228,15 @@ type Agent struct {
 	// separate from genStartTime, which now opens at stream start for speed
 	// timing and so is always set even for empty streams.
 	genSawEvent bool
+	// roundSawProtocolTerminator reports whether the current stream round
+	// received the provider's own end-of-generation marker — finish_reason /
+	// [DONE] / message_stop, whichever the protocol uses. This is the
+	// language-agnostic "the model finished" signal (opencode keys its loop
+	// exit on the same thing), and it is the ONLY input to
+	// roundDeliveredCompleteAnswer: a provider that declared the round
+	// finished and then held the socket open has finished, whatever language
+	// its answer is written in. Reset per round in resetStreamRoundState.
+	roundSawProtocolTerminator bool
 	// genDuration is the wall-clock generation time of the last completed stream
 	// (first token → done), used to derive output speed when provider timings
 	// are unavailable.

@@ -98,8 +98,16 @@ func (a *Agent) handleStreamToolCallDelta(_ context.Context, _ *provider.Assista
 }
 
 func (a *Agent) handleStreamDone(ctx context.Context, stream *provider.AssistantMessageEventStream, _ provider.AssistantMessageEvent) (bool, bool, error) {
+	// The provider's own end-of-generation marker arrived (finish_reason /
+	// [DONE] / message_stop). Record it BEFORE completing the turn: if the
+	// socket is then held open past the stall window, this is what proves the
+	// round was finished rather than truncated, with no reliance on the shape
+	// or language of the answer text.
+	a.mu.Lock()
+	a.roundSawProtocolTerminator = true
+	a.mu.Unlock()
 	// P0 diagnostic: record whether this provider streamed tool-call args at
-	// all. A zero count means tool widgets can only appear at call completion
+	// all. A zero count means tool widgets only appear at call completion
 	// (no live arg streaming) for this provider/model combination.
 	a.mu.Lock()
 	deltas := a.toolCallDeltasThisRound
