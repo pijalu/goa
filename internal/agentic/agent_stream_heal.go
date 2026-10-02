@@ -4,6 +4,7 @@ package agentic
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
@@ -337,22 +338,126 @@ func looksTruncated(content string) bool {
 	return hasTrailingIntent(s)
 }
 
-// hasTrailingIntent reports whether the tail of s carries an explicit intent
-// to keep working ("let me", "I'll", "I will", ...; last 40 chars,
-// case-insensitive). It is the shared intent detector for looksTruncated and
-// for the post-tool-work premature-stop path in shouldAutoContinue.
+// hasTrailingIntent reports whether the closing sentence of s announces work
+// the model is about to do rather than work it has finished. It is the shared
+// intent detector for looksTruncated and for the post-tool-work premature-stop
+// path in classifyPrematureStop.
+//
+// Matching is ANCHORED to the start of the final sentence and matched on whole
+// words. Both properties are load-bearing:
+//
+//   - Anchored. An unanchored substring search fires on any incidental mention
+//     ("the parser now rejects both shapes" contains "now i..." boundaries), so
+//     a finished answer would be dragged into another round.
+//   - Whole-word window. The scan looks at the last intentWindowChars
+//     characters, which can cut a phrase in half — "…Let me now write the fix
+//     plan and finish." truncated to 40 chars is "et me now write the fix
+//     plan and finish.", losing the very phrase being looked for. Word
+//     boundaries make that loss impossible (see intentWindow).
+//
+// The 2026-10-02 creaves.project export is the evidence for both: round 83
+// ("…Let me write the fix plan.") tripped the guard and auto-continued, round 84
+// ("…Now writing the fix plan.") stated the identical intent in a wording the
+// phrase list did not carry, so the turn ended on an undelivered promise with
+// two of three auto-continue attempts unspent.
 func hasTrailingIntent(s string) bool {
-	tail := s
-	if len(tail) > 40 {
-		tail = tail[len(tail)-40:]
-	}
-	tail = strings.ToLower(tail)
-	for _, phrase := range []string{"let me", "i'll", "i will", "i'm going to", "now i", "next i", "i need to", "let's"} {
-		if strings.Contains(tail, phrase) {
+	sentence := strings.ToLower(intentWindow(lastSentence(s)))
+	for _, re := range trailingIntentFrames {
+		if re.MatchString(sentence) {
 			return true
 		}
 	}
 	return false
+}
+
+// trailingIntentFrames are the announcement shapes a model uses when it is
+// about to start work rather than reporting work it has done. Each pattern
+// anchors at the start of the closing sentence (^), so a finished answer that
+// merely mentions the same words mid-sentence is not matched.
+//
+// The set deliberately covers grammatical frames rather than enumerating verbs:
+// "now <gerund>", "proceeding/continuing/moving on", "here is / here's", and
+// "next step" between them catch the announcement regardless of which verb the
+// model picks next, which is what the fixed phrase list could not do.
+var trailingIntentFrames = []*regexp.Regexp{
+	// "Let me …", "I'll …", "I will …", "I need to …", "I'm going to …",
+	// "Let's …" — with an optional leading connective ("Now let me …").
+	regexp.MustCompile(`^(?:(?:now|and|but|so|ok|okay|alright|well)[,\s]+)?(?:let me|i'?ll|i will|i need to|i'?m going to|let'?s)\b`),
+	// "Now writing the fix plan." / "Next I will check the parser."
+	regexp.MustCompile(`^(?:now|next|then)[,\s]+(?:i'?m\s+)?[a-z]+ing\b`),
+	// "Proceeding with the implementation.", "Continuing with the plan.",
+	// "Moving on to the fix."
+	regexp.MustCompile(`^(?:proceeding|continuing|moving|going|starting|heading)\s+(?:on\s+|to\s+|with\s+|into\s+)`),
+	// "Here is the fix plan.", "Here's the plan.", "Here are the changes."
+	regexp.MustCompile(`^here\s*(?:is|are|'s)\b`),
+	// "Next step: patch the parser."
+	regexp.MustCompile(`^next\s+steps?\b`),
+}
+
+// intentWindowChars bounds how far back the intent scan looks. Sized to cover a
+// full announcement sentence including a leading connective.
+const intentWindowChars = 120
+
+// intentWindow trims s to its last intentWindowChars, snapped forward to the
+// next word boundary so the scan can never begin mid-word (which is how
+// "let me" became "et me" and escaped the guard).
+func intentWindow(s string) string {
+	if len(s) <= intentWindowChars {
+		return s
+	}
+	tail := s[len(s)-intentWindowChars:]
+	if i := strings.IndexAny(tail, " \t\n"); i >= 0 {
+		tail = tail[i+1:]
+	}
+	return tail
+}
+
+// lastSentence returns the region the intent frames are anchored to: the final
+// sentence when the reply has terminal punctuation, otherwise the final clause.
+// Anchoring on the closing sentence is what keeps a finished answer from being
+// dragged into another round — an unanchored scan over the whole reply matches
+// any incidental mention of "let me" in the middle of it.
+//
+// Boundaries are only accepted when text FOLLOWS them, so a reply that ends on
+// its own terminator falls through to the previous boundary rather than scanning
+// the empty tail. When no accepted boundary remains, the text is scanned whole
+// (a single short sentence, or a reply cut off mid-thought with no punctuation
+// at all).
+func lastSentence(s string) string {
+	s = strings.TrimRight(s, " \t\r\n")
+	if frag := trailingFragment(s, sentenceBreaks); frag != "" {
+		return frag
+	}
+	if frag := trailingFragment(s, clauseBreaks); frag != "" {
+		return frag
+	}
+	return s
+}
+
+// sentenceBreaks are the terminal punctuation marks that end a sentence;
+// clauseBreaks are the weaker intra-sentence boundaries tried only when the
+// reply carries no terminal punctuation (a reply cut off mid-thought).
+const (
+	sentenceBreaks = ".!?"
+	clauseBreaks   = ",;:\n"
+)
+
+// trailingFragment returns the text following the last boundary byte in cut
+// that is itself followed by more text, or "" when no such boundary exists.
+func trailingFragment(s, cut string) string {
+	for i := strings.LastIndexAny(s, cut); i >= 0; {
+		if frag := strings.TrimSpace(s[i+1:]); frag != "" {
+			return frag
+		}
+		// This boundary closes the reply; look for the one before it.
+		head := strings.TrimRight(s[:i], " \t\r\n")
+		if head == "" {
+			return ""
+		}
+		s = head
+		i = strings.LastIndexAny(s, cut)
+	}
+	return ""
 }
 
 // finishStreamTurn handles a stream that ended without an explicit EventDone.
