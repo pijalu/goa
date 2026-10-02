@@ -22,14 +22,21 @@ type ClarifyCard struct {
 	summary  string
 	question string
 	options  []string
+	// closed marks a question whose answer MUST be one of the options: the
+	// selector then offers no free-text row. Host-owned yes/no questions (e.g.
+	// "rewrite this config file?") are closed — a typed answer has no meaning
+	// there. Cards built from the LLM's ask_user_question tool stay open: the
+	// model may be probing for something its options did not anticipate.
+	closed bool
 	// step/total track position within a multi-question batch (1-based).
 	// total<=1 means a standalone question and no progress label is shown.
 	step  int
 	total int
 }
 
-// NewClarifyCard builds a clarification card. title and question are required;
-// summary and options are optional (rendered only when non-empty).
+// NewClarifyCard builds an OPEN clarification card: the answer may be one of
+// options OR free text. title and question are required; summary and options are
+// optional (rendered only when non-empty).
 func NewClarifyCard(title, summary, question string, options []string) *ClarifyCard {
 	return &ClarifyCard{
 		title:    strings.TrimSpace(title),
@@ -38,6 +45,19 @@ func NewClarifyCard(title, summary, question string, options []string) *ClarifyC
 		options:  options,
 	}
 }
+
+// NewClosedClarifyCard builds a clarification card restricted to its options:
+// the selector offers no free-text row and Esc cancels. Use it for host-owned
+// questions with a known answer set (the config repair offer); use
+// NewClarifyCard for questions a model may need to escape from.
+func NewClosedClarifyCard(title, summary, question string, options []string) *ClarifyCard {
+	c := NewClarifyCard(title, summary, question, options)
+	c.closed = true
+	return c
+}
+
+// Closed reports whether the answer is restricted to the listed options.
+func (c *ClarifyCard) Closed() bool { return c.closed }
 
 // SetProgress records the card's position within a multi-question batch so the
 // host can render a compact "Clarification Y of X" cue instead of repeating the

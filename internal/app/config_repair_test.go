@@ -116,8 +116,8 @@ func TestOfferConfigRepair_YesRewritesBrokenConfig(t *testing.T) {
 	if _, err := config.NewCascadeLoader(filepath.Dir(filepath.Dir(homeCfg)), "", nil).Load(); err != nil {
 		t.Errorf("repaired config must load: %v", err)
 	}
-	waitForVisibleText(t, engine, "Restart goa to apply the corrected configuration")
-}
+	waitForVisibleText(t, engine, "the corrections are on disk now")
+	}
 
 // TestOfferConfigRepair_NoLeavesFilesUntouched pins the consent requirement:
 // declining (Esc) leaves every config file byte-identical and points the user
@@ -152,7 +152,57 @@ func TestOfferConfigRepair_NoLeavesFilesUntouched(t *testing.T) {
 	if len(backups) != 0 {
 		t.Errorf("no backup must be created for a declined repair, got %v", backups)
 	}
-	waitForVisibleText(t, engine, "fix them by hand")
+	waitForVisibleText(t, engine, "keeps applying the corrections in memory")
+	}
+
+// TestOfferConfigRepair_HealOnlyReportOffersToPersist covers the
+// never-converging heal: a home config whose warn lead sits exactly on the event
+// stall (45s warn / 60s window) is corrected IN MEMORY only, so without an offer
+// to write it back the very same "config healed" flash reappears on every start.
+// The announcement must name the error and the correction, and accepting must
+// persist it so the next load is clean.
+func TestOfferConfigRepair_HealOnlyReportOffersToPersist(t *testing.T) {
+	app, engine, term, homeCfg, rep := repairTestApp(t, "execution:\n  activity_timeout: 60s\n  activity_warn_after: 45s\n")
+	if rep.UsedDefaults || len(rep.Dropped) != 0 {
+		t.Fatalf("precondition: the contradictory pair must heal without a fallback, got %+v", rep)
+	}
+	if len(rep.Healed) != 1 {
+		t.Fatalf("precondition: exactly one healed key expected, got %+v", rep.Healed)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.announceConfigIssues()
+		app.offerConfigRepair()
+	}()
+
+	// The announcement names the offending value and the correction.
+	waitForVisibleText(t, engine, "45s")
+	waitForVisibleText(t, engine, "override dropped")
+	waitForVisibleText(t, engine, repairOptionNo)
+	term.sendKey("\r")
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("repair offer did not return after confirmation")
+	}
+
+	repaired, err := os.ReadFile(homeCfg)
+	if err != nil {
+		t.Fatalf("read repaired config: %v", err)
+	}
+	if strings.Contains(string(repaired), "activity_warn_after") {
+		t.Errorf("the contradictory override must be dropped from the file, got:\n%s", repaired)
+	}
+	// Convergence: the next load must be silent, or the flash repeats forever.
+	fresh := config.NewCascadeLoader(filepath.Dir(filepath.Dir(homeCfg)), "", nil)
+	if _, rep2, err := fresh.LoadWithReport(); err != nil {
+		t.Fatalf("repaired config must load: %v", err)
+	} else if !rep2.Empty() {
+		t.Errorf("accepted heal must converge to a clean report, got %+v", rep2)
+	}
 }
 
 // TestAnnounceConfigIssues_CleanReportIsSilent verifies a clean load produces

@@ -679,11 +679,14 @@ func clarifyInputPrompt(card *tui.ClarifyCard) string {
 // free-text main input. The selector title carries the card title plus the
 // compact batch-progress cue; the highlighted row is the one whose label or
 // number the user confirms with Enter; Esc/Ctrl+C cancels (ok==false).
-// A trailing "type your own answer" entry routes to the free-text main
-// input, so an option list never boxes the user in (bugs.md BUG-6); Esc
-// there still cancels the whole clarification.
-// Runs on the commandLoop (via clarify's apply). Falls back to the free-text
-// input path when no engine is wired.
+// An OPEN card also carries a trailing "type your own answer" entry that
+// routes to the free-text main input, so an option list never boxes the user in
+// (bugs.md BUG-6); Esc there still cancels the whole clarification. A CLOSED
+// card (host-owned question with a known answer set, e.g. the config repair
+// offer) has no such entry: its options are exhaustive, so the free-text
+// escape hatch is removed.
+// Runs on the commandLoop (via clarify's apply). Falls back to cancellation when
+// no engine is wired.
 func (a *App) clarifyWithOptionList(card *tui.ClarifyCard, resCh chan<- clarifyResult) {
 	engine := a.subs.tuiEngine
 	if engine == nil {
@@ -705,6 +708,15 @@ func (a *App) clarifyWithOptionList(card *tui.ClarifyCard, resCh chan<- clarifyR
 			Label:         opt,
 			PreserveOrder: true,
 		})
+	}
+	if card.Closed() {
+		// Closed question: the options are the whole answer set — no free-text row.
+		selCh := engine.ShowSelector(title, items, "")
+		go func() {
+			sel := <-selCh
+			a.apply(func() { resCh <- clarifyResult{sel, sel != ""} })
+		}()
+		return
 	}
 	// The custom-answer affix: always the last row, always available.
 	items = append(items, tui.SelectorItem{

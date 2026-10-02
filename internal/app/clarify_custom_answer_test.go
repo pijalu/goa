@@ -115,6 +115,43 @@ func TestClarify_OptionsOfferCustomAnswer(t *testing.T) {
 	}
 }
 
+// TestClarify_ClosedCardHasNoCustomAnswer pins the host-owned question shape: a
+// CLOSED card (the config repair offer) lists its options and nothing else —
+// there is no free-text row to open, because a typed answer to "rewrite this
+// config file?" means nothing.
+func TestClarify_ClosedCardHasNoCustomAnswer(t *testing.T) {
+	app, term, engine, _ := newClarifyTestApp(t)
+
+	card := tui.NewClosedClarifyCard("Repair configuration files?", "", "Write the corrections?",
+		[]string{"Yes", "No"})
+
+	type answer struct {
+		text string
+		ok   bool
+	}
+	ansCh := make(chan answer, 1)
+	go func() {
+		text, ok := app.clarify(card)
+		ansCh <- answer{text, ok}
+	}()
+
+	waitForVisibleText(t, engine, "Yes")
+	if visible := ansi.Strip(strings.Join(engine.AgentFrame().Visible, "\n")); strings.Contains(visible, "Type your own answer") {
+		t.Errorf("a closed question must not offer free text; visible:\n%s", visible)
+	}
+	term.sendKey("\x1b[B") // down → "No"
+	term.sendKey("\r")     // enter
+
+	select {
+	case got := <-ansCh:
+		if !got.ok || got.text != "No" {
+			t.Errorf("clarify = (%q, %v), want the picked option", got.text, got.ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("clarify did not return after picking an option")
+	}
+}
+
 // TestClarify_CustomAnswerEscCancels: Esc on the free-text step (after
 // picking "type your own answer") cancels the whole clarification — the
 // waiting tool caller gets ok==false, never a hang.

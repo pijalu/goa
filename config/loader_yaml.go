@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,32 +119,93 @@ func valueToYAMLNode(value any) (*yaml.Node, error) {
 // covers both spellings.
 var bareDurationPattern = regexp.MustCompile(`^[0-9]+$`)
 
+// Heal records one value the loader corrected in memory while reading a config
+// layer: what was written, why it could not be used, and what goa used instead.
+// The UI renders it verbatim (Describe) and uses Source as the file an accepted
+// repair must rewrite.
+type Heal struct {
+	// Source is the config file carrying the offending value.
+	Source string
+	// Key is the dotted config key that was corrected.
+	Key string
+	// Bad is the value as written in the file.
+	Bad string
+	// Fixed is the value goa loaded instead. Empty when the key was dropped so
+	// the cascade default (or the runtime-derived value) applies.
+	Fixed string
+	// Reason explains in one clause why Bad could not be used.
+	Reason string
+}
+
+// Describe renders a heal for the user: the error, the correction and where.
+func (h Heal) Describe() string {
+	fix := "loaded as " + quoteHealValue(h.Fixed)
+	if h.Fixed == "" {
+		fix = "override dropped, goa derives the value automatically"
+	}
+	return fmt.Sprintf("%s in %s: %s is invalid — %s; %s", h.Key, h.Source, quoteHealValue(h.Bad), h.Reason, fix)
+}
+
+func quoteHealValue(v string) string {
+	if v == "" {
+		return "(empty)"
+	}
+	return strconv.Quote(v)
+}
+
 // sanitizeBareStallDurations corrects stall-timing values written without a
 // time unit ("60" instead of "60s"). The /config UI deliberately speaks
 // plain seconds (bugs.md BUG-5), so hand-edits copy that style into the
 // config file — where units are required — and the next start died with
 // "missing unit in duration". Bare integers have exactly one sane reading
 // (seconds), so heal instead of refusing: correct the value in memory with a
-// visible stderr warning naming the file and the correction. Values that are
-// not bare integers ("60s", "2m", "abc") pass through untouched; "abc"-style
-// garbage keeps belonging to Config.Validate.
+// visible stderr warning naming the file and the correction, and return a
+// Heal record so the UI can name the key, the error and the correction.
+// Values that are not bare integers ("60s", "2m", "abc") pass through
+// untouched; "abc"-style garbage keeps belonging to Config.Validate.
 //
 // Layer-scoped like the pair heal: applied per cascade layer before the
 // merge, so cross-layer combinations stay coherent and the pair check sees
 // the corrected values.
-func sanitizeBareStallDurations(exec *ExecutionConfig, source string) bool {
-	healed := false
-	if bareDurationPattern.MatchString(exec.ActivityTimeout) {
-		exec.ActivityTimeout += "s"
-		warnBareStallDuration(source, "execution.activity_timeout", exec.ActivityTimeout)
-		healed = true
+func sanitizeBareStallDurations(exec *ExecutionConfig, source string) []Heal {
+	var heals []Heal
+	for _, key := range stallTimingKeys {
+		value := execStallValue(exec, key)
+		if !bareDurationPattern.MatchString(value) {
+			continue
+		}
+		fixed := value + "s"
+		setExecStallValue(exec, key, fixed)
+		heals = append(heals, Heal{
+			Source: source,
+			Key:    "execution." + key,
+			Bad:    value,
+			Fixed:  fixed,
+			Reason: "durations in config files need a time unit",
+		})
+		warnBareStallDuration(source, "execution."+key, fixed)
 	}
-	if bareDurationPattern.MatchString(exec.ActivityWarnAfter) {
-		exec.ActivityWarnAfter += "s"
-		warnBareStallDuration(source, "execution.activity_warn_after", exec.ActivityWarnAfter)
-		healed = true
+	return heals
+}
+
+// stallTimingKeys are the two stall-timing config keys that accept durations.
+var stallTimingKeys = []string{"activity_timeout", "activity_warn_after"}
+
+// execStallValue / setExecStallValue address the stall keys by name so the
+// bare-value heal walks one list instead of repeating the same block twice.
+func execStallValue(exec *ExecutionConfig, key string) string {
+	if key == "activity_warn_after" {
+		return exec.ActivityWarnAfter
 	}
-	return healed
+	return exec.ActivityTimeout
+}
+
+func setExecStallValue(exec *ExecutionConfig, key, value string) {
+	if key == "activity_warn_after" {
+		exec.ActivityWarnAfter = value
+		return
+	}
+	exec.ActivityTimeout = value
 }
 
 func warnBareStallDuration(source, key, corrected string) {
@@ -168,15 +230,23 @@ func warnBareStallDuration(source, key, corrected string) {
 // resolved at use: Agent.effectiveStallWarnAfter derives two thirds of the
 // effective window whenever the configured lead is unset, at, or beyond it).
 // Invalid duration shapes are ignored here — Config.Validate reports them with
-// its own wording. Returns true when a correction was applied.
-func sanitizeActivityPairLayer(exec *ExecutionConfig, source string) bool {
+// its own wording. Returns one Heal record per corrected key, nil when the pair
+// is already coherent.
+func sanitizeActivityPairLayer(exec *ExecutionConfig, source string) []Heal {
 	desc, bad := ActivityPairViolation(*exec)
 	if !bad {
-		return false
+		return nil
 	}
+	dropped := exec.ActivityWarnAfter
 	exec.ActivityWarnAfter = ""
 	fmt.Fprintf(os.Stderr, "Warning: %s in %s — dropping the override so the stall warning leads the auto-retry (derived 2/3 of the window)\n", desc, source)
-	return true
+	// Fixed stays empty: the override is dropped, not rewritten.
+	return []Heal{{
+		Source: source,
+		Key:    "execution.activity_warn_after",
+		Bad:    dropped,
+		Reason: desc,
+	}}
 }
 
 // ActivityPairViolation reports whether a config's stall-timing pair is

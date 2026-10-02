@@ -88,9 +88,10 @@ func TestLoadWithReport_HealsBareStallValues(t *testing.T) {
 	if rep.UsedDefaults || rep.FallbackErr != nil {
 		t.Errorf("bare values heal in memory, no fallback expected: %+v", rep)
 	}
-	if len(rep.Healed) == 0 || !strings.Contains(strings.Join(rep.Healed, ";"), "config.yaml") {
-		t.Errorf("Healed must name config.yaml, got: %v", rep.Healed)
+	if len(rep.Healed) != 2 {
+		t.Fatalf("Healed must carry one record per corrected key, got: %+v", rep.Healed)
 	}
+	requireDescribedHeals(t, rep.Healed)
 	if cfg.Execution.ActivityTimeout != "60s" || cfg.Execution.ActivityWarnAfter != "30s" {
 		t.Errorf("healed values = %q/%q, want 60s/30s", cfg.Execution.ActivityTimeout, cfg.Execution.ActivityWarnAfter)
 	}
@@ -99,6 +100,26 @@ func TestLoadWithReport_HealsBareStallValues(t *testing.T) {
 	}
 }
 
+// requireDescribedHeals asserts every heal record names the file, the offending
+// value, the correction and a reason — the UI renders them verbatim, so none of
+// them may be empty.
+func requireDescribedHeals(t *testing.T, heals []Heal) {
+	t.Helper()
+	for _, h := range heals {
+		if !strings.HasSuffix(h.Source, "config.yaml") {
+			t.Errorf("Healed Source = %q, want the home config path", h.Source)
+		}
+		if h.Bad == "" || h.Fixed == "" || h.Reason == "" {
+			t.Errorf("heal record must carry bad/fixed/reason, got: %+v", h)
+		}
+		if h.Describe() == "" {
+			t.Errorf("Describe must render a message, got %+v", h)
+		}
+	}
+}
+
+// TestLoadWithReport_DropsUnparseableYAMLLayer pins that a layer that cannot be
+// parsed is dropped with a visible warning instead of aborting startup.
 func TestLoadWithReport_DropsUnparseableYAMLLayer(t *testing.T) {
 	home := isolatedHome(t)
 	if err := os.WriteFile(homeConfigPath(home), []byte("{[}\n"), 0o644); err != nil {

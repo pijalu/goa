@@ -110,26 +110,50 @@ func checkSanitizeCase(t *testing.T, tt sanitizeCase) {
 	t.Helper()
 	restore := captureStderr(t)
 	exec := &ExecutionConfig{ActivityTimeout: tt.timeout, ActivityWarnAfter: tt.warn}
-	healed := sanitizeBareStallDurations(exec, "/tmp/fake/config.yaml")
+	heals := sanitizeBareStallDurations(exec, "/tmp/fake/config.yaml")
 	captured := restore()
 
-	if healed != tt.wantHeald {
-		t.Errorf("sanitizeBareStallDurations(%q/%q) healed = %v, want %v", tt.timeout, tt.warn, healed, tt.wantHeald)
+	if gotHealed := len(heals) > 0; gotHealed != tt.wantHeald {
+		t.Errorf("sanitizeBareStallDurations(%q/%q) healed = %v, want %v", tt.timeout, tt.warn, gotHealed, tt.wantHeald)
 	}
+	requireBareHealRecords(t, heals)
 	if exec.ActivityTimeout != tt.wantTime {
 		t.Errorf("activity_timeout = %q, want %q", exec.ActivityTimeout, tt.wantTime)
 	}
 	if exec.ActivityWarnAfter != tt.wantWarn {
 		t.Errorf("activity_warn_after = %q, want %q", exec.ActivityWarnAfter, tt.wantWarn)
 	}
-	if tt.wantHeald {
-		for _, want := range []string{"has no time unit", "config.yaml"} {
-			if !strings.Contains(captured, want) {
-				t.Errorf("heal warning must contain %q, got:\n%s", want, captured)
-			}
+	requireHealWarnings(t, captured, tt.wantHeald)
+}
+
+// requireBareHealRecords asserts each bare-value heal names the layer it came
+// from and both the bad and the corrected value, so the UI can show them.
+func requireBareHealRecords(t *testing.T, heals []Heal) {
+	t.Helper()
+	for _, h := range heals {
+		if h.Source != "/tmp/fake/config.yaml" {
+			t.Errorf("heal Source = %q, want the layer path", h.Source)
 		}
-	} else if captured != "" {
-		t.Errorf("no heal expected, but stderr said:\n%s", captured)
+		if h.Bad == "" || h.Fixed == "" {
+			t.Errorf("bare-value heal must name the bad and fixed values, got %+v", h)
+		}
+	}
+}
+
+// requireHealWarnings asserts the stderr warnings match the expectation: the
+// heal names the file and the missing unit, or nothing is printed at all.
+func requireHealWarnings(t *testing.T, captured string, wantHealed bool) {
+	t.Helper()
+	if !wantHealed {
+		if captured != "" {
+			t.Errorf("no heal expected, but stderr said:\n%s", captured)
+		}
+		return
+	}
+	for _, want := range []string{"has no time unit", "config.yaml"} {
+		if !strings.Contains(captured, want) {
+			t.Errorf("heal warning must contain %q, got:\n%s", want, captured)
+		}
 	}
 }
 
