@@ -11,40 +11,43 @@ import (
 
 // TestQuotaHarnessRenderSegmentWaitsForVMIdle reproduces the CI flake in
 // TestQuota_ZaiEndpointWithPathStillHitsMonitorHost: the plugin primes its
-// cache at load via goa.setTimeout(…,0), and that scheduler frame's enterVM
-// window stays active across HTTP hops. buildSegmentRender deliberately
-// returns "" while the VM is busy (only delayed, never lost — production
-// re-renders on the goa.ui.refreshSegment signal), so a harness that renders
-// exactly once can observe the transient skip and assert on "".
+// cache at load via goa.setTimeout(…,0), and that scheduler frame stays live
+// across HTTP hops. buildSegmentRender deliberately skips ("", ok=false) while
+// the runtime has a frame (only delayed, never lost — production re-renders on
+// the goa.ui.refreshSegment signal), so a harness that renders exactly once can
+// observe the transient skip and assert on "".
 //
 // The harness renderSegment must mirror the app render loop's FINAL state:
-// when the VM is busy, wait (bounded) for the frame to drain and take the
-// render made with a quiescent VM. Renders made while the VM is idle return
+// when the runtime is busy, wait (bounded) for the frame to drain and take the
+// render made with a quiescent runtime. Renders made while it is idle return
 // as-is, so by-design empty segments stay immediate.
 func TestQuotaHarnessRenderSegmentWaitsForVMIdle(t *testing.T) {
+	// frames stands in for the plugin runtime's frame state (a bridge is not
+	// loaded here — only the busy/skip contract is under test).
+	var frames frameState
 	e := newQuotaTestEnv(t)
 	e.segments.AddSegment(UISegmentDef{
 		ID: "quota",
 		Render: func() (string, bool) {
-			if vmBusy() {
+			if frames.busy() {
 				return "", false // mirrors buildSegmentRender's busy skip
 			}
 			return "[38%]", true
 		},
 	})
 
-	// Hold a logical VM frame, like a scheduler timer parked on HTTP inside
-	// enterVM. Release it from another goroutine so the (blocking) render
-	// below can observe the drain. enterVM increments synchronously, so the
-	// first render attempt is guaranteed to see a busy VM.
-	leave := enterVM()
+	// Hold a frame, like a scheduler timer parked on HTTP. Release it from
+	// another goroutine so the (blocking) render below can observe the drain.
+	// enter() marks it synchronously, so the first render attempt is
+	// guaranteed to see a busy runtime.
+	leave := frames.enter()
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		leave()
 	}()
 
 	if got := e.renderSegment(); got != "[38%]" {
-		t.Fatalf("segment should render after the VM frame drains, got %q", got)
+		t.Fatalf("segment should render after the runtime frame drains, got %q", got)
 	}
 }
 

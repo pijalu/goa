@@ -457,7 +457,7 @@ func TestRegisterCompletion_GuardedWhenUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
 	}
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	v, err := bridge.vm.RunString(`typeof goa.registerCompletion`)
 	if err != nil {

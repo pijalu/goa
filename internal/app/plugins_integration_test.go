@@ -196,10 +196,16 @@ func TestStartAsyncPluginLoad_NoPluginsFlagSkips(t *testing.T) {
 }
 
 // TestPluginCommandExecutesThroughRouter runs the registered /quota command
-// via the command router to confirm end-to-end output flows. With a cold
-// cache the bare command must acknowledge processing immediately (never
-// blocking the input line on provider HTTP) and emit the table async; the
-// explicit /quota:refresh subcommand stays the synchronous render path.
+// via the command router to confirm end-to-end output flows. The bare command
+// must never block the input line on provider HTTP: with a cold cache it
+// acknowledges processing immediately and emits the table async, with a warm
+// cache (the load-time prime already landed) it renders from cache. Which of
+// the two applies depends on whether the prime finished first — a timing fact,
+// not a contract — so the router test asserts the invariant (prompt,
+// non-empty, one of the two shapes) and leaves the cold/warm split to the
+// deterministic harness tests (TestQuota_BareQuotaColdCacheReturnsImmediately
+// / ...WarmCacheRendersInstantly). The explicit /quota:refresh subcommand stays
+// the synchronous render path.
 func TestPluginCommandExecutesThroughRouter(t *testing.T) {
 	s := newPluginTestSubsystems(t)
 	loadEnabledPlugins(s)
@@ -210,18 +216,23 @@ func TestPluginCommandExecutesThroughRouter(t *testing.T) {
 	}
 	ctx := core.Context{Config: s.cfg, ProjectDir: s.projectDir}
 
-	// Bare /quota on a cold cache: immediate processing acknowledgment.
+	// Bare /quota: immediate acknowledgment (cold) or instant cached render
+	// (warm) — never a blocking provider fetch.
 	var buf strings.Builder
 	ctx.OutputBuffer = &buf
 	if err := cmd.Run(ctx, []string{}); err != nil {
 		t.Fatalf("quota run: %v", err)
 	}
 	out := buf.String()
-	if out == "" {
+	switch {
+	case out == "":
 		t.Fatal("quota produced no output")
-	}
-	if !strings.Contains(out, "Fetching quotas") {
-		t.Fatalf("cold bare /quota must acknowledge processing immediately:\n%s", out)
+	case strings.Contains(out, "Fetching quotas"):
+		// cold cache: acknowledged, table emitted async via goa.output
+	case strings.Contains(out, "Provider Quotas"):
+		// warm cache: rendered from cache without a fetch notice
+	default:
+		t.Fatalf("bare /quota output unexpected (want the fetching notice or the quota table):\n%s", out)
 	}
 
 	// Explicit /quota:refresh is the synchronous path and confirms the router

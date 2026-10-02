@@ -74,9 +74,11 @@ func (b *JSBridge) setupOAuth(goaObj *goja.Object, tokenFn func(context.Context,
 			})
 		}
 		provider := call.Argument(0).String()
-		var result map[string]any
-		var err error
-		runOutsideVMLock(func() { result, err = tokenFn(context.Background(), provider) })
+		// The token store hop is pure Go and needs no runtime. It runs INSIDE
+		// the caller's frame: holding it keeps other frames off THIS runtime
+		// (goja is single-goroutine) while other plugins keep running, so a
+		// slow store never freezes the app.
+		result, err := tokenFn(context.Background(), provider)
 		if err != nil {
 			return b.vm.ToValue(map[string]any{"error": err.Error()})
 		}
@@ -99,31 +101,17 @@ func (b *JSBridge) setupHTTP(goaObj *goja.Object, httpB *HTTPBridge) {
 			return b.vm.ToValue(networkPermissionGatedFetchError())
 		}
 		req := b.buildHTTPRequest(call)
-		// The HTTP round-trip runs OUTSIDE the VM lock. A slow/hanging
-		// endpoint can block for the full request timeout; holding vmMu
-		// across it starves every other JS entry point (segment renders,
-		// hotkeys, /quota) — the input freeze that landed exactly when the
-		// quota segment appeared (Start-up). vmMu serializes goja
-		// access only; the bridge Do is pure Go and needs no VM.
-		// This function is only ever invoked from JS execution, which by
-		// contract holds vmMu, so the unlock/lock pair is balanced.
-		var resp HTTPResponse
-		runOutsideVMLock(func() { resp = httpDo()(httpB, req) })
+		// The HTTP round-trip runs inside the caller's frame. A slow/hanging
+		// endpoint therefore parks THIS runtime only: its own later entry
+		// points (segment render, hotkey, timer) skip or wait instead of
+		// corrupting the runtime, while every other plugin keeps running — so
+		// the input freeze that landed when the quota segment appeared
+		// (Start-up) cannot come back. The bridge Do is pure Go and needs no
+		// runtime of its own.
+		resp := httpDo()(httpB, req)
 		return b.vm.ToValue(httpResponseToMap(resp))
 	})
 	goaObj.Set("http", httpObj)
-}
-
-// runOutsideVMLock releases the global VM lock for the duration of a blocking
-// bridge call and re-acquires it afterwards (panic-safe via defer). It must
-// only be called from a goja bridge callback — i.e. with vmMu held by the
-// current goroutine — so the unlock/lock pair is balanced. While the lock is
-// released the caller must not touch the goja runtime; other JS entry points
-// (timers, hotkeys, segment renders) may run in the window.
-func runOutsideVMLock(fn func()) {
-	vmMu.Unlock()
-	defer vmMu.Lock()
-	fn()
 }
 
 // httpDoFunc performs an HTTP request. Tests substitute a mock via setHTTPDo
@@ -250,13 +238,13 @@ func (b *JSBridge) setupTimers(goaObj *goja.Object, sch *Scheduler) {
 	goaObj.Set("setInterval", func(call goja.FunctionCall) goja.Value {
 		cb := b.mustFunc(call.Argument(0), "setInterval callback")
 		ms := call.Argument(1).ToInteger()
-		id := sch.SetInterval(cb, time.Duration(ms)*time.Millisecond)
+		id := sch.SetIntervalGated(b, cb, time.Duration(ms)*time.Millisecond)
 		return b.vm.ToValue(id)
 	})
 	goaObj.Set("setTimeout", func(call goja.FunctionCall) goja.Value {
 		cb := b.mustFunc(call.Argument(0), "setTimeout callback")
 		ms := call.Argument(1).ToInteger()
-		id := sch.SetTimeout(cb, time.Duration(ms)*time.Millisecond)
+		id := sch.SetTimeoutGated(b, cb, time.Duration(ms)*time.Millisecond)
 		return b.vm.ToValue(id)
 	})
 	goaObj.Set("clearInterval", func(call goja.FunctionCall) goja.Value {
@@ -270,7 +258,7 @@ func (b *JSBridge) setupTimers(goaObj *goja.Object, sch *Scheduler) {
 }
 
 // mustFunc converts a JS value to a Go closure. Timer callbacks already run
-// under the global VM lock (scheduler invokeSafe), so the closure calls the
+// inside the runtime's frame (the scheduler's gate), so the closure calls the
 // function directly.
 func (b *JSBridge) mustFunc(v goja.Value, what string) func() {
 	fn, ok := goja.AssertFunction(v)
@@ -342,18 +330,20 @@ func (b *JSBridge) setupHotkeys(goaObj *goja.Object, hk *HotkeyBridge) {
 	})
 }
 
-// buildHotkeyHandler wraps the JS hotkey callback. It defers while a logical
-// frame is live (command parked on HTTP/confirm): entering then would
-// interleave a second goja frame on this runtime (item E). The user can press
-// the hotkey again once the UI is responsive.
+// buildHotkeyHandler wraps the JS hotkey callback. It defers while a frame is
+// live on this runtime (command parked on HTTP/confirm): entering then would
+// interleave a second goja frame (goja is single-goroutine — item E). The
+// user can press the hotkey again once the UI is responsive. tryEnterFrame
+// re-checks under the frame lock, so a frame that started between the busy
+// probe and the acquire is caught too.
 func (b *JSBridge) buildHotkeyHandler(def HotkeyDef, fn goja.Callable) func() {
 	return func() {
-		if vmBusy() {
+		leave, ok := b.tryEnterFrame()
+		if !ok {
 			b.ctx.Logger.Warn(fmt.Sprintf("hotkey %s deferred: plugin busy", def.KeyName()))
 			return
 		}
-		unlock := lockVM()
-		defer unlock()
+		defer leave()
 		if _, err := fn(goja.Undefined()); err != nil {
 			b.ctx.Logger.Error(fmt.Sprintf("hotkey %s failed: %v", def.KeyName(), err))
 		}

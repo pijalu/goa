@@ -91,11 +91,11 @@ func requireCodex(t *testing.T, e *quotaTestEnv, expr string) string {
 	})()`)
 }
 
-// evalJSString evaluates a JS expression under the VM lock and returns its
-// string value ("" for undefined/null).
+// evalJSString evaluates a JS expression inside the plugin runtime's frame and
+// returns its string value ("" for undefined/null).
 func (e *quotaTestEnv) evalJSString(t *testing.T, expr string) string {
 	t.Helper()
-	unlock := lockVM()
+	unlock := e.bridge.enterFrame()
 	defer unlock()
 	v, err := e.bridge.vm.RunString(expr)
 	if err != nil {
@@ -600,7 +600,7 @@ func runPostJSONProbe(t *testing.T, status int, body, respErr string) postJSONPr
 		}
 		return env.mockDo()(b, req)
 	})()
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	bridge.vm.Set("__require", bridge.vm.Get("require"))
 	v, err := bridge.vm.RunString(`
@@ -683,7 +683,7 @@ func TestPostJSON_BodyOnTheWire(t *testing.T) {
 		cap.record(req)
 		return env.mockDo()(b, req)
 	})()
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	bridge.vm.Set("__require", bridge.vm.Get("require"))
 	if _, err := bridge.vm.RunString(`
@@ -717,7 +717,7 @@ func TestGetJSON_LegacyErrorShapePreserved(t *testing.T) {
 	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	bridge.vm.Set("__require", bridge.vm.Get("require"))
 	v, err := bridge.vm.RunString(`

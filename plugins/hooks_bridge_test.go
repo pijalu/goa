@@ -126,7 +126,7 @@ func (e *hooksTestEnv) load(tb testing.TB) {
 // evalString evaluates a JS expression returning a string, under the VM lock.
 func (e *hooksTestEnv) evalString(t *testing.T, expr string) string {
 	t.Helper()
-	unlock := lockVM()
+	unlock := e.bridge.enterFrame()
 	defer unlock()
 	v, err := e.bridge.vm.RunString(expr)
 	if err != nil {
@@ -255,7 +255,7 @@ func benchEnv(b *testing.B, extraHookJS string) (*hooksTestEnv, *HookSink) {
 	env := newHooksTestEnv(b)
 	env.load(b)
 	if extraHookJS != "" {
-		unlock := lockVM()
+		unlock := env.bridge.enterFrame()
 		_, err := env.bridge.vm.RunString(extraHookJS)
 		unlock()
 		if err != nil {

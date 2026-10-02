@@ -47,7 +47,7 @@ func TestRequire_LoadsModule(t *testing.T) {
 		exports.pct = function(n) { return n + "%"; };
 	`)
 	bridge := loadPluginFromDisk(t, dir)
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	if got := bridge.vm.Get("__result").String(); got != "42%" {
 		t.Fatalf("__result = %q", got)
@@ -65,7 +65,7 @@ func TestRequire_ModuleExportsReplacement(t *testing.T) {
 		module.exports = { name: "quota", value: 7 };
 	`)
 	bridge := loadPluginFromDisk(t, dir)
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	if got := bridge.vm.Get("__result").String(); got != "quota:7" {
 		t.Fatalf("__result = %q", got)
@@ -86,7 +86,7 @@ func TestRequire_CacheReturnsSameObject(t *testing.T) {
 		exports.increment = function() { exports.count++; };
 	`)
 	bridge := loadPluginFromDisk(t, dir)
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	if got := bridge.vm.Get("__result").ToInteger(); got != 1 {
 		t.Fatalf("shared module state = %d, want 1 (cache)", got)
@@ -108,7 +108,7 @@ func TestRequire_NestedRequire(t *testing.T) {
 		exports.base = function() { return 21; };
 	`)
 	bridge := loadPluginFromDisk(t, dir)
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	if got := bridge.vm.Get("__result").ToInteger(); got != 42 {
 		t.Fatalf("nested require = %d, want 42", got)
@@ -127,7 +127,7 @@ func TestRequire_PathTraversalRejected(t *testing.T) {
 		}
 	`)
 	bridge := loadPluginFromDisk(t, dir)
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	if got := bridge.vm.Get("__result").String(); got != "blocked" {
 		t.Fatalf("traversal not blocked: %q", got)
@@ -142,7 +142,7 @@ func TestRequire_MissingModuleThrows(t *testing.T) {
 		catch (e) { __result = "threw"; }
 	`)
 	bridge := loadPluginFromDisk(t, dir)
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	if got := bridge.vm.Get("__result").String(); got != "threw" {
 		t.Fatalf("missing module did not throw: %q", got)

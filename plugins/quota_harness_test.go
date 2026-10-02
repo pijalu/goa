@@ -232,7 +232,7 @@ func registerStubOAuth(t *testing.T, e *quotaTestEnv) {
 	if e.bridge == nil {
 		t.Fatal("registerStubOAuth called before env.load")
 	}
-	unlock := lockVM()
+	unlock := e.bridge.enterFrame()
 	defer unlock()
 	_, err := e.bridge.vm.RunString(`
 		register("` + stubOAuthID + `", {
@@ -301,11 +301,11 @@ func (e *quotaTestEnv) drainPrime(t *testing.T) {
 	t.Fatal("quota cache prime did not complete within 5s")
 }
 
-// evalJSBool evaluates a JS expression inside the plugin VM under the global
-// VM lock and returns its boolean value.
+// evalJSBool evaluates a JS expression inside the plugin runtime's frame and
+// returns its boolean value.
 func (e *quotaTestEnv) evalJSBool(t *testing.T, expr string) bool {
 	t.Helper()
-	unlock := lockVM()
+	unlock := e.bridge.enterFrame()
 	defer unlock()
 	v, err := e.bridge.vm.RunString(expr)
 	if err != nil {
@@ -314,10 +314,10 @@ func (e *quotaTestEnv) evalJSBool(t *testing.T, expr string) bool {
 	return v.ToBoolean()
 }
 
-// evalJS runs a JS statement inside the plugin VM under the global VM lock.
+// evalJS runs a JS statement inside the plugin runtime's frame.
 func (e *quotaTestEnv) evalJS(t *testing.T, stmt string) {
 	t.Helper()
-	unlock := lockVM()
+	unlock := e.bridge.enterFrame()
 	defer unlock()
 	if _, err := e.bridge.vm.RunString(stmt); err != nil {
 		t.Fatalf("eval %q: %v", stmt, err)

@@ -13,13 +13,17 @@ import (
 // TestSegmentRender_SerializedWithScheduler is the regression test for the
 // provider-quota footer crash: a plugin segment's JS render function is
 // invoked from the app's drainSegmentRefreshes goroutine while scheduler
-// timer callbacks also execute JS on the same goja runtime. Without the VM
-// lock in the render closure, concurrent VM access clobbers vm.prg mid-call
+// timer callbacks also execute JS on the same goja runtime. Without the
+// runtime's frame discipline, concurrent VM access clobbers vm.prg mid-call
 // and goja panics with a nil dereference in vm.halted (bridge_extended.go:280).
 //
 // The test renders a segment from many goroutines while a JS interval timer
 // fires at the minimum interval; with -race and repeated iterations, an
 // unlocked render would corrupt the runtime quickly.
+//
+// Renders that find the runtime busy legitimately skip (ok=false, the app
+// keeps its last good text — the documented contract); what must never happen
+// is a render that RUNS and returns garbage, or a panic.
 func TestSegmentRender_SerializedWithScheduler(t *testing.T) {
 	ctx := newExtendedContext(t, t.TempDir(), NewHTTPBridge())
 	sch := ctx.Extended.Scheduler
@@ -42,7 +46,6 @@ func TestSegmentRender_SerializedWithScheduler(t *testing.T) {
 			counter = counter + 1;
 		}, 300);
 	`)
-	_ = bridge
 
 	// Find the registered segment's render closure.
 	var render func() (string, bool)
@@ -54,25 +57,47 @@ func TestSegmentRender_SerializedWithScheduler(t *testing.T) {
 	if render == nil {
 		t.Fatal("quota segment render closure not registered")
 	}
+	if bridge == nil {
+		t.Fatal("plugin fixture did not load")
+	}
 
 	// Hammer the render closure from multiple goroutines (simulating the app
 	// render loop + refresh drains) while the scheduler timer fires. Any
 	// unsynchronized VM access shows up as a goja panic or a -race report.
-	var wg sync.WaitGroup
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		renders int
+	)
 	for g := 0; g < 4; g++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 200; i++ {
 				out, ok := render()
-				if !ok || !strings.HasPrefix(out, "tok:") {
-					t.Errorf("render = %q (ok=%v), want tok:N", out, ok)
+				mu.Lock()
+				switch {
+				case !ok && out == "":
+					// busy skip: the caller keeps the last good text
+				case !ok:
+					mu.Unlock()
+					t.Errorf("busy render returned %q with ok=false; a skip must be empty so the last good text survives", out)
 					return
+				case !strings.HasPrefix(out, "tok:"):
+					mu.Unlock()
+					t.Errorf("render = %q, want tok:N (concurrent VM access corrupted the runtime)", out)
+					return
+				default:
+					renders++
 				}
+				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
+	if renders == 0 {
+		t.Fatal("every render was skipped — the runtime never went idle, so the segment would never paint")
+	}
 }
 
 // TestSegmentRender_JSPanicContained verifies a render function that throws

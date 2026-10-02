@@ -47,34 +47,35 @@ func (b *JSBridge) setupUI(goaObj *goja.Object, ui *UIBridge) {
 		return b.vm.ToValue("modal registered: " + obj.Get("id").String())
 	})
 	// goa.ui.confirm(spec) — blocking multiple-choice prompt (plan §4). The
-	// wait happens OUTSIDE vmMu (runOutsideVMLock, precedent: setupOAuth)
-	// with a fresh logical frame held (enterVM) so scheduler work defers
-	// instead of interleaving a second frame on this runtime (item E).
+	// wait happens INSIDE the caller's frame: same-runtime frames (timers,
+	// renders, hotkeys) skip or wait for the answer instead of interleaving
+	// with the suspended runtime, while every other plugin keeps running — no
+	// global freeze, no corruption (item E).
 	b.setupConfirm(uiObj, ui)
 	goaObj.Set("ui", uiObj)
 }
 
 // buildSegmentRender wraps the JS render function for goa.ui.addSegment.
 // The app render loop calls this from its own goroutine
-// (drainSegmentRefreshes), which does NOT hold the VM lock; serialize with
+// (drainSegmentRefreshes), which holds no frame; serialize with
 // timers/hotkeys so goja's single-goroutine rule is preserved, and contain
 // panics so a broken plugin cannot crash the UI goroutine (see the
 // provider-quota nil-deref crash in vm.halted).
 //
-// Skip while another logical frame is live (a command parked on HTTP/confirm):
-// two frames on one runtime must never overlap (item E). The next refresh
-// re-renders, so skipping only delays. The skip is reported as ok=false so
-// the caller keeps the LAST GOOD text — returning "" would be read as an
+// Skip while another frame is live on this runtime (a command parked on
+// HTTP/confirm): two frames on one goja runtime must never overlap. The next
+// refresh re-renders, so skipping only delays. The skip is reported as ok=false
+// so the caller keeps the LAST GOOD text — returning "" would be read as an
 // authoritative empty render and blank the segment (e.g. the quota segment
 // legitimately renders empty when unconfigured; a startup push landing
 // inside the cache-prime frame must not erase it until the next tick).
 func (b *JSBridge) buildSegmentRender(fn goja.Callable) func() (string, bool) {
 	return func() (string, bool) {
-		if vmBusy() {
+		leave, ok := b.tryEnterFrame()
+		if !ok {
 			return "", false
 		}
-		unlock := lockVM()
-		defer unlock()
+		defer leave()
 		defer func() { _ = recover() }()
 		res, err := fn(goja.Undefined())
 		if err != nil {
@@ -114,11 +115,7 @@ func (b *JSBridge) setupConfirm(uiObj *goja.Object, ui *UIBridge) {
 			return b.vm.ToValue(map[string]any{"error": verr})
 		}
 		var resp ConfirmResponse
-		leave := enterVM()
-		runOutsideVMLock(func() {
-			resp = <-ui.RequestConfirm(req)
-		})
-		leave()
+		resp = <-ui.RequestConfirm(req)
 		if resp.Err != "" {
 			return b.vm.ToValue(map[string]any{"cancelled": resp.Cancelled, "error": resp.Err})
 		}
@@ -130,9 +127,9 @@ func (b *JSBridge) setupConfirm(uiObj *goja.Object, ui *UIBridge) {
 }
 
 // parseConfirmSpec converts the JS spec object into a ConfirmRequest using
-// plain-Go data BEFORE any lock release (goja values must not be touched once
-// vmMu is dropped). Returns a descriptive error string ("" = valid), matching
-// the registerHook validation convention.
+// plain-Go data, so no goja value outlives the conversion. Returns a
+// descriptive error string ("" = valid), matching the registerHook validation
+// convention.
 func (b *JSBridge) parseConfirmSpec(v goja.Value) (ConfirmRequest, string) {
 	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return ConfirmRequest{}, "confirm expects an options object"
@@ -272,10 +269,10 @@ func (b *JSBridge) setupSessionUsage(goaObj *goja.Object, fn func() map[string]a
 // the registerCommand convention. Unknown-but-well-formed point strings are
 // rejected against the constant list (typo protection).
 //
-// v1 reentrancy contract: a hook handler runs UNDER the global VM lock and
-// must not call goa.callTool on a JS-plugin tool (that path would re-acquire
-// the non-reentrant VM lock on the same goroutine). Pure-Go bridges
-// (http/storage/output) release or avoid the lock and are safe.
+// v1 reentrancy contract: a hook handler runs INSIDE this runtime's frame and
+// must not call goa.callTool on a JS-plugin tool of the SAME plugin (that path
+// would wait on its own frame forever). Pure-Go bridges (http/storage/output)
+// are safe, and a tool from another plugin has its own runtime.
 func (b *JSBridge) setupHooks(goaObj *goja.Object) {
 	if b.ctx.RegisterHook == nil {
 		return
@@ -364,8 +361,8 @@ func (b *JSBridge) parseHookDef(obj *goja.Object) (HookSpec, goja.Value, string)
 // buildHookWrapper converts a JS hook handler into the Go HookHandler stored
 // in the registry. The payload crosses the VM boundary as JSON in BOTH
 // directions — no goja value aliasing, nested-map fidelity, trivially
-// versionable. The JS call happens UNDER the global VM lock (mirroring
-// buildToolWrapper's enterVM+lockVM discipline). Any throw, panic-adjacent
+// versionable. The JS call happens INSIDE this runtime's frame (mirroring
+// buildToolWrapper's enterFrame discipline). Any throw, panic-adjacent
 // failure, or non-JSON result degrades to pass-through (nil): availability
 // beats enforcement for user-installed plugins.
 func (b *JSBridge) buildHookWrapper(handlerVal goja.Value) HookHandler {
@@ -374,22 +371,20 @@ func (b *JSBridge) buildHookWrapper(handlerVal goja.Value) HookHandler {
 		return func(map[string]any) map[string]any { return nil }
 	}
 	return func(payload map[string]any) map[string]any {
-		// Pass through when a logical frame is live (command parked on
-		// HTTP/confirm): running now would interleave a second goja frame on
-		// this runtime (item E). Availability beats enforcement — the hook
-		// simply does not apply to this invocation.
-		if vmBusy() {
+		// Pass through when a frame is live on this runtime (command parked
+		// on HTTP/confirm): running now would interleave a second goja frame
+		// (item E). Availability beats enforcement — the hook simply does not
+		// apply to this invocation.
+		leave, ok := b.tryEnterFrame()
+		if !ok {
 			return nil
 		}
+		defer leave()
 		data, err := json.Marshal(payload)
 		if err != nil {
 			b.logWarn("hook payload marshal failed: %v", err)
 			return nil
 		}
-		unlock := lockVM()
-		defer unlock()
-		leave := enterVM()
-		defer leave()
 		return b.invokeHook(fn, data)
 	}
 }

@@ -22,7 +22,7 @@ func TestHTTPFetchJS_RequiresNetworkPermission(t *testing.T) {
 
 	ctx := newExtendedContext(t, t.TempDir(), NewHTTPBridge())
 	bridge := NewJSBridge(PluginDef{ID: "test", Entry: "plugin.js"}, ctx) // no permissions
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	_, err := bridge.vm.RunString(`goa.__res = JSON.stringify(goa.http.fetch("https://example.com/quota"))`)
 	unlock()
 	if err != nil {
@@ -50,7 +50,7 @@ func TestHTTPFetchJS_WithNetworkPermission(t *testing.T) {
 
 	ctx := newExtendedContext(t, t.TempDir(), NewHTTPBridge())
 	bridge := NewJSBridge(PluginDef{ID: "test", Entry: "plugin.js", Permissions: []string{"network"}}, ctx)
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	_, err := bridge.vm.RunString(`goa.__res = JSON.stringify(goa.http.fetch("https://example.com/quota"))`)
 	unlock()
 	if err != nil {

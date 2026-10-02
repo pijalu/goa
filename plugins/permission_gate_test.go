@@ -39,7 +39,7 @@ func TestOAuthTokenJS_RequiresPermission(t *testing.T) {
 		return map[string]any{"accessToken": "should-not-leak"}, nil
 	}
 	bridge := NewJSBridge(PluginDef{ID: "test", Entry: "plugin.js"}, ctx) // no permissions
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	_, err := bridge.vm.RunString(`goa.__res = JSON.stringify(goa.auth.oauthToken("openai"))`)
 	unlock()
 	if err != nil {

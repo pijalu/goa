@@ -15,7 +15,7 @@ func runEngineJS(t *testing.T, env *quotaTestEnv, expr string) string {
 	bridge := NewJSBridge(PluginDef{ID: "q", Permissions: []string{"network"}}, env.context())
 	bridge.installRequire(quotaPluginDir)
 	defer setHTTPDo(env.mockDo())()
-	unlock := lockVM()
+	unlock := bridge.enterFrame()
 	defer unlock()
 	bridge.vm.Set("__require", bridge.vm.Get("require"))
 	v, err := bridge.vm.RunString("(function() { var hq = globalThis.__require(\"lib/http-quota.js\"); " + expr + " })()")

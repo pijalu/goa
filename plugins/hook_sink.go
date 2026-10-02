@@ -103,13 +103,13 @@ type foldState struct {
 //
 // Notify delivery runs on ONE dedicated worker goroutine (FIFO), not the
 // plugin timer Scheduler. Root-caused during M2: every scheduler callback is
-// invoked UNDER vmMu by invokeSafe, while bridge-created hook handlers MUST
-// acquire vmMu themselves (the buildToolWrapper discipline — the intercept
-// path calls them from agent goroutines that hold no lock). Routing handlers
-// through the scheduler re-acquired the non-reentrant VM lock on the same
-// goroutine and deadlocked permanently. The dedicated worker keeps the
-// plan's intent — one background goroutine total, never one per
-// notification — while letting handlers self-lock.
+// invoked inside the runtime's frame, while bridge-created hook handlers must
+// take that frame themselves (the buildToolWrapper discipline — the intercept
+// path calls them from agent goroutines that hold no frame). Routing handlers
+// through the scheduler re-entered the same runtime's frame on one goroutine
+// and deadlocked permanently. The dedicated worker keeps the plan's intent —
+// one background goroutine total, never one per notification — while letting
+// handlers self-serialize.
 type HookSink struct {
 	registry *HookRegistry
 	logger   LoggerAPI

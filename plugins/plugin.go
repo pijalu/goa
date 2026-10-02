@@ -11,7 +11,6 @@ package plugins
 import (
 	"fmt"
 	"strconv"
-	"sync"
 
 	"github.com/dop251/goja"
 )
@@ -126,10 +125,15 @@ type PluginBridge interface {
 
 // JSBridge manages the Goja runtime for a single plugin, exposing
 // goa.* globals to JavaScript code.
+//
+// frames serializes JavaScript execution for THIS runtime (see vm_frame.go):
+// goja is single-goroutine, so two frames on one runtime corrupt each other,
+// while a plugin parked on a slow hop must not stall other plugins.
 type JSBridge struct {
-	vm  *goja.Runtime
-	ctx PluginContext
-	def PluginDef
+	vm     *goja.Runtime
+	ctx    PluginContext
+	def    PluginDef
+	frames frameState
 }
 
 // Kind reports the JS runtime kind.
@@ -145,51 +149,6 @@ func (b *JSBridge) hasPermission(perm string) bool {
 		}
 	}
 	return false
-}
-
-// vmMu serializes every JavaScript execution across all plugins. Goja
-// runtimes are not goroutine-safe, and plugins have asynchronous entry points
-// (timers, hotkeys, HTTP completions, command/tool invocations) arriving from
-// many goroutines. The mutex guarantees goja's single-goroutine rule; bridge
-// callbacks that perform blocking work OUTSIDE the runtime (e.g. the HTTP
-// round-trip in goa.http.fetch) must release it via runOutsideVMLock so a
-// slow endpoint cannot starve the other entry points — vmMu is not
-// reentrant, so holding it across a blocking call freezes the whole VM.
-var vmMu sync.Mutex
-
-// vmActive counts in-flight JS executions (re-entrant across the HTTP hop:
-// runOutsideVMLock does NOT decrement it). Scheduler timers use tryEnterVM
-// to detect that a synchronous command/tool is mid-execution and defer their
-// best-effort work instead of interleaving a second goja frame — the race
-// that made TestPluginCommandExecutesThroughRouter flaky (item E).
-var vmActive int
-var vmActiveMu sync.Mutex
-
-// lockVM acquires the global JS execution lock. All VM interactions must go
-// through this so no two goroutines ever touch a runtime concurrently.
-func lockVM() func() {
-	vmMu.Lock()
-	return vmMu.Unlock
-}
-
-// enterVM marks a JS execution as active for the whole logical call (it is
-// NOT released by runOutsideVMLock). Returns the leave func.
-func enterVM() func() {
-	vmActiveMu.Lock()
-	vmActive++
-	vmActiveMu.Unlock()
-	return func() {
-		vmActiveMu.Lock()
-		vmActive--
-		vmActiveMu.Unlock()
-	}
-}
-
-// vmBusy reports whether any JS execution is currently active.
-func vmBusy() bool {
-	vmActiveMu.Lock()
-	defer vmActiveMu.Unlock()
-	return vmActive > 0
 }
 
 // NewJSBridge creates a new JS bridge for the given plugin definition.
@@ -269,10 +228,10 @@ func (b *JSBridge) buildToolWrapper(executeFn interface{}) (func(map[string]any)
 	switch fn := executeFn.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(params map[string]any) (interface{}, error) {
-			leave := enterVM()
+			// enterFrame serializes against this runtime's other frames for
+			// the tool's whole duration, bridge hops included.
+			leave := b.enterFrame()
 			defer leave()
-			unlock := lockVM()
-			defer unlock()
 			jsParams := b.vm.NewObject()
 			for k, v := range params {
 				jsParams.Set(k, v)
@@ -322,7 +281,7 @@ func (b *JSBridge) wrapRegisterCommand() func(goja.FunctionCall) goja.Value {
 // wrapRegisterCompletion returns a JS-callable function that implements
 // goa.registerCompletion(name, fn): fn(prefix) supplies argument completions
 // for the named command. The JS function is invoked on the completer's
-// goroutine under the VM lock (buildCompletionWrapper owns locking), so it may
+// goroutine inside a frame (buildCompletionWrapper owns that), so it may
 // read plugin state (_fetchers, _cache) freely.
 func (b *JSBridge) wrapRegisterCompletion() func(goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
@@ -370,19 +329,17 @@ func completionsFromExport(v interface{}) []Completion {
 }
 
 // buildCompletionWrapper converts a JS prefix→completions function into a Go
-// callable. Runs the JS frame under the global VM lock (the TUI completer
-// calls this off the command path); malformed return shapes degrade to an
-// empty candidate list rather than erroring the keystroke.
+// callable. Runs the JS frame under this runtime's frame discipline (the TUI
+// completer calls this off the command path); malformed return shapes degrade
+// to an empty candidate list rather than erroring the keystroke.
 func (b *JSBridge) buildCompletionWrapper(fn interface{}) (func(prefix string) []Completion, error) {
 	jsFn, ok := fn.(func(goja.FunctionCall) goja.Value)
 	if !ok {
 		return nil, fmt.Errorf("complete must be a function")
 	}
 	return func(prefix string) []Completion {
-		leave := enterVM()
+		leave := b.enterFrame()
 		defer leave()
-		unlock := lockVM()
-		defer unlock()
 
 		out := []Completion{}
 		func() {
@@ -417,10 +374,10 @@ func (b *JSBridge) buildCommandWrapper(runFn interface{}) (func([]string) (strin
 	switch fn := runFn.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(args []string) (string, error) {
-			leave := enterVM()
+			// enterFrame serializes against this runtime's other frames for
+			// the command's whole duration, bridge hops included.
+			leave := b.enterFrame()
 			defer leave()
-			unlock := lockVM()
-			defer unlock()
 			jsArgs := b.vm.NewArray()
 			for i, a := range args {
 				jsArgs.Set(strconv.Itoa(i), a)
@@ -460,8 +417,8 @@ func (b *JSBridge) buildLifecycleWrapper(callbackVal interface{}) (LifecycleHand
 	switch cb := callbackVal.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(hook HookType, payload map[string]any) {
-			unlock := lockVM()
-			defer unlock()
+			leave := b.enterFrame()
+			defer leave()
 			call := goja.FunctionCall{}
 			call.Arguments = append(call.Arguments, b.vm.ToValue(string(hook)))
 			call.Arguments = append(call.Arguments, b.vm.ToValue(payload))
@@ -496,8 +453,8 @@ func (b *JSBridge) buildObserverWrapper(callbackVal interface{}) (func(string, i
 	switch cb := callbackVal.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(eventName string, payload interface{}) {
-			unlock := lockVM()
-			defer unlock()
+			leave := b.enterFrame()
+			defer leave()
 			call := goja.FunctionCall{}
 			call.Arguments = append(call.Arguments, b.vm.ToValue(eventName))
 			call.Arguments = append(call.Arguments, b.vm.ToValue(payload))

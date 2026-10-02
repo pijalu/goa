@@ -304,58 +304,79 @@ func TestCancelAllConfirms_Shutdown(t *testing.T) {
 	}
 }
 
-// TestRequestConfirm_LockReleasedWhileWaiting is the plan's §4 concurrency
-// assertion. The JS binding waits inside runOutsideVMLock; this white-box
-// probe proves vmMu is genuinely free while a confirm is pending, so timers,
-// hotkeys, and other bridges can run during a long user pause (and that the
-// item-E deferral gates — which check vmBusy, NOT vmMu — remain the safety
-// mechanism, not lock starvation).
-func TestRequestConfirm_LockReleasedWhileWaiting(t *testing.T) {
-	b := NewUIBridge()
-	confirmConsumer(t, b)
+// TestRequestConfirm_OtherRuntimesRunWhileWaiting is the plan's §4 concurrency
+// assertion. The JS binding waits for the user's answer INSIDE the caller's
+// frame, which is per RUNTIME: this white-box probe proves a frame on a
+// DIFFERENT runtime still runs during a long user pause, so a pending confirm
+// never freezes the app (timers, hotkeys, and other plugins' segment renders).
+//
+// The same runtime is deliberately NOT free: goja is single-goroutine, so a
+// second frame there must defer rather than interleave (item E).
+func TestRequestConfirm_OtherRuntimesRunWhileWaiting(t *testing.T) {
+	ui := NewUIBridge()
+	confirmConsumer(t, ui)
 
-	ch := b.RequestConfirm(confirmTestRequest())
-
-	lockAcquired := make(chan struct{}, 1)
+	// The pending confirm's own runtime: its frame is held for the wait.
+	pending := NewJSBridge(PluginDef{ID: "pending", Permissions: []string{"ui-confirm"}}, PluginContext{Extended: &ExtendContext{UI: ui}})
+	leavePending := pending.enterFrame()
+	waiting := make(chan struct{})
 	go func() {
-		unlock := lockVM()
-		unlock()
-		lockAcquired <- struct{}{}
+		ui.RequestConfirm(confirmTestRequest())
+		close(waiting)
 	}()
+	<-waiting
 
+	// Same runtime: a new frame must be refused (defer), never interleaved.
+	if _, ok := pending.tryEnterFrame(); ok {
+		leavePending()
+		t.Fatal("a frame entered the runtime that is waiting on a confirm — two goja frames would overlap")
+	}
+	leavePending()
+
+	// Different runtime: unaffected, so the app keeps running.
+	other := NewJSBridge(PluginDef{ID: "other"}, PluginContext{Extended: &ExtendContext{}})
+	ran := make(chan struct{})
+	go func() {
+		leave := other.enterFrame()
+		defer leave()
+		if _, err := other.vm.RunString(`1 + 1`); err != nil {
+			t.Errorf("JS on the other runtime: %v", err)
+		}
+		close(ran)
+	}()
 	select {
-	case <-lockAcquired:
+	case <-ran:
 	case <-time.After(2 * time.Second):
-		t.Fatal("vmMu not acquirable while a confirm pends — the wait would starve every JS entry point")
+		t.Fatal("a frame on another runtime starved behind a pending confirm — the wait would freeze the app")
 	}
 
 	// Cleanup: resolve so the AfterFunc doesn't leak past the test.
-	b.finishConfirm(1, ConfirmResponse{Cancelled: true})
-	_ = ch
+	ui.finishConfirm(1, ConfirmResponse{Cancelled: true})
 }
 
 // TestRequestConfirm_TimersDeferWhileFrameLive documents the item-E invariant
-// as it applies to confirms: the calling context keeps its logical frame
-// (enterVM), so scheduler work DEFERS until the answer lands instead of
-// interleaving a second goja frame on the same runtime.
+// as it applies to confirms: the calling frame stays live across the wait, so
+// scheduler work on that RUNTIME DEFERS until the answer lands instead of
+// interleaving a second goja frame.
 //
 // This intentionally deviates from the plan sketch ("timers proceed meanwhile")
 // — see docs/plans/plugins-hooks-intercept-plan.md §9 Q3 note and the M3
 // commit message. Delayed-not-lost beats corrupted.
 func TestRequestConfirm_TimersDeferWhileFrameLive(t *testing.T) {
-	leave := enterVM()
+	bridge := NewJSBridge(PluginDef{ID: "defer"}, PluginContext{Extended: &ExtendContext{}})
+	leave := bridge.enterFrame()
 	defer leave()
 
 	fired := make(chan struct{})
 	go func() {
-		invokeSafe(func() { close(fired) })
+		invokeSafe(bridge, func() { close(fired) })
 	}()
 
 	select {
 	case <-fired:
-		t.Fatal("timer entered the VM while a logical frame was live (item E violation)")
+		t.Fatal("timer entered the runtime while a frame was live (item E violation)")
 	case <-time.After(100 * time.Millisecond):
-		// expected: deferred because vmActive > 0
+		// expected: deferred because the runtime already has a live frame
 	}
 }
 
@@ -380,15 +401,15 @@ func confirmJSEnv(t *testing.T) (*JSBridge, *UIBridge) {
 }
 
 // runConfirmJS executes `goa.ui.confirm(spec)` on a dedicated goroutine that
-// mimics a plugin command context (takes vmMu first; the binding releases it
-// while waiting) and stores JSON.stringify(answer) under goa.__confirmResult.
-// Reading the result AFTER done requires only string reads under lockVM.
+// mimics a plugin command context (enters the runtime's frame first) and
+// stores JSON.stringify(answer) under goa.__confirmResult. Reading the result
+// AFTER done needs only a string read inside a frame.
 func runConfirmJS(t *testing.T, b *JSBridge, specJS string) (done <-chan error) {
 	t.Helper()
 	src := "goa.__confirmResult = JSON.stringify(goa.ui.confirm(" + specJS + "))"
 	ch := make(chan error, 1)
 	go func() {
-		unlock := lockVM()
+		unlock := b.enterFrame()
 		defer unlock()
 		_, err := b.vm.RunString(src)
 		ch <- err
@@ -396,10 +417,10 @@ func runConfirmJS(t *testing.T, b *JSBridge, specJS string) (done <-chan error) 
 	return ch
 }
 
-// readConfirmJSON fetches goa.__confirmResult under the VM lock.
+// readConfirmJSON fetches goa.__confirmResult inside the runtime's frame.
 func readConfirmJSON(t *testing.T, b *JSBridge) string {
 	t.Helper()
-	unlock := lockVM()
+	unlock := b.enterFrame()
 	defer unlock()
 	goaVal := b.vm.Get("goa")
 	if goaVal == nil {

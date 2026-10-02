@@ -13,40 +13,37 @@ import (
 
 // TestScheduler_StopCancelsDeferredOneShot is the regression test for the
 // bugs.md CI flake "TestQuota_CarouselPrefersAPIProvidersOverLocal renders an
-// empty segment": a setTimeout(0) one-shot that fires while a synchronous JS
-// frame is active is deferred by invokeSafeWithReschedule and retried every
-// 50ms by fireOnce. The old scheduler dropped the timer from its map BEFORE
-// the first fire attempt, so a deferred retry loop was invisible to Stop() —
-// the callback goroutine outlived Scheduler.Stop() (the plugin-unload /
-// test-cleanup path) and later ran its stale callback in a gap where no other
-// frame was live. A segment render hitting that exact window observes
-// vmBusy()==true and buildSegmentRender returns "" (the CI failure).
+// empty segment": a setTimeout(0) one-shot that fires while a JS frame is live
+// on the same runtime is deferred by the frame gate and retried every 50ms by
+// fireOnce. The old scheduler dropped the timer from its map BEFORE the first
+// fire attempt, so a deferred retry loop was invisible to Stop() — the callback
+// goroutine outlived Scheduler.Stop() (the plugin-unload / test-cleanup path)
+// and later ran its stale callback in a gap where no other frame was live. A
+// segment render hitting that exact window observes a busy runtime and skips
+// (the CI failure).
 //
 // Contract under test: Scheduler.Stop() must cancel a one-shot even after its
 // first fire attempt was deferred; the callback must never run after Stop
 // returns.
 func TestScheduler_StopCancelsDeferredOneShot(t *testing.T) {
 	sch := NewScheduler()
+	bridge := NewJSBridge(PluginDef{ID: "stop"}, PluginContext{})
 
-	// Hold a logical frame so the one-shot's first fire attempt is deferred
-	// (invokeSafeWithReschedule sees vmBusy()==true and reschedules).
-	leave := enterVM()
-	unlock := lockVM()
+	// Hold the runtime's frame so the one-shot's first fire attempt is
+	// deferred (the gate reports busy and fireOnce reschedules).
+	leave := bridge.enterFrame()
 
 	var ran atomic.Bool
-	sch.SetTimeout(func() { ran.Store(true) }, 0)
+	sch.SetTimeoutGated(bridge, func() { ran.Store(true) }, 0)
 
 	// Give the timer goroutine time to reach its first (deferred) fire
 	// attempt: it must now be parked in the 50ms back-off loop.
 	time.Sleep(150 * time.Millisecond)
 
-	// Release the frame briefly WITHOUT letting the callback win the race:
-	// instead of unlocking, stop the scheduler while the frame is still held.
-	// The deferral loop's next attempt must observe the closed stop channel,
-	// not the free VM.
+	// Stop the scheduler while the frame is still held: the deferral loop's
+	// next attempt must observe the closed stop channel, not the free frame.
 	sch.Stop()
 	leave()
-	unlock()
 
 	// After Stop() returns, the callback must never run — not immediately,
 	// and not on any later 50ms back-off tick.
@@ -64,17 +61,17 @@ func TestScheduler_StopCancelsDeferredOneShot(t *testing.T) {
 // exactly like it wins over a not-yet-fired timer.
 func TestScheduler_ClearCancelsPendingOneShot(t *testing.T) {
 	sch := NewScheduler()
+	bridge := NewJSBridge(PluginDef{ID: "clear"}, PluginContext{})
 
-	leave := enterVM()
-	unlock := lockVM()
+	// A live frame defers the one-shot's first fire attempt.
+	leave := bridge.enterFrame()
 
 	var ran atomic.Bool
-	id := sch.SetTimeout(func() { ran.Store(true) }, 0)
+	id := sch.SetTimeoutGated(bridge, func() { ran.Store(true) }, 0)
 	time.Sleep(150 * time.Millisecond) // let the first fire attempt defer
 
 	sch.Clear(id)
 	leave()
-	unlock()
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
