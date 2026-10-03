@@ -65,23 +65,38 @@ func (d *CellDiff) RowChanged(r int) bool {
 // RowRuns collapses one row of cells into maximal runs of identical styling.
 // This is where the payload stays small: a 120-column row of uniformly styled
 // text becomes one run, while only the genuinely varying tail splits.
+//
+// The text of a run is accumulated in a builder, and the style of a cell is
+// derived without allocating: this runs for every row of every frame, so a
+// per-cell allocation here would be the server's whole steady-state GC load.
 func RowRuns(cells []tui.CellAttrs) []Run {
 	if len(cells) == 0 {
 		return nil
 	}
 	var runs []Run
-	cur := Run{Text: cellText(cells[0]), Flags: cells[0].Flags,
-		FG: sgrToCSS(cells[0].FG), BG: sgrToCSS(cells[0].BG), Link: cells[0].Link}
+	var text strings.Builder
+	cur := runStyle(cells[0])
+	text.WriteString(cellText(cells[0]))
 	for _, c := range cells[1:] {
-		fg, bg := sgrToCSS(c.FG), sgrToCSS(c.BG)
-		if fg == cur.FG && bg == cur.BG && c.Flags == cur.Flags && c.Link == cur.Link {
-			cur.Text += cellText(c)
+		style := runStyle(c)
+		if style == cur {
+			text.WriteString(cellText(c))
 			continue
 		}
+		cur.Text = text.String()
 		runs = append(runs, cur)
-		cur = Run{Text: cellText(c), Flags: c.Flags, FG: fg, BG: bg, Link: c.Link}
+		text.Reset()
+		text.WriteString(cellText(c))
+		cur = style
 	}
+	cur.Text = text.String()
 	return append(runs, cur)
+}
+
+// runStyle extracts the styling a run groups by (everything but the text).
+// Run has only comparable fields, so two styles can be compared with ==.
+func runStyle(c tui.CellAttrs) Run {
+	return Run{Flags: c.Flags, FG: sgrToCSS(c.FG), BG: sgrToCSS(c.BG), Link: c.Link}
 }
 
 // IsLink reports whether the run is part of an OSC-8 hyperlink. The flag bit is

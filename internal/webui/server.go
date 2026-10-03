@@ -25,6 +25,46 @@ import (
 // is the one address where it is.
 const DefaultAddr = "127.0.0.1:8080"
 
+// Keepalive is the WebSocket liveness policy: how often the server pings, and
+// how long a socket with no traffic at all may stay open. The zero value means
+// the production defaults.
+//
+// It is a value object rather than two constants because a test must be able to
+// shrink both — the production numbers are minutes, which no unit test can wait
+// for, and a policy that cannot be tested is a policy that silently rots.
+type Keepalive struct {
+	// PingInterval is how often an idle socket is pinged. A browser that is
+	// merely *watching* sends nothing for minutes on end, so without a ping the
+	// read deadline below would close every idle tab.
+	PingInterval time.Duration
+	// ReadTimeout is how long the socket may go without a single inbound byte
+	// (client message or pong) before the server gives up on it.
+	ReadTimeout time.Duration
+}
+
+// Production keepalive defaults (spec §11.1: ping every 30 s, drop after two
+// missed pongs).
+const (
+	defaultPingInterval = 30 * time.Second
+	defaultReadTimeout  = 5 * time.Minute
+)
+
+// ping returns the effective ping interval.
+func (k Keepalive) ping() time.Duration {
+	if k.PingInterval <= 0 {
+		return defaultPingInterval
+	}
+	return k.PingInterval
+}
+
+// read returns the effective read deadline.
+func (k Keepalive) read() time.Duration {
+	if k.ReadTimeout <= 0 {
+		return defaultReadTimeout
+	}
+	return k.ReadTimeout
+}
+
 // ServerOptions configures the HTTP surface. Phase 0 ships the loopback-safe
 // subset; auth (§10) and the SSE/plain transports arrive in phase 3.
 type ServerOptions struct {
@@ -44,6 +84,8 @@ type ServerOptions struct {
 	// InsecureNoAuth is the operator's explicit acceptance of serving without
 	// credentials on a non-loopback address (--insecure-no-auth).
 	InsecureNoAuth bool
+	// Keepalive tunes the WebSocket liveness policy (zero = defaults).
+	Keepalive Keepalive
 	// Logger receives lifecycle messages; nil uses the standard logger.
 	Logger *log.Logger
 }
@@ -71,6 +113,16 @@ type Server struct {
 	http    *http.Server
 	log     *log.Logger
 	upgr    websocket.Upgrader
+	// keepalive is the socket liveness policy every attached transport uses.
+	keepalive Keepalive
+
+	// sessionMu guards the session-rotation bookkeeping: lastSession is the id
+	// the server last saw, retired the ids a page may still be holding after a
+	// rotation. Both exist so `/new` in the browser rotates the conversation
+	// without stranding the tab on a URL that no longer resolves (spec §8).
+	sessionMu   sync.Mutex
+	lastSession string
+	retired     map[string]struct{}
 
 	// boundMu guards bound: Listen writes it on the serving goroutine while
 	// Addr/URL read it from another (the CLI prints the URL as soon as the
@@ -104,12 +156,15 @@ func NewServer(term *VirtualTerminal, cols, rows int, opts ServerOptions) *Serve
 		logger = log.Default()
 	}
 	s := &Server{
-		opts: opts,
-		term: term,
-		hub:  NewHub(opts.MaxClients),
-		page: NewHTMLPage(),
-		auth: auth,
-		log:  logger,
+		opts:        opts,
+		term:        term,
+		hub:         NewHub(opts.MaxClients),
+		page:        NewHTMLPage(),
+		auth:        auth,
+		log:         logger,
+		keepalive:   opts.Keepalive,
+		retired:     map[string]struct{}{},
+		lastSession: opts.SessionID(),
 	}
 	term.Resize(cols, rows)
 	term.SetSink(s.hub)
@@ -208,6 +263,7 @@ func (s *Server) URL() string { return "http://" + s.boundAddr() + "/s/" + s.opt
 
 // Serve serves until ctx is cancelled or the listener fails.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	go s.watchSession(ctx)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -356,22 +412,27 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return // Upgrade already wrote the error
 	}
-	// --read-only (or an over-capacity hub) attaches a viewer, not a driver.
-	readOnly := s.opts.ReadOnly
-	client := NewWSClient(conn, readOnly)
-	detach, hubReadOnly := s.hub.Attach(client)
+	// --read-only, or a hub that already has its drivers, makes this a viewer:
+	// it still receives every frame (the cap is on typing, not on watching) but
+	// its keystrokes never reach the engine, and it is told so.
+	client := NewWSClient(conn, s.opts.ReadOnly, s.keepalive)
+	detach, mode := s.hub.Attach(client)
 	defer detach()
-	if hubReadOnly {
-		readOnly = true
+	if mode == AttachRefused {
+		// No capacity at all: say so and close, rather than leave the browser
+		// on a screen that will never move again.
+		_ = client.SendControl(Control{Kind: CtrlBye, Text: "viewer limit reached"})
+		return
 	}
-	if readOnly {
+	if mode.ReadOnly() || s.opts.ReadOnly {
 		client.SetReadOnly(true)
-		reason := "server is read-only"
-		if hubReadOnly {
-			reason = "viewer limit reached"
-		}
-		_ = client.SendControl(Control{Kind: CtrlReadOnly, Text: reason})
+		_ = client.SendControl(Control{Kind: CtrlReadOnly, Text: s.readOnlyReason()})
 	}
+	// A page that loaded before the session rotated still holds the old id.
+	// The socket is accepted (the screen is the same session) and the client is
+	// told where it now lives, so it reconnects to the canonical URL instead of
+	// retrying a 404 forever.
+	s.announceRotation(client, id)
 	// A joining client gets the authoritative screen: the grid is the truth, so
 	// there is nothing to replay. The frame carries the grid's current revision,
 	// which is what lets the client's own hello be answered with "you are
@@ -399,12 +460,116 @@ func (s *Server) resyncer(client Client) func(uint64) {
 }
 
 // knownSession reports whether id addresses the live session. An empty id is
-// accepted (a browser that loaded before the first message).
+// accepted (a browser that loaded before the first message), and so is an id the
+// session has since rotated away from: that page is not lost — it is attached
+// and immediately told where the session moved (announceRotation).
 func (s *Server) knownSession(id string) bool {
 	if id == "" {
 		return true
 	}
-	return id == s.opts.SessionID()
+	if id == s.opts.SessionID() {
+		return true
+	}
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	_, ok := s.retired[id]
+	return ok
+}
+
+// retiredSessionLimit bounds the remembered rotation history. A page can only
+// present the id it was rendered with, so one previous id would be enough for
+// the normal case; a few more cover a tab left open across several rotations.
+const retiredSessionLimit = 8
+
+// observeSession records the current session id and reports the previous one
+// when it changed. Every id the session leaves behind is remembered as retired
+// so a tab holding it can still reconnect instead of 404ing forever.
+func (s *Server) observeSession() (previous, current string, changed bool) {
+	current = s.opts.SessionID()
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if current == s.lastSession {
+		return "", current, false
+	}
+	previous, s.lastSession = s.lastSession, current
+	s.rememberRetiredLocked(previous)
+	return previous, current, true
+}
+
+// rememberRetiredLocked keeps the previous id (if any) in the retired set,
+// dropping the oldest entries once the bound is reached.
+func (s *Server) rememberRetiredLocked(previous string) {
+	if previous == "" {
+		return
+	}
+	if s.retired == nil {
+		s.retired = map[string]struct{}{}
+	}
+	s.retired[previous] = struct{}{}
+	// The set is tiny and unbounded growth is not worth a queue: dropping the
+	// whole history when it is full costs at most one stale tab its reconnect,
+	// and keeps this a handful of lines instead of a data structure.
+	if len(s.retired) > retiredSessionLimit {
+		s.retired = map[string]struct{}{previous: {}}
+	}
+}
+
+// sessionRotationControl is the message a client needs to follow the session to
+// its new URL.
+func sessionRotationControl(id string) Control {
+	return Control{Kind: CtrlSessionRotated, Session: id}
+}
+
+// announceRotation tells a client that attached with an id the session has
+// since left where it now lives.
+func (s *Server) announceRotation(client Client, presented string) {
+	current := s.opts.SessionID()
+	if presented == "" || presented == current {
+		return
+	}
+	_ = client.SendControl(sessionRotationControl(current))
+}
+
+// watchSession follows the session id until ctx is done, broadcasting a
+// rotation control the moment it changes. It is how `/new` typed in the browser
+// reaches every other tab: without it they would keep a URL that no longer
+// resolves and fall back to a permanently reconnecting page (spec §8).
+func (s *Server) watchSession(ctx context.Context) {
+	ticker := time.NewTicker(sessionPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.broadcastRotation()
+		}
+	}
+}
+
+// sessionPollInterval is how often the server checks whether the session id
+// moved. The id only changes when the user starts a new conversation, so the
+// cost of the check is a mutex read a second.
+const sessionPollInterval = time.Second
+
+// broadcastRotation publishes a rotation control when the session id changed
+// since the last observation, and reports whether it did (tests drive this
+// directly; the watcher calls it on a ticker).
+func (s *Server) broadcastRotation() bool {
+	_, current, changed := s.observeSession()
+	if !changed {
+		return false
+	}
+	s.hub.Broadcast(sessionRotationControl(current))
+	return true
+}
+
+// readOnlyReason explains why an attachment is a viewer rather than a driver.
+func (s *Server) readOnlyReason() string {
+	if s.opts.ReadOnly {
+		return "server is read-only"
+	}
+	return "viewer limit reached"
 }
 
 // sameOrigin accepts only requests whose Origin host matches the Host header

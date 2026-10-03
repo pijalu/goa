@@ -11,7 +11,6 @@ package webui
 
 import (
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -205,8 +204,15 @@ func (g *CellGrid) Scrollback() [][]tui.CellAttrs {
 //
 // A grid whose scrollback was cleared (Clear, or CSI 3) re-bases the counter on
 // the next call, so the transcript simply restarts instead of losing rows.
+//
+// The whole operation runs under the grid lock: the shipped counter is state
+// like any other, and two transports attaching at once (or the no-JS page
+// refreshing) must not interleave a read of the buffer with an update of the
+// counter — that would ship one row twice and lose another.
 func (g *CellGrid) TakeScrollback() []RowPatch {
-	rows := g.Scrollback()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	rows := g.emu.ScrollbackCells()
 	if g.sentScrollback > len(rows) {
 		g.sentScrollback = len(rows)
 	}
@@ -215,14 +221,14 @@ func (g *CellGrid) TakeScrollback() []RowPatch {
 	if len(fresh) == 0 {
 		return nil
 	}
-	cols, _ := g.Size()
 	out := make([]RowPatch, 0, len(fresh))
+	first := g.sentScrollback - len(fresh)
 	for i, cells := range fresh {
-		if len(cells) != cols {
-			cells = fitCells(cells, cols)
+		if len(cells) != g.cols {
+			cells = fitCells(cells, g.cols)
 		}
 		normalizeCells(cells)
-		out = append(out, RowPatch{Row: g.sentScrollback - len(fresh) + i, Runs: RowRuns(cells)})
+		out = append(out, RowPatch{Row: first + i, Runs: RowRuns(cells)})
 	}
 	return out
 }
@@ -245,47 +251,81 @@ func (g *CellGrid) Text() string {
 // FullPatches returns every row as a patch and re-baselines the diff. Used
 // when a client (re)connects: the grid is authoritative, so there is no replay.
 func (g *CellGrid) FullPatches() []RowPatch {
-	cols, rows := g.Size()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.prev = g.snapshotLocked(cols, rows)
-	out := make([]RowPatch, 0, rows)
-	for r := 0; r < rows; r++ {
-		out = append(out, RowPatch{Row: r, Runs: RowRuns(g.prev[r])})
+	out := make([]RowPatch, 0, g.rows)
+	for r := 0; r < g.rows; r++ {
+		cells := g.rowCellsLocked(r)
+		g.prev[r] = cells
+		out = append(out, RowPatch{Row: r, Runs: RowRuns(cells)})
 	}
 	return out
 }
 
 // Patches returns the patches for the rows that changed since the previous
-// Patches call, then re-baselines. Unchanged rows are omitted entirely, which
-// is what keeps a streaming frame to a few kilobytes.
+// Patches call, then re-baselines those rows. Unchanged rows are omitted
+// entirely, which is what keeps a streaming frame to a few kilobytes.
+//
+// Only the rows the emulator reported dirty are examined and only the ones that
+// actually differ are copied into the baseline: the cost of a frame is
+// proportional to what moved (one or two rows while streaming), not to the size
+// of the screen. Snapshotting the whole grid per frame would copy every cell
+// 20-60 times a second for nothing.
 func (g *CellGrid) Patches() []RowPatch {
-	cols, rows := g.Size()
-	changed := g.takeDirtyRows(rows)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	cur := g.snapshotLocked(cols, rows)
-	d := NewCellDiff(g.prev, cur)
-	patches := d.Patches(changed)
-	g.prev = cur
-	return patches
+	changed := g.takeDirtyRowsLocked()
+	var out []RowPatch
+	for _, r := range changed {
+		cells := g.rowCellsLocked(r)
+		if !rowDiffers(g.prev[r], cells) {
+			continue
+		}
+		out = append(out, RowPatch{Row: r, Runs: RowRuns(cells)})
+		g.prev[r] = cells
+	}
+	return out
 }
 
-// takeDirtyRows merges the rows recorded by Process with anything the
-// emulator marked since (resize, MarkDirty) and clears both.
-func (g *CellGrid) takeDirtyRows(rows int) []int {
-	g.mu.Lock()
+// rowCellsLocked reads one screen row as a normalised cell slice.
+func (g *CellGrid) rowCellsLocked(row int) []tui.CellAttrs {
+	cells := g.emu.Cells(row)
+	if len(cells) != g.cols {
+		cells = fitCells(cells, g.cols)
+	}
+	normalizeCells(cells)
+	return cells
+}
+
+// rowDiffers reports whether a row's cells differ from the baseline the clients
+// hold. A missing baseline (a row that never existed, e.g. after a grow) counts
+// as changed.
+func rowDiffers(prev, cur []tui.CellAttrs) bool {
+	if prev == nil || len(prev) != len(cur) {
+		return true
+	}
+	for i := range cur {
+		if cur[i] != prev[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// takeDirtyRowsLocked merges the rows recorded by Process with anything the
+// emulator marked since (resize, MarkDirty), clears both, and normalises the
+// result.
+func (g *CellGrid) takeDirtyRowsLocked() []int {
 	fresh := g.emu.DrainDirty()
 	changed := append(g.pending, fresh...)
 	g.pending = nil
-	g.mu.Unlock()
 	if len(changed) == 0 {
 		// Nothing claims to have changed (e.g. a diff of a grid whose baseline
 		// was never shipped): fall back to comparing every row rather than
 		// silently shipping nothing.
-		return allRows(rows)
+		return allRows(g.rows)
 	}
-	return normalizeRows(changed, rows)
+	return normalizeRows(changed, g.rows)
 }
 
 // normalizeRows drops duplicates and out-of-range rows, and sorts ascending.
@@ -301,20 +341,6 @@ func normalizeRows(rows []int, max int) []int {
 	}
 	sort.Ints(out)
 	return out
-}
-
-// snapshotLocked copies the emulator's rows into a fresh snapshot buffer.
-func (g *CellGrid) snapshotLocked(cols, rows int) [][]tui.CellAttrs {
-	snap := make([][]tui.CellAttrs, rows)
-	for r := 0; r < rows; r++ {
-		cells := g.emu.Cells(r)
-		if len(cells) != cols {
-			cells = fitCells(cells, cols)
-		}
-		normalizeCells(cells)
-		snap[r] = cells
-	}
-	return snap
 }
 
 // normalizeCells makes untouched cells ("") comparable with the blank
@@ -360,30 +386,42 @@ func allRows(rows int) []int {
 // CSS colour. "" (the theme default) stays ""; anything unrecognised becomes ""
 // so an unknown spec degrades to the default colour instead of injecting junk
 // into the stylesheet.
+//
+// It parses with Cut and a hand-rolled integer scan rather than Split/Atoi:
+// every cell of every changed row goes through here, and a Split per cell would
+// allocate a slice per cell for a three-field string.
 func sgrToCSS(sgr string) string {
 	if sgr == "" {
 		return ""
 	}
-	parts := strings.Split(sgr, ";")
-	if len(parts) < 2 {
+	// Drop the colour channel (38 foreground, 48 background, 58 underline):
+	// the channel says where the colour applies, not which colour it is.
+	_, fields, ok := strings.Cut(sgr, ";")
+	if !ok {
 		return ""
 	}
-	switch parts[1] {
+	kind, fields, ok := strings.Cut(fields, ";")
+	if !ok {
+		return ""
+	}
+	switch kind {
 	case "2":
-		if len(parts) < 5 {
+		r, rest, ok := cutColorPart(fields)
+		if !ok {
 			return ""
 		}
-		r, g, b := atoiOr(parts[2], -1), atoiOr(parts[3], -1), atoiOr(parts[4], -1)
-		if r < 0 || g < 0 || b < 0 {
+		g, rest, ok := cutColorPart(rest)
+		if !ok {
+			return ""
+		}
+		b, _, ok := cutColorPart(rest)
+		if !ok {
 			return ""
 		}
 		return rgbHex(r, g, b)
 	case "5":
-		if len(parts) < 3 {
-			return ""
-		}
-		n := atoiOr(parts[2], -1)
-		if n < 0 {
+		n, _, ok := cutColorPart(fields)
+		if !ok {
 			return ""
 		}
 		return Palette256(n)
@@ -391,12 +429,26 @@ func sgrToCSS(sgr string) string {
 	return ""
 }
 
-func atoiOr(s string, def int) int {
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return def
+// cutColorPart splits off the next ";"-delimited field and parses it as a
+// non-negative integer. ok is false for an empty or non-numeric field, which is
+// what makes an unrecognised spec degrade to the theme default.
+func cutColorPart(s string) (value int, rest string, ok bool) {
+	field, rest, _ := strings.Cut(s, ";")
+	if field == "" {
+		return 0, rest, false
 	}
-	return n
+	value = 0
+	for i := 0; i < len(field); i++ {
+		c := field[i]
+		if c < '0' || c > '9' {
+			return 0, rest, false
+		}
+		value = value*10 + int(c-'0')
+		if value > 255*255 {
+			return 0, rest, false // absurd component: not a colour we can render
+		}
+	}
+	return value, rest, true
 }
 
 func rgbHex(r, g, b int) string {

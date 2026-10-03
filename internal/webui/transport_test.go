@@ -572,3 +572,41 @@ func TestAssets_ImmutableCache(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want immutable + 1-year max-age", cc)
 	}
 }
+
+// The Referer is client-supplied, so a form post must never turn it into a
+// redirect off this server: "post here, land on the attacker's page" is an open
+// redirect, and the no-JS form is exactly the surface where it would be free.
+func TestPostForm_RefererCannotRedirectOffServer(t *testing.T) {
+	srv, _, _ := newEngineServer(t, 40, 4)
+
+	cases := []struct {
+		name    string
+		referer string
+		want    string
+	}{
+		{"absolute same-origin", "http://example.com/s/sess-1/page", "/s/sess-1/page"},
+		{"local path", "/s/sess-1/page", "/s/sess-1/page"},
+		{"foreign host", "https://evil.example/steal", "/s/sess-1"},
+		{"protocol relative", "//evil.example/steal", "/s/sess-1"},
+		{"backslash host", "/\\evil.example", "/s/sess-1"},
+		{"missing", "", "/s/sess-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			form := url.Values{"data": {"hello"}}
+			req := httptest.NewRequest(http.MethodPost, "/input?s=sess-1", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if tc.referer != "" {
+				req.Header.Set("Referer", tc.referer)
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusSeeOther {
+				t.Fatalf("status = %d, want 303", rec.Code)
+			}
+			if got := rec.Header().Get("Location"); got != tc.want {
+				t.Errorf("Location = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

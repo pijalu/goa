@@ -233,29 +233,67 @@ func TestServer_RejectsCrossOriginSocket(t *testing.T) {
 	}
 }
 
-// Excess viewers keep a live screen but lose the keyboard.
+// Excess viewers keep a live screen but lose the keyboard: the cap is on
+// *drivers*, not on attachments, so the ninth browser sees the session move
+// instead of a frozen snapshot of the moment it connected.
 func TestHub_CapsClientsAndMarksExcessReadOnly(t *testing.T) {
 	hub := NewHub(1)
 	first := &fakeClient{}
-	_, readOnly := hub.Attach(first)
-	if readOnly {
-		t.Fatal("first client should not be read-only")
+	if _, mode := hub.Attach(first); mode != AttachDriver {
+		t.Fatalf("first client mode = %v, want driver", mode)
 	}
 	second := &fakeClient{}
-	_, readOnly = hub.Attach(second)
-	if !readOnly {
-		t.Error("second client should be read-only")
+	if _, mode := hub.Attach(second); mode != AttachViewer {
+		t.Fatalf("second client mode = %v, want a read-only viewer", mode)
 	}
 	hub.Publish(&Frame{Seq: 1})
-	if len(first.frames) != 1 {
-		t.Errorf("first client got %d frames", len(first.frames))
+	hub.Publish(&Frame{Seq: 2})
+	if len(first.frames) != 2 {
+		t.Errorf("driver got %d frames, want 2", len(first.frames))
 	}
-	if hub.Clients() != 1 {
-		t.Errorf("attached = %d, want 1", hub.Clients())
+	if len(second.frames) != 2 {
+		t.Errorf("viewer got %d frames, want 2 (an excess viewer still watches)", len(second.frames))
+	}
+	if hub.Clients() != 2 {
+		t.Errorf("attached = %d, want 2", hub.Clients())
 	}
 	hub.Close()
-	if hub.Clients() != 0 || !first.closed {
-		t.Error("Close must detach and close clients")
+	if hub.Clients() != 0 || !first.closed || !second.closed {
+		t.Error("Close must detach and close every client")
+	}
+}
+
+// A detached driver frees its slot: the next browser becomes the driver again,
+// so a closed tab does not leave the session un-drivable.
+func TestHub_DetachedDriverFreesTheSlot(t *testing.T) {
+	hub := NewHub(1)
+	driver := &fakeClient{}
+	detach, _ := hub.Attach(driver)
+	viewer := &fakeClient{}
+	if _, mode := hub.Attach(viewer); mode != AttachViewer {
+		t.Fatalf("second client mode = %v, want viewer", mode)
+	}
+	detach()
+	replacement := &fakeClient{}
+	if _, mode := hub.Attach(replacement); mode != AttachDriver {
+		t.Fatalf("replacement mode = %v, want driver after the slot was freed", mode)
+	}
+}
+
+// Attachments beyond every capacity are refused rather than served a screen
+// that never moves: the hub tells the caller so the transport can say goodbye.
+func TestHub_RefusesBeyondViewerCapacity(t *testing.T) {
+	hub := NewHub(1)
+	for i := 0; i < hub.maxTotal; i++ {
+		if _, mode := hub.Attach(&fakeClient{}); mode == AttachRefused {
+			t.Fatalf("attachment %d refused below the hard cap", i)
+		}
+	}
+	if _, mode := hub.Attach(&fakeClient{}); mode != AttachRefused {
+		t.Errorf("attachment past the hard cap = %v, want refused", mode)
+	}
+	if hub.Clients() != hub.maxTotal {
+		t.Errorf("attached = %d, want %d", hub.Clients(), hub.maxTotal)
 	}
 }
 

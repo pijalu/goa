@@ -399,9 +399,15 @@ behaviour:
 * `Send` never blocks the publisher (the agent stream must not stall — §4.5);
 * if a client stays behind for N consecutive frames (default 30) it is closed with a
   "client too slow" notice;
-* `max_clients` caps attachments (default 8). Excess clients get a read-only view.
+* `max_clients` caps the browsers that may **drive** (default 8). Attachments
+  beyond that are read-only **viewers** that still receive every frame — a
+  frozen screen would be worse than useless for a shared session — up to a hard
+  ceiling of `2 × max_clients`, past which an attachment is refused with a
+  `bye` control (every attachment costs a socket, a goroutine and a frame
+  queue).
 
-Multi-client input policy (`server.multiclient`):
+Multi-client input policy (`server.multiclient`, **not shipped** — every
+attachment is `broadcast` for now):
 
 * `broadcast` (default) — any attached client may type; input is serialized on the
   engine's command loop exactly as a real terminal would be.
@@ -435,9 +441,16 @@ commands, `/stats:session`, `/export`).
 AgentManager.StopSession() → chat clear → startAgentSession() → new session id
 ```
 
-which yields a new URL and a **new provider cache key** (Hard Rule 7, §4.7). The
-server responds `{"session":"<new-id>"}` and the client navigates. Attached clients
-receive `session_rotated` and are redirected.
+which yields a new URL and a **new provider cache key** (Hard Rule 7, §4.7).
+
+**Shipped:** the rotation is driven by the engine's own `/new` command (the
+browser types it like any other slash command); the dedicated POST route is not
+implemented. The server watches the session id, broadcasts
+`{"t":"session_rotated","session":"<new-id>"}` to every attached client, and the
+page navigates to the new URL. Ids the session has left behind stay acceptable
+for a bounded window, so a tab that reconnects with a stale id is attached and
+told where the session moved instead of getting a 404 and falling into a
+permanent reconnect loop.
 
 Reconnect: every frame carries a monotonic `seq`. A reconnecting client sends
 `{"t":"hello","since":<seq>}`; the server replies with a full frame (the grid is
@@ -520,7 +533,8 @@ logs and in the `Referer` header.
   in-memory table; five failures trip a 60 s lockout (429 + `Retry-After`), and a
   success clears the count.
 * **Bind default** `127.0.0.1`; `server.host` must be set explicitly to expose.
-* Uploads are written to `.goa/uploads/` with generated names (no user-controlled path).
+* Uploads are written to a generated temp file whose extension comes from the
+  sniffed bytes — never from a user-supplied name or path.
 
 ---
 
@@ -565,9 +579,11 @@ It is intentionally simple: input + read-only view + polling.
 
 ### 11.4 Uploads
 
-`POST /upload` (multipart) → saved to `.goa/uploads/<random>.<ext>` → returns
-`{"path":"..."}`; the client inserts that path into the input, matching the TUI's
-image-paste behaviour.
+`POST /upload` (multipart) → saved to a temporary file with an extension derived
+from the sniffed bytes (never from the client's filename or Content-Type) →
+returns `{"path":"..."}`; the client inserts that path into the input, matching
+the TUI's image-paste behaviour (which also stores the clipboard image as a temp
+PNG — `internal/clipboard_image.go`).
 
 ---
 
@@ -582,8 +598,10 @@ image-paste behaviour.
 | Server CPU | ≈ the TUI's own render cost + JSON encode (measured, §17.6) |
 | Slow client | newest-frame-wins; dropped after 30 consecutive overruns |
 
-Row diffing is O(rows × cells) with an early-out on a per-row hash kept alongside the
-cell slice, so a steady frame compares 60 integers rather than 12 000 cells.
+Row diffing compares only the rows the emulator reported dirty (one or two while
+streaming) against the per-row baseline clients hold, so a frame costs what moved
+rather than what the screen is: 200×60 measured ~8-12 µs and ~18 KB per frame,
+against ~150 µs and ~1 MB for a full-grid snapshot per frame.
 
 ---
 
@@ -656,8 +674,10 @@ IME candidate window correctly.
 
 ### 14.5 Clipboard / copy
 
-`Ctrl+Shift+C` copies the plain-text mirror from `/s/{id}/text`; selecting text and
-pressing `Ctrl+C` uses the native selection.
+**Not shipped.** Selecting text and pressing `Ctrl+C` uses the native selection,
+and the page deliberately leaves `Ctrl+Shift+C` to the browser (devtools) rather
+than claiming it; the plain-text mirror at `/s/{id}/text` is still there for a
+copy-as-text affordance to build on.
 
 ### 14.6 Responsive behaviour
 
@@ -668,6 +688,14 @@ is debounced 120 ms and sent as one `resize` message.
 ---
 
 ## 15. Configuration
+
+**Not shipped.** The server is configured by CLI flags and environment variables
+only (`--server-addr`, `--server-auth*`, `--server-read-only`,
+`--server-max-clients`, `--insecure-no-auth`; `GOA_SERVER_AUTH_PASSWORD`,
+`GOA_SERVER_AUTH_TOKEN`). The YAML block below is the intended shape, kept for
+the next iteration: nothing reads it yet, and `password_hash`, `token_file`,
+`multiclient`, `transport`, `slow_client_frames` and `open_browser` are
+unimplemented.
 
 ```yaml
 server:

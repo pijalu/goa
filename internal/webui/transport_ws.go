@@ -21,11 +21,10 @@ const wsQueue = 8
 
 // Client→server message types (spec §20).
 const (
-	MsgInput      = "input"
-	MsgKey        = "key"
-	MsgResize     = "resize"
-	MsgHello      = "hello"
-	MsgSessionNew = "session_new"
+	MsgInput  = "input"
+	MsgKey    = "key"
+	MsgResize = "resize"
+	MsgHello  = "hello"
 )
 
 // clientMsg is the inbound envelope. Only one field is meaningful per type.
@@ -41,9 +40,13 @@ type clientMsg struct {
 	Since uint64   `json:"since,omitempty"`
 }
 
-// readTimeout bounds how long a silent client may hold the socket before the
-// read loop gives up (pings keep it alive).
-const readTimeout = 5 * time.Minute
+// writeTimeout bounds one socket write, so a peer that stops reading cannot pin
+// the writer goroutine (and with it the hub's Publish) on a blocked socket.
+const writeTimeout = 10 * time.Second
+
+// missedPongLimit is how many consecutive pings may go unanswered before the
+// client is considered gone (spec §11.1: drop after two missed pongs).
+const missedPongLimit = 2
 
 // ClientHandlers are the callbacks a transport hands inbound browser events to.
 // They are a struct rather than three positional funcs so adding a message
@@ -77,6 +80,14 @@ type wsClient struct {
 	consecutive atomic.Int64
 	slowLimit   int64
 
+	// keepalive is the liveness policy: pingEvery drives the writer's ticker,
+	// readTimeout the read deadline the pong handler extends. missedPongs
+	// counts unanswered pings.
+	keepalive   Keepalive
+	pingEvery   time.Duration
+	readTimeout time.Duration
+	missedPongs atomic.Int64
+
 	readOnly atomic.Bool
 	closed   atomic.Bool
 }
@@ -85,15 +96,18 @@ var _ Client = (*wsClient)(nil)
 
 // NewWSClient wraps an upgraded connection and starts its writer goroutine.
 // When readOnly is set, inbound input is ignored (over-capacity viewer).
-func NewWSClient(conn *websocket.Conn, readOnly bool) *wsClient {
+func NewWSClient(conn *websocket.Conn, readOnly bool, ka Keepalive) *wsClient {
 	c := &wsClient{
-		conn:      conn,
-		codec:     NewFrameCodec(),
-		frames:    make(chan *Frame, wsQueue),
-		control:   make(chan Control, 4),
-		done:      make(chan struct{}),
-		slowLimit: DefaultSlowClientLimit,
-		readOnly:  atomic.Bool{},
+		conn:        conn,
+		codec:       NewFrameCodec(),
+		frames:      make(chan *Frame, wsQueue),
+		control:     make(chan Control, 4),
+		done:        make(chan struct{}),
+		slowLimit:   DefaultSlowClientLimit,
+		keepalive:   ka,
+		pingEvery:   ka.ping(),
+		readTimeout: ka.read(),
+		readOnly:    atomic.Bool{},
 	}
 	c.readOnly.Store(readOnly)
 	go c.writeLoop()
@@ -150,6 +164,11 @@ func (c *wsClient) SendControl(ctrl Control) error {
 func (c *wsClient) Close() error {
 	var err error
 	c.once.Do(func() {
+		// Let a farewell that was just queued ("viewer limit reached", "slow
+		// client") reach the socket before it dies: the client is told why it
+		// was dropped, which is the difference between a page that reports the
+		// reason and one that silently reconnects.
+		c.flushControl(closeGracePeriod)
 		c.closed.Store(true)
 		close(c.done)
 		err = c.conn.Close()
@@ -157,25 +176,51 @@ func (c *wsClient) Close() error {
 	return err
 }
 
+// closeGracePeriod bounds how long Close waits for a queued control message to
+// be picked up by the writer goroutine.
+const closeGracePeriod = 250 * time.Millisecond
+
+// flushControl waits (bounded) until the writer has taken every queued control
+// message. It is what makes a goodbye arrive instead of racing the close.
+func (c *wsClient) flushControl(wait time.Duration) {
+	deadline := time.Now().Add(wait)
+	for len(c.control) > 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // ReadLoop reads inbound client messages until the socket dies, dispatching
 // them through the supplied callbacks. It blocks; the handler runs it inline.
 func (c *wsClient) ReadLoop(h ClientHandlers) {
 	c.conn.SetReadLimit(MaxFrameBytes)
-	_ = c.conn.SetReadDeadline(time.Now().Add(readTimeout))
+	c.armReadDeadline()
+	// A pong is the proof of life the ping ticker waits for, so it both clears
+	// the missed-pong count and pushes the deadline out.
 	c.conn.SetPongHandler(func(string) error {
-		return c.conn.SetReadDeadline(time.Now().Add(readTimeout))
+		c.missedPongs.Store(0)
+		c.armReadDeadline()
+		return nil
 	})
 	for {
 		_, data, err := c.conn.ReadMessage()
 		if err != nil {
 			return
 		}
+		// Any inbound message is proof of life too: a client that is typing is
+		// plainly there, whatever the pong timing says.
+		c.missedPongs.Store(0)
+		c.armReadDeadline()
 		var m clientMsg
 		if err := json.Unmarshal(data, &m); err != nil {
 			continue // drop malformed input, keep the socket
 		}
 		c.dispatch(m, h)
 	}
+}
+
+// armReadDeadline (re)sets the read deadline from the keepalive policy.
+func (c *wsClient) armReadDeadline() {
+	_ = c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 }
 
 // dispatch routes one inbound message. Split out of ReadLoop so the read loop
@@ -214,9 +259,17 @@ func (c *wsClient) dispatchInput(m clientMsg, h ClientHandlers) {
 	}
 }
 
-// writeLoop owns every write to the connection: frames, then controls, until
-// the client goes away.
+// writeLoop owns every write to the connection: frames, then controls, then the
+// keepalive ping, until the client goes away.
+//
+// Whatever makes it stop — a dead socket, two unanswered pings, a Close from
+// another goroutine — the connection is torn down on the way out. Leaving it
+// open would strand the read loop (and with it the client's hub slot) on a
+// socket nobody is writing to any more.
 func (c *wsClient) writeLoop() {
+	defer c.closeOnWriterExit()
+	ping := time.NewTicker(c.pingEvery)
+	defer ping.Stop()
 	for {
 		select {
 		case <-c.done:
@@ -229,8 +282,35 @@ func (c *wsClient) writeLoop() {
 			if !c.writeControl(ctrl) {
 				return
 			}
+		case <-ping.C:
+			if !c.sendPing() {
+				return
+			}
 		}
 	}
+}
+
+// closeOnWriterExit closes the socket when the writer stopped on its own. A
+// Close already in progress (or done) owns the teardown, so this is a no-op
+// then.
+func (c *wsClient) closeOnWriterExit() {
+	if c.closed.Load() {
+		return
+	}
+	_ = c.Close()
+}
+
+// sendPing writes one ping, giving up on the client once missedPongLimit pings
+// in a row went unanswered. A dead peer is not detected by a write — the TCP
+// buffer accepts it happily — so the missing pongs are the only signal, and
+// closing here is what stops a half-open socket from holding a client slot
+// forever.
+func (c *wsClient) sendPing() bool {
+	if c.missedPongs.Add(1) > missedPongLimit {
+		return false
+	}
+	_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	return c.conn.WriteMessage(websocket.PingMessage, nil) == nil
 }
 
 // writeFrame sends one frame, followed by its scrollback batch when the screen
@@ -264,6 +344,6 @@ func (c *wsClient) writeControl(ctrl Control) bool {
 // write is the single choke point for socket writes: one deadline, one error
 // check, so every message type gets the same failure handling.
 func (c *wsClient) write(data []byte) bool {
-	_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	return c.conn.WriteMessage(websocket.TextMessage, data) == nil
 }

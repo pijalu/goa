@@ -158,7 +158,6 @@
   }
 
   function onFrame(msg) {
-    measure();
     cols = msg.cols || cols;
     resizeRows(msg.rows || 0);
     (msg.patches || []).forEach(applyRow);
@@ -337,6 +336,15 @@
                     onFrame(msg);
                   }
         else if (msg.t === "scrollback") onScrollback(msg);
+        else if (msg.t === "session_rotated") {
+                  // The conversation rotated (`/new`, `/clear`): this page's URL is
+                  // the old session, which no longer resolves. Following the new id
+                  // is the difference between a working tab and one that retries a
+                  // dead URL forever (spec §8).
+                  if (msg.session && msg.session !== SESSION) {
+                    window.location.replace("/s/" + encodeURIComponent(msg.session));
+                  }
+                }
         else if (msg.t === "read_only") {
           readOnly = true;
           setStatus(mode === "sse" ? "degraded" : "live",
@@ -419,11 +427,32 @@
 
   document.addEventListener("keydown", function (ev) {
     if (readOnly) return;
+    // Chords the browser owns stay the browser's: reload, devtools and tab
+    // switching are how a user escapes a page, and a terminal that swallows
+    // them is a trap. Everything else — including the engine's own Ctrl+W /
+    // Ctrl+L bindings — is claimed, so the terminal behaves like a terminal.
+    if (browserOwned(ev)) return;
     // Modifier-only presses and Meta chords are sent as-is; the server's
     // encoder declines to encode them, and the browser keeps its default.
     send({ t: "key", key: keyEvent(ev) });
     ev.preventDefault();
   });
+
+  // BROWSER_OWNED is the set of chords the page never claims: the function
+  // keys with no engine binding, plus the browser's own navigation and
+  // devtools chords.
+  var BROWSER_OWNED_FKEYS = { F5: 1, F11: 1, F12: 1 };
+  var BROWSER_OWNED_CHORDS = { r: 1, q: 1 };
+  var BROWSER_OWNED_DEVTOOLS = { i: 1, j: 1, c: 1 };
+
+  // browserOwned reports whether a keydown belongs to the browser.
+  function browserOwned(ev) {
+    if (BROWSER_OWNED_FKEYS[ev.key]) return true;
+    if (!ev.ctrlKey && !ev.metaKey) return false;
+    var k = (ev.key || "").toLowerCase();
+    if (ev.shiftKey) return !!BROWSER_OWNED_DEVTOOLS[k];
+    return !!BROWSER_OWNED_CHORDS[k];
+  }
 
   // uploadImage posts pasted image bytes and resolves with the stored path.
   function uploadImage(blob) {
@@ -477,6 +506,9 @@
   });
 
   window.addEventListener("resize", function () {
+    // The cell size is measured here, not per frame: a measurement forces a
+    // synchronous layout, and frames arrive at the engine's tick rate.
+    measure();
     send({ t: "resize", cols: measureCols(), rows: measureRows() });
   });
 

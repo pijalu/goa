@@ -97,8 +97,7 @@ func TestHub_BroadcastAndPublishFull(t *testing.T) {
 	vt.WriteString("hello")
 
 	c := &fakeClient{}
-	_, readOnly := hub.Attach(c)
-	if readOnly {
+	if _, mode := hub.Attach(c); mode != AttachDriver {
 		t.Fatal("first client must be the driver")
 	}
 	hub.Broadcast(Control{Kind: CtrlReadOnly, Text: "note"})

@@ -12,32 +12,60 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// streamState tracks the current streaming context for LLM output.
-// Decoupled from content type so thinking segments break correctly on
-// any non-thinking event (tool call, tool result, content, idle, end).
+// streamState tracks the current streaming context for LLM output: one
+// accumulator per block kind for the *segment* in progress. A provider may
+// stream its reasoning and answer channels concurrently, so deltas of both kinds
+// arrive interleaved within one segment; routing by kind is what keeps each
+// delta in the block it belongs to, instead of closing and re-opening blocks on
+// every alternation (bugs.md — "Live stream splits when a provider interleaves
+// reasoning and answer deltas").
+//
+// A segment ends at a real boundary (tool call/result, idle, session end,
+// stream retry): resetSegment forgets every in-flight block, so the next delta
+// of any kind opens a fresh block rather than extending one from before the tool
+// ran.
 type streamState struct {
-	kind     tui.ConsoleItemType
-	text     strings.Builder
-	isActive bool
+	parts map[tui.ConsoleItemType]*streamPart
 }
 
-func (s *streamState) begin(kind tui.ConsoleItemType) {
-	s.kind = kind
-	s.text.Reset()
-	s.isActive = true
+// streamPart is one in-flight block's accumulated text.
+type streamPart struct{ text strings.Builder }
+
+// append routes one delta to the block of the given kind, creating that block's
+// accumulator on first use. It reports the block's full text and whether this
+// delta opened it — the caller adds the message the text belongs to.
+func (s *streamState) append(kind tui.ConsoleItemType, delta string) (text string, opened bool) {
+	if s.parts == nil {
+		s.parts = make(map[tui.ConsoleItemType]*streamPart, 2)
+	}
+	part := s.parts[kind]
+	if opened = part == nil; opened {
+		part = &streamPart{}
+		s.parts[kind] = part
+	}
+	part.text.WriteString(delta)
+	return part.text.String(), opened
 }
 
-func (s *streamState) end() {
-	s.isActive = false
-	s.text.Reset()
+// opened reports whether the segment already has a block of that kind.
+func (s *streamState) opened(kind tui.ConsoleItemType) bool {
+	_, ok := s.parts[kind]
+	return ok
 }
 
-func (s *streamState) is(kind tui.ConsoleItemType) bool {
-	return s.isActive && s.kind == kind
+// kinds lists the block kinds this segment has opened.
+func (s *streamState) kinds() []tui.ConsoleItemType {
+	out := make([]tui.ConsoleItemType, 0, len(s.parts))
+	for kind := range s.parts {
+		out = append(out, kind)
+	}
+	return out
 }
 
-func (s *streamState) active() bool {
-	return s.isActive
+// resetSegment ends the streaming segment: every in-flight block is forgotten,
+// so the next delta of any kind opens a fresh block.
+func (s *streamState) resetSegment() {
+	s.parts = nil
 }
 
 // ToolCallLevel indicates the severity of tool call loop detection for

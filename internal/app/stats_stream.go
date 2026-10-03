@@ -132,57 +132,52 @@ func (a *App) handleThinkingContent(ev *agentic.OutputEvent) {
 	if a.subs.cfg != nil && !a.subs.cfg.TUI.Transparency.ShowThinking {
 		return
 	}
-	a.endStreamIfDifferent(agentic.StateThinking)
-	if !a.stream.is(tui.ConsoleThinkingBlock) {
-		a.stream.begin(tui.ConsoleThinkingBlock)
+	text, opened := a.stream.append(tui.ConsoleThinkingBlock, ev.Text)
+	if opened {
 		expanded := a.subs.cfg == nil || !a.subs.cfg.TUI.Transparency.ThinkingCollapsed
 		a.subs.chat.AddThinkingBlock("", expanded)
 	}
-	a.stream.text.WriteString(ev.Text)
-	a.subs.chat.UpdateLastMessage(a.stream.text.String(), tui.ConsoleThinkingBlock)
-	a.subs.statusMsg.Show("Thinking...")
+	a.subs.chat.UpdateLastMessage(text, tui.ConsoleThinkingBlock)
+	// The status stays on the answer once it has started: a provider that
+	// interleaves the two channels must not make the spinner flap between
+	// "Thinking..." and "Answering..." on every delta.
+	if !a.stream.opened(tui.ConsoleAssistantMessage) {
+		a.subs.statusMsg.Show("Thinking...")
+	}
 }
 
 func (a *App) handleAssistantContent(ev *agentic.OutputEvent) {
-	a.endStreamIfDifferent(agentic.StateContent)
 	// Ensure the activity spinner is visible — the model may emit EventContent
 	// without a preceding EventStateChange (e.g., subsequent turns after the first).
 	// Show() is idempotent: if already spinning with same text, it returns early.
 	a.setStreamingStatus()
-	if !a.stream.is(tui.ConsoleAssistantMessage) {
-		a.stream.begin(tui.ConsoleAssistantMessage)
+	text, opened := a.stream.append(tui.ConsoleAssistantMessage, ev.Text)
+	if opened {
 		a.subs.chat.AddAssistantMessage("")
 	}
-	a.stream.text.WriteString(ev.Text)
-	a.subs.chat.UpdateLastMessage(a.stream.text.String(), tui.ConsoleAssistantMessage)
+	a.subs.chat.UpdateLastMessage(text, tui.ConsoleAssistantMessage)
 }
 
-// endCurrentStream stops any active streaming segment so the next content
-// event of a different type starts a new block.
+// endCurrentStream ends the streaming segment so the next content event of any
+// kind starts a new block.
 func (a *App) endCurrentStream() {
-	a.stream.end()
+	a.stream.resetSegment()
 }
 
-// endStreamIfDifferent ends the current streaming block when the new agent
-// state corresponds to a different block type. This prevents a thinking block
-// from being reused for later assistant content (or vice-versa) after a state
-// transition or tool call.
+// endStreamIfDifferent ends the current streaming segment when a *boundary*
+// state arrives.
+//
+// Thinking and content deltas are not boundaries: they are routed to their own
+// block by streamState.append, so a provider that interleaves its reasoning and
+// answer channels cannot split a block in two. A tool call, a tool result or an
+// idle state does end the segment — the next delta of any kind must start a
+// fresh block rather than extend one from before the tool ran.
 func (a *App) endStreamIfDifferent(state agentic.OutputState) {
-	if !a.stream.active() {
+	switch state {
+	case agentic.StateThinking, agentic.StateContent:
 		return
 	}
-	switch state {
-	case agentic.StateThinking:
-		if a.stream.kind != tui.ConsoleThinkingBlock {
-			a.endCurrentStream()
-		}
-	case agentic.StateContent:
-		if a.stream.kind != tui.ConsoleAssistantMessage {
-			a.endCurrentStream()
-		}
-	case agentic.StateToolCall, agentic.StateToolResult, agentic.StateIdle:
-		a.endCurrentStream()
-	}
+	a.endCurrentStream()
 }
 
 func (a *App) handleToolResult(ev *agentic.OutputEvent) {
@@ -329,8 +324,9 @@ func (a *App) failPendingTools() {
 }
 
 func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
-	streamKind := a.stream.kind
-	hadActiveStream := a.stream.active()
+	// Every block the segment opened may be half-streamed; the cancel path
+	// retracts all of them, not just the last kind that happened to arrive.
+	inflight := a.stream.kinds()
 	a.endCurrentStream()
 	a.stream = streamState{} // full reset
 
@@ -358,8 +354,17 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 		hint := friendlyConnectionHint(ev.Text)
 		subs.chat.AddSystemMessage(hint)
 	} else if ev != nil && ev.Metadata["cancelled"] == "true" {
-		if hadActiveStream {
-			subs.chat.RemoveLastMessageOfType(streamKind)
+		// Retract the segment's half-streamed blocks. RemoveLast only inspects
+		// the tail, so this pops while the tail is still an in-flight kind: a
+		// segment may hold a half-streamed reasoning block AND a half-streamed
+		// answer, and a single removal would leave one of them behind (and a
+		// finished message is never touched, because it is not in inflight).
+		//
+		// The length check is load-bearing: an empty type list means "any
+		// message" to RemoveLast, which would eat the user's own question.
+		if len(inflight) > 0 {
+			for subs.chat.RemoveLastMessageOfType(inflight...) {
+			}
 		}
 		subs.chat.AddSystemMessage("Generation stopped by user.")
 	}

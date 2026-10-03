@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -298,15 +299,23 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	readOnly := s.opts.ReadOnly
 	client := newSSEClient(streamWriter{w: w, f: flusher}, readOnly)
-	detach, hubReadOnly := s.hub.Attach(client)
+	detach, mode := s.hub.Attach(client)
 	// Detach first (it stops new frames), then Close (it joins the writer) —
 	// LIFO order, which is what keeps the last write inside the handler.
 	defer client.Close()
 	defer detach()
-	if hubReadOnly {
-		readOnly = true
+	if mode == AttachRefused {
+		// No capacity at all: say so, then let the deferred detach close the
+		// stream. The writer goroutine is joined by Close, so the farewell is
+		// written before the response is finished.
+		_ = client.SendControl(Control{Kind: CtrlBye, Text: "viewer limit reached"})
+		return
 	}
-	client.SetReadOnly(readOnly)
+	if mode.ReadOnly() || readOnly {
+		readOnly = true
+		client.SetReadOnly(true)
+		_ = client.SendControl(Control{Kind: CtrlReadOnly, Text: s.readOnlyReason()})
+	}
 
 	// Open queues the reconnection hint. Every later write — the first frame
 	// included — goes through the same writer goroutine, so the handler never
@@ -315,19 +324,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		s.log.Printf("webui: sse open: %v", err)
 	}
 
+	// A page holding an id the session has since left is told where it moved,
+	// exactly as the WebSocket path does.
+	s.announceRotation(client, id)
+
 	// EventSource reconnects on its own, replaying the URL it was opened with, so
 	// the page carries the revision it holds in ?since= and a resumed stream that
 	// is already current opens silently. A joining client (no since) or one that
 	// fell behind gets the authoritative screen.
 	if f, due := s.term.Resync(sinceQuery(r)); due {
 		client.Send(f)
-	}
-	if readOnly {
-		reason := "server is read-only"
-		if hubReadOnly {
-			reason = "viewer limit reached"
-		}
-		_ = client.SendControl(Control{Kind: CtrlReadOnly, Text: reason})
 	}
 
 	// The handler owns the connection until the client goes away or the server
@@ -531,10 +537,38 @@ func decodeJSONPost(r *http.Request, v any) error {
 // redirectBack sends a form poster back where it came from, defaulting to the
 // session page. A 303 is required rather than a 302 so the browser follows with
 // a GET — a repost would resend the input.
+//
+// The Referer is only trusted as a *local path*: the header is client-supplied,
+// and honouring it verbatim would turn the no-JS form into an open redirect
+// ("post here, land on the attacker's page"). A Referer naming another host
+// falls back to the session page, which is always the right answer.
 func redirectBack(w http.ResponseWriter, r *http.Request) {
-	target := r.Referer()
-	if target == "" {
+	target := safeNext(refererPath(r))
+	if target == "/" {
 		target = "/s/" + r.URL.Query().Get("s")
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// refererPath reduces the Referer to a same-origin path and query. A browser
+// always sends an absolute URL, so the host is compared against this request's
+// Host (port excluded, exactly as the origin guard does); a Referer naming
+// another host — or anything unparsable — yields "", which safeNext turns into
+// the session page.
+func refererPath(r *http.Request) string {
+	raw := r.Referer()
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if u.Host != "" && !strings.EqualFold(u.Hostname(), hostOnly(r.Host)) {
+		return ""
+	}
+	if u.RawQuery != "" {
+		return u.Path + "?" + u.RawQuery
+	}
+	return u.Path
 }

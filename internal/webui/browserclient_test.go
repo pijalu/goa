@@ -51,7 +51,11 @@ const domStub = `
   El.prototype.addEventListener = function (t, fn) {
     (this.listeners[t] = this.listeners[t] || []).push(fn);
   };
-  El.prototype.getBoundingClientRect = function () { return { width: 8, height: 16 }; };
+  El.prototype.getBoundingClientRect = function () {
+    window.__measureCalls = (window.__measureCalls || 0) + 1;
+    return { width: 8, height: 16 };
+  };
+  window.__measures = function () { return window.__measureCalls || 0; };
   El.prototype.focus = function () {};
   El.prototype.setAttribute = function () {};
   El.prototype.fire = function (t) {
@@ -208,7 +212,14 @@ const domStub = `
       };
 
       window.GOA_SESSION = "sess-1";
-      window.location = { protocol: "http:", host: "localhost:8080" };
+      // location records a navigation (session rotation follows one) instead of
+      // pretending the page can reload itself under the test.
+      window.location = {
+        protocol: "http:",
+        host: "localhost:8080",
+        replace: function (url) { window.__replacedUrl = url; }
+      };
+      window.__replaced = function () { return window.__replacedUrl || ""; };
       window.WebSocket = function (url) {
         this.url = url;
         this.readyState = 1;
