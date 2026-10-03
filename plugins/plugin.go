@@ -329,16 +329,31 @@ func completionsFromExport(v interface{}) []Completion {
 }
 
 // buildCompletionWrapper converts a JS prefix→completions function into a Go
-// callable. Runs the JS frame under this runtime's frame discipline (the TUI
-// completer calls this off the command path); malformed return shapes degrade
-// to an empty candidate list rather than erroring the keystroke.
+// callable. Malformed return shapes degrade to an empty candidate list rather
+// than erroring the keystroke.
+//
+// The frame is taken with tryEnterFrame, NOT enterFrame: completion is a
+// UI-facing path invoked inline on the commandLoop (tui/editor_autocomp.go —
+// scheduleAutoComp → updateAutoComp → completer.Complete), and the commandLoop
+// is the sole owner of input and render state. Blocking there would freeze the
+// whole keyboard for as long as the plugin's frame is parked on a blocking
+// bridge call — seconds at startup, while the bundled quota plugin primes its
+// cache over provider HTTP (bugs.md "startup blocked: / completion stalls").
+//
+// A busy frame therefore yields no candidates. That costs one keystroke's worth
+// of suggestions, which the next keystroke recomputes once the prime drains;
+// waiting would cost the whole keyboard. Same trade as buildSegmentRender,
+// which keeps last-good text for the same reason.
 func (b *JSBridge) buildCompletionWrapper(fn interface{}) (func(prefix string) []Completion, error) {
 	jsFn, ok := fn.(func(goja.FunctionCall) goja.Value)
 	if !ok {
 		return nil, fmt.Errorf("complete must be a function")
 	}
 	return func(prefix string) []Completion {
-		leave := b.enterFrame()
+		leave, ok := b.tryEnterFrame()
+		if !ok {
+			return nil // frame busy: skip rather than stall the keystroke
+		}
 		defer leave()
 
 		out := []Completion{}
