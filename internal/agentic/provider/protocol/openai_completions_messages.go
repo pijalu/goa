@@ -3,11 +3,7 @@
 package protocol
 
 import (
-	"encoding/base64"
 	"fmt"
-	"net/http"
-	"os"
-	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
@@ -219,9 +215,10 @@ func buildUserContent(blocks []schema.ContentBlock) any {
 				parts = append(parts, map[string]any{"type": "text", "text": b.Text})
 			}
 		case schema.ContentBlockImage:
-			dataURL := imagePathToDataURL(b.ImageData)
-			if dataURL != "" {
+			if dataURL := schema.ImageToDataURL(b.ImageData); dataURL != "" {
 				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL}})
+			} else {
+				parts = append(parts, map[string]any{"type": "text", "text": schema.ImageUnavailablePlaceholder})
 			}
 		}
 	}
@@ -235,18 +232,6 @@ func hasImageBlock(blocks []schema.ContentBlock) bool {
 		}
 	}
 	return false
-}
-
-func imagePathToDataURL(path string) string {
-	if strings.HasPrefix(path, "data:") {
-		return path
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	mime := http.DetectContentType(data)
-	return fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(data))
 }
 
 func convertAssistantMessage(msg schema.Message, compat openAICompletionsCompat) map[string]any {

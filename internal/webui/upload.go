@@ -12,13 +12,15 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/pijalu/goa/internal"
 )
 
 // Image paste over the web (spec §7.5/§11.4). A browser cannot put a PNG on the
 // agent's clipboard the way a real terminal paste does, so the page uploads the
 // image bytes to /upload and inserts the returned *path* into the input line —
 // exactly the text the terminal editor inserts for a clipboard image, so the
-// rest of the pipeline (submit → splitUserInput → extractImagePaths → agent
+// rest of the pipeline (submit → splitUserInput → validated attachment → agent
 // attachment) is the same code in both.
 
 // MaxUploadBytes bounds one pasted image. A screenshot is well under it; the
@@ -89,9 +91,12 @@ func saveUploadedImage(r io.Reader) (string, int64, error) {
 	}
 
 	body := io.MultiReader(strings.NewReader(string(head)), r)
-	f, err := os.CreateTemp("", "goa-upload-*"+ext)
+	// Stored in the durable image store, not os.TempDir: the path is embedded in
+	// conversation history and re-read on every later request, so it must survive
+	// a reboot or a tmp cleaner.
+	f, err := internal.NewImageFile(ext)
 	if err != nil {
-		return "", 0, fmt.Errorf("create temp file: %w", err)
+		return "", 0, err
 	}
 	defer f.Close()
 	written, err := io.Copy(f, io.LimitReader(body, MaxUploadBytes+1))
@@ -110,29 +115,7 @@ func saveUploadedImage(r io.Reader) (string, int64, error) {
 // longest signature, RIFF….WEBP, is 12 bytes; 64 leaves room to spare).
 const sniffLen = 64
 
-// imageSigs lists the accepted formats by magic number. The declared MIME is
-// never consulted, so a lying Content-Type cannot smuggle a non-image past the
-// check.
-var imageSigs = []struct {
-	ext    string
-	sig    string
-	offset int
-}{
-	{ext: ".png", sig: "\x89PNG\r\n\x1a\n"},
-	{ext: ".jpg", sig: "\xff\xd8\xff"},
-	{ext: ".gif", sig: "GIF87a"},
-	{ext: ".gif", sig: "GIF89a"},
-	{ext: ".webp", sig: "WEBP", offset: 8},
-}
-
-// detectImageExt maps the leading bytes of a file to an extension.
-func detectImageExt(head []byte) string {
-	for _, s := range imageSigs {
-		sig := []byte(s.sig)
-		end := s.offset + len(sig)
-		if len(head) >= end && string(head[s.offset:end]) == s.sig {
-			return s.ext
-		}
-	}
-	return ""
-}
+// detectImageExt maps the leading bytes of a file to an extension. The magic
+// table lives in package internal (internal.SniffImageExt) so the terminal
+// paste path and the web upload path cannot disagree about what an image is.
+func detectImageExt(head []byte) string { return internal.SniffImageExt(head) }

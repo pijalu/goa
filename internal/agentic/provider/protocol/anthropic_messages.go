@@ -153,12 +153,19 @@ func convertAnthropicContentBlocks(blocks []schema.ContentBlock) []map[string]an
 		case schema.ContentBlockText:
 			result = append(result, map[string]any{"type": "text", "text": b.Text})
 		case schema.ContentBlockImage:
+			enc, ok := schema.EncodeImage(b.ImageData)
+			if !ok {
+				// An empty Base64 part is rejected by the API and hides the loss;
+				// a text placeholder keeps the request valid and visible.
+				result = append(result, map[string]any{"type": "text", "text": schema.ImageUnavailablePlaceholder})
+				break
+			}
 			result = append(result, map[string]any{
 				"type": "image",
 				"source": map[string]any{
 					"type":       "base64",
-					"media_type": b.ImageMimeType,
-					"data":       b.ImageData,
+					"media_type": enc.MimeType,
+					"data":       enc.Base64,
 				},
 			})
 		}

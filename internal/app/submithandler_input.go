@@ -10,15 +10,65 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/core/commands"
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
 )
 
-func splitUserInput(text string) (string, []string) {
-	images := extractImagePaths(text)
-	messageText := stripImagePaths(text)
-	return messageText, images
+// splitUserInput separates validated image attachments from the message text.
+//
+// A token is only an attachment when it names an existing regular file whose
+// bytes sniff as an image. That single rule is what keeps prose intact: a
+// sentence that merely mentions "logo.png", and any URL that happens to end in
+// an image suffix, stay in the message instead of being stripped out and then
+// silently dropped because the file does not exist (the pre-fix behaviour).
+//
+// Candidates that look like an image but cannot be read are returned in
+// unreadable and kept in the text, so the user is told about it rather than
+// losing both the words and the image.
+func splitUserInput(text string) (messageText string, images []string, unreadable []string) {
+	seen := make(map[string]bool)
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		fields := strings.Fields(line)
+		kept := make([]string, 0, len(fields))
+		for _, field := range fields {
+			if !looksLikeImageName(field) {
+				kept = append(kept, field)
+				continue
+			}
+			if internal.IsImageFile(field) {
+				if !seen[field] {
+					seen[field] = true
+					images = append(images, field)
+				}
+				continue
+			}
+			unreadable = append(unreadable, field)
+			kept = append(kept, field)
+		}
+		lines[i] = strings.Join(kept, " ")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n")), images, unreadable
+}
+
+// looksLikeImageName is the cheap pre-filter for an attachment candidate: an
+// image suffix, and nothing that identifies a URL. It is deliberately only a
+// pre-filter — the decision is made by actually reading the file.
+func looksLikeImageName(field string) bool {
+	lower := strings.ToLower(field)
+	if strings.Contains(lower, "://") || strings.ContainsAny(field, "?&=") {
+		return false
+	}
+	switch {
+	case strings.HasSuffix(lower, ".png"), strings.HasSuffix(lower, ".jpg"),
+		strings.HasSuffix(lower, ".jpeg"), strings.HasSuffix(lower, ".webp"),
+		strings.HasSuffix(lower, ".gif"):
+		return true
+	}
+	return false
 }
 
 func (a *App) displayUserMessage(chat *tui.ChatViewport, text string, images []string) {
@@ -27,6 +77,15 @@ func (a *App) displayUserMessage(chat *tui.ChatViewport, text string, images []s
 	}
 	for _, img := range images {
 		chat.AddSystemMessage(fmt.Sprintf("[attached image: %s]", img))
+	}
+}
+
+// displayUnattachedImages reports attachment candidates that could not be read.
+// They stay in the message text, so the user can fix the path and resend
+// instead of silently losing the image from the turn.
+func (a *App) displayUnattachedImages(chat *tui.ChatViewport, unreadable []string) {
+	for _, path := range unreadable {
+		chat.AddSystemMessage(fmt.Sprintf("[image not attached — could not read: %s]", path))
 	}
 }
 
@@ -181,6 +240,10 @@ func (a *App) sendToAgentWithImages(input string, images []string) {
 	}
 	a.markSessionActive()
 
+	if len(images) > 0 {
+		a.warnIfImagesUnsupported(images)
+	}
+
 	modelName := a.resolveModelName()
 	input = a.expandSkillInput(input)
 	// Expand @file references to absolute paths so the model can read them.
@@ -201,6 +264,28 @@ func (a *App) sendToAgentWithImages(input string, images []string) {
 	if err := subs.agentMgr.SendUserInputWithImages(input, images); err != nil {
 		a.handleSendError(err)
 	}
+}
+
+// warnIfImagesUnsupported tells the user when the active model cannot see the
+// attached images. Without it the attachments are silently replaced by a
+// placeholder at request time (provider.Transform's non-vision downgrade) while
+// the chat still shows "attached image", so the user believes the model saw
+// the picture and reads the answer as a vision answer.
+func (a *App) warnIfImagesUnsupported(images []string) {
+	subs := a.subs
+	if subs.providerMgr == nil || subs.chat == nil {
+		return
+	}
+	mdl, err := subs.providerMgr.ResolveActiveModel()
+	if err != nil {
+		return
+	}
+	if provider.IsVisionModel(mdl) {
+		return
+	}
+	subs.chat.AddSystemMessage(fmt.Sprintf(
+		"[warning: model %q does not support images — %d attachment(s) will be omitted; switch to a vision model]",
+		mdl.ID, len(images)))
 }
 
 // expandSessionReferences parses @[label](goa-session:<id>) mentions in the
@@ -328,46 +413,6 @@ func expandFileRefs(input, workdir string) string {
 		i = pathEnd
 	}
 	return result.String()
-}
-
-// extractImagePaths returns paths that look like pasted image files.
-// It preserves line structure so callers can rebuild multi-line text.
-func extractImagePaths(text string) []string {
-	var paths []string
-	for _, line := range strings.Split(text, "\n") {
-		for _, field := range strings.Fields(line) {
-			lower := strings.ToLower(field)
-			if isImagePath(lower) {
-				paths = append(paths, field)
-			}
-		}
-	}
-	return paths
-}
-
-// stripImagePaths removes pasted image paths from text while preserving
-// original line breaks and spacing within each line.
-func stripImagePaths(text string) string {
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		fields := strings.Fields(line)
-		var kept []string
-		for _, field := range fields {
-			lower := strings.ToLower(field)
-			if isImagePath(lower) {
-				continue
-			}
-			kept = append(kept, field)
-		}
-		lines[i] = strings.Join(kept, " ")
-	}
-	return strings.Join(lines, "\n")
-}
-
-func isImagePath(lower string) bool {
-	return strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") ||
-		strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".webp") ||
-		strings.HasSuffix(lower, ".gif")
 }
 
 func (a *App) markSessionActive() {

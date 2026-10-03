@@ -102,10 +102,15 @@ func convertGoogleParts(blocks []schema.ContentBlock, role schema.Role) []map[st
 		case schema.ContentBlockText:
 			parts = append(parts, map[string]any{"text": b.Text})
 		case schema.ContentBlockImage:
+			enc, ok := schema.EncodeImage(b.ImageData)
+			if !ok {
+				parts = append(parts, map[string]any{"text": schema.ImageUnavailablePlaceholder})
+				break
+			}
 			parts = append(parts, map[string]any{
 				"inlineData": map[string]any{
-					"mimeType": b.ImageMimeType,
-					"data":     b.ImageData,
+					"mimeType": enc.MimeType,
+					"data":     enc.Base64,
 				},
 			})
 		case schema.ContentBlockToolCall:

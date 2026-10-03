@@ -143,12 +143,17 @@ func convertContentBlocks(blocks []provider.ContentBlock) []map[string]interface
 		case provider.ContentBlockText:
 			result = append(result, map[string]interface{}{"type": "text", "text": b.Text})
 		case provider.ContentBlockImage:
+			enc, ok := provider.EncodeImage(b.ImageData)
+			if !ok {
+				result = append(result, map[string]interface{}{"type": "text", "text": provider.ImageUnavailablePlaceholder})
+				break
+			}
 			result = append(result, map[string]interface{}{
 				"type": "image",
 				"source": map[string]interface{}{
 					"type":       "base64",
-					"media_type": b.ImageMimeType,
-					"data":       b.ImageData,
+					"media_type": enc.MimeType,
+					"data":       enc.Base64,
 				},
 			})
 		}

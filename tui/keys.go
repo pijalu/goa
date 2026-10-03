@@ -44,6 +44,7 @@ const (
 	KeyCtrlE      = "ctrl+e"
 	KeyCtrlL      = "ctrl+l"
 	KeyCtrlT      = "ctrl+t"
+	KeyCtrlV      = "ctrl+v"
 	KeyCtrlY      = "ctrl+y"
 	KeyAltEnter   = "alt+enter"
 	KeyShiftTab   = "shift+tab"
@@ -184,6 +185,7 @@ var ctrlMap = map[byte]string{
 	0x0c: KeyCtrlL,
 	0x14: KeyCtrlT,
 	0x15: KeyCtrlU,
+	0x16: KeyCtrlV,
 	0x17: KeyCtrlW,
 	0x19: KeyCtrlY,
 	// 0x1b NOT included — handled by decodeESC

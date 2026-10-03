@@ -57,6 +57,12 @@ func (e *Editor) handleInputLocked(data string) []func() {
 
 func (e *Editor) handleControlKeys(data string) bool {
 	switch {
+	case e.kb.Matches(data, KbPaste):
+		// Explicit paste: no terminal forwards image bytes, so this key is the
+		// only reliable trigger for a clipboard image (and for a file-manager
+		// copy, and for text). Resolve it in that precedence order.
+		e.pasteFromClipboard()
+		return true
 	case matchesKey(data, KeyCtrlD):
 		if len(e.buf) == 0 && e.tui != nil {
 			t := e.tui

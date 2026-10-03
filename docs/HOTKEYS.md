@@ -40,6 +40,7 @@ The table below shows the default keybindings. Customize them in your theme conf
 | `Ctrl+Y` | Paste most-recently deleted text (yank) |
 | `Alt+Y` | Cycle through deleted text after pasting |
 | `Ctrl+Z` | Undo |
+| `Ctrl+V` | Paste from the system clipboard: files copied in a file manager, then an image, then text |
 
 ## Application
 

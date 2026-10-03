@@ -115,11 +115,18 @@ type Editor struct {
 	title string
 
 	// OnImagePaste is called when an image is pasted from the clipboard.
-	// If nil, the editor inserts a markdown image reference instead.
+	// If nil, the editor inserts the image file path instead.
 	OnImagePaste func(path string)
 
 	// readClipboardImage reads an image from the clipboard. Swapped in tests.
 	readClipboardImage func() (image.Image, error)
+
+	// readClipboardFilePaths returns paths of files copied from a file manager
+	// (Finder/Explorer/Nautilus). Swapped in tests.
+	readClipboardFilePaths func() []string
+
+	// readClipboardText returns the clipboard's plain text. Swapped in tests.
+	readClipboardText func() (string, bool)
 
 	// History draft: preserves current text when entering history browsing
 	historyDraft *string
@@ -140,16 +147,18 @@ type Editor struct {
 // NewEditor creates a multi-line editor.
 func NewEditor() *Editor {
 	return &Editor{
-		histIdx:            -1,
-		prompt:             "",
-		maxLines:           1,
-		undo:               NewUndoStack(100),
-		killRing:           NewKillRing(20),
-		kb:                 DefaultKeybindingsManager(),
-		compDebounce:       150 * time.Millisecond,
-		compAbort:          make(chan struct{}),
-		preferredVisualCol: -1,
-		readClipboardImage: internal.ReadClipboardImage,
+		histIdx:                -1,
+		prompt:                 "",
+		maxLines:               1,
+		undo:                   NewUndoStack(100),
+		killRing:               NewKillRing(20),
+		kb:                     DefaultKeybindingsManager(),
+		compDebounce:           150 * time.Millisecond,
+		compAbort:              make(chan struct{}),
+		preferredVisualCol:     -1,
+		readClipboardImage:     internal.ReadClipboardImage,
+		readClipboardFilePaths: internal.ReadClipboardFilePaths,
+		readClipboardText:      internal.ReadClipboardText,
 	}
 }
 
@@ -398,11 +407,27 @@ func (e *Editor) looksLikePaste(data string) bool {
 	return strings.ContainsAny(data, "\n\t\r")
 }
 
-// handlePaste inserts pasted text at the cursor. If the clipboard contains
-// an image, it is saved to a temp file and either handed to OnImagePaste or
-// inserted as a markdown image reference. Large text pastes become a
-// collapsible marker; smaller pastes are inserted inline.
+// handlePaste inserts already-delivered pasted text at the cursor. Large text
+// pastes become a collapsible marker; smaller pastes are inserted inline.
+//
+// Reading the OS clipboard is deliberately NOT part of this path. The terminal
+// already delivered this text, and a clipboard image must never win a text
+// paste: that silently discarded the user's text whenever the clipboard held
+// both flavours (e.g. a copy from a browser). Image/file pasting happens only
+// through the explicit paste key — see pasteFromClipboard.
 func (e *Editor) handlePaste(text string) {
+	e.insertPastedText(text)
+}
+
+// pasteFromClipboard resolves the OS clipboard in the same precedence the
+// reference agents use: file paths copied from a file manager, then an image,
+// then plain text. No terminal emulator forwards image bytes, so this explicit
+// path is the only reliable image-paste trigger.
+func (e *Editor) pasteFromClipboard() {
+	if paths := e.clipboardFilePaths(); len(paths) > 0 {
+		e.insertPastedPaths(paths)
+		return
+	}
 	if path, ok := e.tryPasteImage(); ok {
 		if e.OnImagePaste != nil {
 			cb := e.OnImagePaste
@@ -410,10 +435,33 @@ func (e *Editor) handlePaste(text string) {
 			e.queueCallback(func() { cb(p) })
 			return
 		}
-		e.insertImageReference(path)
+		e.insertPastedPaths([]string{path})
 		return
 	}
+	if text, ok := e.clipboardText(); ok && text != "" {
+		e.insertPastedText(text)
+	}
+}
 
+// clipboardFilePaths returns clipboard file paths, tolerating a test swap of
+// the reader (or its absence).
+func (e *Editor) clipboardFilePaths() []string {
+	if e.readClipboardFilePaths == nil {
+		return nil
+	}
+	return e.readClipboardFilePaths()
+}
+
+// clipboardText returns the clipboard's plain text, tolerating a test swap.
+func (e *Editor) clipboardText() (string, bool) {
+	if e.readClipboardText == nil {
+		return "", false
+	}
+	return e.readClipboardText()
+}
+
+// insertPastedText stores pasted text, collapsing large payloads into a marker.
+func (e *Editor) insertPastedText(text string) {
 	normalized := e.normalizePastedText(text)
 	lines := strings.Count(normalized, "\n")
 	if lines > 10 || len(normalized) > 1000 {
@@ -423,6 +471,21 @@ func (e *Editor) handlePaste(text string) {
 	e.pushUndo()
 	e.insertString(normalized)
 	e.clearCompletion()
+}
+
+// insertPastedPaths inserts paths at the cursor, adding the separating spaces a
+// shell-style paste needs so the inserted token never fuses with the text the
+// cursor sits inside.
+func (e *Editor) insertPastedPaths(paths []string) {
+	joined := strings.Join(paths, " ")
+	before, after := "", ""
+	if e.pos > 0 && !isSpaceRune(e.buf[e.pos-1]) {
+		before = " "
+	}
+	if e.pos < len(e.buf) && !isSpaceRune(e.buf[e.pos]) {
+		after = " "
+	}
+	e.InsertTextAtCursor(before + joined + after)
 }
 
 // tryPasteImage attempts to read and save an image from the clipboard.
@@ -440,14 +503,6 @@ func (e *Editor) tryPasteImage() (string, bool) {
 		return "", false
 	}
 	return path, true
-}
-
-// insertImageReference inserts the image file path at the cursor so the
-// agent receives it as an attachment.
-func (e *Editor) insertImageReference(path string) {
-	e.pushUndo()
-	e.insertString(path)
-	e.clearCompletion()
 }
 
 // normalizePastedText cleans raw pasted bytes for editor storage.

@@ -234,6 +234,11 @@ func (a *App) Run() bool {
 	initTheme(cfg)
 	initSpinner(cfg)
 
+	// Reap expired pasted/uploaded images in the background. The store is a
+	// cache of attachments referenced by path from conversation history, so
+	// pruning must never block startup or fail the run.
+	go internal.PruneImages()
+
 	// Before building the TUI (terminal is in normal mode), prompt the user
 	// about project-level skills if this is the first run.
 	a.promptProjectTrustIfNeeded(projectDir)
