@@ -484,6 +484,13 @@ func decodeCSIuNumeric(code, mod int) (string, bool) {
 		}
 		return KeyTab, true
 	case code == 8 || code == 127:
+		// The modifier is meaningful: terminals report Ctrl/Alt+Backspace as
+		// code 127 with a modifier (kitty: ESC [ 127 ; 5 u), and the editor
+		// binds "ctrl+backspace" / "alt+backspace" to word deletion. Dropping
+		// it here silently downgraded those chords to a single-char delete.
+		if mod > 1 {
+			return csiModPrefix(mod) + KeyBackspace, true
+		}
 		return KeyBackspace, true
 	case code >= 32 && code <= 126:
 		ch := string(rune(code))

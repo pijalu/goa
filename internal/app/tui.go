@@ -87,7 +87,10 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 }
 
 func (a *App) createTerminal() tui.Terminal {
-	terminal := tui.Terminal(tui.NewProcessTerminal())
+	terminal := a.subs.terminal
+	if terminal == nil {
+		terminal = tui.NewProcessTerminal()
+	}
 	logPath := a.subs.cfg.Logging.TerminalLog
 	if logPath == "" {
 		logPath = os.Getenv("GOA_DEBUG_TERMINAL")

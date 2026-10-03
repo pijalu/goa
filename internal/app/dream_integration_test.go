@@ -233,6 +233,13 @@ func subsystemsWithShippedDefaultSkills(t *testing.T) *subsystems {
 	project := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	// GOA_HOME outranks HOME in internal.GoaHome, and TestMain points it at a
+	// package-wide scratch dir shared by every test in this binary. Without
+	// isolating it here, SaveHomeFieldValue writes this test's opt-in into that
+	// shared home and the *next* run (-count=2, or a later test) loads it and
+	// fails the "no embedded opt-ins" precondition. t.Setenv restores the
+	// package value when the test ends.
+	t.Setenv("GOA_HOME", home)
 	loader := config.NewCascadeLoader(project, "", nil)
 	cfg, err := loader.Load()
 	if err != nil {

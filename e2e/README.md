@@ -90,6 +90,39 @@ unset = silent). Point a throwaway project at it with
 - **Artifacts**: the actual file the task asked for must exist with the
   expected content. Exit codes are advisory; artifacts decide.
 
+## Browser scenario (G7 — `w1_webui_browser.sh`)
+
+`e2e/w1_webui_browser.sh` is the browser twin of the PTY scenarios: it starts
+`goa server` and drives it in a **real Chrome** through
+`/opt/homebrew/bin/agent-browser` (`open` / `click` / `press` / `screenshot` /
+`eval`), asserting the live DOM at every stage.
+
+```bash
+e2e/w1_webui_browser.sh                     # defaults to 127.0.0.1:8099
+E2E_ROOT=/tmp/my-run GOA_WEB_PORT=8199 e2e/w1_webui_browser.sh
+```
+
+It is **not** part of `run_all.sh`: the T-series need LM Studio, this one needs
+a real provider for the pinned model in your own `~/.goa/config.yaml`. The model
+is pinned through the environment only —
+`GOA_ACTIVE_PROVIDER=opencode-go`, `GOA_ACTIVE_MODEL=space-bunny-free`
+(override with `GOA_WEB_PROVIDER` / `GOA_WEB_MODEL`) — because the config
+cascade lets env win over every file layer, so the run cannot silently answer
+with whatever model you last used.
+
+Assertions (each one is a `PASS`/`FAIL` line in `results.tsv`, with a
+screenshot per stage under `shots/`): page reaches `#status[data-state=live]`,
+the pinned model appears in the status bar, a tool call (`$ echo G7-E2E-OK`) and
+the model's reply are rendered, the grid **grows incrementally** while a turn is
+in flight (sampled from inside the page, not from the shell), `/help` lists
+commands, `/config` opens and its `›` selector moves on `ArrowDown`, the type
+filter narrows the list, `Escape` closes it, and the model pin still holds.
+
+Typing note: `agent-browser keyboard type` uses `Input.insertText`, which fires
+no `keydown`, and `internal/webui/assets/app.js` deliberately sends *key
+descriptors* to the server (the server owns the byte table). The script
+therefore types character by character with `press`.
+
 ## Key techniques (reuse these)
 
 1. **Seeded headless orchestration** — `goa --orchestrate` only *resumes* a

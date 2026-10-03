@@ -134,6 +134,7 @@ var docDescriptions = map[string]string{
 	"SKILLS":                "Skills system — built-in skills, custom skills, inline vs sub-agent",
 	"TOOLS":                 "Tool system reference — all native tools, schemas, examples",
 	"TUI":                   "TUI layout and usage — keybindings, panes, transparency features",
+	"WEBUI":                 "Web UI (`goa server`) — security model, transports, URLs, browser key map",
 	"TUI-REWORK-PROGRESS":   "TUI rework progress tracker — rendering, streaming, tooling fixes status",
 	"WORKFLOWS":             "Workflows — pre-defined agent pipelines and task automation",
 }

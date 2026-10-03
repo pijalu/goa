@@ -461,17 +461,46 @@ func Main() {
 		return
 	}
 
+	// `goa server` is likewise a subcommand: the verb is stripped from argv
+	// before flag parsing, then handed to runApp as a mode selector (spec §19
+	// decision 5).
+	serverMode, err := stripSubcommand(os.Args, "server")
+	if err != nil {
+		fmt.Print(err)
+		os.Exit(2)
+	}
+
 	for {
-		relaunch := runApp()
+		relaunch := runApp(serverMode)
 		if !relaunch {
 			break
 		}
 	}
 }
 
-func runApp() bool {
+// stripSubcommand removes a leading `name` verb from argv so the flag parser
+// never sees it. It returns an error for `goa name --help`, which must not
+// print the agent's flag help.
+func stripSubcommand(argv []string, name string) (bool, error) {
+	if len(argv) < 2 || argv[1] != name {
+		return false, nil
+	}
+	rest := argv[2:]
+	if len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h" || rest[0] == "help") {
+		if name == "server" {
+			fmt.Print(webServerUsage)
+			os.Exit(0)
+		}
+		return false, fmt.Errorf("goa %s: unknown command %q", name, rest[0])
+	}
+	os.Args = append([]string{argv[0]}, rest...)
+	return true, nil
+}
+
+func runApp(serverMode bool) bool {
 	projectDir := MustGetwd()
 	cliFlags, runtimeOpts := ParseCLIFlags()
+	runtimeOpts.Server = serverMode
 	// --home (or GOA_HOME) relocates every ~/.goa path (config, cache, logs,
 	// usage, first-run detection). It must be applied before the cascade
 	// loader and any subsystem resolves the home directory.
@@ -508,6 +537,12 @@ func runApp() bool {
 		return false
 	case runtimeOpts.ExportOutput != "" || runtimeOpts.ExportSession != "" || runtimeOpts.IncludeGlobalLog:
 		runExport(subs, exportOptionsFromRuntime(runtimeOpts))
+		return false
+	case runtimeOpts.Server:
+		// The web UI is the interactive session, not a headless one: it must
+		// win over --prompt-shaped flags so `goa server --prompt` still
+		// serves a browser-driven session.
+		runWebServer(subs, runtimeOpts)
 		return false
 	case runtimeOpts.Headless():
 		runHeadless(subs, runtimeOpts)

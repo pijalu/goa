@@ -23,6 +23,8 @@ below, then explore the features that match your workflow.
 3. [Companion — Sub-Agent Code Review](#3-companion--sub-agent-code-review)
 4. [Feature Comparison](#4-feature-comparison)
 5. [Configuration Reference](#5-configuration-reference)
+6. [Provider Quota](#6-provider-quota--usage-tracking)
+7. [Web UI — Goa in the Browser](#7-web-ui--goa-in-the-browser)
 
 ---
 
@@ -840,7 +842,59 @@ plugins:
 
 ---
 
+## 7. Web UI — Goa in the Browser
+
+`goa server` runs your normal Goa session and serves its screen to a browser.
+It is the *same* session, not a remote-control toy: the TUI engine renders into
+a virtual screen, the page draws those cells, and every key you type is encoded
+by the server into the bytes a terminal would have sent.
+
+```bash
+# Loopback only — nothing to configure, no credentials
+./goa server
+# → goa web UI ready: http://127.0.0.1:8080
+
+# Someone else on the network? Credentials are then mandatory.
+export GOA_SERVER_AUTH_TOKEN=$(openssl rand -hex 32)
+./goa server --server-addr 0.0.0.0:7331 --server-auth=token
+
+# Sharing your screen without handing over the wheel
+./goa server --server-read-only
+```
+
+Opening `http://127.0.0.1:8080/` redirects to the live session at `/s/<id>`.
+
+### What works
+
+Everything. The parity matrix in [specs/webui.md](../specs/webui.md) is the
+acceptance list, and it holds: streaming text, thinking blocks, tool widgets,
+diffs, markdown, syntax colours, multiline editing, `Ctrl+U`/`Ctrl+W`, the kill
+ring, `Ctrl+Z`, history (`↑`), `Tab` completion, `/` command popups, selectors
+(`/model`, `/mode`), confirm cards, clarify cards, review pagers, the goal list
+and orchestrator tabs all render and respond in the page. Keys behave as they
+do in a terminal — see [HOTKEYS.md](HOTKEYS.md) for the browser key map.
+
+### What to know
+
+| Situation | What happens |
+|-----------|--------------|
+| Behind a proxy that blocks WebSockets | The page falls back to SSE + POST automatically |
+| Scripting disabled | A server-rendered page polls the same session |
+| Want to watch without touching anything | `--server-read-only` |
+| Driving it from a script | Send `Authorization: Bearer $GOA_SERVER_AUTH_TOKEN`, or poll `/s/<id>/text` |
+| Remote box | Leave it on loopback and forward the port: `ssh -L 8080:127.0.0.1:8080 host` |
+| Tempted to bind `0.0.0.0` without a token | Refused at startup. `--insecure-no-auth` exists, is spelled out, and means "anyone who reaches this port drives your agent" |
+
+One session per process for now: `goa server` serves the one session it is
+running. Multiple concurrent sessions in a single process are future work.
+
+Full reference: [WEBUI.md](WEBUI.md).
+
+---
+
 ## See Also
+
+- [WEBUI.md](WEBUI.md) — Web UI reference: security model, transports, URLs
 
 - [WORKFLOWS.md](WORKFLOWS.md) — Workflow system reference
 - [ORCHESTRATOR.md](ORCHESTRATOR.md) — Orchestrator technical reference

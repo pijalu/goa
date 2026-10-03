@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="{{.Theme}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>goa — {{.SessionID}}</title>
+<link rel="stylesheet" href="/assets/app.css">
+  <style nonce="{{.Nonce}}">{{.CSS}}</style>
+</head>
+<body data-session="{{.SessionID}}">
+    <div id="scrollback" class="scrollback" aria-hidden="true"></div>
+    <div id="grid" class="grid" role="log" aria-live="polite" aria-label="goa terminal"></div>
+  <div id="caret" class="caret" hidden></div>
+  <div id="status" class="status" data-state="connecting">connecting…</div>
+  <script nonce="{{.Nonce}}">window.GOA_SESSION = {{.SessionID}};</script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

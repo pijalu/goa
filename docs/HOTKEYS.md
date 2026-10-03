@@ -100,3 +100,28 @@ When the interactive review pager is open (`/review`):
 > **Note:** Keybindings may vary by terminal emulator. Some keys (like
 > `Ctrl+Enter`) require Kitty keyboard protocol support.
 > Use `/hotkeys` inside Goa to see your active keybindings.
+
+---
+
+## Browser keys (`goa server`)
+
+The tables above are the whole story: over the web UI **the same bindings
+apply**, because the page does not implement shortcuts of its own. A keypress
+is reported to the server (`key`, `ctrl`, `alt`, `shift`), and the server's
+encoder turns it into the byte sequence a terminal would have written — so
+`Ctrl+G`, `Alt+1`, `Ctrl+L`, `PgUp`, `F5` and friends mean in the page exactly
+what they mean in a terminal. Click the page first to give it focus.
+
+What does differ, and is worth knowing:
+
+| Difference | Why |
+|------------|-----|
+| `Cmd`/`Ctrl+Cmd` chords are left to the browser | Reload, devtools and tab switching stay available; the page never swallows them |
+| `Alt` alone may be claimed by the browser menu on some platforms | Use `Esc` to dismiss an overlay if the browser eats `Alt` |
+| Text inserted programmatically (`Input.insertText`, some IME/assistive paths) fires no `keydown` | Those keystrokes have no descriptor to encode; type or paste normally — paste goes through `/input` verbatim |
+| No Kitty keyboard protocol | Chords are encoded in the legacy xterm form plus Kitty CSI-u where legacy has no parameter, which covers every binding Goa has |
+
+Read-only servers (`--server-read-only`) accept every view and reject every
+keystroke, so viewers can navigate and scroll but cannot drive the session.
+
+See [WEBUI.md](WEBUI.md) for the full transport and security model.

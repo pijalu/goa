@@ -22,19 +22,37 @@ import (
 // agent's "what is actually on the screen" reader.
 type TermEmulator struct {
 	w, h        int
-	screen      [][]string // [row][col] cell text (ANSI-stripped for assertion)
-	screenBg    [][]string // [row][col] cell background SGR ("" = default)
-	screenFg    [][]string // [row][col] cell foreground SGR ("" = default)
+	screen      [][]string    // [row][col] cell text (ANSI-stripped for assertion)
+	screenBg    [][]string    // [row][col] cell background SGR ("" = default)
+	screenFg    [][]string    // [row][col] cell foreground SGR ("" = default)
+	screenFlags [][]AttrFlags // [row][col] per-cell text attributes (term_cells.go)
+	screenLink  [][]string    // [row][col] OSC-8 hyperlink target ("" = none)
 	scrollback  []string
-	row, col    int
-	curBg       string // current SGR background params (e.g. "48;2;42;50;41")
-	curFg       string // current SGR foreground params (e.g. "38;2;139;148;158")
-	pendingWrap bool   // DEC deferred wrap: last cell filled, next char wraps
+	// scrollbackAttrs mirrors scrollback with per-cell attributes so a scrolled
+	// row keeps its styling (phase 0 of the web UI cell pipeline).
+	scrollbackAttrs [][]CellAttrs
+	curFlags        AttrFlags // current SGR text attributes
+	curLink         string    // current OSC-8 hyperlink target ("" = none)
+	row, col        int
+	curBg           string // current SGR background params (e.g. "48;2;42;50;41")
+	curFg           string // current SGR foreground params (e.g. "38;2;139;148;158")
+	pendingWrap     bool   // DEC deferred wrap: last cell filled, next char wraps
+	// oscBuf holds the tail of an OSC sequence whose terminator has not arrived
+	// yet. Without it a hyperlink split across two writes (title, chunked
+	// stream, a diffed repaint) would leak "8;;https://…" onto the screen as
+	// printable text.
+	oscBuf string
 	// scrollTop/scrollBot model the DECSTBM scroll region (0-indexed,
 	// inclusive). \n scrolls only within [scrollTop, scrollBot]; rows outside
 	// the region never move, which is how pinned chrome is emulated. Defaults
 	// to the full screen.
 	scrollTop, scrollBot int
+	// dirty marks the rows touched since the last DrainDirty. It is only
+	// maintained while TrackDirty(true) is set (the web UI grid uses it to ship
+	// just the changed rows); tests and one-shot replays leave it off and pay
+	// no bookkeeping.
+	dirty    []bool
+	tracking bool
 }
 
 func NewTermEmulator(h, w int) *TermEmulator {
@@ -42,16 +60,26 @@ func NewTermEmulator(h, w int) *TermEmulator {
 	e.screen = make([][]string, h)
 	e.screenBg = make([][]string, h)
 	e.screenFg = make([][]string, h)
+	e.screenFlags = make([][]AttrFlags, h)
+	e.screenLink = make([][]string, h)
+	e.dirty = make([]bool, h)
 	for i := range e.screen {
 		e.screen[i] = make([]string, w)
 		e.screenBg[i] = make([]string, w)
 		e.screenFg[i] = make([]string, w)
+		e.screenFlags[i] = make([]AttrFlags, w)
+		e.screenLink[i] = make([]string, w)
 	}
 	return e
 }
 
 // Process replays a byte stream of compositor output.
 func (e *TermEmulator) Process(s string) {
+	// Resume an OSC left unterminated by a previous write before parsing.
+	if e.oscBuf != "" {
+		s = "\x1b]" + e.oscBuf + s
+		e.oscBuf = ""
+	}
 	i := 0
 	for i < len(s) {
 		c := s[i]
@@ -65,10 +93,16 @@ func (e *TermEmulator) Process(s string) {
 			i++
 		case c == '\x1b':
 			n := e.parseEscape(s[i:])
-			if n == 0 {
-				i++
-			} else {
+			switch {
+			case n > 0:
 				i += n
+			case strings.HasPrefix(s[i:], "\x1b]") && len(s)-i <= maxOSCBuffer:
+				// Unterminated OSC: hold the payload until the terminator
+				// arrives instead of printing it as text.
+				e.oscBuf = s[i+2:]
+				return
+			default:
+				i++
 			}
 		default:
 			if c >= 0x20 {
@@ -112,7 +146,10 @@ func (e *TermEmulator) writePrintable(s string, i int) int {
 			e.screen[e.row][e.col] = ch
 			e.screenBg[e.row][e.col] = e.curBg
 			e.screenFg[e.row][e.col] = e.curFg
+			e.screenFlags[e.row][e.col] = e.cellFlags()
+			e.screenLink[e.row][e.col] = e.curLink
 		}
+		e.markDirty(e.row)
 		e.col++
 	}
 	if e.col >= e.w {
@@ -136,10 +173,22 @@ func (e *TermEmulator) lineFeed() {
 			top.WriteString(cell)
 		}
 		e.scrollback = append(e.scrollback, top.String())
+		e.scrollbackAttrs = append(e.scrollbackAttrs, e.Cells(e.scrollTop))
 		copy(e.screen[e.scrollTop:e.scrollBot], e.screen[e.scrollTop+1:e.scrollBot+1])
 		copy(e.screenBg[e.scrollTop:e.scrollBot], e.screenBg[e.scrollTop+1:e.scrollBot+1])
+		// The foreground (and flags) must move with the row: leaving them
+		// behind made a scrolled row lose its text colour.
+		copy(e.screenFg[e.scrollTop:e.scrollBot], e.screenFg[e.scrollTop+1:e.scrollBot+1])
+		copy(e.screenFlags[e.scrollTop:e.scrollBot], e.screenFlags[e.scrollTop+1:e.scrollBot+1])
+		copy(e.screenLink[e.scrollTop:e.scrollBot], e.screenLink[e.scrollTop+1:e.scrollBot+1])
 		e.screen[e.scrollBot] = make([]string, e.w)
 		e.screenBg[e.scrollBot] = make([]string, e.w)
+		e.screenFg[e.scrollBot] = make([]string, e.w)
+		e.screenFlags[e.scrollBot] = make([]AttrFlags, e.w)
+		e.screenLink[e.scrollBot] = make([]string, e.w)
+		for r := e.scrollTop; r <= e.scrollBot; r++ {
+			e.markDirty(r)
+		}
 		return
 	}
 	// Cursor below the region (pinned chrome): plain advance, clamped.
@@ -150,11 +199,15 @@ func (e *TermEmulator) lineFeed() {
 
 func (e *TermEmulator) parseEscape(s string) int {
 	if strings.HasPrefix(s, "\x1b]") {
-		// OSC (e.g. hyperlink \x1b]8;;...\x07): consume until BEL.
-		if idx := strings.Index(s, "\x07"); idx >= 0 {
-			return idx + 1
+		// OSC: \x1b]<code>;<params/text> BEL-or-ST. The payload may contain
+		// semicolons (OSC 8 hyperlinks: id;URI), so it is handled as one
+		// string and terminated by BEL (\a) or ST (\x1b\\).
+		body, n, ok := oscPayload(s)
+		if !ok {
+			return 0 // unterminated: wait for more bytes
 		}
-		return 0
+		e.applyOSC(body)
+		return n
 	}
 	if !strings.HasPrefix(s, "\x1b[") {
 		return 0
@@ -231,6 +284,7 @@ func (e *TermEmulator) applyScrollRegion(params string) {
 func (e *TermEmulator) applySGR(params string) {
 	codes := strings.Split(params, ";")
 	for i := 0; i < len(codes); i++ {
+		e.trackSGRFlag(codes, i)
 		switch codes[i] {
 		case "", "0", "49":
 			e.curBg = ""
@@ -282,6 +336,7 @@ func extendedColorLen(codes []string, i int) int {
 }
 
 func (e *TermEmulator) eraseDisplay(params string) {
+	e.markAllDirty()
 	switch params {
 	case "2", "3":
 		for r := range e.screen {
@@ -289,22 +344,29 @@ func (e *TermEmulator) eraseDisplay(params string) {
 				e.screen[r][c] = ""
 				e.screenBg[r][c] = ""
 				e.screenFg[r][c] = ""
+				e.screenFlags[r][c] = 0
+				e.screenLink[r][c] = ""
 			}
 		}
 		if params == "3" {
 			e.scrollback = nil
+			e.scrollbackAttrs = nil
 		}
 	case "0", "":
 		for c := e.col; c < e.w; c++ {
 			e.screen[e.row][c] = ""
 			e.screenBg[e.row][c] = ""
 			e.screenFg[e.row][c] = ""
+			e.screenFlags[e.row][c] = 0
+			e.screenLink[e.row][c] = ""
 		}
 		for r := e.row + 1; r < e.h; r++ {
 			for c := range e.screen[r] {
 				e.screen[r][c] = ""
 				e.screenBg[r][c] = ""
 				e.screenFg[r][c] = ""
+				e.screenFlags[r][c] = 0
+				e.screenLink[r][c] = ""
 			}
 		}
 	}
@@ -314,10 +376,13 @@ func (e *TermEmulator) eraseLine(params string) {
 	if params != "" && params != "2" && params != "0" {
 		return
 	}
+	e.markDirty(e.row)
 	for c := range e.screen[e.row] {
 		e.screen[e.row][c] = ""
 		e.screenBg[e.row][c] = ""
 		e.screenFg[e.row][c] = ""
+		e.screenFlags[e.row][c] = 0
+		e.screenLink[e.row][c] = ""
 	}
 	e.pendingWrap = false
 }

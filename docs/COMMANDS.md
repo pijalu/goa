@@ -8,6 +8,10 @@ Copyright (C) 2026 Pierre Poissinger
 
 Goa commands are the primary way users interact with the agent. They are prefixed with `/` and self-register via `init()` in individual files under `core/commands/`.
 
+Commands behave identically wherever the UI runs: `./goa` in a terminal, and
+`goa server` in a browser (the same router, the same handlers — see
+[WEBUI.md](WEBUI.md) for the web transport and its security model).
+
 ## Architecture
 
 ```

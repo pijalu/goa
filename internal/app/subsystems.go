@@ -96,6 +96,13 @@ type subsystems struct {
 	pluginSched *plugins.Scheduler
 	noPlugins   bool // --no-plugins: skip plugin load entirely
 	headless    bool // no TUI session: external plugin hooks fail closed (§7 step 5)
+	// terminal is the injected tui.Terminal the TUI engine renders to. Nil in
+	// every normal run, in which case createTerminal falls back to
+	// tui.NewProcessTerminal (the TTY). `goa server` injects a
+	// webui.VirtualTerminal here so the very same engine draws onto a virtual
+	// cell grid instead of the process terminal — the web UI can therefore
+	// never drift from the TUI.
+	terminal tui.Terminal
 	// opts is the startup RuntimeOptions, retained so runtime paths (e.g. the
 	// /tools:goal:on factory) rebuild the same LIVE gates the startup
 	// registration used — --goal must force-enable creation on both paths.

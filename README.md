@@ -27,6 +27,28 @@ On first run, Goa walks you through:
 2. Selecting an agent profile (coder, planner, reviewer)
 3. Choosing an execution mode (yolo, confirm, review)
 
+## Web UI
+
+The TUI is not a second rendering path — `goa server` runs the *same* session
+against a virtual terminal and serves the resulting cells to a browser:
+
+```bash
+# Loopback only, no credentials needed
+./goa server
+
+# Reachable from another machine: a token, exchanged for an HttpOnly cookie
+GOA_SERVER_AUTH_TOKEN=$(openssl rand -hex 32) ./goa server --server-addr 0.0.0.0:7331 --server-auth=token
+
+# Screen sharing: browsers watch, they cannot type
+./goa server --server-read-only
+```
+
+Binding a non-loopback address without credentials is refused at startup — the
+unsafe choice is the one you have to type (`--insecure-no-auth`). Keys typed in
+the browser reach the agent as the bytes a real terminal would have written, so
+multiline editing, kill-ring, history, autocomplete and overlays behave
+identically. Full details: [docs/WEBUI.md](docs/WEBUI.md).
+
 ## Features
 
 | Feature | Description |
@@ -46,6 +68,7 @@ On first run, Goa walks you through:
 | **💾 Session Persistence** | Full JSONL session history with `/save` and `/restore` |
 | **📦 Diagnostic Export** | Self-contained ZIP bundle via `/export` with events, logs, config, and issue description |
 | **🖥 Rich TUI** | Chat, thinking stream, tool ledger, log, token budget, side panel, modals |
+| **🌐 Web UI** | `goa server` serves the same TUI as a web page — loopback-only by default, optional token/basic auth, read-only mode |
 | **🔌 JS Plugins** | Extend Goa with JavaScript plugins via Goja |
 | **🔄 Execution Modes** | yolo (auto-approve), confirm (pause before each tool), review (queue edits) |
 | **🔒 Git Worktree Isolation** | Sandboxed agent filesystem via `git worktree` |
@@ -125,6 +148,7 @@ On first run, Goa walks you through:
 | [SKILL-EXECUTION.md](docs/SKILL-EXECUTION.md) | Skill execution modes and sub-agent isolation |
 | [PROFILES.md](docs/PROFILES.md) | Agent profiles & resolution |
 | [TUI.md](docs/TUI.md) | TUI layout & usage |
+| [WEBUI.md](docs/WEBUI.md) | Web UI (`goa server`) — security model, transports, URLs |
 | [HOTKEYS.md](docs/HOTKEYS.md) | Keyboard shortcuts reference |
 | [AGENTIC-SDK.md](docs/AGENTIC-SDK.md) | How Goa wraps the agentic SDK |
 | [WORKFLOWS.md](docs/WORKFLOWS.md) | Workflow system reference |

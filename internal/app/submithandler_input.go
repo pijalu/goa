@@ -154,16 +154,19 @@ func (a *App) handleBangCommand(engine *tui.TUI, chat *tui.ChatViewport, text st
 		if err != nil {
 			outStr = fmt.Sprintf("Error: %v\n%s", err, outStr)
 		}
-		if isNote {
-			chat.AddSystemMessage("```\n" + outStr + "\n```")
-			engine.RequestRender()
-		} else {
-			if inp := subs.getInput(); inp != nil {
+		// The shell runs off the commandLoop, so every UI mutation it causes
+		// goes back through engine.Apply: the loop stays the sole owner of
+		// component state (SetFocus and the focus flag on the editor are
+		// deliberately lock-free, exactly like every other Editor field).
+		engine.Apply(func() {
+			if isNote {
+				chat.AddSystemMessage("```\n" + outStr + "\n```")
+			} else if inp := subs.getInput(); inp != nil {
 				inp.SetText("```\n" + outStr + "\n```")
 				engine.SetFocus(inp)
-				engine.RequestRender()
 			}
-		}
+			engine.RequestRender()
+		})
 	}()
 }
 

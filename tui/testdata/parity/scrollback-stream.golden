@@ -1,0 +1,14 @@
+cols=60 rows=4
+cursor=3,0
+scrollback=2
+row=0 runs=1
+  "palette three" flags=default fg=38;5;208 bg= link=
+row=1 runs=1
+  " bg four" flags=default fg= bg=48;5;17 link=
+row=2 runs=1
+  "inverse five" flags=inverse fg= bg= link=
+row=3 runs=0
+sb=0 runs=1
+  "linked" flags=link fg= bg= link=https://goa.dev
+sb=1 runs=1
+  "bold two" flags=bold fg= bg= link=

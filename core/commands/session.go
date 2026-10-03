@@ -98,7 +98,7 @@ func printHelpTools(out core.OutputWriter, reg core.ToolRegistry) {
 func printHelpDocs(out core.OutputWriter, dp core.DocsProvider) {
 	writeStr(out, "\nDocumentation:\n")
 	if dp == nil {
-		docs := []string{"ARCHITECTURE", "COMMANDS", "CONFIGURATION", "TOOLS", "SKILLS", "TUI", "PROFILES", "SETUP"}
+		docs := []string{"ARCHITECTURE", "COMMANDS", "CONFIGURATION", "TOOLS", "SKILLS", "TUI", "WEBUI", "PROFILES", "SETUP"}
 		for _, name := range docs {
 			writeFmt(out, "  %-25s (use /docs %s)\n", name, name)
 		}

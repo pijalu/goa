@@ -117,7 +117,7 @@ func TestOfferConfigRepair_YesRewritesBrokenConfig(t *testing.T) {
 		t.Errorf("repaired config must load: %v", err)
 	}
 	waitForVisibleText(t, engine, "the corrections are on disk now")
-	}
+}
 
 // TestOfferConfigRepair_NoLeavesFilesUntouched pins the consent requirement:
 // declining (Esc) leaves every config file byte-identical and points the user
@@ -153,7 +153,7 @@ func TestOfferConfigRepair_NoLeavesFilesUntouched(t *testing.T) {
 		t.Errorf("no backup must be created for a declined repair, got %v", backups)
 	}
 	waitForVisibleText(t, engine, "keeps applying the corrections in memory")
-	}
+}
 
 // TestOfferConfigRepair_HealOnlyReportOffersToPersist covers the
 // never-converging heal: a home config whose warn lead sits exactly on the event

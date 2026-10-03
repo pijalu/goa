@@ -18,7 +18,7 @@ func TestList_KnownDocs(t *testing.T) {
 		t.Fatal("expected at least one embedded doc")
 	}
 
-	required := []string{"ARCHITECTURE", "COMMANDS", "CONFIGURATION", "SKILLS", "TOOLS"}
+	required := []string{"ARCHITECTURE", "COMMANDS", "CONFIGURATION", "SKILLS", "TOOLS", "WEBUI"}
 	found := make(map[string]bool)
 	for _, d := range list {
 		found[d.Name] = true
@@ -27,6 +27,31 @@ func TestList_KnownDocs(t *testing.T) {
 		if !found[name] {
 			t.Errorf("missing required doc %q in list: %v", name, list)
 		}
+	}
+}
+
+// TestGet_WebUI documents the web UI end to end through the model-facing path:
+// the doc must be readable by name and case-insensitively, and it must carry
+// the facts a user cannot guess — the subcommand, the loopback default and the
+// auth flag.
+func TestGet_WebUI(t *testing.T) {
+	content, err := Get("WEBUI")
+	if err != nil {
+		t.Fatalf("Get(WEBUI) failed: %v", err)
+	}
+	for _, want := range []string{
+		"goa server",
+		"127.0.0.1:8080",
+		"--server-auth",
+		"--insecure-no-auth",
+		"--server-read-only",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("WEBUI.md must document %q so the web UI can be used without guessing", want)
+		}
+	}
+	if _, err := Get("webui"); err != nil {
+		t.Errorf("Get(webui) must resolve case-insensitively: %v", err)
 	}
 }
 

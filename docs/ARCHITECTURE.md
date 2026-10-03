@@ -159,6 +159,47 @@ cmd/goa/ (CLI entry)   main.go (Goa entry)
     └──────────────┘
 ```
 
+## The Virtual Terminal (`internal/webui/`)
+
+`goa server` does not reimplement the UI. It swaps the process terminal for a
+`webui.VirtualTerminal` — a `tui.Terminal` that keeps the emulator's **cell
+grid** in memory instead of writing ANSI to a pty — and serves that grid over
+HTTP. The TUI engine, the components, the focus stack, the command router and
+the agent are literally the same objects the interactive build uses.
+
+```
+browser keydown ──▶ /key or /ws frame
+        │              webui.EncodeKey ──▶ terminal bytes (the xterm/Kitty
+        │                                       table lives server-side)
+        ▼
+VirtualTerminal (tui.Terminal: Start/Input/Resize/Size/Write/Clear/SetTitle)
+        │  writes accumulate into a cell grid
+        ▼
+tui.TUI ──▶ Scene ──▶ Compositor ──▶ cells ──▶ webui.Frame ──▶ browser
+```
+
+Three consequences worth stating, because they are the whole design:
+
+* **One rendering path.** Cells are produced by the same compositor that feeds
+  a real terminal, so a browser cannot drift from the TUI: there is no second
+  renderer to keep in sync.
+* **One input path.** The page sends a normalized key *descriptor*
+  (`key`, `ctrl`, `alt`, `shift`); `webui.EncodeKey` turns it into the bytes a
+  terminal would have written. The engine then decodes the very same bytes it
+  decodes in a terminal — `TestKeyEncoder_SpecTable` pins the byte table and the
+  `internal/app` web-parity tests drive the real editor/overlays with them, so
+  the two cannot drift.
+* **The grid is the network boundary.** Frames are diffed against the previous
+  one (only changed rows travel) and carry a sequence number, so a reconnect
+  resumes by sequence instead of painting a delta across a hole.
+
+Ownership is unchanged too: state mutation still goes through the engine's
+command loop (`TUI.Apply`), which is why the web session is a plain
+`subsystems` bundle with one field (`terminal`) replaced.
+
+See [WEBUI.md](WEBUI.md) for transports, auth and the URL map;
+[specs/webui.md](../specs/webui.md) for the full design.
+
 ## Key Design Decisions
 
 | Decision | Rationale |
@@ -170,6 +211,7 @@ cmd/goa/ (CLI entry)   main.go (Goa entry)
 | **Multi-agent via AgentBus + Go channels** | Lightweight inter-agent communication without shared mutable state |
 | **Skills as SKILL.md files** | Plain markdown with YAML frontmatter — human-readable, version-controllable |
 | **JS plugins via Goja** | Pure Go JS runtime; no CGO; agents can create plugins dynamically |
+| **The browser *is* the terminal (`goa server`)** | One engine, one renderer, one input decoder; the web UI is a transport, not a second UI |
 
 ## Event Types (agentic SDK)
 

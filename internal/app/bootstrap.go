@@ -44,6 +44,23 @@ type RuntimeOptions struct {
 	PerfLoad         bool
 	PerfLoadDuration time.Duration
 	WithProfiling    bool
+	// Server is set by the `goa server` subcommand: run the interactive
+	// session against a virtual terminal and serve it over HTTP instead of a
+	// TTY. ServerAddr is the listen address (--server-addr),
+	// ServerReadOnly makes every browser a viewer (--server-read-only) and
+	// ServerMaxClients caps attachments (--server-max-clients, 0 = default).
+	Server           bool
+	ServerAddr       string
+	ServerReadOnly   bool
+	ServerMaxClients int
+	// ServerAuth selects the web UI's auth scheme ("none", "basic", "token").
+	// Without it the server only binds loopback; see webui.CheckExposure.
+	ServerAuth      string
+	ServerAuthUser  string
+	ServerAuthPass  string
+	ServerAuthToken string
+	// InsecureNoAuth waives the loopback requirement (--insecure-no-auth).
+	InsecureNoAuth bool
 }
 
 // Headless reports whether the user requested headless execution.
@@ -263,6 +280,14 @@ type runtimeFlagDefs struct {
 	perfLoad         *bool
 	perfLoadDuration *time.Duration
 	withProfiling    *bool
+	serverAddr       *string
+	serverReadOnly   *bool
+	serverMaxClients *int
+	serverAuth       *string
+	serverAuthUser   *string
+	serverAuthPass   *string
+	serverAuthToken  *string
+	insecureNoAuth   *bool
 }
 
 func defineScalarFlags() scalarFlags {
@@ -311,6 +336,14 @@ func defineRuntimeFlags() runtimeFlagDefs {
 		perfLoad:         flag.Bool("perf-load", false, "Run a synthetic TUI performance load instead of an agent turn"),
 		perfLoadDuration: flag.Duration("perf-load-duration", 30*time.Second, "Duration of the synthetic performance load"),
 		withProfiling:    flag.Bool("with-profiling", false, "Capture CPU, memory, and trace profiles after exit (default names unless overridden)"),
+		serverAddr:       flag.String("server-addr", "", "Listen address for 'goa server' (default 127.0.0.1:8080)"),
+		serverReadOnly:   flag.Bool("server-read-only", false, "Serve 'goa server' as a viewer: browsers see the session but cannot drive it"),
+		serverMaxClients: flag.Int("server-max-clients", 0, "Maximum browsers attached to 'goa server' (0 = built-in default)"),
+		serverAuth:       flag.String("server-auth", "none", "Authentication for 'goa server': none, basic or token"),
+		serverAuthUser:   flag.String("server-auth-user", "", "Username for --server-auth=basic"),
+		serverAuthPass:   flag.String("server-auth-password", "", "Password for --server-auth=basic (prefer the env var GOA_SERVER_AUTH_PASSWORD)"),
+		serverAuthToken:  flag.String("server-auth-token", "", "Bearer token for --server-auth=token (prefer the env var GOA_SERVER_AUTH_TOKEN)"),
+		insecureNoAuth:   flag.Bool("insecure-no-auth", false, "Serve 'goa server' on a non-loopback address with no authentication (unsafe: anyone who can reach it drives the agent)"),
 	}
 }
 
@@ -353,7 +386,26 @@ func (r *runtimeFlagDefs) collectInto() RuntimeOptions {
 		PerfLoad:         *r.perfLoad,
 		PerfLoadDuration: *r.perfLoadDuration,
 		WithProfiling:    *r.withProfiling,
+		ServerAddr:       *r.serverAddr,
+		ServerReadOnly:   *r.serverReadOnly,
+		ServerMaxClients: *r.serverMaxClients,
+		ServerAuth:       *r.serverAuth,
+		ServerAuthUser:   *r.serverAuthUser,
+		ServerAuthPass:   serverAuthSecret(*r.serverAuthPass, "GOA_SERVER_AUTH_PASSWORD"),
+		ServerAuthToken:  serverAuthSecret(*r.serverAuthToken, "GOA_SERVER_AUTH_TOKEN"),
+		InsecureNoAuth:   *r.insecureNoAuth,
 	}
+}
+
+// serverAuthSecret prefers the environment variable over the flag. A secret on
+// a command line is readable by every other process on the machine and lands in
+// the shell history; the environment does not, so the flag stays as a fallback
+// for the odd case where an exported variable cannot be set.
+func serverAuthSecret(flagVal, envKey string) string {
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+	return flagVal
 }
 
 func (s scalarFlags) collectInto(flags map[string]string) {

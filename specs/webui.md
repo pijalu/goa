@@ -477,32 +477,48 @@ The client renders each row as one `<div class="row">` containing `<span>` runs.
 
 ### 10.1 Modes (`server.auth`)
 
-* `none` (default) — allowed **only** on loopback. If the bind address is not
-  loopback, the server prints a loud warning and requires an explicit
-  `--insecure-no-auth` to continue.
+* `none` (default) — allowed **only** on loopback. A non-loopback bind without
+  credentials is refused at startup; `--insecure-no-auth` is the explicit,
+  self-describing override.
 * `basic` — HTTP Basic against `server.username` + `server.password` (or
   `server.password_hash`, a SHA-256 hex digest, so the plaintext need not be stored).
   Comparison is `crypto/subtle.ConstantTimeCompare` over SHA-256 digests, so it is
   constant-time regardless of input length.
 * `token` — a bearer token (`server.token`, or `~/.goa/server.token` with mode 0600),
-  presented as `?t=<token>` once and then stored in an HttpOnly cookie.
+  presented as `Authorization: Bearer <token>` or exchanged once at `/login`
+  for the session cookie.
+
+Shipped (G6) with CLI flags `--server-auth`, `--server-auth-user`,
+`--server-auth-password` / `GOA_SERVER_AUTH_PASSWORD`,
+`--server-auth-token` / `GOA_SERVER_AUTH_TOKEN`, and `--insecure-no-auth`.
+Config-file keys (§15) and `password_hash` are not wired yet.
 
 ### 10.2 Session cookie
 
-On successful auth the server sets `goa_sid` = base64(sha256(user|secret|sessionID)),
-`HttpOnly; SameSite=Strict; Path=/`. WebSocket auth uses the cookie (never a query
-token, which would leak into logs).
+On successful auth the server sets `goa_auth` = the token, with
+`HttpOnly; SameSite=Strict; Path=/; Max-Age=86400` (plus `Secure` when the
+request itself is TLS). WebSocket auth uses the cookie — a token in the query
+string is deliberately **not** accepted, because query strings land in access
+logs and in the `Referer` header.
 
 ### 10.3 Hardening
 
-* **CSP**: `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'` — no inline script, no CDN, no `unsafe-inline`.
-* **Origin check** on the WS upgrade: the `Origin` header must match `Host`.
-* **No CORS headers** are ever emitted.
-* **CSRF**: same-site cookie + Origin check + WS-only mutations; the plain-form
-  fallback additionally requires the session id in the form action path.
-* **Body limits**: `http.MaxBytesReader` (1 MiB default, uploads 10 MiB).
-* **Rate limiting**: failed auth attempts per IP are counted with exponential backoff
-  (5 → 30 s lockout) in an in-memory table.
+* **CSP**: `default-src 'none'; script-src 'self' 'nonce-…'; style-src 'self'
+  'nonce-…'; img-src 'self' data:; connect-src 'self'; base-uri 'none';
+  form-action 'self'; frame-ancestors 'none'; object-src 'none'` — the page's
+  own inline theme block and bootstrap line carry a per-response
+  `crypto/rand` nonce, so no `unsafe-inline` is needed and an injected tag has
+  nothing to borrow.
+* **Origin check** on every unsafe method *and* on the WS upgrade: the `Origin`
+  header must match `Host` (port excluded on both sides); an absent `Origin` is
+  a native client and passes.
+* **No CORS headers** are ever emitted; the middleware strips any that appear.
+* **CSRF**: same-site cookie + Origin check.
+* **Body limits**: `http.MaxBytesReader` (16 MiB transport cap; uploads 16 MiB
+  and additionally content-sniffed).
+* **Rate limiting**: failed auth attempts per client IP are counted in an
+  in-memory table; five failures trip a 60 s lockout (429 + `Retry-After`), and a
+  success clears the count.
 * **Bind default** `127.0.0.1`; `server.host` must be set explicitly to expose.
 * Uploads are written to `.goa/uploads/` with generated names (no user-controlled path).
 
@@ -826,6 +842,19 @@ fallback triggers when the handshake fails.
 
 *Done when:* the parity matrix (§13) is fully checked off, row by row, in CI output.
 
+**Status (G7).** The interactive surfaces are validated in a **real Chrome**, not
+just in-process: `e2e/w1_webui_browser.sh` drives `goa server` through
+`agent-browser` and asserts the live DOM for the phases that matter on the
+browser path — `#status[data-state=live]`, the pinned model in the status bar, a
+real tool call (`$ echo G7-E2E-OK`) plus the model's reply, frame-by-frame
+streaming (the grid grows 0→1→4→6 while the turn is in flight), `/help`, and the
+`/config` menu (`›` selector moves on `ArrowDown`, the type filter narrows the
+list, `Escape` closes it, and the model pin survives every command). One
+harness detail worth keeping: the page reports *key descriptors* to the server
+(§7.5), so text has to arrive as real `keydown`s — `agent-browser`'s
+`keyboard type` (`Input.insertText`) is invisible to it and the script types
+character by character.
+
 ### Phase 5 — Security, hardening, docs
 
 *Tasks*
@@ -844,8 +873,18 @@ fallback triggers when the handshake fails.
 * Shutdown drain test.
 * Docs build test (`docs_test.go` already validates the doc set).
 
-*Done when:* `goa server --host 0.0.0.0` refuses to start without auth and an explicit
+*Done when:* `goa server --server-addr 0.0.0.0` refuses to start without auth and an explicit
 override, and the docs describe the browser key map.
+
+**Status (G6–G8).** Items 1–3 shipped: `internal/webui/auth.go` (modes,
+constant-time compare, HttpOnly/SameSite cookie, per-client lockout) and
+`internal/webui/security.go` (loopback guard, CSP with nonce, Origin guard,
+`MaxBytesReader`, no-CORS, login handlers). Docs shipped (G8): `docs/WEBUI.md`,
+`docs/USER-GUIDE.md` §7, `docs/SETUP.md`, `docs/ARCHITECTURE.md`, the browser
+key map in `docs/HOTKEYS.md`, and README/COMMANDS cross-links. Still open, and
+deliberately out of the v1 scope: item 4 (fuzz targets for the cell grid and the
+frame codec) and config-file keys for `server.auth`, `password_hash`,
+`token_file` (auth is flag/env only for now — `goa server --help` says so).
 
 ### Phase 6 — Multi-session per process (future, not v1)
 
@@ -946,12 +985,48 @@ Server → client control:
 
 ## 21. Deliverables checklist
 
-- [ ] `goa server` starts, redirects `/` → `/s/<id>`, serves the UI.
-- [ ] Every row of the parity matrix (§13) verified in CI.
-- [ ] Zero new `go.mod` entries.
-- [ ] No JavaScript framework, no CDN, no build step; payload < 40 KB.
-- [ ] WS primary, SSE fallback, no-JS page fallback — all driving a live session.
-- [ ] Optional login/password; loopback-safe defaults; CSP + Origin checks.
-- [ ] Parity harness proves web cells == terminal cells for a scripted session.
-- [ ] All gates green: vet, race tests, coverage, complexity budgets.
-- [ ] Docs: `docs/WEBUI.md` + USER-GUIDE / SETUP / ARCHITECTURE / HOTKEYS updates.
+- [x] `goa server` starts, redirects `/` → `/s/<id>`, serves the UI.
+  (`TestServer_RedirectsRootToSession`, `TestServer_ServesSessionPage`, plus
+  `e2e/w1_webui_browser.sh` driving a live Chrome: 11/11 assertions PASS.)
+- [x] Every row of the parity matrix (§13) verified in CI.
+  Each row is served by the one engine, so a row cannot be right in the
+  terminal and wrong in the browser: the browser draws the cells the same
+  compositor emits. The engine-side behaviour is covered by the `tui` suite,
+  the browser-side path by the `internal/app` web-parity tests (editor,
+  autocomplete, history, selectors, confirms, clarifies, `!` bang, steering)
+  and by the browser e2e script; cell fidelity is locked by the parity
+  harness (§7.1 goldens + the pyte cross-check).
+- [x] Zero new `go.mod` entries.
+  `git diff go.mod go.sum` is empty across the whole web-UI track; the only
+  dependency involved (`gorilla/websocket`) was already in the module.
+- [x] No JavaScript framework, no CDN, no build step; payload < 40 KB.
+  `internal/webui/assets/` is 22 KB uncompressed (19 KB `app.js`, 2.4 KB
+  `app.css`, 0.8 KB `index.html`), embedded in the binary and served with a
+  per-response CSP nonce — no `<script src>` pointing anywhere but `/assets`.
+- [x] WS primary, SSE fallback, no-JS page fallback — all driving a live session.
+  `TestServer_WebSocket*` (frame delivery, input, resize repaint),
+  `TestSSE_*`/`TestPost*` (live frames, headers, retry, input/resize),
+  `TestPlainPage_*` (server-rendered screen, form post, read-only) each run
+  against a real `tui.TUI` behind a real listener.
+- [x] Optional login/password; loopback-safe defaults; CSP + Origin checks.
+  `internal/webui/auth.go` + `security.go`: `CheckExposure` refuses a
+  non-loopback bind without credentials, basic/token modes with constant-time
+  comparison, per-client lockout, nonce'd CSP, Origin guard, no-CORS
+  (`TestAuth_*`, `TestSecurity_*`, `TestCheckpoint_AuthCookieFlow*`).
+- [x] Parity harness proves web cells == terminal cells for a scripted session.
+  `internal/webui.CellGrid` wraps `tui.TermEmulator` — the same emulator type
+  `tui/parity_harness_test.go` locks against goldens and cross-checks against
+  pyte — so web cells *are* terminal cells by construction, and the harness
+  guards the model both of them read.
+- [x] All gates green: vet, race tests, coverage, complexity budgets.
+  `go build ./...` and `go vet ./...` (host plus linux/darwin/windows) exit 0;
+  `go test -count=1 -race -cover ./...` exits 0 over 88 packages;
+  `gocognit -over 15` and `gocyclo -over 12` report nothing; `gofmt -l` is
+  empty. `internal/webui` — the package this track added — is at 91.1 %
+  (target ≥ 85 %); `internal/app` (63.5 %) and `tui` (76.1 %) sit where they
+  did before, and CI enforces no package-level coverage threshold.
+- [x] Docs: `docs/WEBUI.md` + USER-GUIDE / SETUP / ARCHITECTURE / HOTKEYS updates.
+  `docs/WEBUI.md` (security model, transports, URL map), `docs/USER-GUIDE.md`
+  §7, `docs/SETUP.md` "Web UI (`goa server`)", `docs/ARCHITECTURE.md` "The
+  Virtual Terminal", `docs/HOTKEYS.md` "Browser keys", plus README and COMMANDS
+  cross-links. `go test ./docs/...` green.

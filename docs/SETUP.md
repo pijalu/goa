@@ -126,6 +126,38 @@ tui:
 ./goa --config ~/.goa/custom-config.yaml
 ```
 
+### Web UI (`goa server`)
+
+`goa server` runs the same interactive session against a virtual terminal and
+serves the screen to browsers. Nothing else changes: same engine, same agent,
+same commands, same overlays.
+
+```bash
+# Serve on loopback (default 127.0.0.1:8080), no credentials
+./goa server
+
+# Serve beyond this machine: credentials are mandatory off-loopback
+export GOA_SERVER_AUTH_TOKEN=$(openssl rand -hex 32)
+./goa server --server-addr 0.0.0.0:7331 --server-auth=token
+
+# Basic auth instead of a token
+./goa server --server-auth=basic --server-auth-user you   # password: GOA_SERVER_AUTH_PASSWORD
+
+# Screen sharing: browsers see the session, keystrokes and uploads are refused
+./goa server --server-read-only
+```
+
+* Startup refuses a non-loopback bind without credentials; `--insecure-no-auth`
+  is the explicit, typed opt-out.
+* Opening `http://127.0.0.1:8080/` redirects to the live session
+  (`/s/<id>`); `/s/<id>/text` is a plain-text mirror of the screen.
+* The same flags apply over SSH port-forwarding, so a remote box stays
+  loopback-only and you still reach it from your laptop:
+  `ssh -L 8080:127.0.0.1:8080 host`.
+
+See [WEBUI.md](WEBUI.md) for the security model, transports and the full URL
+map.
+
 ## Config File Locations
 
 Goa searches for config in this order (later overrides earlier):
