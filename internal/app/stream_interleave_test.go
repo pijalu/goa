@@ -12,7 +12,8 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// These tests validate the open item in bugs.md:
+// These tests validate the archived item
+// (docs/archive/stream-interleave-splits-blocks.2026-10-03.md):
 //
 //	"Live stream splits when a provider interleaves reasoning and answer deltas"
 //

@@ -17,8 +17,9 @@ import (
 // stream its reasoning and answer channels concurrently, so deltas of both kinds
 // arrive interleaved within one segment; routing by kind is what keeps each
 // delta in the block it belongs to, instead of closing and re-opening blocks on
-// every alternation (bugs.md — "Live stream splits when a provider interleaves
-// reasoning and answer deltas").
+// every alternation (docs/archive/stream-interleave-splits-blocks.2026-10-03.md —
+// "Live stream splits when a provider interleaves reasoning and answer
+// deltas").
 //
 // A segment ends at a real boundary (tool call/result, idle, session end,
 // stream retry): resetSegment forgets every in-flight block, so the next delta
