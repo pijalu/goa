@@ -191,6 +191,130 @@ else
   record pin_held FAIL "model pin lost"
 fi
 
+# ---------------------------------------------------------------- page mechanics
+#
+# These assertions cover the page's OWN machinery — scrolling, the transcript
+# bound, the caret, resize and the clipboard chords — and they are deliberately
+# independent of the model: they drive /help, which the engine renders locally.
+# Every one of them is a regression the page shipped at some point.
+
+# has <captured> <substring> — property-order-independent JSON assertion.
+#
+# agent-browser returns an eval result JSON-encoded, so a string result arrives
+# quoted with its inner quotes escaped (`"{\"a\":1}"`). Normalising here keeps
+# every assertion below written as plain JSON.
+has() { printf '%s' "$1" | sed 's/\\"/"/g' | grep -q "$2"; }
+
+# jnum <captured> <key> — pull one numeric field out of a captured result.
+jnum() { printf '%s' "$1" | sed 's/\\"/"/g' | sed -n "s/.*\"$2\":\([0-9]*\).*/\1/p"; }
+
+# One scroll container, transcript in flow ABOVE the live grid, caret inside the
+# grid. The overlay layout this replaced had the grid painting over a
+# pointer-events:none transcript, so the wheel never reached the content and
+# dragging the scrollbar showed two layers interleaved.
+STRUCT="$(abq "(function(){var s=document.getElementById('screen'),sb=document.getElementById('scrollback'),g=document.getElementById('grid');
+return JSON.stringify({overflow:getComputedStyle(s).overflowY,sbParent:sb.parentNode===s,gridParent:g.parentNode===s,sbBeforeGrid:(sb.compareDocumentPosition(g)&4)!==0,caretInGrid:document.getElementById('caret').parentNode===g})})()" || echo '{}')"
+if has "$STRUCT" '"overflow":"auto"' && has "$STRUCT" '"sbParent":true' && \
+   has "$STRUCT" '"gridParent":true' && has "$STRUCT" '"sbBeforeGrid":true' && \
+   has "$STRUCT" '"caretInGrid":true'; then
+  record scroll_container PASS "one scroller, transcript in flow above the grid, caret in the grid"
+else
+  record scroll_container FAIL "unexpected layout: $STRUCT"
+fi
+
+# The caret follows the screen's real cursor (DECTCEM). It used to be hidden
+# from the first frame, because the compositor signals visibility only as
+# \x1b[?25h / \x1b[?25l and the emulator ignored them.
+CARET="$(abq "(function(){var c=document.getElementById('caret');
+return JSON.stringify({hidden:c.hidden,left:c.style.left,top:c.style.top})})()" || echo '{}')"
+if has "$CARET" '"hidden":false' && has "$CARET" 'px'; then
+  record caret_visible PASS "caret shown at $CARET"
+else
+  record caret_visible FAIL "caret not placed: $CARET"
+fi
+
+# Scrolling: the transcript holds the rows that left the screen, the container
+# really scrolls, and follow-tail keeps the newest output in view.
+for _ in $(seq 1 6); do press_str "/help"; ab press "Enter"; sleep 0.6; done
+SCROLL="$(abq "(function(){var s=document.getElementById('screen'),sb=document.getElementById('scrollback');
+return JSON.stringify({rows:sb.children.length,scrolls:s.scrollHeight>s.clientHeight,atBottom:s.scrollHeight-(s.scrollTop+s.clientHeight)<=24})})()" || echo '{}')"
+if has "$SCROLL" '"scrolls":true' && has "$SCROLL" '"atBottom":true'; then
+  record scroll_follow_tail PASS "transcript scrolls and follow-tail pins the newest output: $SCROLL"
+else
+  record scroll_follow_tail FAIL "scrolling or follow-tail broken: $SCROLL"
+fi
+
+# Scrolling up detaches follow-tail; returning to the bottom re-arms it.
+abq "document.getElementById('screen').scrollTop=0" >/dev/null 2>&1
+DETACHED="$(abq "(function(){var s=document.getElementById('screen');
+return JSON.stringify({atBottom:s.scrollHeight-(s.scrollTop+s.clientHeight)<=24})})()" || echo '{}')"
+if has "$DETACHED" '"atBottom":false'; then
+  record scroll_detach PASS "scrolling up left the tail"
+else
+  record scroll_detach FAIL "the view snapped back to the tail after scrolling up: $DETACHED"
+fi
+
+# The transcript is BOUNDED. It used to keep every row the session ever scrolled
+# off, so its layout cost grew for as long as the tab stayed open (measured
+# 1.23 ms/frame at 2 000 rows, 1.80 ms at 10 080). The bound is 2 000 rows plus
+# one trim batch of slack.
+for _ in $(seq 1 30); do press_str "/help"; ab press "Enter"; sleep 0.35; done
+BOUND="$(abq "document.getElementById('scrollback').children.length" || echo 0)"
+if [ "${BOUND:-0}" -le 2100 ] && [ "${BOUND:-0}" -gt 0 ]; then
+  record transcript_bounded PASS "transcript held at $BOUND rows after ~30 more screens of output"
+else
+  record transcript_bounded FAIL "transcript is unbounded: $BOUND rows"
+fi
+
+# Resize: the row list must match the server's screen height in BOTH directions
+# (it used to only ever append, so shrinking kept stale rows that pushed the
+# input box off-screen), and the grid's height must be exactly its rows (the
+# phantom-blank-line bug: `white-space: pre` on the container rendered the HTML
+# formatting whitespace as literal blank lines).
+ab set viewport 1280 900 >/dev/null 2>&1; sleep 2
+GROW="$(abq "(function(){var r=document.getElementById('rows'),g=document.getElementById('grid');
+return JSON.stringify({rows:r.children.length,gridH:g.offsetHeight,expect:16+r.children.length*16})})()" || echo '{}')"
+ab set viewport 900 480 >/dev/null 2>&1; sleep 2
+SHRINK="$(abq "(function(){var r=document.getElementById('rows'),g=document.getElementById('grid');
+return JSON.stringify({rows:r.children.length,gridH:g.offsetHeight,expect:16+r.children.length*16})})()" || echo '{}')"
+GROW_ROWS="$(jnum "$GROW" rows)"
+SHRINK_ROWS="$(jnum "$SHRINK" rows)"
+GROW_H="$(jnum "$GROW" gridH)"
+GROW_EXPECT="$(jnum "$GROW" expect)"
+if [ -n "$GROW_ROWS" ] && [ -n "$SHRINK_ROWS" ] && [ "$SHRINK_ROWS" -lt "$GROW_ROWS" ]; then
+  record resize_trims PASS "rows $GROW_ROWS -> $SHRINK_ROWS across a shrink"
+else
+  record resize_trims FAIL "row count did not follow the viewport: grow=$GROW shrink=$SHRINK"
+fi
+if [ -n "$GROW_H" ] && [ "$GROW_H" = "$GROW_EXPECT" ]; then
+  record grid_height PASS "grid height $GROW_H == 16 + $GROW_ROWS rows"
+else
+  record grid_height FAIL "grid height != 16 + rows*16: $GROW"
+fi
+
+# Clipboard: Ctrl/Cmd+V and Ctrl/Cmd+X must stay the browser's — preventDefault
+# on Ctrl+V suppresses the very `paste` event the page relies on, and claiming
+# Ctrl+X blocks native cut. Ctrl+C is the browser's copy ONLY when something is
+# selected; with no selection it is the terminal's interrupt and must be claimed.
+# A chord the ENGINE binds must still be claimed, or Ctrl+W would close the tab
+# instead of deleting a word.
+CLAIM="$(abq "(function(){function fire(k){var ev=new KeyboardEvent('keydown',{key:k,ctrlKey:true,bubbles:true,cancelable:true});document.dispatchEvent(ev);return ev.defaultPrevented}
+var realSel=window.getSelection;
+window.getSelection=function(){return {toString:function(){return ''}}};
+var copyNoSelection=fire('c'), paste=fire('v'), cut=fire('x');
+window.getSelection=function(){return {toString:function(){return 'selected text'}}};
+var copyWithSelection=fire('c');
+window.getSelection=realSel;
+return JSON.stringify({copyNoSelection:copyNoSelection,paste:paste,cut:cut,copyWithSelection:copyWithSelection,engine:fire('w')})})()" || echo '{}')"
+if has "$CLAIM" '"copyNoSelection":true' && has "$CLAIM" '"paste":false' && \
+   has "$CLAIM" '"cut":false' && has "$CLAIM" '"copyWithSelection":false' && \
+   has "$CLAIM" '"engine":true'; then
+  record clipboard_chords PASS "Ctrl+V/X stay with the browser, Ctrl+C is the interrupt unless text is selected"
+else
+  record clipboard_chords FAIL "clipboard/engine chord ownership wrong: $CLAIM"
+fi
+shot 08-mechanics
+
 echo
 log "results ($E2E_ROOT/results.tsv):"
 cat "$E2E_ROOT/results.tsv"
