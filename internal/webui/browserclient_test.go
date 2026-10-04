@@ -38,15 +38,34 @@ const domStub = `
     this.textContent = "";
     this.className = "";
     this.hidden = false;
-    this.scrollTop = 0;
     this.scrollHeight = 1000;
     this.clientHeight = 100;
     this.clientWidth = 800;
+    this._scrollTop = 0;
   }
+  // scrollTop is clamped to the scrollable range, like the real property: a page
+  // that assigns scrollHeight lands ON the bottom rather than past it, so "is
+  // the view at the bottom" is a question the stub answers honestly.
+  Object.defineProperty(El.prototype, "scrollTop", {
+    get: function () { return this._scrollTop; },
+    set: function (v) {
+      var max = this.scrollHeight - this.clientHeight;
+      if (max < 0) max = 0;
+      this._scrollTop = Math.max(0, Math.min(v, max));
+    }
+  });
   El.prototype.appendChild = function (c) { this.children.push(c); return c; };
   El.prototype.removeChild = function (c) {
     var i = this.children.indexOf(c);
     if (i >= 0) this.children.splice(i, 1);
+  };
+  // insertBefore(node, ref) mirrors the DOM: a null/absent ref appends. app.js
+  // uses it to keep the transcript spacer ahead of the windowed rows.
+  El.prototype.insertBefore = function (c, ref) {
+    var i = ref ? this.children.indexOf(ref) : -1;
+    if (i < 0) { this.children.push(c); return c; }
+    this.children.splice(i, 0, c);
+    return c;
   };
   El.prototype.addEventListener = function (t, fn) {
     (this.listeners[t] = this.listeners[t] || []).push(fn);
@@ -149,8 +168,16 @@ const domStub = `
   };
 
   var els = {};
+  // PARENT mirrors index.html's nesting, so a stub element is reachable from
+  // its container the way the real DOM nests them (a test reading #grid's text
+  // must see the rows inside #rows).
+  var PARENT = { rows: "grid", caret: "grid", grid: "screen", scrollback: "screen" };
   window.__el = function (id) {
-    if (!els[id]) els[id] = new El("div");
+    if (!els[id]) {
+      els[id] = new El("div");
+      var parent = PARENT[id];
+      if (parent) window.__el(parent).appendChild(els[id]);
+    }
     return els[id];
   };
   var docListeners = {};
@@ -159,6 +186,11 @@ const domStub = `
     createElement: function (tag) { return new El(tag); },
     addEventListener: function (t, fn) {
       (docListeners[t] = docListeners[t] || []).push(fn);
+    },
+    // documentElement.style.setProperty is where app.js publishes the measured
+    // cell metrics; a bare sink is enough to keep it from throwing.
+    documentElement: {
+      style: { setProperty: function () {}, getPropertyValue: function () { return ""; } }
     },
     body: new El("div")
   };
@@ -211,6 +243,17 @@ const domStub = `
         return false;
       };
 
+      // Animation-frame stub. app.js coalesces follow-tail scrolling into one
+      // frame, so the scroll happens when the test flushes the queue with
+      // __fireFrame — which is what makes "one scroll per burst" assertable.
+      var frames = [];
+      window.requestAnimationFrame = function (fn) { frames.push(fn); return frames.length; };
+      window.__fireFrame = function () {
+        var fns = frames.splice(0, frames.length);
+        for (var i = 0; i < fns.length; i++) fns[i](0);
+        return fns.length;
+      };
+
       window.GOA_SESSION = "sess-1";
       // location records a navigation (session rotation follows one) instead of
       // pretending the page can reload itself under the test.
@@ -220,6 +263,11 @@ const domStub = `
         replace: function (url) { window.__replacedUrl = url; }
       };
       window.__replaced = function () { return window.__replacedUrl || ""; };
+      // getSelection is what decides whether Ctrl+C is the browser's copy or the
+      // terminal's interrupt; the default is "nothing selected".
+      window.__selection = "";
+      window.getSelection = function () { return { toString: function () { return window.__selection; } }; };
+      window.__setSelection = function (s) { window.__selection = s; };
       window.WebSocket = function (url) {
         this.url = url;
         this.readyState = 1;
@@ -290,7 +338,17 @@ const domStub = `
     for (var i = 0; i < el.children.length; i++) out += window.__text(el.children[i]);
     return out;
   };
+  // __count returns the number of child nodes.
   window.__count = function (el) { return el.children.length; };
+  // __setScrollHeight gives an element a realistic scroll range: the stub's
+  // default (1000px) is a fixed number, but the transcript tests need
+  // scrollHeight to describe the rows that actually exist, or "is the view at
+  // the bottom" cannot be asserted.
+  window.__setScrollHeight = function (el, h) { el.scrollHeight = h; return h; };
+  // __listenersOn reports how many handlers of a type are attached to an
+  // element — used to pin WHICH element owns a listener (the scroll container,
+  // not the transcript list inside it).
+  window.__listenersOn = function (el, t) { return (el.listeners[t] || []).length; };
   window.__scroll = function (el, top) {
     el.scrollTop = top;
     el.fire("scroll");
@@ -369,6 +427,29 @@ func (h *clientHarness) userScrollTo(t *testing.T, el *goja.Object, top float64)
 	h.call(t, "__scroll", el, top)
 }
 
+// fireFrame flushes the queued animation frames, which is when the client's
+// coalesced follow-tail scroll happens. It returns how many callbacks ran.
+func (h *clientHarness) fireFrame(t *testing.T) int {
+	t.Helper()
+	return int(h.call(t, "__fireFrame").ToInteger())
+}
+
+// transcript returns the transcript list's element.
+func (h *clientHarness) transcript(t *testing.T) *goja.Object { return h.el(t, "scrollback") }
+
+// bottomOf is the scroll offset at the bottom of an element's range — where
+// follow-tail must land.
+func (h *clientHarness) bottomOf(el *goja.Object) float64 {
+	return el.Get("scrollHeight").ToFloat() - el.Get("clientHeight").ToFloat()
+}
+
+// setScrollHeight gives the scroll container a scroll range that describes the
+// rows that actually exist (the stub's default is a fixed 1000px).
+func (h *clientHarness) setScrollHeight(t *testing.T, el *goja.Object, px int) {
+	t.Helper()
+	h.call(t, "__setScrollHeight", el, px)
+}
+
 // deliver feeds one wire document into the client's onmessage handler,
 // exactly as a browser would on a WebSocket data frame.
 func (h *clientHarness) deliver(t *testing.T, doc string) {
@@ -413,22 +494,48 @@ func frameDocSeq(t *testing.T, row int, text string, seq uint64) string {
 	return string(b)
 }
 
+// frameDocRows builds a frame for a screen of `rows` rows, with one styled row
+// and Seq omitted (so the client's seq gate always accepts it). It is how a
+// resize test drives a geometry change.
+func frameDocRows(t *testing.T, rows int, text string) string {
+	t.Helper()
+	b, err := NewFrameCodec().EncodeFrame(&Frame{
+		Cols:   80,
+		Rows:   rows,
+		Cursor: Cursor{Row: 0, Col: 0, Visible: true},
+		Patches: []RowPatch{{
+			Row:  0,
+			Runs: []Run{{Text: text}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("encode frame: %v", err)
+	}
+	return string(b)
+}
+
 // TestClientJS_FollowTailScroll pins the follow-tail contract (spec §7.3):
 // while the client is at the bottom every frame pulls the view to the newest
 // output; as soon as the user scrolls up, live streaming must NOT move the
 // view; returning to the bottom re-arms following.
 func TestClientJS_FollowTailScroll(t *testing.T) {
 	h := newClientHarness(t)
-	scroll := h.el(t, "scrollback")
+	// The scroll container is the ONE element that scrolls (transcript + live
+	// grid); following the tail means scrolling IT, not the transcript list
+	// inside it (which is not a scroll container at all).
+	scroll := h.el(t, "screen")
 
 	// Streaming while at the bottom: every frame pins the view to the newest
-	// output.
+	// output. The scroll is coalesced into one animation frame, so it lands when
+	// the browser paints rather than per message.
 	h.deliver(t, frameDoc(t, 3, "first line"))
-	if got := h.scrollTop(scroll); got != 1000 {
+	h.fireFrame(t)
+	if got := h.scrollTop(scroll); got != h.bottomOf(scroll) {
 		t.Fatalf("follow-tail did not scroll to the bottom while following: scrollTop=%v", got)
 	}
 	h.deliver(t, frameDoc(t, 4, "second line"))
-	if got := h.scrollTop(scroll); got != 1000 {
+	h.fireFrame(t)
+	if got := h.scrollTop(scroll); got != h.bottomOf(scroll) {
 		t.Fatalf("follow-tail lost the tail on the next frame: scrollTop=%v", got)
 	}
 
@@ -436,15 +543,36 @@ func TestClientJS_FollowTailScroll(t *testing.T) {
 	// back down.
 	h.userScrollTo(t, scroll, 0)
 	h.deliver(t, frameDoc(t, 5, "third line"))
+	h.fireFrame(t)
 	if got := h.scrollTop(scroll); got != 0 {
 		t.Errorf("streaming moved the view while the user had scrolled up: scrollTop=%v", got)
 	}
 
 	// Scrolling back to the bottom re-arms follow-tail.
-	h.userScrollTo(t, scroll, 900)
+	h.userScrollTo(t, scroll, h.bottomOf(scroll))
 	h.deliver(t, frameDoc(t, 6, "fourth line"))
-	if got := h.scrollTop(scroll); got != 1000 {
+	h.fireFrame(t)
+	if got := h.scrollTop(scroll); got != h.bottomOf(scroll) {
 		t.Errorf("follow-tail did not re-arm at the bottom: scrollTop=%v", got)
+	}
+}
+
+// TestClientJS_FollowTailIsCoalescedPerFrame pins that a burst of frames costs
+// one scroll, not one per message: the scrollHeight read behind it forces a
+// layout, and the transcript layout is what the client pays for.
+func TestClientJS_FollowTailIsCoalescedPerFrame(t *testing.T) {
+	h := newClientHarness(t)
+	scroll := h.el(t, "screen")
+
+	for i := 0; i < 5; i++ {
+		h.deliver(t, frameDoc(t, 10+i, "streaming line"))
+	}
+	// All five messages must share one queued frame.
+	if got := h.fireFrame(t); got != 1 {
+		t.Errorf("a burst of 5 frames queued %d animation frames, want 1", got)
+	}
+	if got := h.scrollTop(scroll); got != h.bottomOf(scroll) {
+		t.Errorf("coalesced follow-tail did not reach the bottom: scrollTop=%v", got)
 	}
 }
 
@@ -452,7 +580,7 @@ func TestClientJS_FollowTailScroll(t *testing.T) {
 // yanks the view while the client is following.
 func TestClientJS_ScrollbackRespectsFollowTail(t *testing.T) {
 	h := newClientHarness(t)
-	scroll := h.el(t, "scrollback")
+	scroll := h.el(t, "screen")
 
 	doc := func() string {
 		b, err := NewFrameCodec().EncodeScrollback(1, []RowPatch{{Row: 0, Runs: []Run{{Text: "scrolled off"}}}})
@@ -463,7 +591,8 @@ func TestClientJS_ScrollbackRespectsFollowTail(t *testing.T) {
 	}
 
 	h.deliver(t, doc())
-	if got := h.scrollTop(scroll); got != 1000 {
+	h.fireFrame(t)
+	if got := h.scrollTop(scroll); got != h.bottomOf(scroll) {
 		t.Errorf("scrollback while following did not keep the tail in view: scrollTop=%v", got)
 	}
 	if !strings.Contains(h.text(t, scroll), "scrolled off") {
@@ -472,6 +601,7 @@ func TestClientJS_ScrollbackRespectsFollowTail(t *testing.T) {
 
 	h.userScrollTo(t, scroll, 100)
 	h.deliver(t, doc())
+	h.fireFrame(t)
 	if got := h.scrollTop(scroll); got != 100 {
 		t.Errorf("scrollback moved the view while the user had scrolled up: scrollTop=%v", got)
 	}
@@ -482,11 +612,12 @@ func TestClientJS_ScrollbackRespectsFollowTail(t *testing.T) {
 func TestClientJS_PaintsRowsAndCaret(t *testing.T) {
 	h := newClientHarness(t)
 	grid := h.el(t, "grid")
+	rowsBox := h.el(t, "rows")
 	caret := h.el(t, "caret")
 
 	h.deliver(t, frameDoc(t, 2, "hello grid"))
 
-	if n := h.count(t, grid); n == 0 {
+	if n := h.count(t, rowsBox); n == 0 {
 		t.Fatal("frame produced no grid rows")
 	}
 	if got := h.text(t, grid); !strings.Contains(got, "hello grid") {
@@ -918,7 +1049,8 @@ func TestClientJS_SSEPasteGoesOutAsPost(t *testing.T) {
 }
 
 // A resize over the fallback must go to /resize, not /input: they are different
-// endpoints with different payloads.
+// endpoints with different payloads. The geometry message is debounced (spec
+// §14.6) so a drag-resize burst becomes one repaint, not one per pixel.
 func TestClientJS_SSEResizeGoesToResizeEndpoint(t *testing.T) {
 	h := newClientHarness(t)
 	h.failHandshake(t)
@@ -927,9 +1059,79 @@ func TestClientJS_SSEResizeGoesToResizeEndpoint(t *testing.T) {
 	if got := int(h.call(t, "__fireWindow", "resize").ToInteger()); got == 0 {
 		t.Fatal("page registered no resize listener")
 	}
+	if posts := h.posts(t); len(posts) != 0 {
+		t.Fatalf("resize was not debounced; posted immediately: %v", posts)
+	}
+	if !h.call(t, "__fireTimer").ToBoolean() {
+		t.Fatal("debounced resize never scheduled a geometry message")
+	}
 	posts := h.posts(t)
 	if len(posts) == 0 || posts[0]["url"] != "/resize" {
 		t.Fatalf("resize produced %v, want a POST to /resize", posts)
+	}
+}
+
+// TestClientJS_ScrollListenerIsOnTheScrollContainer pins WHICH element owns the
+// follow-tail listener: the scroll container, not the transcript list inside it.
+// Listening on a non-scrollable child is exactly how "scrolling does nothing"
+// shipped once already.
+func TestClientJS_ScrollListenerIsOnTheScrollContainer(t *testing.T) {
+	h := newClientHarness(t)
+	screen := h.el(t, "screen")
+	sb := h.el(t, "scrollback")
+	if n := int(h.call(t, "__listenersOn", screen, "scroll").ToInteger()); n != 1 {
+		t.Errorf("scroll container has %d scroll listeners, want exactly 1", n)
+	}
+	if n := int(h.call(t, "__listenersOn", sb, "scroll").ToInteger()); n != 0 {
+		t.Errorf("transcript list has %d scroll listeners; the listener belongs on the container", n)
+	}
+}
+
+// TestClientJS_ShrinkTrimsGridRows pins that a shrinking screen removes the rows
+// that no longer exist. Keeping them left stale rows below the new bottom,
+// inflating the scroll height and pushing the input box (and the caret) off
+// screen — the visible symptom of "resizing does not work well".
+func TestClientJS_ShrinkTrimsGridRows(t *testing.T) {
+	h := newClientHarness(t)
+	rowsBox := h.el(t, "rows")
+
+	h.deliver(t, frameDocRows(t, 30, "top"))
+	if n := h.count(t, rowsBox); n != 30 {
+		t.Fatalf("rows after a 30-row frame = %d, want 30", n)
+	}
+	h.deliver(t, frameDocRows(t, 12, "top"))
+	if n := h.count(t, rowsBox); n != 12 {
+		t.Fatalf("rows after shrinking to 12 = %d, want 12 (stale rows were kept)", n)
+	}
+}
+
+// TestClientJS_ClipboardChordsStayWithTheBrowser pins the clipboard contract:
+// Ctrl/Cmd+V and Ctrl/Cmd+X must reach the browser, or preventDefault suppresses
+// the paste/cut the page needs; Ctrl+C is the browser's when text is selected
+// (native copy) and the terminal's interrupt when nothing is.
+func TestClientJS_ClipboardChordsStayWithTheBrowser(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
+	if h.keydown(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true}) {
+		t.Error("page claimed Ctrl+V; the paste event would never fire")
+	}
+	if h.keydown(t, map[string]any{"key": "x", "code": "KeyX", "ctrlKey": true}) {
+		t.Error("page claimed Ctrl+X; native cut is blocked")
+	}
+	h.call(t, "__setSelection", "copied text")
+	if h.keydown(t, map[string]any{"key": "c", "code": "KeyC", "ctrlKey": true}) {
+		t.Error("page claimed Ctrl+C with a live selection; native copy is blocked")
+	}
+	h.call(t, "__setSelection", "")
+	if !h.keydown(t, map[string]any{"key": "c", "code": "KeyC", "ctrlKey": true}) {
+		t.Error("page let Ctrl+C through with no selection; the terminal lost its interrupt")
+	}
+	for _, m := range h.sent(t) {
+		kk, _ := m["key"].(map[string]any)
+		if kk["key"] == "v" || kk["key"] == "x" {
+			t.Errorf("clipboard chord was sent to the terminal: %v", m)
+		}
 	}
 }
 

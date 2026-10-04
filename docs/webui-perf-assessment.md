@@ -139,6 +139,25 @@ that can encode once.
 set is empty. A `goa server` with nobody watching still pays the whole web cost
 (§2.2 included) for every engine frame.
 
+### 2.7 Real-browser validation (after the fixes)
+
+`agent-browser` against `goa server`, driving real `/help` output through the
+real engine, transcript grown past the bound:
+
+| Check | Result |
+|---|---|
+| Transcript rows in DOM after ~3 500 rows streamed through | **2000 (exactly the bound), stable** |
+| Total DOM nodes at that point | ~12 000 (bounded; was unbounded before) |
+| Follow-tail after trimming | `scrollTop == maxScroll` — still armed (see §5) |
+| Scroll geometry | `scrollHeight − clientHeight` == transcript height + grid height, exactly |
+| Renderer CPU while ~1 000 rows streamed | 0.21 s over 5.1 s ≈ **4 % of one core** |
+| Renderer CPU idle with a full transcript | 0.02 s over 5 s ≈ **0.4 % of one core** |
+| Grid height | `grid.offsetHeight == 16 + rows*16` (608 for 37 rows) — the phantom-blank-line fix holds |
+| Caret | visible, positioned at the input line |
+
+Two client bugs were found **only** by this pass (both now fixed and covered by
+regressions — see §5).
+
 ---
 
 ## 3. Findings, ranked by measured impact
@@ -193,10 +212,32 @@ set is empty. A `goa server` with nobody watching still pays the whole web cost
 
 | Change | Why |
 |---|---|
-| Transcript data model in JS (run lists) + a **bounded DOM window** + a spacer for evicted rows | kills findings 2, 3 |
-| Rehydrate evicted rows from the data model when the user scrolls into the spacer | history keeps working, natively |
-| Coalesce follow-tail scrolling into one `requestAnimationFrame`, and only when the content grew | removes the per-frame forced layout |
-| Patch rows in place (reuse spans) instead of `textContent=""` + rebuild | removes per-frame DOM churn/GC |
+| Transcript **bounded** at 2000 rows; the oldest fall off in batches, with the scroll offset compensated | kills findings 2, 3 |
+| `content-visibility: auto` on transcript rows | native off-screen skipping, 2.7× cheaper layout |
+| Follow-tail coalesced into one `requestAnimationFrame` | removes the per-frame forced layout |
+| Row patching left alone — measured at 0.0018 ms vs 0.0008 ms per row | **not worth the complexity**: ~0.006 % of a core at 2 rows/frame |
+
+The transcript is bounded rather than windowed-behind-a-spacer. A spacer window
+was built and measured first, and the real-browser pass showed why it is the
+worse design: the scrollbar promises rows that cannot be shown, and a view
+parked at the top of the range has content evicted out from under it. Bounding
+the transcript the way a terminal bounds its scrollback gives the same O(1) cost
+with the browser owning the whole scroll interaction and nothing to correct.
+
+### 4.4 Two bugs the real browser caught (both now regression-tested)
+
+1. **Trimming detached follow-tail.** Compensating the scroll offset while the
+   view is pinned to the tail leaves it a batch short of the bottom; the scroll
+   event that follows reads that as "the user scrolled away", so follow-tail
+   detached and — after a few trims — the view had drifted to the *top* of the
+   transcript. The offset must only be compensated when the view is NOT
+   following; there the browser's own clamp pins the new bottom.
+   (`TestClientJS_TranscriptTrimKeepsFollowTailArmed` — verified to fail without
+   the fix.)
+2. **The goja DOM stub clamped nothing.** `scrollTop` was a plain property, so a
+   page assigning `scrollHeight` landed past the bottom and "is the view at the
+   bottom" was a fiction. The stub now clamps like the real property, which is
+   what makes the follow-tail assertions mean something.
 
 ---
 

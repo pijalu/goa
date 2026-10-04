@@ -28,4 +28,9 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-_No open items._
+Closed 2026-10-04 — web UI rendering (scroll / caret / resize / clipboard) and
+the O(history) per-frame cost. See
+[`docs/archive/webui-rendering-and-frame-cost.2026-10-04.md`](docs/archive/webui-rendering-and-frame-cost.2026-10-04.md)
+for the root causes, the measurements and the verification, and
+[`docs/webui-perf-assessment.md`](docs/webui-perf-assessment.md) for the full
+performance record.

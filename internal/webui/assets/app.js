@@ -9,8 +9,13 @@
   "use strict";
 
   var SESSION = window.GOA_SESSION || "";
-  var grid = document.getElementById("grid");
+  // screenEl is the ONE scroll container (transcript + live grid); the grid and
+  // the caret live inside it, so a scroll moves the caret with the content it
+  // marks. scrollEl is the transcript list itself.
+  var screenEl = document.getElementById("screen");
   var scrollEl = document.getElementById("scrollback");
+  var gridEl = document.getElementById("grid");
+  var rowsEl = document.getElementById("rows");
   var caret = document.getElementById("caret");
   var status = document.getElementById("status");
 
@@ -27,18 +32,54 @@
   // back to the bottom re-arms it (spec §7.3).
   var following = true;
 
+  // ---------------------------------------------------------------- transcript
+
+  // The transcript (the rows that scrolled off the live grid) is the one part of
+  // the page that grows with the session, so it is BOUNDED — exactly like a
+  // terminal's scrollback buffer, which also discards the oldest lines once it
+  // is full.
+  //
+  // Bounding it this way (rather than keeping every row and windowing the DOM
+  // against a spacer) is what keeps the scrolling entirely the browser's: the
+  // scroll range is the transcript that actually exists, the scrollbar never
+  // promises rows that cannot be shown, and there is no script-driven scroll
+  // correction to get wrong. The only thing script does when the oldest rows
+  // fall off is compensate scrollTop by their height, so the view does not jump.
+  //
+  // Measured in Chrome: appending a row and following the tail costs ~1.8 ms per
+  // frame once 10 000 transcript rows are in the DOM, and ~0.33 ms flat once the
+  // transcript is bounded — unbounded, the cost grew with the session for as
+  // long as the tab stayed open.
+  var TRANSCRIPT_MAX = 2000;
+  // TRANSCRIPT_TRIM_BATCH is how many rows fall off at once. Dropping one at a
+  // time would shift the row list (and re-flow) for every single line.
+  var TRANSCRIPT_TRIM_BATCH = 100;
+
+  var transcriptRows = 0; // rows currently in the transcript list
+
+  // raf is requestAnimationFrame where it exists; the timer fallback keeps the
+  // page working in an engine that only has timers.
+  var raf = window.requestAnimationFrame
+    ? function (fn) { return window.requestAnimationFrame(fn); }
+    : function (fn) { return setTimeout(fn, 16); };
+
   // ---------------------------------------------------------------- rendering
 
   // FOLLOW_SLACK_PX is how close to the bottom still counts as "at the bottom":
   // one line of slack keeps follow-tail from flapping on sub-pixel rounding.
   var FOLLOW_SLACK_PX = 24;
 
-  function atBottom() {
-    return scrollEl.scrollHeight - (scrollEl.scrollTop + scrollEl.clientHeight) <= FOLLOW_SLACK_PX;
-  }
+  // PAD is the grid's padding in px, applied on all four sides. It is what the
+  // caret offset and the cell-count arithmetic below account for.
+  var PAD = 8;
 
-  function scrollToBottom() {
-    scrollEl.scrollTop = scrollEl.scrollHeight;
+  // RESIZE_DEBOUNCE_MS collapses a drag-resize burst into one geometry message
+  // (spec §14.6): every resize is a full server-side repaint, so sending one per
+  // intermediate pixel would make the agent screen thrash.
+  var RESIZE_DEBOUNCE_MS = 120;
+
+  function atBottom() {
+    return screenEl.scrollHeight - (screenEl.scrollTop + screenEl.clientHeight) <= FOLLOW_SLACK_PX;
   }
 
   function measure() {
@@ -46,11 +87,17 @@
     probe.textContent = "M";
     probe.style.visibility = "hidden";
     probe.style.position = "absolute";
-    grid.appendChild(probe);
+    gridEl.appendChild(probe);
     var r = probe.getBoundingClientRect();
+    gridEl.removeChild(probe);
     if (r.width > 0) charWidth = r.width;
     if (r.height > 0) lineHeight = r.height;
-    grid.removeChild(probe);
+    // Publish the measured metrics to CSS: the row height and the caret size
+    // must use the SAME cell size the geometry math uses, or a font/zoom change
+    // desyncs them and the caret drifts off the input box.
+    var root = document.documentElement.style;
+    root.setProperty("--cell-w", charWidth + "px");
+    root.setProperty("--cell-h", lineHeight + "px");
   }
 
   // flags maps the server's attribute bitmask (spec §20) to CSS classes.
@@ -119,8 +166,8 @@
   function applyRow(patch) {
     var idx = patch.row;
     while (rows.length <= idx) rows.push(null);
-    var div = grid.children[idx];
-    if (!div) div = grid.appendChild(buildRow(null));
+    var div = rowsEl.children[idx];
+    if (!div) div = rowsEl.appendChild(buildRow(null));
     div.textContent = "";
     var runs = patch.runs || [];
     for (var i = 0; i < runs.length; i++) div.appendChild(runElement(runs[i]));
@@ -128,21 +175,85 @@
   }
 
   // onScrollback appends the rows that scrolled off the live grid to the
-  // transcript list above it. Each row is shipped exactly once, so a plain
-  // append is all that is needed.
+  // transcript. Each row is shipped exactly once, so a plain append is all that
+  // is needed.
   function onScrollback(msg) {
     if (!scrollEl) return;
     var list = msg.sb || [];
+    if (!list.length) return;
+    appendTranscript(list);
+    followTail();
+  }
+
+  // appendTranscript adds rows (oldest first) to the transcript and enforces the
+  // bound.
+  function appendTranscript(list) {
+    trimTranscript(list.length);
     for (var i = 0; i < list.length; i++) {
       scrollEl.appendChild(buildRow(list[i].runs));
     }
-    if (following) scrollToBottom();
+    transcriptRows += list.length;
   }
 
+  // trimTranscript makes room for `incoming` rows by dropping the oldest ones.
+  // Rows past the bound fall off the FRONT — the oldest history — and a reader
+  // who is scrolled up has the scroll offset moved with them, so the text they
+  // are reading does not jump by the height of the dropped rows.
+  //
+  // While following the tail the offset is deliberately NOT compensated: there
+  // the browser's own clamp already lands the view on the new bottom, and
+  // subtracting the dropped height would leave it a batch short of the bottom —
+  // which the next scroll event would read as "the user scrolled away" and
+  // follow-tail would detach. (Found in a real browser: after a few trims the
+  // view had drifted all the way to the top of the transcript.)
+  //
+  // It trims a batch at a time so the row list is not shifted (and re-flowed)
+  // for every single line.
+  function trimTranscript(incoming) {
+    var total = transcriptRows + incoming;
+    if (total <= TRANSCRIPT_MAX + TRANSCRIPT_TRIM_BATCH) return;
+    var drop = total - TRANSCRIPT_MAX;
+    for (var i = 0; i < drop; i++) {
+      var first = scrollEl.children[0];
+      if (!first) break;
+      scrollEl.removeChild(first);
+    }
+    transcriptRows -= drop;
+    // Everything below the dropped rows moved up by their height; moving the
+    // scroll offset with it keeps the same content in the viewport.
+    if (!following && screenEl.scrollTop > 0) {
+      screenEl.scrollTop = Math.max(0, screenEl.scrollTop - drop * lineHeight);
+    }
+  }
+
+  // followTail schedules the follow-tail scroll for the next animation frame. A
+  // burst of frames produces ONE scroll, and the scrollHeight read that forces
+  // layout happens once per painted frame instead of once per message.
+  var tailQueued = false;
+
+  function followTail() {
+    if (!following || tailQueued) return;
+    tailQueued = true;
+    raf(function () {
+      tailQueued = false;
+      if (!following) return;
+      screenEl.scrollTop = screenEl.scrollHeight;
+    });
+  }
+
+  // resizeRows matches the row list to the server's screen height. It both
+  // grows AND shrinks: a shrinking window that kept its old rows would leave
+  // stale rows below the new bottom, inflating the scroll height and putting
+  // the input box (and the caret) off-screen.
   function resizeRows(n) {
     while (rows.length < n) {
       rows.push(null);
-      grid.appendChild(document.createElement("div")).className = "row";
+      rowsEl.appendChild(document.createElement("div")).className = "row";
+    }
+    while (rows.length > n) {
+      rows.pop();
+      var last = rowsEl.children[rowsEl.children.length - 1];
+      if (last) rowsEl.removeChild(last);
     }
   }
 
@@ -152,9 +263,8 @@
       return;
     }
     caret.hidden = false;
-    var pad = 8;
-    caret.style.left = (pad + cur.c * charWidth) + "px";
-    caret.style.top = (pad + cur.r * lineHeight) + "px";
+    caret.style.left = (PAD + cur.c * charWidth) + "px";
+    caret.style.top = (PAD + cur.r * lineHeight) + "px";
   }
 
   function onFrame(msg) {
@@ -164,7 +274,7 @@
     placeCaret(msg.cur);
     if (msg.title) document.title = msg.title;
     // Follow-tail: only auto-scroll while the user has not scrolled away.
-    if (following) scrollToBottom();
+    followTail();
   }
 
   // ---------------------------------------------------------------- transport
@@ -394,11 +504,11 @@
           }
 
   function measureCols() {
-    return Math.max(20, Math.floor((grid.clientWidth - 16) / charWidth));
+    return Math.max(20, Math.floor((screenEl.clientWidth - 2 * PAD) / charWidth));
   }
 
   function measureRows() {
-    return Math.max(6, Math.floor((grid.clientHeight - 16) / lineHeight));
+    return Math.max(6, Math.floor((screenEl.clientHeight - 2 * PAD) / lineHeight));
   }
 
   // ------------------------------------------------------------------- input
@@ -439,11 +549,31 @@
   });
 
   // BROWSER_OWNED is the set of chords the page never claims: the function
-  // keys with no engine binding, plus the browser's own navigation and
-  // devtools chords.
+  // keys with no engine binding, plus the browser's own navigation, devtools
+  // and clipboard chords.
   var BROWSER_OWNED_FKEYS = { F5: 1, F11: 1, F12: 1 };
   var BROWSER_OWNED_CHORDS = { r: 1, q: 1 };
   var BROWSER_OWNED_DEVTOOLS = { i: 1, j: 1, c: 1 };
+
+  // CLIPBOARD_CHORDS are the browser's own clipboard chords. They must stay the
+  // browser's: `preventDefault` on a Ctrl/Cmd+V keydown suppresses the very
+  // `paste` event this page relies on, and claiming Ctrl+C makes selecting text
+  // and copying it do nothing. The paste handler below turns a paste into
+  // terminal input, and a copy with a live selection needs no help from us.
+  var CLIPBOARD_CHORDS = { c: 1, v: 1, x: 1 };
+
+  // clipboardOwned reports whether a chord belongs to the browser's clipboard.
+  // Ctrl+C is only the browser's when something is selected: with no selection
+  // it is the terminal's interrupt, which the agent must still receive.
+  function clipboardOwned(ev) {
+    var k = (ev.key || "").toLowerCase();
+    if (!CLIPBOARD_CHORDS[k]) return false;
+    if (k === "c") {
+      var sel = window.getSelection ? String(window.getSelection()) : "";
+      return sel.length > 0;
+    }
+    return true;
+  }
 
   // browserOwned reports whether a keydown belongs to the browser.
   function browserOwned(ev) {
@@ -451,6 +581,7 @@
     if (!ev.ctrlKey && !ev.metaKey) return false;
     var k = (ev.key || "").toLowerCase();
     if (ev.shiftKey) return !!BROWSER_OWNED_DEVTOOLS[k];
+    if (clipboardOwned(ev)) return true;
     return !!BROWSER_OWNED_CHORDS[k];
   }
 
@@ -505,25 +636,34 @@
     send({ t: "input", data: text });
   });
 
+  // A resize burst is debounced (spec §14.6): the cell metrics are re-measured
+  // immediately (the layout is already changing), but the geometry message the
+  // server turns into a full repaint waits for the drag to settle.
+  var resizeTimer = null;
+
   window.addEventListener("resize", function () {
-    // The cell size is measured here, not per frame: a measurement forces a
-    // synchronous layout, and frames arrive at the engine's tick rate.
     measure();
-    send({ t: "resize", cols: measureCols(), rows: measureRows() });
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      resizeTimer = null;
+      send({ t: "resize", cols: measureCols(), rows: measureRows() });
+    }, RESIZE_DEBOUNCE_MS);
   });
 
   // Follow-tail state follows the user's own scroll: scrolling up detaches,
   // returning to the bottom re-attaches. The listener is passive so it never
-  // blocks the browser's scrolling.
-  if (scrollEl) {
-    scrollEl.addEventListener("scroll", function () {
+  // blocks the browser's scrolling, and it is on the scroll container — the
+  // element that actually scrolls — not on the transcript list inside it.
+  // Nothing else needs to run on scroll: the transcript is a real list of real
+  // rows, so the browser owns the whole interaction.
+  if (screenEl) {
+    screenEl.addEventListener("scroll", function () {
       following = atBottom();
     }, { passive: true });
   }
 
   // Typing must reach the terminal even when nothing is focused.
-  document.addEventListener("click", function () { grid.focus(); });
-  grid.setAttribute("tabindex", "0");
+  document.addEventListener("click", function () { gridEl.focus(); });
 
   measure();
   connect();

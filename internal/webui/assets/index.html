@@ -9,9 +9,18 @@
   <style nonce="{{.Nonce}}">{{.CSS}}</style>
 </head>
 <body data-session="{{.SessionID}}">
-    <div id="scrollback" class="scrollback" aria-hidden="true"></div>
-    <div id="grid" class="grid" role="log" aria-live="polite" aria-label="goa terminal"></div>
-  <div id="caret" class="caret" hidden></div>
+    <!-- #screen is the one scroll container: the transcript (#scrollback, the
+         rows that scrolled off the top) sits above the live screen (#grid), so
+         "at the bottom" is the normal terminal view and scrolling up reveals
+         history. #rows holds the row divs; #caret is positioned inside #grid so
+         it scrolls with the content it marks. -->
+    <div id="screen" class="screen">
+      <div id="scrollback" class="scrollback" aria-hidden="true"></div>
+      <div id="grid" class="grid" role="log" aria-live="polite" aria-label="goa terminal" tabindex="0">
+        <div id="rows" class="rows"></div>
+        <div id="caret" class="caret" hidden></div>
+      </div>
+    </div>
   <div id="status" class="status" data-state="connecting">connecting…</div>
   <script nonce="{{.Nonce}}">window.GOA_SESSION = {{.SessionID}};</script>
   <script src="/assets/app.js"></script>
