@@ -89,8 +89,8 @@ func b3HeaderComplete(vt *webui.VirtualTerminal) bool {
 	return len(rows) > 0 && strings.HasPrefix(strings.TrimRight(rows[0], " "), "          ▄▄▄▄▄")
 }
 
-// b3RequireWholeStartup fails unless the grid holds the whole startup screen and
-// nothing was shipped as history.
+// b3RequireWholeStartup fails unless the grid holds the whole startup screen,
+// nothing was shipped as history, and no scrollback row equals a grid row.
 func b3RequireWholeStartup(t *testing.T, label string, vt *webui.VirtualTerminal, sink *b3Sink) {
 	t.Helper()
 	if !b3HeaderComplete(vt) {
@@ -98,6 +98,25 @@ func b3RequireWholeStartup(t *testing.T, label string, vt *webui.VirtualTerminal
 	}
 	if shipped := sink.shipped(); len(shipped) != 0 {
 		t.Errorf("%s: %d transcript rows shipped: %q", label, len(shipped), shipped)
+	}
+	// Literal B3 invariant: no scrollback row equals a grid row.
+	grid := vt.Grid()
+	screen := b3Rows(vt)
+	for _, sbRow := range grid.Scrollback() {
+		var b strings.Builder
+		for _, c := range sbRow {
+			if c.Text == "" {
+				b.WriteByte(' ')
+			} else {
+				b.WriteString(c.Text)
+			}
+		}
+		row := strings.TrimRight(b.String(), " ")
+		for i, g := range screen {
+			if strings.TrimRight(g, " ") == row {
+				t.Errorf("%s: scrollback row %q equals grid row %d", label, row, i)
+			}
+		}
 	}
 }
 
