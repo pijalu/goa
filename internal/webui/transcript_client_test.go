@@ -26,11 +26,25 @@ const (
 // scrollbackBatch encodes a transcript batch of n rows, oldest first.
 func scrollbackBatch(t *testing.T, n int, prefix string) string {
 	t.Helper()
+	return scrollbackDoc(t, n, prefix, false)
+}
+
+// replaceScrollbackBatch encodes a batch that REPLACES the transcript the client
+// holds: the server wiped its scrollback and re-emitted the whole history (the
+// compositor does that at a new width), so the rows are the transcript as it
+// stands, not an addition to it.
+func replaceScrollbackBatch(t *testing.T, n int, prefix string) string {
+	t.Helper()
+	return scrollbackDoc(t, n, prefix, true)
+}
+
+func scrollbackDoc(t *testing.T, n int, prefix string, replace bool) string {
+	t.Helper()
 	rows := make([]RowPatch, 0, n)
 	for i := 0; i < n; i++ {
 		rows = append(rows, RowPatch{Row: i, Runs: []Run{{Text: prefix + " row"}}})
 	}
-	b, err := NewFrameCodec().EncodeScrollback(1, rows)
+	b, err := NewFrameCodec().EncodeScrollback(1, TranscriptBatch{Rows: rows, Replace: replace})
 	if err != nil {
 		t.Fatalf("encode scrollback: %v", err)
 	}
@@ -189,6 +203,46 @@ func TestClientJS_TranscriptBoundSurvivesRepeatedScrolling(t *testing.T) {
 	}
 	if got := transcriptRowCount(t, h); got != transcriptCap {
 		t.Errorf("transcript holds %d rows after repeated scrolling, want %d", got, transcriptCap)
+	}
+}
+
+// TestClientJS_TranscriptReplaceDropsWhatTheClientAlreadyHad is B2's client
+// half: the server wipes its scrollback and re-emits the whole transcript (the
+// compositor does it at a new width), and the rows that follow describe the
+// transcript as it stands now. Appending them — which is what the page used to
+// do — paints every already-scrolled line a second time, the corruption the
+// reported screenshot shows.
+func TestClientJS_TranscriptReplaceDropsWhatTheClientAlreadyHad(t *testing.T) {
+	h := newClientHarness(t)
+
+	h.deliver(t, scrollbackBatch(t, 5, "history"))
+	if got := transcriptRowCount(t, h); got != 5 {
+		t.Fatalf("transcript holds %d rows, want the 5 shipped", got)
+	}
+
+	// The wipe + re-emit: the same 5 rows plus one the client had not seen.
+	h.deliver(t, replaceScrollbackBatch(t, 6, "history"))
+
+	if got := transcriptRowCount(t, h); got != 6 {
+		t.Errorf("transcript holds %d rows after a replacing batch, want the batch's 6 "+
+			"(the rows it already had must be dropped, not kept alongside the re-emit)", got)
+	}
+	if n := strings.Count(h.text(t, h.transcript(t)), "history row"); n != 6 {
+		t.Errorf("transcript paints %d rows of the replacing batch, want 6: ", n)
+	}
+}
+
+// TestClientJS_TranscriptReplaceWithoutRowsClearsTheList pins the empty case: a
+// replacement carrying no rows is the server saying the transcript is gone (the
+// screen was cleared), so the list must be emptied rather than left as it was.
+func TestClientJS_TranscriptReplaceWithoutRowsClearsTheList(t *testing.T) {
+	h := newClientHarness(t)
+
+	h.deliver(t, scrollbackBatch(t, 4, "stale"))
+	h.deliver(t, replaceScrollbackBatch(t, 0, ""))
+
+	if got := transcriptRowCount(t, h); got != 0 {
+		t.Errorf("transcript holds %d rows after an empty replacement, want none", got)
 	}
 }
 

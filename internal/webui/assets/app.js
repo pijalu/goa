@@ -176,13 +176,26 @@
 
   // onScrollback appends the rows that scrolled off the live grid to the
   // transcript. Each row is shipped exactly once, so a plain append is all that
-  // is needed.
+  // is needed — except when the server says the batch REPLACES the transcript
+  // (msg.sbr): the transcript was wiped there (the compositor clears it before
+  // re-emitting the whole history at a new width, exactly as CSI 3J empties a
+  // terminal's scrollback), so the rows it holds now are the whole transcript
+  // and appending them would paint the same lines twice.
   function onScrollback(msg) {
     if (!scrollEl) return;
+    if (msg.sbr) clearTranscript();
     var list = msg.sb || [];
     if (!list.length) return;
     appendTranscript(list);
     followTail();
+  }
+
+  // clearTranscript empties the transcript list — the server's statement that
+  // the rows it holds now are the whole history (a wipe it then re-emitted).
+  function clearTranscript() {
+    if (transcriptRows === 0 && scrollEl.children.length === 0) return;
+    scrollEl.textContent = "";
+    transcriptRows = 0;
   }
 
   // appendTranscript adds rows (oldest first) to the transcript and enforces the

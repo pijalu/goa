@@ -56,11 +56,18 @@ type webCommandSession struct {
 // virtual terminal, then focuses the editor the way production does.
 func newWebCommandSession(t *testing.T) *webCommandSession {
 	t.Helper()
-	vt := webui.NewVirtualTerminal(100, 30)
-	sink := &recordingSink{}
+	return newWebCommandSessionSink(t, &recordingSink{}, 100, 30)
+}
+
+// newWebCommandSessionSink is newWebCommandSession with an explicit frame sink
+// and geometry, so a scenario can observe exactly what a browser receives
+// (transcript rows included).
+func newWebCommandSessionSink(t *testing.T, sink webui.FrameSink, cols, rows int) *webCommandSession {
+	t.Helper()
+	vt := webui.NewVirtualTerminal(cols, rows)
 	vt.SetSink(sink)
 
-	sc := newUIScenarioTerm(t, vt, 100, 30)
+	sc := newUIScenarioTerm(t, vt, cols, rows)
 	s := &webCommandSession{sc: sc, vt: vt, ranCmd: new(bool)}
 
 	registry := core.NewCommandRegistry()

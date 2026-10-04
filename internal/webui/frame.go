@@ -47,6 +47,13 @@ type Frame struct {
 	// them in a transcript list ends up with a full scroll history — what a
 	// real terminal's scrollback buffer gives you. Empty on most frames.
 	Scrollback []RowPatch
+	// ScrollbackReplace marks Scrollback as a REPLACEMENT of the client's
+	// transcript rather than an addition to it: the transcript was wiped (the
+	// compositor clears it before re-emitting the whole history at a new width),
+	// exactly as a terminal that receives CSI 3J loses its scrollback. It rides
+	// an empty batch too — "the transcript you hold is gone", with nothing new
+	// to add, is a valid (and necessary) statement.
+	ScrollbackReplace bool
 	// Title is set only when it changed since the previous frame ("" = keep
 	// the client's current title).
 	Title string

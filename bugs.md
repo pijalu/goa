@@ -28,45 +28,49 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B2 — Web UI: screen corrupted after `/quota` (double/triple output)
+## B8 — Web UI: a screen-taller *view* command drops the transcript above it
 
-**Observed.** Typing `/quota` in the browser leaves the whole screen corrupted
-with output appearing two or three times over.
+**Observed.** At the reported window size (984×692), `/help` on a fresh page puts
+all 64 command-list lines on the page (transcript + grid, each line once).
+Running `/tools` — whose table is taller than the screen — then drops most of
+them: the page keeps 22–31 list lines and its transcript starts mid-list (`•
+/setup`, `• /provider`). Rows are lost, not duplicated. Identical with and
+without the B2 fix, with and without a window resize in between, and *not*
+reproducible in the app harness at the same geometry (there the real registry's
+`/help` stays complete through a width change), so the browser/socket path holds
+the trigger.
 
-Evidence: `docs/bugs/2026-10-04-webui-quota-corruption.png` (real browser, after
-`/quota`).
-
-Reproduced partially: with a 1280×900 window the transcript+grid form one
-continuous log (no duplication), so the corruption depends on the window
-geometry/scroll state the screenshot was taken in — the screenshot is currently
-the authoritative evidence. Two concrete mechanisms are already visible in the
-same area and must be ruled in/out first:
-1. the web flow ships rows that were pushed into the emulator's scrollback by a
-   *geometry change* as if they were history (see B3), so a later repaint can
-   duplicate them;
-2. row patches and transcript rows are separate messages, so any path that
-   re-sends a row (or applies a patch whose row index the client has already
-   moved) paints the same content twice.
-
-**Expected.** `/quota` (and any long output) renders each line exactly once, in
-chronological order, with the transcript holding the scrolled-off lines and the
-grid holding the live screen.
+**Expected.** Every line stays on the page exactly once: appending a tall output
+must not remove rows the browser already holds.
 
 **Plan.**
-- Reproduce headlessly with the existing web harness (`newWebCommandSession` in
-  `internal/app/webui_commands_parity_test.go`: real `webui.VirtualTerminal`, real
-  engine, real `EncodeKey` path): type `/quota` (or `/help` as a model-free
-  stand-in), then assert the *concatenation of transcript rows + grid rows*
-  contains each content line exactly once and in order. That is the invariant the
-  screenshot violates.
-- Fix the duplicates at their source (whatever the harness exposes) — likely in
-  `VirtualTerminal.publish`/`TakeScrollback`/frame sequencing rather than the
-  client.
-- Test approach: the harness assertion above, run against the pre-fix code to
-  see it fail, plus a browser pass.
-- Validation: real browser at the screenshot's window size, `/quota`, screenshot
-  + DOM dump showing every line once; `e2e/w1_webui_browser.sh` mechanics section
-  still green.
+- Reproduce in a harness that includes the *socket* path (the real `goa server` +
+a browser, or a websocket client replaying the frames) so the difference from
+the in-process harness is visible.
+- Suspect the compositor's scrollback watermark: a wipe (CSI 3J) that the app
+performs implicitly makes rows the compositor culls as "already in scrollback"
+unreachable to a client that has just replaced its transcript. Instrument the
+frames around `/tools` (seq, batch size, replace flag, emulator base/length).
+- Validation: the browser DOM dump at 984×692 shows the `/help` list complete
+after `/tools`, and the harness passes the same sequence.
+
+## B9 — e2e footer_band fails at 1280×900: the grid is one row too tall
+
+**Observed.** `e2e/w1_webui_browser.sh`'s `footer_band` check fails with
+`rows:53, inside:false, overlap:true`: the grid is 16 + 53×16 = 864 px, the
+status bar is 24 px, so the grid's bottom crosses into `#status` at that
+viewport (the page sized the grid one row taller than fits). Reproduced on the
+pre-fix build, so it is not a B2 regression; the app-level B4 pinning test
+(`webui_b4_footer_test.go`, 10 geometries) passes, so this is the browser's own
+row-count arithmetic at this viewport.
+
+**Expected.** The grid fits the viewport at every size, with the band inside it.
+
+**Plan.**
+- Reproduce headlessly: compare the page's reported `rows` with the viewport's
+usable height at 1280×900 (and the sizes in the B4 test).
+- Fix the row-count arithmetic and add the failing viewport to the B4 geometry
+list so the app harness covers it too.
 
 ## B5 — Web UI: selecting text works, copy/paste does not
 
@@ -153,6 +157,21 @@ once the session is ready; both touch session startup, so they are left here.
   types immediately on load.
 
 ## Closed
+
+Closed 2026-10-04 — B2, the web UI painting a long output two or three times
+after `/quota`: the compositor wipes the terminal's scrollback and re-emits the
+whole transcript at a new width (and on a mid-transcript edit). A terminal loses
+its transcript to that wipe and the re-emitted rows replace it; the browser kept
+its own list and appended them, so every already-scrolled line came back — and
+B3's erase-and-suppress workaround left a seam that repeated (or dropped) the
+boundary rows. `tui.TermEmulator.ScrollbackGeneration` now reports the wipe, the
+grid ships the batch that follows it as a *replacement* (wire `sbr`), and
+`app.js` clears its transcript before appending. Pinned by
+`internal/app/webui_b2_longoutput_test.go` (three scenarios through the real
+`EncodeKey` path, including the reported `/quota`-during-streaming case),
+`TestClientJS_TranscriptReplace*` for the page, and a real-browser DOM dump at
+the screenshot's geometry (984×692: 79 content lines, 0 duplicates). See
+[`docs/archive/webui-b2-long-output-once.2026-10-04.md`](docs/archive/webui-b2-long-output-once.2026-10-04.md).
 Closed 2026-10-04 — B4, the web UI's input line / bottom status bar: the bottom
 band (input row, separators, status row with the right-aligned mode, model line)
 now renders exactly like the terminal's at the same geometry and stays inside the

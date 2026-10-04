@@ -40,10 +40,10 @@ func transcriptRows(g *CellGrid) []RowPatch {
 	var out []RowPatch
 	for {
 		batch := g.TakeScrollback()
-		if len(batch) == 0 {
+		if len(batch.Rows) == 0 {
 			return out
 		}
-		out = append(out, batch...)
+		out = append(out, batch.Rows...)
 	}
 }
 
@@ -55,20 +55,20 @@ func TestTakeScrollbackShipsOnlyNewRows(t *testing.T) {
 	feedTranscriptScroll(g, 3)
 
 	first := g.TakeScrollback()
-	if len(first) != 3 {
-		t.Fatalf("first take = %d rows, want 3", len(first))
+	if len(first.Rows) != 3 {
+		t.Fatalf("first take = %d rows, want 3", len(first.Rows))
 	}
-	if again := g.TakeScrollback(); len(again) != 0 {
-		t.Errorf("second take repeated %d rows, want none", len(again))
+	if again := g.TakeScrollback(); len(again.Rows) != 0 {
+		t.Errorf("second take repeated %d rows, want none", len(again.Rows))
 	}
 
 	feedTranscriptScroll(g, 5)
 	third := g.TakeScrollback()
-	if len(third) != 2 {
-		t.Fatalf("take after 2 more scrolled rows = %d rows, want 2", len(third))
+	if len(third.Rows) != 2 {
+		t.Fatalf("take after 2 more scrolled rows = %d rows, want 2", len(third.Rows))
 	}
-	if want := first[len(first)-1].Row + 1; third[0].Row != want {
-		t.Errorf("first new row index = %d, want %d (absolute transcript position)", third[0].Row, want)
+	if want := first.Rows[len(first.Rows)-1].Row + 1; third.Rows[0].Row != want {
+		t.Errorf("first new row index = %d, want %d (absolute transcript position)", third.Rows[0].Row, want)
 	}
 }
 
@@ -101,22 +101,27 @@ func TestTakeScrollbackIndicesAreContiguousAbsolutePositions(t *testing.T) {
 }
 
 // TestTakeScrollbackAfterClearRestartsTranscript covers CSI 3 / Clear: the
-// transcript restarts rather than losing rows or repeating them.
+// transcript restarts rather than losing rows or repeating them, and the batch
+// says so — the client must drop what it holds, since the screen the rows
+// described is gone.
 func TestTakeScrollbackAfterClearRestartsTranscript(t *testing.T) {
 	g := NewCellGrid(40, 4)
 	feedTranscriptScroll(g, 3)
-	if got := len(g.TakeScrollback()); got != 3 {
+	if got := len(g.TakeScrollback().Rows); got != 3 {
 		t.Fatalf("take = %d rows, want 3", got)
 	}
 
 	g.Clear()
 	feedTranscriptScroll(g, 2)
 	batch := g.TakeScrollback()
-	if len(batch) != 2 {
-		t.Fatalf("take after clear = %d rows, want 2", len(batch))
+	if !batch.Replace {
+		t.Error("the batch after a clear must replace the client's transcript")
 	}
-	if batch[0].Row != 0 {
-		t.Errorf("first row after clear = %d, want 0", batch[0].Row)
+	if len(batch.Rows) != 2 {
+		t.Fatalf("take after clear = %d rows, want 2", len(batch.Rows))
+	}
+	if batch.Rows[0].Row != 0 {
+		t.Errorf("first row after clear = %d, want 0", batch.Rows[0].Row)
 	}
 }
 
@@ -128,8 +133,8 @@ func TestTakeScrollbackAfterEvictionDoesNotRepeatRows(t *testing.T) {
 	g := NewCellGrid(40, 4)
 	feedTranscriptScroll(g, 5)
 	sent := g.TakeScrollback()
-	if len(sent) != 5 {
-		t.Fatalf("take = %d rows, want 5", len(sent))
+	if len(sent.Rows) != 5 {
+		t.Fatalf("take = %d rows, want 5", len(sent.Rows))
 	}
 
 	// Scroll far past the retention cap without taking anything.
@@ -138,16 +143,16 @@ func TestTakeScrollbackAfterEvictionDoesNotRepeatRows(t *testing.T) {
 		t.Fatal("nothing was evicted: the test did not reach the retention cap")
 	}
 	batch := g.TakeScrollback()
-	if len(batch) == 0 {
+	if len(batch.Rows) == 0 {
 		t.Fatal("no rows shipped after eviction")
 	}
-	if batch[0].Row < sent[len(sent)-1].Row {
+	if batch.Rows[0].Row < sent.Rows[len(sent.Rows)-1].Row {
 		t.Errorf("resumed at row %d, before the last shipped row %d: rows would repeat",
-			batch[0].Row, sent[len(sent)-1].Row)
+			batch.Rows[0].Row, sent.Rows[len(sent.Rows)-1].Row)
 	}
-	for i := 1; i < len(batch); i++ {
-		if batch[i].Row != batch[i-1].Row+1 {
-			t.Fatalf("row %d follows %d: indices must be contiguous", batch[i].Row, batch[i-1].Row)
+	for i := 1; i < len(batch.Rows); i++ {
+		if batch.Rows[i].Row != batch.Rows[i-1].Row+1 {
+			t.Fatalf("row %d follows %d: indices must be contiguous", batch.Rows[i].Row, batch.Rows[i-1].Row)
 		}
 	}
 }

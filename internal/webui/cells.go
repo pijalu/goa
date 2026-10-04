@@ -23,6 +23,23 @@ const (
 	DefaultRows = 40
 )
 
+// TranscriptBatch is the transcript a frame carries for the browser: rows that
+// scrolled off the live screen, and whether they REPLACE the client's transcript
+// instead of extending it.
+//
+// Replace is the terminal's own CSI 3J semantics: a terminal that receives the
+// wipe has lost its scrollback, so the rows that follow are the transcript, not
+// an addition to it. The compositor uses the wipe before re-emitting the whole
+// transcript at a new width — shipping those rows as an append is what painted
+// the same lines twice in the browser (bugs.md B2).
+type TranscriptBatch struct {
+	// Rows are the transcript rows, oldest first, in absolute transcript order.
+	Rows []RowPatch
+	// Replace means the client must drop the transcript it holds before adding
+	// Rows: the rows are the transcript as it stands now.
+	Replace bool
+}
+
 // CellGrid owns the authoritative virtual screen: a tui.TermEmulator plus the
 // last snapshot shipped to clients. It is a pure state machine — the bytes the
 // TUI engine writes go in, patches (or a full snapshot) come out. All methods
@@ -61,11 +78,11 @@ type CellGrid struct {
 	// It is clamped back when the emulator's buffer is cleared.
 	sentScrollback int
 
-	// geometryChange is set by Resize and cleared once the repaint that
-	// re-anchors the screen at the new geometry has run. While it is set, rows
-	// the repaint pushes off are dropped instead of shipped: they belong to the
-	// screen the geometry change replaced, not to the new one (bugs.md B3).
-	geometryChange bool
+	// replacePending is set when the transcript the client holds no longer
+	// describes the emulator's: the stream wiped it (CSI 3J — the compositor's
+	// full re-emit is a replacement), or the program cleared the screen. The next
+	// batch then tells the client to drop what it has (TranscriptBatch.Replace).
+	replacePending bool
 }
 
 // NewCellGrid creates a blank cols×rows grid with change tracking on.
@@ -111,7 +128,14 @@ const (
 func (g *CellGrid) Process(s string) bool {
 	g.mu.Lock()
 	before := g.emu.CursorVisible()
+	gen := g.emu.ScrollbackGeneration()
 	g.emu.Process(s)
+	if g.emu.ScrollbackGeneration() != gen {
+		// The stream wiped the transcript. A terminal would have lost it, and the
+		// rows that follow are the whole transcript re-emitted for the current
+		// screen — so the browser must rebuild rather than append (bugs.md B2).
+		g.replacePending = true
+	}
 	if g.emu.CursorVisible() != before {
 		// Hiding/showing the cursor is a DECTCEM transition the compositor
 		// emits as bytes, with no cell change of its own: mark the screen so
@@ -195,25 +219,17 @@ func (g *CellGrid) Resize(cols, rows int) {
 	// are gone with it, so no stale index can be shipped.
 	g.pending = make([]bool, rows)
 	g.markAllPendingLocked()
-	// A geometry change replaces the screen. History retained from the old
-	// geometry can no longer correspond to the new one (the same reasoning the
-	// compositor applies to a width change), and the rows the re-anchoring
-	// repaint pushes off the top belong to the screen being replaced: shipping
-	// them as transcript is what corrupts the startup screen on load
-	// (bugs.md B3). Drop the retained history and suppress the repaint's own
-	// overflow until it has run.
+	// A geometry change replaces the screen, and the rows it pushes off the top
+	// belong to the screen being replaced, not to the browser's transcript: drop
+	// the history retained at the old geometry. What the browser already holds
+	// stays valid until the compositor re-emits the transcript at the new width,
+	// which arrives as a wipe and therefore as a *replacement* of the browser's
+	// transcript (TranscriptBatch.Replace) rather than as an append — that is
+	// what keeps each line in exactly one place across the geometry change
+	// (bugs.md B2; B3 dropped these rows and left the browser's copy in place,
+	// which duplicated the seam).
 	g.emu.EraseScrollback()
 	g.sentScrollback = 0
-	g.geometryChange = true
-	g.mu.Unlock()
-}
-
-// EndGeometryChange ends the suppression Resize started, once the repaint that
-// re-anchors the screen at the new geometry has run — the terminal calls it
-// after the first write that changed the grid.
-func (g *CellGrid) EndGeometryChange() {
-	g.mu.Lock()
-	g.geometryChange = false
 	g.mu.Unlock()
 }
 
@@ -251,13 +267,17 @@ func (g *CellGrid) DiscardChanges() {
 	g.resetPendingLocked()
 }
 
-// Clear blanks the screen and scrollback, and re-baselines the diff.
+// Clear blanks the screen and scrollback, and re-baselines the diff. The
+// browser's transcript is cleared with it: the screen the rows described is
+// gone, so the rows are too (a Reset is a replacement, exactly like the stream's
+// own wipe).
 func (g *CellGrid) Clear() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.emu.Reset()
 	g.prev = blankSnapshot(g.cols, g.rows)
 	g.sentScrollback = 0
+	g.replacePending = true
 }
 
 // Cells returns a normalised copy of one screen row's cells (blank cells come
@@ -278,9 +298,16 @@ func (g *CellGrid) Scrollback() [][]tui.CellAttrs {
 	return g.emu.ScrollbackCells()
 }
 
-// TakeScrollback returns the scrollback rows that have not been published yet,
-// as row patches, and marks them as shipped. Row indices are the position in
-// the scrollback transcript (0-based), not screen rows.
+// TakeScrollback returns the transcript the client does not hold yet, as row
+// patches, and marks the rows as shipped. Row indices are the position in the
+// scrollback transcript (0-based), not screen rows.
+//
+// The batch REPLACES the client's transcript whenever the transcript the client
+// holds no longer describes this grid's: the stream wiped it (CSI 3J — the
+// compositor's full re-emit is a replacement, not an addition), or the screen
+// was cleared. The batch then carries every retained row, so the client rebuilds
+// the transcript instead of appending a second copy of what it already had
+// (bugs.md B2).
 //
 // The work is proportional to the rows that are NEW, never to how much history
 // the session has: the emulator is asked for its retained window and its base
@@ -298,31 +325,40 @@ func (g *CellGrid) Scrollback() [][]tui.CellAttrs {
 // like any other, and two transports attaching at once (or the no-JS page
 // refreshing) must not interleave a read of the buffer with an update of the
 // counter — that would ship one row twice and lose another.
-func (g *CellGrid) TakeScrollback() []RowPatch {
+func (g *CellGrid) TakeScrollback() TranscriptBatch {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	batch := TranscriptBatch{Replace: g.replacePending}
+	g.replacePending = false
 	base := g.emu.ScrollbackBase()
 	end := base + g.emu.ScrollbackLen()
+	if batch.Replace {
+		// The rows the emulator holds now are the whole transcript for the
+		// current screen, so they all have to reach the client — including the
+		// ones a previous batch already shipped, as they are its replacement.
+		g.sentScrollback = base
+	}
 	if g.sentScrollback < base {
 		// History the grid never shipped was evicted by the retention cap.
 		g.sentScrollback = base
 	}
 	if g.sentScrollback > end {
-		// The buffer was cleared (Clear, CSI 3): restart from what exists.
+		// The buffer was cleared without a replacement (a programmatic geometry
+		// reset): restart from what exists.
 		g.sentScrollback = end
 	}
 	first := g.sentScrollback
-	if g.geometryChange {
-		// The repaint re-anchoring the screen pushed these rows off the top of
-		// the screen being replaced. They are not history of the new screen:
-		// drop them instead of drawing the replaced screen above the live grid
-		// (bugs.md B3).
-		g.sentScrollback = end
-		return nil
-	}
 	if first >= end {
-		return nil
+		return batch
 	}
+	batch.Rows = g.rowsFromLocked(first, end)
+	g.sentScrollback = end
+	return batch
+}
+
+// rowsFromLocked reads the transcript rows in [first, end) as patches. Callers
+// hold the grid lock and have clamped the range to what the emulator retains.
+func (g *CellGrid) rowsFromLocked(first, end int) []RowPatch {
 	out := make([]RowPatch, 0, end-first)
 	for abs := first; abs < end; abs++ {
 		cells := g.emu.ScrollbackRow(abs)
@@ -333,7 +369,6 @@ func (g *CellGrid) TakeScrollback() []RowPatch {
 		// the emulator's own storage is never written to from here.
 		out = append(out, RowPatch{Row: abs, Runs: RowRuns(cells)})
 	}
-	g.sentScrollback = end
 	return out
 }
 

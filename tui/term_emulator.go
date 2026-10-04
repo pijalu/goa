@@ -51,6 +51,13 @@ type TermEmulator struct {
 	// each row exactly once (the web UI) count in absolute indices, so they can
 	// tell "rows I have not sent yet" from "rows that are gone" after eviction.
 	scrollbackBase int
+	// scrollbackGen counts the times the transcript was DROPPED (CSI 3J, or a
+	// programmatic EraseScrollback). A consumer that mirrors the transcript
+	// elsewhere (the web UI keeps one in the browser) compares it to notice that
+	// the rows after the drop are a REPLACEMENT of what it holds, not an append:
+	// the compositor wipes the scrollback and re-emits the whole transcript at a
+	// new width, and a terminal that kept the old rows would show them twice.
+	scrollbackGen int
 	curFlags       AttrFlags // current SGR text attributes
 	curLink        string    // current OSC-8 hyperlink target ("" = none)
 	row, col       int
@@ -393,6 +400,7 @@ func (e *TermEmulator) eraseDisplay(params string) {
 			e.scrollback = nil
 			e.scrollbackAttrs = nil
 			e.scrollbackBase = 0
+			e.scrollbackGen++
 		}
 	case "0", "":
 		for c := e.col; c < e.w; c++ {
@@ -478,6 +486,14 @@ func (e *TermEmulator) RowFg(row int) string {
 
 func (e *TermEmulator) Scrollback() []string { return e.scrollback }
 
+// ScrollbackGeneration counts how many times the retained transcript has been
+// dropped (the CSI 3J wipe, or EraseScrollback). A mirror of the transcript that
+// lives outside the emulator (the browser's history) uses it to distinguish the
+// rows a wipe was followed by — a replacement, because a terminal's scrollback
+// is wiped before the whole transcript is re-emitted at a new width — from the
+// rows of an ordinary append.
+func (e *TermEmulator) ScrollbackGeneration() int { return e.scrollbackGen }
+
 // EraseScrollback drops the retained transcript rows (the CSI 3J wipe) without
 // touching the screen. A geometry change uses it: history recorded at the old
 // geometry no longer corresponds to the new screen, and the rows a re-anchoring
@@ -487,6 +503,7 @@ func (e *TermEmulator) EraseScrollback() {
 	e.scrollback = nil
 	e.scrollbackAttrs = nil
 	e.scrollbackBase = 0
+	e.scrollbackGen++
 }
 
 // ScrollbackBase is the absolute index of the oldest retained transcript row:

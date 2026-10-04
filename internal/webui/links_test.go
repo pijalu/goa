@@ -91,7 +91,7 @@ func TestFrameCodec_LinkRoundTrip(t *testing.T) {
 
 func TestFrameCodec_ScrollbackRoundTrip(t *testing.T) {
 	rows := []RowPatch{{Row: 0, Runs: []Run{{Text: "old line"}}}}
-	data, err := NewFrameCodec().EncodeScrollback(3, rows)
+	data, err := NewFrameCodec().EncodeScrollback(3, TranscriptBatch{Rows: rows})
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -102,10 +102,26 @@ func TestFrameCodec_ScrollbackRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if seq != 3 || len(back) != 1 || RunsText(back[0].Runs) != "old line" {
+	if seq != 3 || len(back.Rows) != 1 || RunsText(back.Rows[0].Runs) != "old line" {
 		t.Errorf("round trip = %d %+v", seq, back)
 	}
-	if _, err := NewFrameCodec().EncodeScrollback(1, nil); err == nil {
+	if back.Replace {
+		t.Error("a plain batch must not claim to replace the transcript")
+	}
+}
+
+// TestFrameCodec_ScrollbackReplacement pins the wipe's wire semantics: a batch
+// that says "the transcript you hold is gone" is meaningful even with no rows,
+// while an empty ordinary batch stays a bug.
+func TestFrameCodec_ScrollbackReplacement(t *testing.T) {
+	empty, err := NewFrameCodec().EncodeScrollback(4, TranscriptBatch{Replace: true})
+	if err != nil {
+		t.Fatalf("encode empty replacement: %v", err)
+	}
+	if _, batch, err := NewFrameCodec().DecodeScrollback(empty); err != nil || !batch.Replace {
+		t.Errorf("empty replacement round trip = %+v, %v", batch, err)
+	}
+	if _, err := NewFrameCodec().EncodeScrollback(1, TranscriptBatch{}); err == nil {
 		t.Error("empty scrollback batch must be rejected")
 	}
 	if _, _, err := NewFrameCodec().DecodeScrollback([]byte(`{"t":"frame"}`)); err == nil {
@@ -122,19 +138,19 @@ func TestCellGrid_TakeScrollbackShipsEachRowOnce(t *testing.T) {
 	g.Process("\x1b[3;1Hthree\n") // scrolls "one" into the scrollback
 
 	first := g.TakeScrollback()
-	if len(first) != 1 || first[0].Row != 0 {
+	if len(first.Rows) != 1 || first.Rows[0].Row != 0 {
 		t.Fatalf("first take = %+v, want row 0", first)
 	}
-	if got := RunsText(first[0].Runs); got[:3] != "one" {
+	if got := RunsText(first.Rows[0].Runs); got[:3] != "one" {
 		t.Errorf("scrollback row = %q", got)
 	}
-	if again := g.TakeScrollback(); len(again) != 0 {
+	if again := g.TakeScrollback(); len(again.Rows) != 0 {
 		t.Errorf("second take = %+v, want nothing (already shipped)", again)
 	}
 
 	g.Process("\x1b[3;1Hfour\n") // scrolls "three"
 	second := g.TakeScrollback()
-	if len(second) != 1 || second[0].Row != 1 {
+	if len(second.Rows) != 1 || second.Rows[0].Row != 1 {
 		t.Fatalf("second take = %+v, want row 1", second)
 	}
 }
@@ -142,12 +158,12 @@ func TestCellGrid_TakeScrollbackShipsEachRowOnce(t *testing.T) {
 func TestCellGrid_TakeScrollbackResetsOnClear(t *testing.T) {
 	g := NewCellGrid(6, 2)
 	g.Process("\x1b[1;1Hone\x1b[2;1Htwo\x1b[3;1Hthree\n")
-	if got := g.TakeScrollback(); len(got) != 1 {
+	if got := g.TakeScrollback(); len(got.Rows) != 1 {
 		t.Fatalf("take = %+v, want 1 row", got)
 	}
 	g.Clear()
-	if got := g.TakeScrollback(); len(got) != 0 {
-		t.Errorf("take after clear = %+v, want nothing", got)
+	if got := g.TakeScrollback(); len(got.Rows) != 0 || !got.Replace {
+		t.Errorf("take after clear = %+v, want a replacement with nothing in it", got)
 	}
 }
 
@@ -199,7 +215,7 @@ func TestVirtualTerminal_FullFrameCarriesScrollback(t *testing.T) {
 // The browser client is the contract: it reads msg.sb, so the wire key must
 // stay "sb" until app.js changes.
 func TestFrameCodec_ScrollbackWireKey(t *testing.T) {
-	data, err := NewFrameCodec().EncodeScrollback(1, []RowPatch{{Row: 0, Runs: []Run{{Text: "x"}}}})
+	data, err := NewFrameCodec().EncodeScrollback(1, TranscriptBatch{Rows: []RowPatch{{Row: 0, Runs: []Run{{Text: "x"}}}}})
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

@@ -35,7 +35,7 @@ const domStub = `
     this.style = {};
     this.dataset = {};
     this.listeners = {};
-    this.textContent = "";
+    this._text = "";
     this.className = "";
     this.hidden = false;
     this.scrollHeight = 1000;
@@ -43,6 +43,18 @@ const domStub = `
     this.clientWidth = 800;
     this._scrollTop = 0;
   }
+  // textContent is a real accessor, not a plain field: assigning to it REPLACES
+  // the element's children (DOM spec), which is how app.js clears a row or the
+  // whole transcript. A stub that kept the children would let a page that clears
+  // by textContent look like one that appends — the exact difference between
+  // painting a line once and painting it twice.
+  Object.defineProperty(El.prototype, "textContent", {
+    get: function () { return this._text; },
+    set: function (v) {
+      this._text = v === undefined || v === null ? "" : String(v);
+      this.children.length = 0;
+    }
+  });
   // scrollTop is clamped to the scrollable range, like the real property: a page
   // that assigns scrollHeight lands ON the bottom rather than past it, so "is
   // the view at the bottom" is a question the stub answers honestly.
@@ -583,7 +595,7 @@ func TestClientJS_ScrollbackRespectsFollowTail(t *testing.T) {
 	scroll := h.el(t, "screen")
 
 	doc := func() string {
-		b, err := NewFrameCodec().EncodeScrollback(1, []RowPatch{{Row: 0, Runs: []Run{{Text: "scrolled off"}}}})
+		b, err := NewFrameCodec().EncodeScrollback(1, TranscriptBatch{Rows: []RowPatch{{Row: 0, Runs: []Run{{Text: "scrolled off"}}}}})
 		if err != nil {
 			t.Fatalf("encode scrollback: %v", err)
 		}

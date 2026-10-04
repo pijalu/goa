@@ -31,8 +31,11 @@ type wireFrame struct {
 	Cur     Cursor    `json:"cur,omitempty"`
 	Patches []wireRow `json:"patches,omitempty"`
 	Scroll  []wireRow `json:"sb,omitempty"`
-	Title   string    `json:"title,omitempty"`
-	Full    bool      `json:"full,omitempty"`
+	// Replace marks a scrollback batch as a replacement of the client's
+	// transcript instead of an addition to it (the transcript was wiped).
+	Replace bool   `json:"sbr,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Full    bool   `json:"full,omitempty"`
 
 	Kind    string `json:"kind,omitempty"`
 	Session string `json:"session,omitempty"`
@@ -90,8 +93,8 @@ func (c *FrameCodec) EncodePayload(f *Frame) (*Payload, error) {
 		return nil, err
 	}
 	p := &Payload{Frame: f, Data: data}
-	if len(f.Scrollback) > 0 {
-		batch, err := c.EncodeScrollback(f.Seq, f.Scrollback)
+	if len(f.Scrollback) > 0 || f.ScrollbackReplace {
+		batch, err := c.EncodeScrollback(f.Seq, TranscriptBatch{Rows: f.Scrollback, Replace: f.ScrollbackReplace})
 		if err != nil {
 			return nil, err
 		}
@@ -152,34 +155,39 @@ func (c *FrameCodec) DecodeFrame(data []byte) (*Frame, error) {
 	return f, nil
 }
 
-// EncodeScrollback renders the rows a frame scrolled off as their own message.
+// EncodeScrollback renders a transcript batch as its own message: the rows a
+// frame scrolled off, and whether they replace the transcript the client holds.
 // It is a separate message type (spec §11.1) so a client can append to its
 // transcript list without touching the live grid.
-func (c *FrameCodec) EncodeScrollback(seq uint64, rows []RowPatch) ([]byte, error) {
-	if len(rows) == 0 {
+//
+// A replacement is encoded even when it carries no rows: the transcript being
+// gone is information the client needs (the screen was cleared, or re-emitted at
+// a new width), and silence would leave it holding rows that describe nothing.
+func (c *FrameCodec) EncodeScrollback(seq uint64, batch TranscriptBatch) ([]byte, error) {
+	if len(batch.Rows) == 0 && !batch.Replace {
 		return nil, fmt.Errorf("webui: empty scrollback batch")
 	}
-	w := wireFrame{T: MsgScrollback, Seq: seq}
-	for _, p := range rows {
+	w := wireFrame{T: MsgScrollback, Seq: seq, Replace: batch.Replace}
+	for _, p := range batch.Rows {
 		w.Scroll = append(w.Scroll, wireRow{Row: p.Row, Runs: encodeRuns(p.Runs)})
 	}
 	return json.Marshal(w)
 }
 
 // DecodeScrollback parses a scrollback document.
-func (c *FrameCodec) DecodeScrollback(data []byte) (uint64, []RowPatch, error) {
+func (c *FrameCodec) DecodeScrollback(data []byte) (uint64, TranscriptBatch, error) {
 	var w wireFrame
 	if err := json.Unmarshal(data, &w); err != nil {
-		return 0, nil, fmt.Errorf("webui: decode scrollback: %w", err)
+		return 0, TranscriptBatch{}, fmt.Errorf("webui: decode scrollback: %w", err)
 	}
 	if w.T != MsgScrollback {
-		return 0, nil, fmt.Errorf("webui: unexpected message type %q", w.T)
+		return 0, TranscriptBatch{}, fmt.Errorf("webui: unexpected message type %q", w.T)
 	}
-	out := make([]RowPatch, 0, len(w.Scroll))
+	batch := TranscriptBatch{Replace: w.Replace}
 	for _, r := range w.Scroll {
-		out = append(out, RowPatch{Row: r.Row, Runs: decodeRuns(r.Runs)})
+		batch.Rows = append(batch.Rows, RowPatch{Row: r.Row, Runs: decodeRuns(r.Runs)})
 	}
-	return w.Seq, out, nil
+	return w.Seq, batch, nil
 }
 
 // EncodeControl renders an out-of-band control message (session rotation,

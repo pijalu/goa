@@ -152,11 +152,6 @@ func (v *VirtualTerminal) WriteString(s string) {
 		return
 	}
 	v.publish(false)
-	// The first write that changed the screen after a geometry change IS the
-	// repaint that re-anchors it: its own scroll overflow (rows of the screen
-	// being replaced) has just been dropped, so the suppression ends here
-	// (bugs.md B3).
-	v.grid.EndGeometryChange()
 }
 
 // Size reports the virtual screen geometry.
@@ -290,8 +285,13 @@ func (v *VirtualTerminal) publish(full bool) {
 	frame := NewFrame(seq, v.grid, patches, v.grid.Title(), full)
 	// Rows that scrolled off since the last publish ride this frame: the
 	// transport emits them as a separate "scrollback" message so the client can
-	// keep a transcript without disturbing the live grid.
-	frame.Scrollback = v.grid.TakeScrollback()
+	// keep a transcript without disturbing the live grid. A batch that REPLACES
+	// the transcript — the scrollback was wiped before the whole history was
+	// re-emitted at a new width — is marked as such, or the browser would append
+	// a second copy of what it already holds (bugs.md B2).
+	batch := v.grid.TakeScrollback()
+	frame.Scrollback = batch.Rows
+	frame.ScrollbackReplace = batch.Replace
 	sink.Publish(frame)
 }
 
@@ -311,7 +311,9 @@ func (v *VirtualTerminal) PublishFull() {
 func (v *VirtualTerminal) FullFrame() *Frame {
 	f := NewFrame(v.Seq(), v.grid, v.grid.FullPatches(), v.grid.Title(), true)
 	// A joining client gets the transcript it missed in the same message set.
-	f.Scrollback = v.grid.TakeScrollback()
+	batch := v.grid.TakeScrollback()
+	f.Scrollback = batch.Rows
+	f.ScrollbackReplace = batch.Replace
 	return f
 }
 
