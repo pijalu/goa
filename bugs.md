@@ -202,17 +202,84 @@ does not.
 and the resulting attachment is inserted as a path in the input line — i.e. image
 paste is a first-class capability of the session, not of one front end.
 
-**Plan.**
-- Decide the mechanism per platform (e.g. a hotkey that reads the OS clipboard via
-  the platform tool: `pbpaste`/`osascript` on macOS, `xclip`/`wl-paste` on Linux,
-  PowerShell on Windows), then upload/store it through the same image store the
-  web path uses, and insert the stored path into the editor.
-- Keep the platform-specific part behind one interface (small primitive) so the
-  editor only ever sees "insert this path".
-- Test approach: unit test the "clipboard image → stored path → editor text" chain
-  with a fake clipboard reader; skip the OS call where it is unavailable.
-- Validation: real terminal, copy an image in a browser, press the hotkey in goa,
-  the input line shows the stored path; and the same via the web page for parity.
+**Root cause (measured, not inferred).** No terminal emulator forwards image
+bytes. The terminal's own paste chord (Cmd+V) can only deliver the clipboard's
+*text* flavours: a file copied in Finder/Explorer is exactly that (its path
+arrives as pasted text and the submit path attaches it), but a raw image — a
+screenshot — has no text form, so nothing reaches the TUI and "inserts nothing"
+is literally what happens. That is the one case the paste key covers: the image
+can only be had by reading the OS clipboard from inside goa, which is what the
+explicit paste key does. `KbPaste` (`tui/keybindings.go`: `Ctrl+V`,
+`ctrl+shift+v`, raw `0x16` via `tui/keys.go`) → `Editor.pasteFromClipboard`
+(`tui/editor.go`) resolves the clipboard in the precedence a file-manager copy
+needs — file paths → image → text — and the platform dispatch lives in
+`internal/clipboard_image.go` (`osascript`/`pbpaste` on macOS, `wl-paste`/
+`xclip` on Linux, PowerShell on Windows and WSL) behind one runner,
+`runClipboardCommand`.
+
+That chain existed before this entry; what was missing was any *pin* on it — no
+test covered clipboard bytes → store → path → input line, no test covered a
+platform with no clipboard reader, and no real-terminal check existed. That is
+how "there is no path from the terminal clipboard to an attachment" could be
+reported against a binary that had one (and why the trigger is worth documenting
+in `docs/HOTKEYS.md`, next to the text chords).
+
+**Fix (structure, not a rewrite).** Nothing in the paste chain needed changing;
+the gap was coverage and discoverability, and both are now closed:
+
+* **One platform seam.** `internal/clipboard_image.go` owns every OS tool call
+  and is swappable at one point (`runClipboardCommand`); the editor never calls
+  an OS tool — it holds three injectable readers (`readClipboardImage`,
+  `readClipboardFilePaths`, `readClipboardText`, defaulting to the `internal`
+  functions in `tui/editor.go:NewEditor`) plus one injectable store
+  (`saveClipboardImage` = `internal.SaveClipboardImage`). The editor only ever
+  learns "insert this path".
+* **Shared code with the web path, not a copy.** `internal.SaveClipboardImage`
+  writes through `internal.NewImageFile` — the same durable image store
+  `internal/webui/upload.go` stores uploads in — and `internal.IsImageFile` is
+  the same predicate the submit path (`internal/app/submithandler_input.go`) uses
+  to turn a token into an attachment. Web/image parity is therefore structural.
+* **Discoverability.** `docs/HOTKEYS.md` documents `Ctrl+V` as "files copied in a
+  file manager, then an image, then text".
+
+**Tests.** `internal/clipboard_paste_chain_test.go` (new) runs
+`fakeImageClipboard`: a fake runner on *every* OS answers each backend's command
+shape, so clipboard bytes → `ReadClipboardImage` decode → `SaveClipboardImage`
+(store redirected to `t.TempDir()`) → stored path → `IsImageFile` runs with no
+real clipboard and no OS tool; plus the two failure paths (nothing on the
+clipboard → `(nil,nil)`, silently; bytes that are not an image → a decode error).
+`tui/editor_image_paste_chain_test.go` (new) drives the real `Ctrl+V` binding
+through the *real* store to the input line
+(`TestEditor_PasteFromClipboard_StoresImageAndInsertsStoredPath`) and pins both
+failure paths — no image on the clipboard, and *no reader at all* on this
+platform (`nil` readers: quiet no-op, nothing written to the store).
+`internal/app/pasted_image_test.go` (new) pins the app-level tail:
+`OnImagePaste` → `handlePastedImage` inserts the stored path into the input line,
+separated from the text the cursor sits in.
+
+**Validation (real terminal, real clipboard).** `e2e/clipimg.sh` (new) puts a
+known 8×8 PNG on the OS clipboard, boots a real `goa` in a PTY (config pinned to
+`e2e/mockllm`, so no model traffic) and presses `Ctrl+V`; it asserts the
+*rendered input line* shows `…/goa/images/goa-image-<n>.png` **and** that the
+stored file is that image (IHDR re-read from the stored PNG):
+
+```
+[PASS] Ctrl+V pasted the clipboard image: input line =
+  /Users/…/Library/Caches/goa/images/goa-image-4102929851.png (8x8, file on disk)
+```
+
+`e2e/ptydrive` gained a `--wait-output <regex>` condition for this (assert on
+what the TUI rendered, not on a polled file), and `e2e/README.md` documents the
+check. Live-process note: the TUI was shut down by the driver (`gracefulStop`);
+no `goa`/mock-LLM process was left behind.
+
+**Regression evidence (before/after).** With `tryPasteImage` short-circuited to
+"no image" (`return "", false`), the three `tui` paste tests fail
+(`StoresImageAndInsertsStoredPath`, `InsertsImageReference`,
+`CallsOnImagePaste`) and `e2e/clipimg.sh` reports
+`FAIL paste key produced no image path in the input line (ptydrive rc=1)`;
+restored, both pass. The same short-circuit also leaves the input line empty in
+the script's screen dump, which is the reported symptom.
 
 ## B7 — Web UI: keystrokes typed while the session is still starting are not acted on
 

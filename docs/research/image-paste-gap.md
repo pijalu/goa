@@ -248,6 +248,10 @@ text).
 | Image resolver (encode/sniff/fit) | `go test ./internal/agentic/provider/schema/ -run 'TestEncodeImage|TestImageToDataURL|TestFitImage|TestSniffImageMime'` |
 | Every wire format embeds Base64 (G2 regression) | `go test ./internal/agentic/provider/protocol/ -run TestImageEncoding` |
 | Paste trigger + precedence + text-paste non-hijack | `go test ./tui/ -run 'TestEditor_PasteFromClipboard|TestEditor_TextPaste'` |
+| Clipboard bytes → store → stored path (fake runner, any OS) | `go test ./internal/ -run 'TestReadClipboardImage'` |
+| Paste key → real store → **input line**, + no-image / no-reader paths | `go test ./tui/ -run 'TestEditor_PasteFromClipboard'` |
+| Pasted path lands in the input line (app tail) | `go test ./internal/app/ -run TestPastedImagePathLandsInTheInputLine` |
+| Real terminal, real clipboard, rendered input line | `e2e/clipimg.sh` |
 | Attachment extraction keeps prose / rejects URLs | `go test ./internal/app/ -run TestSplitUserInput` |
 | Full gate | `go vet ./... && go test -count=1 -race -timeout 900s ./... && gocognit -over 15 <changed dirs> && gocyclo -over 12 <changed dirs>` |
 

@@ -17,6 +17,9 @@
 // (e.g. 'e' edit in /goal:manage, which must not be followed by '\r' before
 // the replacement text arrives). Both flags append to ONE ordered step list:
 // interleaved --send/--send-raw flags execute in command-line order.
+//
+// Conditions: --wait-file + --wait-pattern poll a file, --wait-output matches
+// the TUI's own output (ANSI-stripped). Give at least one; both may be given.
 package main
 
 import (
@@ -67,20 +70,22 @@ func main() {
 	sendDelay := flag.Duration("send-delay", 8*time.Second, "delay before each send")
 	waitFile := flag.String("wait-file", "", "glob of file(s) to poll")
 	waitPattern := flag.String("wait-pattern", "", "regex to match in the polled file content")
+	waitOutput := flag.String("wait-output", "", "regex to match in the TUI output (ANSI-stripped)")
 	timeout := flag.Duration("timeout", 15*time.Minute, "overall timeout")
 	flag.Parse()
 
-	if *bin == "" || *logPath == "" || *waitFile == "" || *waitPattern == "" {
-		fmt.Fprintln(os.Stderr, "required: --bin --log --wait-file --wait-pattern")
+	fileCond := *waitFile != "" && *waitPattern != ""
+	if *bin == "" || *logPath == "" || (!fileCond && *waitOutput == "") {
+		fmt.Fprintln(os.Stderr, "required: --bin --log, plus --wait-file+--wait-pattern or --wait-output")
 		os.Exit(2)
 	}
-	if err := run(*bin, *dir, *logPath, steps, *sendDelay, *waitFile, *waitPattern, *timeout); err != nil {
+	if err := run(*bin, *dir, *logPath, steps, *sendDelay, *waitFile, *waitPattern, *waitOutput, *timeout); err != nil {
 		fmt.Fprintln(os.Stderr, "ptydrive:", err)
 		os.Exit(1)
 	}
 }
 
-func run(bin, dir, logPath string, steps []sendStep, sendDelay time.Duration, waitFile, waitPattern string, timeout time.Duration) error {
+func run(bin, dir, logPath string, steps []sendStep, sendDelay time.Duration, waitFile, waitPattern, waitOutput string, timeout time.Duration) error {
 	absBin, err := filepath.Abs(bin)
 	if err != nil {
 		return err
@@ -108,6 +113,10 @@ func run(bin, dir, logPath string, steps []sendStep, sendDelay time.Duration, wa
 	if err != nil {
 		return fmt.Errorf("bad --wait-pattern: %w", err)
 	}
+	outRe, err := compileOptional(waitOutput)
+	if err != nil {
+		return fmt.Errorf("bad --wait-output: %w", err)
+	}
 
 	deadline := time.Now().Add(timeout)
 	switch err := sendSteps(ptty, steps, sendDelay, deadline); {
@@ -116,7 +125,16 @@ func run(bin, dir, logPath string, steps []sendStep, sendDelay time.Duration, wa
 	case err != nil:
 		return err
 	}
-	return waitForCondition(cmd, ptty, &mu, &buf, waitFile, re, deadline)
+	return waitForCondition(cmd, ptty, &mu, &buf, waitFile, re, outRe, deadline)
+}
+
+// compileOptional compiles an optional pattern; an empty pattern matches
+// nothing (nil), so callers can skip the check entirely.
+func compileOptional(pattern string) (*regexp.Regexp, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	return regexp.Compile(pattern)
 }
 
 // captureOutput streams PTY output into the raw log and the shared buffer
@@ -159,11 +177,16 @@ func sendSteps(ptty *os.File, steps []sendStep, sendDelay time.Duration, deadlin
 	return nil
 }
 
-// waitForCondition polls the wait-file glob until the pattern matches, the
-// process exits, or the deadline passes.
-func waitForCondition(cmd *exec.Cmd, ptty *os.File, mu *sync.Mutex, buf *[]byte, waitFile string, re *regexp.Regexp, deadline time.Time) error {
+// waitForCondition polls the wait-file glob and the PTY output until either
+// condition matches, the process exits, or the deadline passes.
+func waitForCondition(cmd *exec.Cmd, ptty *os.File, mu *sync.Mutex, buf *[]byte, waitFile string, re, outRe *regexp.Regexp, deadline time.Time) error {
 	for time.Now().Before(deadline) {
-		if matches, err := globAnyContains(waitFile, re); err == nil && matches {
+		if matches := fileConditionMet(waitFile, re); matches {
+			fmt.Println("ptydrive: condition met")
+			gracefulStop(cmd, ptty)
+			return nil
+		}
+		if outRe != nil && outputMatches(mu, buf, outRe) {
 			fmt.Println("ptydrive: condition met")
 			gracefulStop(cmd, ptty)
 			return nil
@@ -174,6 +197,25 @@ func waitForCondition(cmd *exec.Cmd, ptty *os.File, mu *sync.Mutex, buf *[]byte,
 		time.Sleep(2 * time.Second)
 	}
 	return killAndReport(cmd, ptty, mu, buf, "timeout waiting for condition")
+}
+
+// fileConditionMet reports whether the wait-file glob's content matches. An
+// unset file condition (empty glob or pattern) never matches.
+func fileConditionMet(waitFile string, re *regexp.Regexp) bool {
+	if waitFile == "" || re == nil {
+		return false
+	}
+	matches, err := globAnyContains(waitFile, re)
+	return err == nil && matches
+}
+
+// outputMatches reports whether the PTY output so far (ANSI-stripped) matches.
+// The buffer accumulates the whole session, so a pattern split across two reads
+// is still seen once complete.
+func outputMatches(mu *sync.Mutex, buf *[]byte, re *regexp.Regexp) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return re.MatchString(stripANSI(*buf))
 }
 
 func globAnyContains(glob string, re *regexp.Regexp) (bool, error) {

@@ -123,6 +123,25 @@ no `keydown`, and `internal/webui/assets/app.js` deliberately sends *key
 descriptors* to the server (the server owns the byte table). The script
 therefore types character by character with `press`.
 
+## Clipboard scenario (B6 — `clipimg.sh`)
+
+`e2e/clipimg.sh` is the terminal twin of the web page's image paste: it puts a
+known 8×8 PNG on the OS clipboard, boots a real `goa` in a PTY (config pinned to
+the mock LLM — the paste never reaches a model) and presses `Ctrl+V`. It asserts
+the **rendered input line** shows a path inside the durable image store
+(`…/goa/images/goa-image-<n>.png`) *and* that the stored file is that image (its
+dimensions are re-read from the stored PNG's IHDR, so an empty or stale file
+fails).
+
+```bash
+E2E_ROOT=/tmp/my-run e2e/clipimg.sh
+```
+
+It **owns the OS clipboard** (it replaces its contents) and records `SKIP` where
+no clipboard tool exists (needs `osascript` on macOS, `wl-copy` or `xclip` on
+Linux). It is not part of `run_all.sh`: it needs no LM Studio, but it does need a
+real desktop clipboard.
+
 ## Key techniques (reuse these)
 
 1. **Seeded headless orchestration** — `goa --orchestrate` only *resumes* a
@@ -139,6 +158,9 @@ therefore types character by character with `press`.
 3. **ptydrive** (`e2e/ptydrive`) — runs goa TUI in a PTY, sends keystrokes,
    and waits on a **file condition** (glob+regex, e.g. `run_finished` in
    events.jsonl) rather than scraping ANSI. Raw stream saved for inspection.
+   `--wait-output <regex>` waits on the TUI's **own rendered output**
+   (ANSI-stripped, whole session) instead — use it when the evidence *is* the
+   screen (hotkeys that insert text, e.g. `clipimg.sh`), not a file.
 4. **Fake projects** — `mk_fake_project` + `write_base_config` give each
    scenario an isolated `/tmp` project whose `.goa/config.yaml` pins
    provider/models/thinking to LM Studio (project config overrides home).

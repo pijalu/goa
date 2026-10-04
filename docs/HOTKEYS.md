@@ -42,6 +42,14 @@ The table below shows the default keybindings. Customize them in your theme conf
 | `Ctrl+Z` | Undo |
 | `Ctrl+V` | Paste from the system clipboard: files copied in a file manager, then an image, then text |
 
+`Ctrl+V` is the only way to bring an **image** in: a terminal's own paste
+chord (`Cmd+V`) can only deliver the clipboard's text flavours, so a screenshot
+never reaches goa and pasting it appears to do nothing. `Ctrl+V` reads the OS
+clipboard directly, stores the image in the durable image store
+(`~/.cache/goa/images`, `~/Library/Caches/goa/images` on macOS) and inserts the
+stored path into the input line, where the submit path turns it into an
+attachment — the same store the web UI's `/upload` uses.
+
 ## Application
 
 | Key | Action |
