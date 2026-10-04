@@ -374,15 +374,25 @@ func toolSchemaBytes(t agentic.Tool) int {
 	return len(b)
 }
 
+// addStartupInfo adds one startup banner line as a SINGLE-ROW info entry
+// instead of the three-row bordered panel AddSystemMessage draws. The banner is
+// the last content of the startup screen, so with boxed panels it pushed the
+// screen's total height past a small terminal/browser window and the compositor
+// scrolled the mascot's top rows into history (bugs.md B3). The info widget
+// draws its own "⟡ " marker, so the banner text's marker is dropped here.
+func addStartupInfo(chat *tui.ChatViewport, text string) {
+	chat.AddInfoMessage(strings.TrimSpace(strings.TrimPrefix(text, "⟡")))
+}
+
 // showStartupBanner displays startup information in the chat viewport:
 // what context file was loaded (if any) and how many skills are available.
 func showStartupBanner(subs *subsystems, chat *tui.ChatViewport) {
 	// Context file info
 	if len(subs.contextFiles) > 0 {
 		lastFile := subs.contextFiles[len(subs.contextFiles)-1]
-		chat.AddSystemMessage(fmt.Sprintf("⟡ Context loaded: %s", lastFile.Path))
+		addStartupInfo(chat, fmt.Sprintf("⟡ Context loaded: %s", lastFile.Path))
 	} else {
-		chat.AddSystemMessage("⟡ No AGENTS.md context file found")
+		addStartupInfo(chat, "⟡ No AGENTS.md context file found")
 	}
 
 	// Skills summary
@@ -390,7 +400,7 @@ func showStartupBanner(subs *subsystems, chat *tui.ChatViewport) {
 	if len(skillList) > 0 {
 		showSkillBanner(subs, chat, skillList)
 	} else {
-		chat.AddSystemMessage("⟡ No skills loaded")
+		addStartupInfo(chat, "⟡ No skills loaded")
 	}
 
 	// LSP (gopls) availability — surface start failures instead of staying
@@ -406,7 +416,7 @@ func showLSPBanner(subs *subsystems, chat *tui.ChatViewport) {
 		return
 	}
 	if err := subs.lspMgr.StartError(); err != nil {
-		chat.AddSystemMessage(fmt.Sprintf("⟡ LSP (gopls) unavailable: %v — Go diagnostics on write/edit are disabled", err))
+		addStartupInfo(chat, fmt.Sprintf("⟡ LSP (gopls) unavailable: %v — Go diagnostics on write/edit are disabled", err))
 	}
 }
 
@@ -422,10 +432,10 @@ func showSkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skill
 	}
 
 	if forcedInlineCount > 0 {
-		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d forced inline · mode: %s)",
+		addStartupInfo(chat, fmt.Sprintf("⟡ %d skills (%d inline, %d forced inline · mode: %s)",
 			len(skillList), inlineCount, forcedInlineCount, globalMode))
 	} else {
-		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d sub-agent · mode: %s)",
+		addStartupInfo(chat, fmt.Sprintf("⟡ %d skills (%d inline, %d sub-agent · mode: %s)",
 			len(skillList), inlineCount, subCount, globalMode))
 	}
 	showStickySkillBanner(subs, chat, skillList)
@@ -444,7 +454,7 @@ func showStickySkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList [
 	if len(names) == 0 {
 		return
 	}
-	chat.AddSystemMessage(fmt.Sprintf("⟡ Sticky skills (always-on): %s", strings.Join(names, ", ")))
+	addStartupInfo(chat, fmt.Sprintf("⟡ Sticky skills (always-on): %s", strings.Join(names, ", ")))
 }
 
 // filterSkillsForMode removes skills that require a sub-agent when the global
@@ -523,7 +533,7 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 	// Prompt-size info bubble (same style as the context/skills banners):
 	// report the assembled context cost of every request — system prompt +
 	// tool schemas — so bloat is visible at each session start/reload.
-	chat.AddSystemMessage(promptContextBanner(systemPrompt, agenticTools))
+	addStartupInfo(chat, promptContextBanner(systemPrompt, agenticTools))
 
 	// Wire main agent into the foreground orchestrator
 	if subs.foregroundOrch != nil {
@@ -540,7 +550,7 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 		providerName = providerCfg.ID
 	}
 	msg := fmt.Sprintf("⟡ Connected to %s (%s).", providerName, model)
-	chat.AddSystemMessage(msg)
+	addStartupInfo(chat, msg)
 	subs.tuiEngine.RequestRender()
 }
 

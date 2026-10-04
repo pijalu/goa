@@ -12,10 +12,9 @@ import (
 	"github.com/pijalu/goa/skills"
 )
 
-// b3Sink records the transcript rows frames ship to a browser: the rows that
-// scrolled off the top of the screen. B3 is about a *geometry change* creating
-// such rows out of the screen it replaced, so the sink is the assertion surface
-// for "no row of the current screen may be shipped as history".
+// b3Sink records what a browser receives: the transcript rows each frame
+// shipped (the rows that scrolled off the top) and the screen those rows were
+// shipped against.
 type b3Sink struct {
 	grid   *webui.CellGrid
 	frames []b3Frame
@@ -65,6 +64,12 @@ func newB3Session(t *testing.T, cols, rows int) (*webui.VirtualTerminal, *uiScen
 	sc := newUIScenarioTerm(t, vt, cols, rows)
 	sc.app.subs.skillRegistry = skills.NewSkillRegistry(nil)
 	showStartupBanner(sc.app.subs, sc.chat)
+	// The rest of the production startup banner (sticky skills, context cost,
+	// provider line): five banner entries in total, the shape that overflowed a
+	// small screen and scrolled the mascot into history (bugs.md B3).
+	addStartupInfo(sc.chat, "⟡ Sticky skills (always-on): telegram, thoughtfull")
+	addStartupInfo(sc.chat, promptContextBanner("system", nil))
+	addStartupInfo(sc.chat, "⟡ Connected to OpenCode Zen Go (deepseek-v4-flash).")
 	b3Render(sc)
 	return vt, sc, sink
 }
@@ -77,93 +82,75 @@ func b3Render(sc *uiScenario) {
 func b3Rows(vt *webui.VirtualTerminal) []string { return strings.Split(vt.Grid().Text(), "\n") }
 
 // b3HeaderComplete reports whether the grid shows the mascot from its first
-// row (a whole startup screen), i.e. the screen has not been scrolled.
-func b3HeaderComplete(t *testing.T, vt *webui.VirtualTerminal) bool {
-	t.Helper()
+// row — i.e. the startup screen has not been scrolled. A scrolled screen starts
+// mid-art, so its first row is one of the narrower art rows.
+func b3HeaderComplete(vt *webui.VirtualTerminal) bool {
 	rows := b3Rows(vt)
-	if len(rows) == 0 {
-		return false
+	return len(rows) > 0 && strings.HasPrefix(strings.TrimRight(rows[0], " "), "          ▄▄▄▄▄")
+}
+
+// b3RequireWholeStartup fails unless the grid holds the whole startup screen and
+// nothing was shipped as history.
+func b3RequireWholeStartup(t *testing.T, label string, vt *webui.VirtualTerminal, sink *b3Sink) {
+	t.Helper()
+	if !b3HeaderComplete(vt) {
+		t.Errorf("%s: startup screen scrolled (mascot cut):\n%s", label, strings.Join(b3Rows(vt)[:8], "\n"))
 	}
-	// The mascot's first row is the widest art row; a scrolled screen starts
-	// mid-art (a narrower fragment preceded by the lost rows in history).
-	return strings.HasPrefix(strings.TrimRight(rows[0], " "), "          ▄▄▄▄▄")
+	if shipped := sink.shipped(); len(shipped) != 0 {
+		t.Errorf("%s: %d transcript rows shipped: %q", label, len(shipped), shipped)
+	}
+}
+
+// b3RequireSameScreen fails unless vt's screen is byte-identical to a fresh
+// session rendered at the same geometry.
+func b3RequireSameScreen(t *testing.T, label string, vt *webui.VirtualTerminal, cols, rows int) {
+	t.Helper()
+	fresh, _, _ := newB3Session(t, cols, rows)
+	got, want := b3Rows(vt), b3Rows(fresh)
+	if len(got) != len(want) {
+		t.Errorf("%s: %d rows != fresh %dx%d session's %d", label, len(got), cols, rows, len(want))
+	}
+	for i := 0; i < len(got) && i < len(want); i++ {
+		if got[i] != want[i] {
+			t.Errorf("%s: row %d differs from a fresh %dx%d session\n got: %q\nwant: %q", label, i, cols, rows, got[i], want[i])
+			return
+		}
+	}
 }
 
 // TestWebUI_StartupScreenSurvivesGeometryChange is bugs.md B3: the browser's
 // first resize must not corrupt the startup screen. A geometry change replaces
-// the screen; it must not turn the screen it replaces into transcript history,
-// and after it settles the grid must hold exactly what a session started at
-// that geometry holds.
+// the screen; the rows it displaces belong to the screen being replaced, never
+// to the browser's transcript, and after it settles the grid must hold exactly
+// what a session started at that geometry holds.
 func TestWebUI_StartupScreenSurvivesGeometryChange(t *testing.T) {
 	vt, sc, sink := newB3Session(t, 100, 30)
+	b3RequireWholeStartup(t, "startup at 100x30", vt, sink)
 
-	// (1) The startup screen is complete: the mascot's first row is on screen
-	// and no row of it was manufactured into history by the startup itself.
-	if !b3HeaderComplete(t, vt) {
-		t.Errorf("startup screen is scrolled at 100x30 (mascot cut):\n%s", strings.Join(b3Rows(vt)[:12], "\n"))
-	}
-	if shipped := sink.shipped(); len(shipped) != 0 {
-		t.Errorf("startup shipped %d history rows before any resize: %q", len(shipped), shipped)
-	}
-
-	// (2) The browser's first resize away from the server geometry: shrink then
-	// grow, rendering after each (the client paints what the server publishes).
+	// The browser's first resize away from the server geometry: shrink then
+	// grow, rendering after each, as the client paints what the server sends.
 	vt.Resize(90, 24)
 	b3Render(sc)
 	vt.Resize(140, 40)
 	b3Render(sc)
 
-	// (3) Settled: the grid equals a fresh session's screen at that geometry.
-	fresh, _, _ := newB3Session(t, 140, 40)
-	got, want := vt.Grid().Text(), fresh.Grid().Text()
-	if got != want {
-		g, w := b3Rows(vt), b3Rows(fresh)
-		n := len(g)
-		if len(w) < n {
-			n = len(w)
-		}
-		for i := 0; i < n; i++ {
-			if g[i] != w[i] {
-				t.Errorf("grid differs from a fresh %dx%d session at row %d\n got: %q\nwant: %q", 140, 40, i, g[i], w[i])
-				break
-			}
-		}
-		if len(g) != len(w) {
-			t.Errorf("grid rows %d != fresh %d", len(g), len(w))
-		}
-	}
-	if !b3HeaderComplete(t, vt) {
-		t.Errorf("header cut after the resize sequence:\n%s", strings.Join(b3Rows(vt)[:12], "\n"))
-	}
-
-	// (4) No row of the current screen is present as history, and the geometry
-	// change shipped no history at all: the startup screen fits, so nothing
-	// scrolled and the browser's transcript is empty.
+	b3RequireSameScreen(t, "settled after shrink+grow", vt, 140, 40)
+	b3RequireWholeStartup(t, "settled after shrink+grow", vt, sink)
 	if sb := vt.Grid().Scrollback(); len(sb) != 0 {
 		t.Errorf("geometry change left %d scrollback rows", len(sb))
 	}
-	if shipped := sink.shipped(); len(shipped) != 0 {
-		t.Errorf("geometry change shipped %d transcript rows: %q", len(shipped), shipped)
-	}
 
-	// A trailing resize back to the original geometry stays consistent too
-	// (a grow that makes the screen taller than its content must re-anchor).
+	// A resize back to the original geometry stays consistent too.
 	vt.Resize(100, 30)
 	b3Render(sc)
-	back, _, _ := newB3Session(t, 100, 30)
-	if got, want := vt.Grid().Text(), back.Grid().Text(); got != want {
-		t.Errorf("grid after round-trip resize != fresh 100x30 session")
-	}
-	if !b3HeaderComplete(t, vt) {
-		t.Errorf("header cut after round-trip resize:\n%s", strings.Join(b3Rows(vt)[:12], "\n"))
-	}
+	b3RequireSameScreen(t, "after round-trip resize", vt, 100, 30)
+	b3RequireWholeStartup(t, "after round-trip resize", vt, sink)
 }
 
-// TestWebUI_TranscriptRowsAreNotOnScreen is the invariant behind B3's
-// "no row of the current screen present as history", stated over the frames a
-// browser actually receives: every shipped transcript row must be off-screen
-// at the moment it ships. Rows repeated verbatim on the screen (box borders)
-// are excluded: their presence on screen is not the shipping bug this guards.
+// TestWebUI_TranscriptRowsAreNotOnScreen states B3's invariant over the frames a
+// browser actually receives: every shipped transcript row must be off-screen at
+// the moment it ships. Rows repeated verbatim on the screen (box borders) are
+// excluded — their presence on screen is not the shipping bug this guards.
 func TestWebUI_TranscriptRowsAreNotOnScreen(t *testing.T) {
 	vt, sc, sink := newB3Session(t, 100, 30)
 
@@ -177,15 +164,22 @@ func TestWebUI_TranscriptRowsAreNotOnScreen(t *testing.T) {
 			if strings.TrimSpace(row) == "" {
 				continue
 			}
-			count := 0
-			for _, g := range fr.screen {
-				if g == row {
-					count++
-				}
-			}
-			if count == 1 {
+			if b3OnScreenOnce(fr.screen, row) {
 				t.Errorf("frame %d shipped %q as history while the screen showed it", i, row)
 			}
 		}
 	}
+}
+
+// b3OnScreenOnce reports whether row appears exactly once in screen: a single
+// occurrence is the current screen's own content, while a repeated row is an
+// ambiguous decoration (a box border) that says nothing about shipping.
+func b3OnScreenOnce(screen []string, row string) bool {
+	count := 0
+	for _, g := range screen {
+		if g == row {
+			count++
+		}
+	}
+	return count == 1
 }
