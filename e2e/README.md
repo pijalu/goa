@@ -142,6 +142,13 @@ no clipboard tool exists (needs `osascript` on macOS, `wl-copy` or `xclip` on
 Linux). It is not part of `run_all.sh`: it needs no LM Studio, but it does need a
 real desktop clipboard.
 
+`CLIP_KEEP=1 e2e/clipimg.sh` validates whatever is **already** on the clipboard
+instead of writing the synthetic PNG — used to check a clipboard a real browser
+copied an image into (the script then asserts the path and that the file exists,
+since it does not know the source dimensions). Note for that path: agent-browser
+launches Chrome `--headless=new`, where `navigator.clipboard.write` resolves but
+never reaches the OS pasteboard, so the copy has to be made `--headed`.
+
 ## Key techniques (reuse these)
 
 1. **Seeded headless orchestration** — `goa --orchestrate` only *resumes* a

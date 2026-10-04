@@ -17,6 +17,11 @@
 # Anything else (or a platform without the tool) records SKIP.
 #
 # Usage: e2e/clipimg.sh
+#
+# CLIP_KEEP=1 validates whatever is ALREADY on the clipboard instead of putting
+# the synthetic PNG there — used to check a clipboard written by a real browser
+# ("copy an image in a browser"), where the source dimensions are unknown to
+# this script and only path + existence are asserted.
 source "$(dirname "$0")/lib.sh"
 
 E2E_ROOT="${E2E_ROOT:-/tmp/goa-e2e/last}"
@@ -44,7 +49,8 @@ clipboard_tool() {
 }
 
 TOOL="$(clipboard_tool)"
-if [ -z "$TOOL" ]; then
+KEEP_CLIP="${CLIP_KEEP:-}"
+if [ -z "$TOOL" ] && [ -z "$KEEP_CLIP" ]; then
   note "no clipboard tool on this platform — skipping"
   record "$TEST_ID" SKIP "no clipboard backend for $(uname -s)"
   exit 0
@@ -96,12 +102,16 @@ png = (b'\x89PNG\r\n\x1a\n'
 open(sys.argv[1], 'wb').write(png)
 PY
 
-log "clipboard tool: $TOOL"
-case "$TOOL" in
-  osascript) osascript -e "set the clipboard to (read (POSIX file \"$SOURCE\") as «class PNGf»)" ;;
-  wl-copy)   wl-copy --type image/png < "$SOURCE" ;;
-  xclip)     xclip -selection clipboard -t image/png -i "$SOURCE" ;;
-esac
+log "clipboard tool: ${TOOL:-none (CLIP_KEEP: validating the clipboard as-is)}"
+if [ -z "$KEEP_CLIP" ]; then
+  case "$TOOL" in
+    osascript) osascript -e "set the clipboard to (read (POSIX file \"$SOURCE\") as «class PNGf»)" ;;
+    wl-copy)   wl-copy --type image/png < "$SOURCE" ;;
+    xclip)     xclip -selection clipboard -t image/png -i "$SOURCE" ;;
+  esac
+else
+  note "CLIP_KEEP: using the clipboard as it stands (no synthetic PNG written)"
+fi
 
 log "driving the TUI: Ctrl+V with a clipboard image"
 rc=0
@@ -136,6 +146,11 @@ fi
 
 want_dims="$(dims "$SOURCE")"
 got_dims="$(dims "$PATH_IN_LINE")"
+if [ -n "$KEEP_CLIP" ]; then
+  pass "Ctrl+V pasted the clipboard image: input line = $PATH_IN_LINE ($got_dims, file on disk; source left to the caller)"
+  record "$TEST_ID" PASS "input line shows $PATH_IN_LINE ($got_dims), clipboard kept as-is"
+  exit 0
+fi
 if [ "$got_dims" != "$want_dims" ]; then
   fail "stored image is $got_dims, clipboard image was $want_dims"
   record "$TEST_ID" FAIL "stored pixels $got_dims != clipboard $want_dims"

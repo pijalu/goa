@@ -252,6 +252,7 @@ text).
 | Paste key → real store → **input line**, + no-image / no-reader paths | `go test ./tui/ -run 'TestEditor_PasteFromClipboard'` |
 | Pasted path lands in the input line (app tail) | `go test ./internal/app/ -run TestPastedImagePathLandsInTheInputLine` |
 | Real terminal, real clipboard, rendered input line | `e2e/clipimg.sh` |
+| Image copied *in a browser* → PTY hotkey → stored path | `agent-browser open --headed … ; CLIP_KEEP=1 e2e/clipimg.sh` (see bugs.md B6) |
 | Attachment extraction keeps prose / rejects URLs | `go test ./internal/app/ -run TestSplitUserInput` |
 | Full gate | `go vet ./... && go test -count=1 -race -timeout 900s ./... && gocognit -over 15 <changed dirs> && gocyclo -over 12 <changed dirs>` |
 

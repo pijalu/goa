@@ -273,6 +273,38 @@ what the TUI rendered, not on a polled file), and `e2e/README.md` documents the
 check. Live-process note: the TUI was shut down by the driver (`gracefulStop`);
 no `goa`/mock-LLM process was left behind.
 
+**Validation, the reported case (image copied in a browser).** The synthetic PNG
+above proves the chain; the report is about an image copied *in a browser*, so
+that was driven too. A page whose image is **40×24** (deliberately unlike the
+script's 8×8) writes the real OS clipboard through the browser's own clipboard
+API from a real click:
+
+```
+AGENT_BROWSER_SESSION=clipimg-headed agent-browser open --headed \
+  file:///tmp/clipval/browser/copy-image.html      # page: <img> + copy button
+AGENT_BROWSER_SESSION=clipimg-headed agent-browser click '#copy'
+  → eval state = "copied:97"
+osascript -e 'clipboard info'
+  → BEFORE: «class PNGf», 74  …  AFTER: «class PNGf», 217
+  and the readback PNG is 40×24 (the browser re-encoded the 97-byte source)
+CLIP_KEEP=1 e2e/clipimg.sh
+  → [PASS] Ctrl+V pasted the clipboard image: input line =
+    /Users/…/Caches/goa/images/goa-image-20449706.png (40x24, file on disk)
+```
+
+The `40x24` on both sides is the point: the stored attachment **is** the
+browser-copied image, not a leftover file. `e2e/clipimg.sh` takes `CLIP_KEEP=1`
+for exactly this: validate a clipboard someone else set (it then asserts path +
+existence, since it does not know the source dimensions).
+
+**Harness finding (measured here).** `agent-browser` launches Chrome with
+`--headless=new`, and in that mode `navigator.clipboard.write` **resolves and
+changes nothing on the OS pasteboard** — a click reported `copied:97` while
+`clipboard info` still showed the previous 74-byte PNG. So a *browser→OS
+clipboard* check must run `--headed` (or read back through the page, as
+`e2e/webclip` does); a headless run of this validation would look green and prove
+nothing.
+
 **Regression evidence (before/after).** With `tryPasteImage` short-circuited to
 "no image" (`return "", false`), the three `tui` paste tests fail
 (`StoresImageAndInsertsStoredPath`, `InsertsImageReference`,
