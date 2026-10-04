@@ -315,7 +315,7 @@ with the browser owning the whole scroll interaction and nothing to correct.
   these are regression-checked, not hand-checked. (Done; the mechanics section
   was re-run against the fixed server — §2.7.)
 
-### 5.1 Open, unrelated to the per-frame cost
+### 5.1 Closed 2026-10-04: `goa server` did not exit on SIGINT/SIGTERM
 
 `goa server` does not exit on SIGINT/SIGTERM: `runWebServer` builds the session
 with `signal.NotifyContext` and then blocks in `New(subs).Run()`, which does not
@@ -326,3 +326,10 @@ the same way — cleaning up the throwaway servers left over from this work need
 `kill -9` on eight processes that a `pkill` (SIGTERM) had left running.
 Pre-existing, in the session lifecycle rather than the web layer; it is why the
 §2 numbers come from benchmarks rather than an end-to-end pprof capture.
+
+Fixed in the session lifecycle, not the web layer: the console's context now
+reaches the stop path `/quit` already used (`App.RunContext` → StopRequest
+control event → `TUI.Stop`), the listener closes only after the session ends, and
+the process exits 0 with its profiles flushed. Real-binary PTY measurements
+(Ctrl+C → exit 0 in ~2.8-3.1 s, SIGTERM likewise, profiles non-empty) are in
+[`docs/archive/2026-10-04-webui-server-shutdown.md`](archive/2026-10-04-webui-server-shutdown.md).

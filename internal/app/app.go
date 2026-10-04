@@ -15,12 +15,14 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/acp"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
+	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/usage"
 	"github.com/pijalu/goa/skills"
@@ -227,6 +229,19 @@ func (a *App) sessionUsageSnapshot() map[string]any {
 // Run starts the TUI, agent session, and event loop. It returns true if the
 // application should relaunch (e.g., after the setup wizard writes config).
 func (a *App) Run() bool {
+	return a.RunContext(context.Background())
+}
+
+// RunContext runs the interactive session and ends it when ctx is cancelled,
+// performing the same shutdown `/quit` performs. `goa server` passes a context
+// cancelled by the console's SIGINT/SIGTERM: the web UI session has no TTY to
+// read Ctrl+C from (the process terminal is replaced by a VirtualTerminal), so
+// without this the signal was consumed by the handler and the process could not
+// be stopped from its own console at all.
+//
+// Returns true if the application should relaunch (e.g., after the setup wizard
+// writes config).
+func (a *App) RunContext(ctx context.Context) bool {
 	subs := a.subs
 	cfg := subs.cfg
 	projectDir := subs.projectDir
@@ -278,6 +293,11 @@ func (a *App) Run() bool {
 	a.startAsyncPluginLoad(engine)
 
 	done := a.setupEventHandlers(engine, chat, inp)
+	// External stop: `goa server` has no TTY for Ctrl+C, so the shutdown signal
+	// arrives as a cancelled context. Installed AFTER setupEventHandlers (the
+	// stop rides the control-event path, whose reader must exist) and before the
+	// blocking wait on done below.
+	a.watchStopContext(ctx, engine)
 	// P22/DS6: hot-reload config edits from disk for the interactive session.
 	// Started before the event loops so an edit made while the app runs
 	// applies on the next request; stopped on shutdown (no goroutine leaks).
@@ -333,6 +353,64 @@ func (a *App) Run() bool {
 		return true
 	}
 	return false
+}
+
+// watchStopContext ties an external context to the session's own shutdown: when
+// ctx is cancelled the session ends exactly as `/quit` ends it. Used by
+// `goa server`, whose session has no TTY to read Ctrl+C from.
+//
+// The watcher exits with the session (engine.Stopped) so a normally-ended
+// session leaves no goroutine behind; App.RunContext's blocking wait on `done`
+// is what the stop must reach.
+func (a *App) watchStopContext(ctx context.Context, engine *tui.TUI) {
+	if ctx == nil || ctx.Done() == nil || engine == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			a.requestStop()
+		case <-engine.Stopped():
+		}
+	}()
+}
+
+// stopRequestBudget bounds how long requestStop waits for the control-event
+// reader to accept the stop before falling back to stopping the engine
+// directly. The bus is drained continuously, so the send succeeds on the first
+// attempt in practice; the budget only covers a full buffer.
+const (
+	stopRequestBudget = 2 * time.Second
+	stopRequestRetry  = 5 * time.Millisecond
+)
+
+// requestStop ends the running session through the same path `/quit` uses: a
+// StopRequest control event, handled on the commandLoop, which calls TUI.Stop.
+// That keeps TUI.Stop's documented restore ordering (compositor reset →
+// Terminal.Stop → close(done)) on the single owning goroutine, so the process
+// cannot exit mid-restore.
+//
+// Stop is stopOnce-guarded and documented as safe from any goroutine, which is
+// what makes the direct fallback below safe: it can never double-restore.
+func (a *App) requestStop() {
+	bus := a.subs.events
+	if bus != nil && bus.Control != nil {
+		deadline := time.Now().Add(stopRequestBudget)
+		for {
+			select {
+			case bus.Control <- event.ControlEvent{StopRequest: true}:
+				return
+			default:
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(stopRequestRetry)
+		}
+	}
+	if engine := a.subs.tuiEngine; engine != nil {
+		engine.Stop()
+	}
 }
 
 // activatePluginUI connects loaded plugin UI contributions (status-bar

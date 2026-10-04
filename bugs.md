@@ -28,46 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B1 — `goa server` ignores Ctrl+C: the console does not stop the server
-
-**Observed.** `goa server` cannot be stopped from its own console. `Ctrl+C`
-(SIGINT) and SIGTERM are both ignored: the HTTP listener stops answering but the
-process keeps running, and `--cpuprofile`/`--memprofile` never write their files.
-Measured on a binary built from `8c42fc73`:
-
-```
-$ goa server --server-addr 127.0.0.1:8299 &   # http=302 while up
-$ kill -INT $! ; sleep 5 ; kill -0 $! && echo STILL_ALIVE
-STILL_ALIVE
-$ pkill -f "goa server --server-addr"         # SIGTERM: 8 servers survive
-$ kill -9 <pids>                              # only SIGKILL works
-```
-
-Root cause: `internal/app/webui.go` `runWebServer` builds the session with
-`signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` and
-then blocks in `New(subs).Run()`, which never observes that context. NotifyContext
-also consumes the signal, so the default "die on Ctrl+C" behaviour is gone.
-
-**Expected.** Ctrl+C in the server console stops `goa server` cleanly: the
-session ends (as `/quit` does), the listener closes, deferred profiling flushes,
-and the process exits with status 0.
-
-**Plan.**
-- Wire the server's context into the session shutdown: give `App.Run` (or a new
-  `App.RunContext(ctx)`) a way to request the same stop `/quit` performs, and have
-  `runWebServer` cancel it on ctx.Done, then wait for `Run` to return before
-  closing the listener (today `srv.Close()`/`<-serveErr` run after `Run`).
-  Keep the restore sequence ordered exactly as `TUI.Stop` documents it.
-- Test approach: an app-level test that runs the server wiring with a
-  cancellable context and asserts `Run` returns and the profile files are written
-  (headless-shape test, no TTY). Plus a PTY e2e (`e2e/w1_webui_browser.sh` or a
-  small addition) that sends Ctrl+C to a real `goa server` and asserts the
-  process exits within a few seconds.
-- Validation: `goa server` + real Ctrl+C in a terminal → prompt returns, exit 0,
-  no stray process; `--cpuprofile` file exists and is non-empty.
-- Related: docs/webui-perf-assessment.md §5.1 (recorded there while fixing the
-  frame cost).
-
 ## B2 — Web UI: screen corrupted after `/quota` (double/triple output)
 
 **Observed.** Typing `/quota` in the browser leaves the whole screen corrupted
@@ -221,7 +181,48 @@ paste is a first-class capability of the session, not of one front end.
 - Validation: real terminal, copy an image in a browser, press the hotkey in goa,
   the input line shows the stored path; and the same via the web page for parity.
 
+## B7 — Web UI: keystrokes typed while the session is still starting are not acted on
+
+**Observed.** A browser that connects the moment the listener answers — i.e.
+before the session has finished wiring itself — can type without effect. Measured
+while fixing B1 with a real `goa server` over a websocket client: sending the
+`/quit` keys immediately after `goa web UI ready: ...` is ignored (the process
+stays up), while the same keys sent 350 ms+ after startup always quit it. The
+listener binds and accepts clients before `App.RunContext` builds the engine, so
+the window is the session's startup time (tens of milliseconds on this machine).
+
+**Expected.** Typing always has an effect: bytes that arrive before the engine
+exists are held and delivered when it does, and once they are delivered the
+submit path is there to act on them.
+
+**Partial fix already in tree.** `webui.VirtualTerminal` now holds pre-`Start`
+bytes (bounded, 4 KiB) and replays them in `Start`, instead of dropping them
+silently (`TestVirtualTerminal_InputBeforeStartIsReplayedOnStart`). The remaining
+half is the submit path: `inp.SetOnSubmit` is wired in `setupEventHandlers`,
+*after* `buildTUI` has already started the engine — so an Enter replayed at
+`Start` is consumed with no handler attached (the typed text stays in the editor,
+it is not lost). Making the first keystrokes fully effective needs either the
+submit wiring moved before `engine.Start` or the listener to start serving only
+once the session is ready; both touch session startup, so they are left here.
+
+**Plan.**
+- Decide the gate: either (a) wire `inp.SetOnSubmit` inside `buildTUI` before
+  `engine.Start`, proving no replayed key can reach unwired app state, or (b) keep
+  the listener bound but start `srv.Serve` only after the session signals ready.
+- Test approach: the existing e2e (`cmd/goa/e2e_server_signal_test.go`
+  `TestGoaE2E_ServerBrowserQuitStopsProcessWithStatusZero`) sends `/quit` exactly
+  at connect time; drop its re-send loop once the gate exists, which is the
+  deterministic assertion this needs.
+- Validation: repeated runs of that test with no re-send, plus a browser test that
+  types immediately on load.
+
 ## Closed
+Closed 2026-10-04 — B1, `goa server` could not be stopped from its own console:
+Ctrl+C/SIGTERM are now wired into the session's own stop path, the listener
+closes after the session ends, deferred profiling flushes and the process exits 0.
+See [`docs/archive/2026-10-04-webui-server-shutdown.md`](docs/archive/2026-10-04-webui-server-shutdown.md)
+for the root cause, the RED/GREEN measurements and the residual risks.
+
 Closed 2026-10-04 — web UI rendering (scroll / caret / resize / clipboard) and
 the O(history) per-frame cost. See
 [`docs/archive/webui-rendering-and-frame-cost.2026-10-04.md`](docs/archive/webui-rendering-and-frame-cost.2026-10-04.md)

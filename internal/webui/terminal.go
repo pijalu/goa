@@ -5,6 +5,7 @@
 package webui
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -15,6 +16,14 @@ import (
 // documents are tiny; anything larger is a bug or an attack, never a
 // legitimate client.
 const MaxFrameBytes = 1 << 20
+
+// pendingInputLimit bounds the keystrokes a VirtualTerminal holds before the
+// engine wires its input callback. A tty's own input buffer is finite too, and
+// this one is fed by a socket: an unbounded buffer would be a memory-growth
+// vector for a client that types into a session that never starts. Bytes past
+// the limit are dropped (the overflow is the least valuable part of a burst
+// nobody asked the session to interpret yet).
+const pendingInputLimit = 4096
 
 // FrameSink receives the frames a VirtualTerminal produces. The Hub is the
 // production implementation; tests use a recorder.
@@ -46,6 +55,9 @@ type VirtualTerminal struct {
 	onResize func()
 	started  bool
 	stopped  bool
+	// pendingInput holds keystrokes delivered before Start wired onInput.
+	// Guarded by mu.
+	pendingInput strings.Builder
 
 	frameNo atomic.Uint64
 	codec   FrameCodec
@@ -85,12 +97,23 @@ func (v *VirtualTerminal) SetSink(s FrameSink) {
 // Start stores the engine's input and resize callbacks. Unlike
 // ProcessTerminal it acquires no raw mode and claims no screen: there is no
 // TTY behind it.
+//
+// Keystrokes that arrived first are replayed through the callback now, in
+// order: a page can attach and type as soon as the listener is up, which is a
+// few milliseconds before the session's terminal exists, and those bytes must
+// not vanish (a tty holds typed bytes until a reader arrives; so does this).
 func (v *VirtualTerminal) Start(onInput func(string), onResize func()) {
 	v.mu.Lock()
 	v.onInput, v.onResize = onInput, onResize
 	v.started = true
 	v.stopped = false
+	pending := v.pendingInput.String()
+	v.pendingInput.Reset()
 	v.mu.Unlock()
+
+	if pending != "" {
+		v.dispatch(onInput, pending)
+	}
 }
 
 // Stop detaches from the sink. The grid is left intact so a late reader can
@@ -103,6 +126,9 @@ func (v *VirtualTerminal) Stop() {
 	}
 	v.stopped = true
 	v.onInput, v.onResize = nil, nil
+	// The session is over: keystrokes typed into it now have no engine to
+	// reach, and must not be replayed into a future session either.
+	v.pendingInput.Reset()
 	v.mu.Unlock()
 	v.SetSink(nil)
 }
@@ -195,16 +221,33 @@ func (v *VirtualTerminal) resizeChanged(cols, rows int) bool {
 // Input delivers raw terminal bytes from a transport to the engine, exactly as
 // a real keyboard read would. Panics from the engine's handler are contained:
 // one bad key must not kill the transport goroutine.
+//
+// Before the engine has started, the bytes are held (bounded) instead of
+// dropped and replayed by Start: the listener accepts clients the moment it
+// binds, a few milliseconds before the session wires its input callback, and a
+// page that connects in that window must not lose what the user typed.
 func (v *VirtualTerminal) Input(s string) {
 	if s == "" {
 		return
 	}
-	v.mu.RLock()
+
+	v.mu.Lock()
 	cb := v.onInput
-	v.mu.RUnlock()
 	if cb == nil {
+		// Not started yet: hold the bytes for Start. A stopped terminal holds
+		// nothing — there is no session left to type into.
+		if !v.stopped && v.pendingInput.Len() < pendingInputLimit {
+			room := pendingInputLimit - v.pendingInput.Len()
+			if len(s) > room {
+				s = s[:room]
+			}
+			v.pendingInput.WriteString(s)
+		}
+		v.mu.Unlock()
 		return
 	}
+	v.mu.Unlock()
+
 	v.dispatch(cb, s)
 }
 

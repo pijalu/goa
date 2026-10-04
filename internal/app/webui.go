@@ -54,31 +54,103 @@ carries a strict Content-Security-Policy, and cross-origin writes are refused.
 // One wiring site, no second code path: everything the terminal UI can do,
 // the page can do, because it *is* the terminal UI.
 func runWebServer(subs *subsystems, opts RuntimeOptions) {
+	ctx, releaseSignals := shutdownSignals()
+	defer releaseSignals()
+	if err := serveWebUI(subs, opts, New(subs), ctx); err != nil {
+		fatalExitf("Error: %v\n", err)
+	}
+}
+
+// webSession is the interactive session the web UI serves. *App implements it
+// (RunContext). It is an interface so the shutdown wiring — the session ends
+// because its context was cancelled, and only THEN does the listener close —
+// is testable without a real binary and without a TTY.
+type webSession interface {
+	RunContext(ctx context.Context) bool
+}
+
+// serveWebUI binds the listener, serves the web UI, runs the interactive
+// session, and returns once BOTH are over: the session has ended (a browser's
+// /quit, a console SIGINT/SIGTERM through session's context, or a startup
+// failure) and the listener is closed.
+//
+// The ordering matters and is the bug this fixes. The session owns the URL the
+// browser is driving, so the listener must stay up for as long as the session
+// runs and must be closed only after it has ended. The HTTP server therefore
+// gets its own context, cancelled here — never the shutdown context — so a
+// console Ctrl+C cannot shut the listener down underneath a still-running
+// session; the deferred profiler flush after this returns still happens, so the
+// process exits 0 with its --cpuprofile/--memprofile written.
+func serveWebUI(subs *subsystems, opts RuntimeOptions, session webSession, ctx context.Context) error {
 	srv, err := newWebServer(subs, opts)
 	if err != nil {
-		fatalExitf("Error: %v\n", err)
+		return err
 	}
 
 	ln, err := srv.Listen()
 	if err != nil {
-		fatalExitf("Error: %v\n", err)
+		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
+	serveCtx, stopServing := context.WithCancel(context.Background())
+	defer stopServing()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve(ctx, ln) }()
+	go func() { serveErr <- srv.Serve(serveCtx, ln) }()
 
 	fmt.Printf("goa web UI ready: %s\n", srv.URL())
 
 	// The interactive session owns stdout-free rendering: it draws into the
 	// virtual screen while browsers watch. It returns when the session ends.
-	New(subs).Run()
+	session.RunContext(ctx)
 
-	stop()
+	stopServing()
 	_ = srv.Close()
 	<-serveErr
+	return nil
+}
+
+// shutdownSignals returns a context cancelled by the first SIGINT/SIGTERM
+// delivered to the server console, plus a function that releases the handlers.
+//
+// The handlers are installed here rather than with signal.NotifyContext so the
+// SECOND signal can escalate to an immediate exit. NotifyContext alone both
+// consumed Ctrl+C (removing the default die-on-SIGINT behaviour while nothing
+// observed its context — the reported defect) and left a second Ctrl+C just as
+// ignored, so a graceful stop that failed to finish would have left the process
+// unstoppable. signalExitCode reports the signal that forced the exit.
+func shutdownSignals() (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		if _, ok := <-sigCh; !ok {
+			return
+		}
+		cancel()
+		sig, ok := <-sigCh
+		if !ok {
+			return
+		}
+		exitAfterFlush(signalExitCode(sig))
+	}()
+
+	return ctx, func() {
+		// Stop guarantees no further sends on sigCh, so closing it releases the
+		// watcher goroutine.
+		signal.Stop(sigCh)
+		close(sigCh)
+		cancel()
+	}
+}
+
+// signalExitCode maps a signal to the conventional shell status (128+signum),
+// so an escalated stop still reports which signal ended the process.
+func signalExitCode(sig os.Signal) int {
+	if s, ok := sig.(syscall.Signal); ok {
+		return 128 + int(s)
+	}
+	return 1
 }
 
 // newWebServer builds the web UI's HTTP server for the given options, or

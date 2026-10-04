@@ -59,6 +59,73 @@ func TestVirtualTerminal_InputSurvivesPanickingHandler(t *testing.T) {
 	vt.Input("x") // must not propagate
 }
 
+// The listener accepts clients the moment it binds, which is a few
+// milliseconds before the session has wired its terminal — so keystrokes
+// arriving in that window must be held and replayed by Start, not dropped.
+// Dropped input here means a browser that connected during startup loses what
+// the user typed (measured: an immediate /quit was ignored).
+func TestVirtualTerminal_InputBeforeStartIsReplayedOnStart(t *testing.T) {
+	vt := NewVirtualTerminal(80, 24)
+
+	vt.Input("/qui")
+	vt.Input("t\r")
+	vt.Input("") // still a no-op
+
+	var got []string
+	vt.Start(func(s string) { got = append(got, s) }, func() {})
+
+	const want = "/quit\r"
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("buffered input replayed as %q, want one %q", got, want)
+	}
+
+	// Once started, delivery is immediate again (not buffered a second time).
+	vt.Input("x")
+	if len(got) != 2 || got[1] != "x" {
+		t.Fatalf("post-start input = %q, want immediate delivery", got)
+	}
+}
+
+// Nothing may be replayed into a session that already ended: a stopped
+// terminal has no engine to type into, and stale keystrokes must not surface
+// in a future one.
+func TestVirtualTerminal_InputAfterStopIsDropped(t *testing.T) {
+	vt := NewVirtualTerminal(80, 24)
+	vt.Start(func(string) {}, func() {})
+	vt.Stop()
+
+	vt.Input("late")
+
+	var got []string
+	vt.Start(func(s string) { got = append(got, s) }, func() {})
+	if len(got) != 0 {
+		t.Fatalf("input typed after Stop was replayed: %q", got)
+	}
+}
+
+// The pre-start buffer is bounded: a client that floods a session which never
+// starts must not be able to grow it without limit.
+func TestVirtualTerminal_PendingInputIsBounded(t *testing.T) {
+	vt := NewVirtualTerminal(80, 24)
+
+	burst := strings.Repeat("a", pendingInputLimit*2)
+	vt.Input(burst)
+
+	got := vt.pendingInput.Len()
+	if got > pendingInputLimit {
+		t.Fatalf("pending input grew to %d bytes, want at most %d", got, pendingInputLimit)
+	}
+
+	var delivered []string
+	vt.Start(func(s string) { delivered = append(delivered, s) }, func() {})
+	if len(delivered) != 1 {
+		t.Fatalf("replayed %d chunks, want exactly 1", len(delivered))
+	}
+	if len(delivered[0]) != pendingInputLimit {
+		t.Fatalf("replayed %d bytes, want the bounded %d", len(delivered[0]), pendingInputLimit)
+	}
+}
+
 // The screen the engine writes must come back out as cells, and a second,
 // unchanged write must not publish a frame.
 func TestVirtualTerminal_WriteUpdatesGrid(t *testing.T) {
