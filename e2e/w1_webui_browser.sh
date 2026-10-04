@@ -292,6 +292,24 @@ else
   record grid_height FAIL "grid height != 16 + rows*16: $GROW"
 fi
 
+# B4: the bottom band renders like the terminal's — input row(s), separator,
+# status row with the right-aligned mode, model line — one row per line, all
+# inside the viewport, never clipped or overlapping. The page sizes the grid to
+# the viewport, so "inside the viewport" is "every row inside #screen's client
+# rect", the grid's last row is the model line, and the grid never crosses into
+# #status (the 24px connection bar).
+ab set viewport 1280 900 >/dev/null 2>&1; sleep 2
+BAND="$(abq "(function(){var s=document.getElementById('screen'),r=document.getElementById('rows'),st=document.getElementById('status');
+var rect=s.getBoundingClientRect(),n=r.children.length,inside=true,overlap=false;
+for(var i=0;i<n;i++){var b=r.children[i].getBoundingClientRect();if(b.top<rect.top-0.5||b.bottom>rect.bottom+0.5){inside=false}}
+if(r.getBoundingClientRect().bottom>st.getBoundingClientRect().top+0.5){overlap=true}
+return JSON.stringify({rows:n,inside:inside,overlap:overlap,model:r.children[n-1].innerText.trim(),status:r.children[n-2].innerText.trim()})})()" || echo '{}')"
+if has "$BAND" '"inside":true' && has "$BAND" '"overlap":false' && has "$BAND" "$GOA_ACTIVE_MODEL"; then
+  record footer_band PASS "$(jnum "$BAND" rows) rows all inside the viewport, model line last"
+else
+  record footer_band FAIL "footer band outside the viewport or clipped: $BAND"
+fi
+
 # Clipboard: Ctrl/Cmd+V and Ctrl/Cmd+X must stay the browser's — preventDefault
 # on Ctrl+V suppresses the very `paste` event the page relies on, and claiming
 # Ctrl+X blocks native cut. Ctrl+C is the browser's copy ONLY when something is

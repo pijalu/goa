@@ -68,33 +68,6 @@ grid holding the live screen.
   + DOM dump showing every line once; `e2e/w1_webui_browser.sh` mechanics section
   still green.
 
-## B4 — Web UI: input line / bottom status bar not rendered correctly
-
-**Observed.** The bottom of the page (input line, separators, status and model
-lines) is not rendered correctly in the browser.
-
-Formal measurement so far (DOM, 1280×900): `#screen` clientHeight 876 vs grid +
-transcript heights, rows all 16 px with no overlap and no horizontal overflow, so
-the *cell* layout is not the problem — the suspicion is the same rows being laid
-out with the wrong width/height after a geometry change, and/or the footer rows
-falling outside the visible area (screenshot structure analysis shows one
-separator rule and a gap before the status line, with no model line inside the
-captured area).
-
-**Expected.** The footer renders exactly like the terminal's: input row(s),
-separator, status row with the right-aligned mode, model line — all inside the
-viewport, one row per line, never clipped.
-
-**Plan.**
-- Compare browser vs terminal row by row at the same geometry: capture the TUI's
-  own screen at N columns/rows (PTY + `tui.TermEmulator` replay) and assert the
-  web grid's text equals it (this is the "fully verify the screen" check; it also
-  covers B3).
-- Fix whatever the comparison exposes (measurement of cols/rows, footer heights,
-  or the grid height accounting for the footer band).
-- Validation: equality check at several geometries in a real browser (cells, row
-  count, `#rows` height vs `16 + rows*16`), plus the screenshot.
-
 ## B5 — Web UI: selecting text works, copy/paste does not
 
 **Observed.** Text can be selected in the page, but copying it does not reach the
@@ -180,6 +153,18 @@ once the session is ready; both touch session startup, so they are left here.
   types immediately on load.
 
 ## Closed
+Closed 2026-10-04 — B4, the web UI's input line / bottom status bar: the bottom
+band (input row, separators, status row with the right-aligned mode, model line)
+now renders exactly like the terminal's at the same geometry and stays inside the
+viewport. Root cause: the same startup-canvas overflow as B3 (the boxed banner
+made the canvas taller than the browser's grid, so the compositor scrolled the
+header into the emulator's scrollback and the transcript pushed the footer band
+below the fold); B3's single-row startup info entries removed it. Pinned by
+`internal/app/webui_b4_footer_test.go` (web grid == terminal screen, row for row,
+at 10 geometries, plus the band's presence/order) and an `e2e/w1_webui_browser.sh`
+`footer_band` check in a real browser. See
+[`docs/archive/webui-b4-bottom-band.2026-10-04.md`](docs/archive/webui-b4-bottom-band.2026-10-04.md).
+
 Closed 2026-10-04 — B1, `goa server` could not be stopped from its own console:
 Ctrl+C/SIGTERM are now wired into the session's own stop path, the listener
 closes after the session ends, deferred profiling flushes and the process exits 0.
