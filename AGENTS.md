@@ -45,3 +45,4 @@ Copyright (C) 2026 Pierre Poissinger
 - Tool errors use `internal.ToolError` format
 - Commands self-register via `init()` in `core/commands/`
 - TUI renderers for tools in `tools/*_renderer.go`, registered via `tui/register_renderers.go`
+- **Always commit** `internal/agentic/provider/models/api.json` (the regenerated model catalog): it is tracked, so never leave it dirty and never exclude it from a commit — its churn is expected and belongs in history
