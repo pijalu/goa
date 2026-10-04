@@ -46,3 +46,14 @@ Copyright (C) 2026 Pierre Poissinger
 - Commands self-register via `init()` in `core/commands/`
 - TUI renderers for tools in `tools/*_renderer.go`, registered via `tui/register_renderers.go`
 - **Always commit** `internal/agentic/provider/models/api.json` (the regenerated model catalog): it is tracked, so never leave it dirty and never exclude it from a commit — its churn is expected and belongs in history
+
+## Running a Server (validation)
+
+- When a `goa server` (or any test/throwaway server, browser driver or Chrome
+  instance) is started for validation — typically from `/tmp` or a scratch dir —
+  **always shut it down before finishing the task**. Never leave one running.
+- `goa server` currently ignores SIGINT and SIGTERM (see `bugs.md` B1), so a
+  graceful `kill` is not enough: verify with `ps`, and use `kill -9` when the
+  process is still alive. Close browser sessions too (`agent-browser close --all`
+  / `pkill -f agent-browser-chrome-`).
+- Report the cleanup in the task summary (which pids/ports were stopped).
