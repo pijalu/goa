@@ -321,6 +321,8 @@ with the browser owning the whole scroll interaction and nothing to correct.
 with `signal.NotifyContext` and then blocks in `New(subs).Run()`, which does not
 observe that context, so the HTTP listener stops but the process stays up (and
 the profiling flags never write their files). Reproduced on the binary built for
-the §2.7 pass: `kill -INT` → `kill -0` still true 5 s later. Pre-existing, in the
-session lifecycle rather than the web layer; it is why the §2 numbers come from
-benchmarks rather than an end-to-end pprof capture.
+the §2.7 pass: `kill -INT` → `kill -0` still true 5 s later. SIGTERM is ignored
+the same way — cleaning up the throwaway servers left over from this work needed
+`kill -9` on eight processes that a `pkill` (SIGTERM) had left running.
+Pre-existing, in the session lifecycle rather than the web layer; it is why the
+§2 numbers come from benchmarks rather than an end-to-end pprof capture.
