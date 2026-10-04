@@ -72,31 +72,124 @@ usable height at 1280×900 (and the sizes in the B4 test).
 - Fix the row-count arithmetic and add the failing viewport to the B4 geometry
 list so the app harness covers it too.
 
+## B10 — Web UI: scrollback colours are wrong
+
+**Observed.** Reported while B5 was being fixed: "scroll color aren't correct" —
+colours in the scrolled-off transcript do not match the live grid.
+
+**Expected.** A row rendered in the transcript looks the same as the same row did
+in the grid: the same run classes, the same palette, no theme-default fallback.
+
+**Plan.**
+- Reproduce in the browser: emit a coloured screen (`/help` has styled rows), let
+  it scroll into `#scrollback`, then compare each transcript row's computed
+  colours against the same row's colours while it was in the grid (same run text,
+  same class list, same `color`/`background-color`).
+- Suspect the shared run builder: transcript rows are built by `buildRow` from
+  `RowPatch` runs, while live rows go through `applyRow`; if one path drops the
+  style fields (`fg`/`bg`) or the class flags, the transcript loses colour.
+- Also check the server side: scrollback batches are encoded separately
+  (`EncodeScrollback`), so a run field lost in that encoder would only show up
+  after a row scrolls off.
+- Validation: the browser harness compares grid colours and transcript colours for
+  the same content, and a goja test asserts a transcript row keeps its runs.
+
 ## B5 — Web UI: selecting text works, copy/paste does not
 
 **Observed.** Text can be selected in the page, but copying it does not reach the
-system clipboard and pasting does not insert anything (reported; not yet
-reproduced — headless Chrome has no real clipboard).
+system clipboard and pasting does not insert anything.
 
-What is already verified: the page claims the right chords (`Ctrl/Cmd+C/V/X` stay
-the browser's, `Ctrl+C` is the terminal interrupt only with no selection), a
-*synthetic* paste inserts its text into the editor, and an idle page performs 0
-DOM mutations with a stable selection — so neither the chord logic nor repaint
-churn is the obvious cause.
+**Root cause (measured, not inferred).** The page left Cmd/Ctrl+C/V/X to the
+browser and relied on the implicit `copy`/`paste` events. Chrome only wires those
+chords to **editable** targets, and the terminal's grid is not one: with `#grid`
+focused, a real Cmd+C over a live selection produced **no `copy` event and left
+the clipboard unchanged**, and a real Cmd+V produced **no `paste` event at all**
+(so `document.addEventListener("paste", …)` never ran). Reproduced by driving
+headless Chrome over CDP with real chords (`Input.dispatchKeyEvent`) and reading
+`navigator.clipboard.readText()` back with the clipboard permission granted and
+focus emulated (`Emulation.setFocusEmulationEnabled`) — without the permission
+and the emulated focus Chrome auto-denies the reads, which is why the failure had
+looked environmental.
+
+Two further measurements shaped the fix:
+
+* CDP-injected chords never trigger the *browser's* clipboard actions — in
+  headless and headed alike (a focused hidden textarea received no `paste`
+  either). The page's own path is therefore the only testable one.
+* In a real (headed) Chrome, `navigator.clipboard.readText()` sits behind a
+  **permission prompt** even inside a trusted keydown (the promise never settles
+  until it is answered). So a paste must first be handed to the browser's own
+  paste, which needs no permission; the async read is only the fallback.
 
 **Expected.** Cmd+C with a selection puts the selected text on the system
 clipboard; Cmd+V pastes clipboard text into the input line; Cmd+X cuts; the
 engine's own Ctrl chords keep working.
 
-**Plan.**
-- Reproduce with a real clipboard: drive Chrome with real chord events over CDP
-  and read back `navigator.clipboard.readText()` with the clipboard permission
-  granted, both with and without a selection, before touching code.
-- Test approach: once the failing step is known, add it to
-  `e2e/w1_webui_browser.sh` (real clipboard, not synthetic events) so it is
-  regression-checked; keep the goja chord test as the unit-level guard.
-- Validation: real browser, select → Cmd+C → clipboard contains the selection;
-  Cmd+V inserts text; Ctrl+C with no selection still interrupts the turn.
+**Fix.** `internal/webui/assets/app.js`:
+
+* `clipboardChord` decides the chord's fate: `CHORD_DONE` (the page did it),
+  `CHORD_BROWSER` (the browser keeps it — nothing sent, nothing prevented),
+  `CHORD_KEY` (an ordinary keystroke for the engine).
+* Copy: `writeClipboard` uses `navigator.clipboard.writeText`, falling back to
+  `document.execCommand("copy")` through a detached textarea (both work from a
+  keydown, where the user gesture comes from).
+* Paste: the chord focuses the hidden `#paste-target` textarea and does **not**
+  `preventDefault`, so the browser pastes into an editable element and delivers a
+  `paste` event carrying the clipboard — no permission involved. The chord's
+  **keyup** closes the paste window (`finishPaste`); if no paste event arrived (a
+  script-dispatched chord performs no browser paste) the page reads the clipboard
+  itself from there, which is still a user-gesture context. The 500 ms timer is
+  only a backstop. `pasteHandled` keeps the two paths from double-inserting.
+* Cut: copies the selection and removes it from the input line by driving the
+  engine's own keys — Backspace when the selection ends at the cursor, Delete
+  when it starts there, and (for a selection neither reaches) the cursor is walked
+  to the selection's end first, using pixel-measured cell columns. Text the
+  terminal **output** cannot delete is copied and left alone; the walk is skipped
+  on a line holding two-cell glyphs, where columns and buffer characters disagree.
+* Ctrl+C with **no** selection is still sent to the engine as the interrupt
+  (`\x03`), and a viewer (read-only) can still copy but never paste or cut.
+
+**Tests.**
+
+* `internal/webui/browserclient_test.go` (real `app.js` under goja): the chord
+  contract, the paste target/focus hand-off, the keyup fallback, the backstop, the
+  no-clipboard-API fallback, the execCommand copy fallback, the read-only viewer,
+  and all three cut shapes (adjacent, mid-line walk, wide-glyph guard, output left
+  alone). The stub gained `document.activeElement`, a clipboard mock, range
+  geometry and a faithful `textContent` getter (which had hidden a row's text).
+* `e2e/webclip` (new Go CDP driver): real chords, real clipboard — `copy`, `paste`
+  and `cut` are asserted end to end against a live `goa server` page, with the
+  permissions granted, focus emulated and the tab foregrounded.
+* `e2e/w1_webui_browser.sh`: the synthetic chord check now pins the NEW ownership
+  contract, and a new `clipboard_real` check runs `e2e/webclip`.
+
+**Validation (real browser, real clipboard).** copy: Cmd+C and Ctrl+C put the
+selection on the clipboard; paste: Cmd+V inserted the clipboard text **exactly
+once**; cut: Cmd+X copied the selection AND removed it from the input line (both
+the adjacent and mid-line cases); Ctrl+C with no selection was claimed by the page
+(`defaultPrevented`, focus on the grid) so the engine still gets the interrupt.
+`e2e/webclip` reports `copy PASS; paste PASS; cut PASS`.
+
+**Regression evidence (before/after).** The new client tests fail against the
+previous `app.js` and pass against the fixed one: with `git show HEAD~1:
+internal/webui/assets/app.js` in place, the clipboard tests report
+`page let Ctrl+C through with a live selection`, `clipboard = "" after Ctrl+C`,
+`focus after Ctrl+V = ""`, `paste inserted 0 times`, `cut sent ""` and
+`paste scheduled no backstop timer` — seven failures that the fix removes.
+
+**End-to-end interrupt.** `goa server` pinned to the mock LLM started a turn
+(the mock logged the completion request, the footer showed the streaming
+percentage), and a real Ctrl+C chord with **no selection** then ended the session
+(`exit=0`, no process left, mid-turn): the byte reached the engine and the engine
+acted on it, which is what "still reaches the engine as the interrupt" means — the
+engine's own Ctrl+C binding (clear the input line, or stop the TUI when it is
+empty) decides the effect, and the page no longer swallows it.
+
+**Harness rules learned here** (in `AGENTS.md`): drive Chromium **headless**, keep
+injected keys inside the page's vocabulary, grant the clipboard permission and
+emulate focus explicitly, foreground the tab (background tabs throttle timers),
+and never dispatch Ctrl+C-with-no-selection against a session whose input line is
+empty — the engine reads it as "stop the TUI" and the server exits.
 
 ## B6 — Terminal copy/paste does not support images
 

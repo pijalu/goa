@@ -270,11 +270,18 @@
     }
   }
 
+  // cursor is the engine's cursor as of the last frame (grid row/column), or
+  // null while it is hidden. The clipboard chords need it to find the terminal's
+  // input line — the one editable row on the page.
+  var cursor = null;
+
   function placeCaret(cur) {
     if (!cur || !cur.v) {
+      cursor = null;
       caret.hidden = true;
       return;
     }
+    cursor = cur;
     caret.hidden = false;
     caret.style.left = (PAD + cur.c * charWidth) + "px";
     caret.style.top = (PAD + cur.r * lineHeight) + "px";
@@ -548,13 +555,27 @@
     };
   }
 
+  document.addEventListener("keyup", function (ev) {
+    // The keyup of a paste chord ends its paste window: by now the browser has
+    // either delivered the clipboard as a `paste` event or never will.
+    if (ev.key === "v" && !ev.altKey && !ev.shiftKey) finishPaste();
+  });
+
   document.addEventListener("keydown", function (ev) {
-    if (readOnly) return;
     // Chords the browser owns stay the browser's: reload, devtools and tab
     // switching are how a user escapes a page, and a terminal that swallows
     // them is a trap. Everything else — including the engine's own Ctrl+W /
     // Ctrl+L bindings — is claimed, so the terminal behaves like a terminal.
     if (browserOwned(ev)) return;
+    // The clipboard chords are the page's own (see CLIPBOARD_CHORDS). A viewer
+    // may still copy — reading the screen is not driving it.
+    var chord = clipboardChord(ev);
+    if (chord === CHORD_DONE) {
+      ev.preventDefault();
+      return;
+    }
+    if (chord === CHORD_BROWSER) return;
+    if (readOnly) return;
     // Modifier-only presses and Meta chords are sent as-is; the server's
     // encoder declines to encode them, and the browser keeps its default.
     send({ t: "key", key: keyEvent(ev) });
@@ -562,31 +583,11 @@
   });
 
   // BROWSER_OWNED is the set of chords the page never claims: the function
-  // keys with no engine binding, plus the browser's own navigation, devtools
-  // and clipboard chords.
+  // keys with no engine binding, plus the browser's own navigation and devtools
+  // chords.
   var BROWSER_OWNED_FKEYS = { F5: 1, F11: 1, F12: 1 };
   var BROWSER_OWNED_CHORDS = { r: 1, q: 1 };
   var BROWSER_OWNED_DEVTOOLS = { i: 1, j: 1, c: 1 };
-
-  // CLIPBOARD_CHORDS are the browser's own clipboard chords. They must stay the
-  // browser's: `preventDefault` on a Ctrl/Cmd+V keydown suppresses the very
-  // `paste` event this page relies on, and claiming Ctrl+C makes selecting text
-  // and copying it do nothing. The paste handler below turns a paste into
-  // terminal input, and a copy with a live selection needs no help from us.
-  var CLIPBOARD_CHORDS = { c: 1, v: 1, x: 1 };
-
-  // clipboardOwned reports whether a chord belongs to the browser's clipboard.
-  // Ctrl+C is only the browser's when something is selected: with no selection
-  // it is the terminal's interrupt, which the agent must still receive.
-  function clipboardOwned(ev) {
-    var k = (ev.key || "").toLowerCase();
-    if (!CLIPBOARD_CHORDS[k]) return false;
-    if (k === "c") {
-      var sel = window.getSelection ? String(window.getSelection()) : "";
-      return sel.length > 0;
-    }
-    return true;
-  }
 
   // browserOwned reports whether a keydown belongs to the browser.
   function browserOwned(ev) {
@@ -594,8 +595,350 @@
     if (!ev.ctrlKey && !ev.metaKey) return false;
     var k = (ev.key || "").toLowerCase();
     if (ev.shiftKey) return !!BROWSER_OWNED_DEVTOOLS[k];
-    if (clipboardOwned(ev)) return true;
     return !!BROWSER_OWNED_CHORDS[k];
+  }
+
+  // ---------------------------------------------------------------- clipboard
+  //
+  // Copy, cut and paste are the PAGE's, not the browser's.
+  //
+  // Measured in Chrome with trusted chord events and a real clipboard: with
+  // `#grid` — a plain non-editable div — focused, Cmd+C over a live selection
+  // copies nothing (no `copy` event, clipboard unchanged) and Cmd+V inserts
+  // nothing (no `paste` event at all). The browser's implicit clipboard chords
+  // are wired to editable targets, and the terminal's rows are output: there is
+  // nothing there for it to paste into. So the page performs the chords itself.
+  //
+  // Copy and cut write through the async clipboard where it exists (a secure
+  // context: https, or http on loopback) and fall back to
+  // `document.execCommand("copy")` — both work from a keydown, which is where a
+  // user gesture comes from. Paste cannot be read the same way: Chrome leaves
+  // `navigator.clipboard.readText()` behind a permission prompt even with a user
+  // gesture (measured in a real browser: the promise never settles until the
+  // prompt is answered). So a paste is handed to the browser first — the hidden
+  // `#paste-target` below gives it an editable target to paste into, which
+  // arrives as a `paste` event carrying the clipboard, no permission involved —
+  // and only when no paste event shows up (a script-dispatched chord performs no
+  // browser paste action at all) does the page read the clipboard itself.
+
+  // CLIPBOARD_CHORDS are the chords the page claims for the clipboard.
+  var CLIPBOARD_CHORDS = { c: 1, v: 1, x: 1 };
+
+  // PASTE_WINDOW_MS backstops the paste window when no keyup ever arrives (a
+  // chord delivered without one): the browser's own paste for a key event is part
+  // of that event's dispatch, so anything after it is already too late to matter.
+  var PASTE_WINDOW_MS = 500;
+
+  // pasteTarget is a hidden textarea that exists for one reason: the browser
+  // pastes into an editable element, and the terminal's grid is not one. It is
+  // focused for the duration of a paste chord (never otherwise) and its value is
+  // always empty — the paste event is prevented before the text lands in it.
+  var pasteTarget = document.createElement("textarea");
+  pasteTarget.id = "paste-target";
+  pasteTarget.setAttribute("aria-hidden", "true");
+  pasteTarget.setAttribute("autocapitalize", "off");
+  pasteTarget.setAttribute("autocomplete", "off");
+  pasteTarget.setAttribute("autocorrect", "off");
+  pasteTarget.setAttribute("spellcheck", "false");
+  pasteTarget.setAttribute("tabindex", "-1");
+  pasteTarget.style.position = "fixed";
+  pasteTarget.style.top = "0";
+  pasteTarget.style.left = "-1000px";
+  pasteTarget.style.width = "1px";
+  pasteTarget.style.height = "1px";
+  pasteTarget.style.opacity = "0";
+  document.body.appendChild(pasteTarget);
+
+  // pastePending marks a paste chord whose keyup has not been seen yet, and
+  // pasteHandled records that the browser's own paste already delivered the
+  // clipboard, so the fallback must not deliver it a second time.
+  var pastePending = false;
+  var pasteHandled = false;
+
+  // hasSelection reports whether the page has a live text selection.
+  function hasSelection() {
+    return !!(window.getSelection && String(window.getSelection()).length > 0);
+  }
+
+  // clipboardAPI is the async clipboard, or null on an origin that has none
+  // (plain http on a LAN address): there the legacy path is all there is.
+  function clipboardAPI() {
+    return (typeof navigator !== "undefined" && navigator.clipboard) || null;
+  }
+
+  // canReadClipboard reports whether the page has any clipboard read path.
+  function canReadClipboard() {
+    var api = clipboardAPI();
+    return !!(api && (api.read || api.readText));
+  }
+
+  // focusTerminal puts the keyboard back on the grid. The paste target exists
+  // only for the instant the browser needs an editable element to paste into.
+  function focusTerminal() {
+    if (document.activeElement === pasteTarget && gridEl) gridEl.focus();
+  }
+
+  // beginPaste hands a paste chord to the browser: the textarea takes focus so
+  // the browser has somewhere to paste, and a `paste` event (with the clipboard
+  // in clipboardData) is what the handler below turns into terminal input. That
+  // is the path a real keyboard takes, and it needs no permission.
+  function beginPaste() {
+    pastePending = true;
+    pasteHandled = false;
+    pasteTarget.focus();
+    setTimeout(finishPaste, PASTE_WINDOW_MS);
+  }
+
+  // finishPaste closes the paste window, from the chord's keyup or the backstop
+  // timer. When the browser's own paste did not deliver the clipboard — a chord
+  // dispatched without a keyboard performs no browser paste at all — the page
+  // reads it itself. A key event is what a clipboard read wants, so keyup is the
+  // point to do it from: the read keeps the user activation the API requires.
+  function finishPaste() {
+    if (!pastePending) return;
+    pastePending = false;
+    focusTerminal();
+    if (pasteHandled || !canReadClipboard()) return;
+    pasteFromClipboard().then(function (read) {
+      if (!read) setStatus("error", "paste blocked — allow clipboard access for this site");
+    });
+  }
+
+  // legacyCopy writes text through a detached textarea. execCommand is
+  // deprecated, but it is the only write path an insecure origin has, and it
+  // works in every browser that has a clipboard at all.
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("aria-hidden", "true");
+    ta.setAttribute("tabindex", "-1");
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "-1000px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (err) {
+      ok = false;
+    }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  // writeClipboard puts text on the real clipboard and reports whether it got
+  // there, so a caller can tell a refusal from a success.
+  function writeClipboard(text) {
+    if (!text) return Promise.resolve(false);
+    var api = clipboardAPI();
+    if (!api || !api.writeText) return Promise.resolve(legacyCopy(text));
+    return api.writeText(text).then(
+      function () { return true; },
+      function () { return legacyCopy(text); }
+    );
+  }
+
+  // insertText sends pasted text as terminal input — the same message the
+  // `paste` event handler sends, so the editor's own paste handling applies
+  // (spec §7.5).
+  function insertText(text) {
+    if (!text) return false;
+    send({ t: "input", data: text });
+    return true;
+  }
+
+  // imageType picks the image MIME type of a clipboard item, or "text/plain"
+  // when the item carries no image.
+  function imageType(item) {
+    var types = (item && item.types) || [];
+    for (var i = 0; i < types.length; i++) {
+      if (types[i].indexOf("image/") === 0) return types[i];
+    }
+    return "text/plain";
+  }
+
+  // insertClipboardItems walks the clipboard's items: an image is uploaded and
+  // its stored path inserted (the terminal's own image-paste behaviour), text is
+  // sent as input. Reading an item is asynchronous, so the walk is a promise
+  // chain and insertion order is preserved.
+  function insertClipboardItems(items) {
+    var chain = Promise.resolve(true);
+    (items || []).forEach(function (item) {
+      var type = imageType(item);
+      chain = chain.then(function () {
+        return item.getType(type).then(function (blob) {
+          if (type.indexOf("image/") !== 0) {
+            if (!blob.text) return false;
+            return blob.text().then(insertText);
+          }
+          return uploadImage(blob).then(function (path) {
+            if (path) send({ t: "input", data: path });
+            return true;
+          });
+        }, function () { return false; });
+      });
+    });
+    return chain;
+  }
+
+  // readClipboardText is the text-only read path, for a browser with readText
+  // but no read().
+  function readClipboardText() {
+    var api = clipboardAPI();
+    if (!api || !api.readText) return Promise.resolve(false);
+    return api.readText().then(function (text) {
+      insertText(text);
+      return true;
+    }, function () { return false; });
+  }
+
+  // pasteFromClipboard inserts the clipboard's contents, resolving true when the
+  // clipboard could be read at all — an empty clipboard is not a failure.
+  function pasteFromClipboard() {
+    var api = clipboardAPI();
+    if (!api) return Promise.resolve(false);
+    if (api.read) return api.read().then(insertClipboardItems, readClipboardText);
+    return readClipboardText();
+  }
+
+  // copySelection copies the live selection.
+  function copySelection() {
+    return writeClipboard(String(window.getSelection())).then(function (ok) {
+      if (!ok) setStatus("error", "copy blocked — the browser refused clipboard access");
+      return ok;
+    });
+  }
+
+  // cutSelection copies the live selection and removes it from the terminal's
+  // input line. The rows above the input line are output — nothing there can be
+  // cut — so a selection that reaches into the transcript is copied and left
+  // alone.
+  function cutSelection() {
+    var sel = window.getSelection();
+    var range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    return writeClipboard(String(sel || "")).then(function (ok) {
+      if (!ok) setStatus("error", "cut blocked — the browser refused clipboard access");
+      if (range) deleteSelectedRange(range);
+      return ok;
+    });
+  }
+
+  // MAX_KEY_BURST bounds a synthesized edit: a longer selection is still copied,
+  // but the input line is not walked one keypress at a time forever.
+  var MAX_KEY_BURST = 512;
+
+  // sendKeyBurst repeats one named key (Backspace, Delete, ArrowLeft, …). The
+  // engine's editor is driven the way a keyboard drives it, so its undo,
+  // kill-ring and auto-complete behaviour stay the terminal's own (spec §7.5).
+  function sendKeyBurst(name, count) {
+    if (count < 1) return;
+    if (count > MAX_KEY_BURST) count = MAX_KEY_BURST;
+    for (var i = 0; i < count; i++) send({ t: "key", key: { key: name } });
+  }
+
+  // columnAt maps a viewport x to the cell column it falls on inside a row. Cell
+  // columns are what the cursor position (cur.c) counts in, and pixels are the
+  // only place a wide glyph's two cells are visible to this code.
+  function columnAt(rowBox, x) {
+    var col = Math.round((x - rowBox.left) / charWidth);
+    return col > 0 ? col : 0;
+  }
+
+  // singleWidth reports whether every character in text occupies one cell. The
+  // editor's buffer index and a grid cell column coincide only then, which is
+  // what lets a cut walk the cursor by column arithmetic.
+  function singleWidth(text) {
+    for (var i = 0; i < (text || "").length; i++) {
+      var c = text.charCodeAt(i);
+      if (c >= 0xd800 && c <= 0xdfff) return false; // surrogate pair: emoji, rare CJK
+      if (c < 0x1100) continue;
+      if (c <= 0x115f || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) ||
+          (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe4f) ||
+          (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // deleteSelectedRange removes the selected characters from the terminal's
+  // input line: the cursor is walked to the selection when it is not already
+  // there, then Backspace (delete behind the cursor) or Delete (delete ahead of
+  // it) removes exactly the selected characters.
+  function deleteSelectedRange(range) {
+    var row = cursor && rowsEl ? rowsEl.children[cursor.r] : null;
+    if (!row) return;
+    var rects = range.getClientRects ? range.getClientRects() : null;
+    if (!rects || !rects.length) return;
+    var box = row.getBoundingClientRect();
+    for (var i = 0; i < rects.length; i++) {
+      // Anything reaching outside the cursor's row is output (or another input
+      // line), not this row's editable text.
+      if (rects[i].top < box.top - 0.5 || rects[i].bottom > box.bottom + 0.5) return;
+    }
+    var chars = String(range).length;
+    if (!chars) return;
+    var startCol = columnAt(box, rects[0].left);
+    var endCol = columnAt(box, rects[rects.length - 1].right);
+    if (endCol === cursor.c) {      // selection ends at the cursor: cut behind it
+      sendKeyBurst("Backspace", chars);
+      return;
+    }
+    if (startCol === cursor.c) {    // selection starts at the cursor: cut ahead of it
+      sendKeyBurst("Delete", chars);
+      return;
+    }
+    // Walk the cursor to the selection's end. Columns and characters agree only
+    // on a single-width line, so a line holding wide glyphs is left to the two
+    // exact cases above instead of deleting the wrong characters.
+    if (!singleWidth(row.textContent)) return;
+    var delta = endCol - cursor.c;
+    sendKeyBurst(delta > 0 ? "ArrowRight" : "ArrowLeft", Math.abs(delta));
+    sendKeyBurst("Backspace", chars);
+  }
+
+  // A clipboard chord resolves one of three ways, and the difference is what
+  // keeps the engine's own bindings intact:
+  //
+  //   CHORD_DONE    the page performed it (or deliberately swallowed it)
+  //   CHORD_BROWSER the browser keeps it — nothing sent, nothing prevented, so
+  //                 its own paste path can still fire where it has one
+  //   CHORD_KEY     not a clipboard chord: it goes to the engine as a keystroke
+  var CHORD_DONE = "done";
+  var CHORD_BROWSER = "browser";
+  var CHORD_KEY = "key";
+
+  // clipboardChord performs a clipboard chord and says how it was resolved.
+  // Ctrl/Cmd+C counts as a copy only with a live selection: with no selection
+  // Ctrl+C is the terminal's interrupt and must reach the engine (and Meta+C has
+  // nothing to copy, so it stays the browser's).
+  function clipboardChord(ev) {
+    if (!ev.ctrlKey && !ev.metaKey) return CHORD_KEY;
+    if (ev.altKey || ev.shiftKey) return CHORD_KEY;
+    var k = (ev.key || "").toLowerCase();
+    if (!CLIPBOARD_CHORDS[k]) return CHORD_KEY;
+    if (k === "c") {
+      if (!hasSelection()) {
+        // With the paste target focused the terminal is not the keyboard target,
+        // so a Ctrl+C in that instant is not the engine's interrupt either.
+        return document.activeElement === pasteTarget ? CHORD_BROWSER : CHORD_KEY;
+      }
+      copySelection();
+      return CHORD_DONE;
+    }
+    if (k === "x") {
+      if (readOnly) return CHORD_DONE; // a viewer never edits the session
+      if (hasSelection()) cutSelection();
+      return CHORD_DONE;
+    }
+    if (readOnly) return CHORD_DONE;
+    // Paste is the browser's: it is the only one that can reach the clipboard
+    // without a permission prompt, and the paste handler below turns what it
+    // delivers into terminal input. beginPaste also covers the case where no
+    // paste arrives at all.
+    beginPaste();
+    return CHORD_BROWSER;
   }
 
   // uploadImage posts pasted image bytes and resolves with the stored path.
@@ -627,14 +970,27 @@
     return null;
   }
 
-  // onPaste inserts clipboard text as-is (the editor applies its own paste
-  // handling — markers, normalization — exactly as for a terminal paste). An
-  // image has no textual form, so it is uploaded and its stored path inserted:
-  // the same text the terminal editor inserts for a clipboard image.
+  // onPaste turns a `paste` event into terminal input. It is the page's primary
+  // paste path: the chord focuses #paste-target, so the browser pastes into an
+  // editable element and delivers the clipboard here — no permission needed. The
+  // event is always prevented, so nothing ever lands in the textarea.
+  //
+  // Clipboard text is inserted as-is (the editor applies its own paste handling —
+  // markers, normalization — exactly as for a terminal paste). An image has no
+  // textual form, so it is uploaded and its stored path inserted: the same text
+  // the terminal editor inserts for a clipboard image.
   document.addEventListener("paste", function (ev) {
-    if (readOnly) return;
+    pasteHandled = true;
+    focusTerminal();
+    if (readOnly) {
+      ev.preventDefault();
+      return;
+    }
     var data = ev.clipboardData || window.clipboardData;
-    if (!data) return;
+    if (!data) {
+      ev.preventDefault();
+      return;
+    }
     var image = imageItem(data);
     if (image) {
       ev.preventDefault();
@@ -643,9 +999,11 @@
       }).catch(function () { setStatus("error", "image upload failed"); });
       return;
     }
+    // Always prevent the default: the paste target must stay empty, and what the
+    // terminal inserts is decided here, not by the browser.
+    ev.preventDefault();
     var text = data.getData("text");
     if (!text) return;
-    ev.preventDefault();
     send({ t: "input", data: text });
   });
 

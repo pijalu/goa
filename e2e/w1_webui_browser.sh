@@ -310,26 +310,43 @@ else
   record footer_band FAIL "footer band outside the viewport or clipped: $BAND"
 fi
 
-# Clipboard: Ctrl/Cmd+V and Ctrl/Cmd+X must stay the browser's — preventDefault
-# on Ctrl+V suppresses the very `paste` event the page relies on, and claiming
-# Ctrl+X blocks native cut. Ctrl+C is the browser's copy ONLY when something is
-# selected; with no selection it is the terminal's interrupt and must be claimed.
-# A chord the ENGINE binds must still be claimed, or Ctrl+W would close the tab
-# instead of deleting a word.
-CLAIM="$(abq "(function(){function fire(k){var ev=new KeyboardEvent('keydown',{key:k,ctrlKey:true,bubbles:true,cancelable:true});document.dispatchEvent(ev);return ev.defaultPrevented}
+# Clipboard ownership. The page owns Cmd/Ctrl+C/V/X: a real browser dispatches
+# no copy/paste event for a non-editable grid, so the page performs the chords
+# itself (bugs.md B5). What must hold:
+#   - Ctrl+C is the terminal's interrupt ONLY with no selection; with a selection
+#     the page copies it,
+#   - Ctrl+V is handed to the browser's own paste (the page focuses its paste
+#     target and does NOT preventDefault, or the browser's paste is suppressed),
+#   - Ctrl+X cuts,
+#   - a chord the ENGINE binds is still claimed, or Ctrl+W would close the tab
+#     instead of deleting a word.
+CLAIM="$(abq "(function(){function fire(k,sel){var ev=new KeyboardEvent('keydown',{key:k,ctrlKey:true,bubbles:true,cancelable:true});
 var realSel=window.getSelection;
-window.getSelection=function(){return {toString:function(){return ''}}};
-var copyNoSelection=fire('c'), paste=fire('v'), cut=fire('x');
-window.getSelection=function(){return {toString:function(){return 'selected text'}}};
-var copyWithSelection=fire('c');
-window.getSelection=realSel;
-return JSON.stringify({copyNoSelection:copyNoSelection,paste:paste,cut:cut,copyWithSelection:copyWithSelection,engine:fire('w')})})()" || echo '{}')"
-if has "$CLAIM" '"copyNoSelection":true' && has "$CLAIM" '"paste":false' && \
-   has "$CLAIM" '"cut":false' && has "$CLAIM" '"copyWithSelection":false' && \
-   has "$CLAIM" '"engine":true'; then
-  record clipboard_chords PASS "Ctrl+V/X stay with the browser, Ctrl+C is the interrupt unless text is selected"
+window.getSelection=function(){return {toString:function(){return sel}}};document.dispatchEvent(ev);window.getSelection=realSel;return ev.defaultPrevented}
+var copyNoSelection=fire('c',''), copyWithSelection=fire('c','selected text'), paste=fire('v',''), cut=fire('x','selected text'), engine=fire('w','');
+var afterPaste=document.activeElement&&document.activeElement.id;
+return JSON.stringify({copyNoSelection:copyNoSelection,copyWithSelection:copyWithSelection,paste:paste,cut:cut,engine:engine,afterPaste:afterPaste})})()" || echo '{}')"
+if has "$CLAIM" '"copyNoSelection":true' && has "$CLAIM" '"copyWithSelection":true' && \
+   has "$CLAIM" '"paste":false' && has "$CLAIM" '"cut":true' && \
+   has "$CLAIM" '"engine":true' && has "$CLAIM" '"afterPaste":"paste-target"'; then
+  record clipboard_chords PASS "Ctrl+C interrupts unless text is selected, Ctrl+V hands the chord to the browser, Ctrl+X cuts, engine chords stay claimed"
 else
   record clipboard_chords FAIL "clipboard/engine chord ownership wrong: $CLAIM"
+fi
+
+# The real thing: real chords, real clipboard (bugs.md B5). Synthetic events
+# cannot show that the clipboard actually moves, so e2e/webclip drives Chrome
+# over CDP with real chords and reads navigator.clipboard back (permissions
+# granted, focus emulated, tab foregrounded — the three things a page needs to
+# behave like it does for a user).
+CDP_URL="$(AGENT_BROWSER_SESSION="$SESSION" "$AGENT_BROWSER_BIN" get cdp-url 2>/dev/null | tail -1)"
+PAGE_URL="$(abq 'location.href' | tr -d '"')"
+if [ -z "$CDP_URL" ] || [ -z "$PAGE_URL" ]; then
+  record clipboard_real FAIL "no CDP url/page url to drive (cdp=$CDP_URL page=$PAGE_URL)"
+elif CLIP_OUT="$(go run ./e2e/webclip --ws "$CDP_URL" --url "$PAGE_URL" 2>&1)"; then
+  record clipboard_real PASS "$(printf '%s' "$CLIP_OUT" | tr '\n' ';')"
+else
+  record clipboard_real FAIL "$(printf '%s' "$CLIP_OUT" | tr '\n' ';')"
 fi
 shot 08-mechanics
 

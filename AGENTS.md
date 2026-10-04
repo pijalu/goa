@@ -57,3 +57,22 @@ Copyright (C) 2026 Pierre Poissinger
   process is still alive. Close browser sessions too (`agent-browser close --all`
   / `pkill -f agent-browser-chrome-`).
 - Report the cleanup in the task summary (which pids/ports were stopped).
+
+## Browser-driven UI validation
+
+- Drive Chromium **headless only** (`agent-browser` default; never `--headed`).
+  A headed window is a real macOS app: an injected Cmd chord that the page does
+  not claim is taken by the Chrome/app **menu key equivalents**, and when the
+  window loses focus the keystrokes land in whatever app is frontmost. That
+  happens: stray "About"/menu dialogs and keystrokes typed into the user's
+  editor, from a test that only meant to press Ctrl+V in a page.
+- Keep the injected keys to the page's own vocabulary. If a bug needs the
+  *browser's* clipboard behaviour (Cmd+C/V/X), remember CDP-injected chords do
+  **not** trigger the browser's clipboard actions at all (no `copy`/`paste` event,
+  in headless *and* headed): assert the page's own path, and leave the implicit
+  one to a real keyboard.
+- Grant permissions explicitly (`Browser.grantPermissions`) and emulate focus
+  (`Emulation.setFocusEmulationEnabled`) — without them `navigator.clipboard`
+  reads are denied and the page looks broken when it is not.
+- Foreground the tab (`Page.bringToFront`) before measuring: background tabs have
+  their timers throttled, so a page's fallback path can look dead when it is not.

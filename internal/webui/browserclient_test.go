@@ -48,8 +48,17 @@ const domStub = `
   // whole transcript. A stub that kept the children would let a page that clears
   // by textContent look like one that appends — the exact difference between
   // painting a line once and painting it twice.
+  //
+  // Reading it back concatenates the descendants' text, exactly as the DOM does:
+  // the page reads a row's text to decide whether the line holds a two-cell
+  // glyph, and a getter that only echoed the last assignment would report every
+  // row as empty.
   Object.defineProperty(El.prototype, "textContent", {
-    get: function () { return this._text; },
+    get: function () {
+      var out = this._text || "";
+      for (var i = 0; i < this.children.length; i++) out += this.children[i].textContent || "";
+      return out;
+    },
     set: function (v) {
       this._text = v === undefined || v === null ? "" : String(v);
       this.children.length = 0;
@@ -84,10 +93,14 @@ const domStub = `
   };
   El.prototype.getBoundingClientRect = function () {
     window.__measureCalls = (window.__measureCalls || 0) + 1;
-    return { width: 8, height: 16 };
+    // A cell is 8x16 in this stub, and the box starts at the origin: the cut
+    // path compares a selection's client rects against the cursor row's box, so
+    // the stub has to publish the same coordinate space the rects use.
+    return { left: 0, top: 0, right: 8, bottom: 16, width: 8, height: 16 };
   };
   window.__measures = function () { return window.__measureCalls || 0; };
-  El.prototype.focus = function () {};
+  El.prototype.focus = function () { document.activeElement = this; };
+  El.prototype.select = function () { this.selected = true; };
   El.prototype.setAttribute = function () {};
   El.prototype.fire = function (t) {
     var fns = this.listeners[t] || [];
@@ -179,6 +192,66 @@ const domStub = `
     return new window.Promise(function (res) { res(v); });
   };
 
+  // __clipItem builds a clipboard item the way the async clipboard reports one:
+  // the MIME types it carries plus getType(type) -> Blob, the Blob carrying
+  // text(). The image path reads a Blob the same way and uploads it.
+  window.__clipItem = function (type, body) {
+    return {
+      types: [type],
+      getType: function () {
+        return new window.Promise(function (res) {
+          res({ text: function () { return new window.Promise(function (r2) { r2(body); }); } });
+        });
+      }
+    };
+  };
+
+  // The async clipboard: the copy/cut/paste chords go through it where it
+  // exists, and a refused write falls back to execCommand. The stub records
+  // every call and lets a test decide what the clipboard holds, whether a write
+  // lands and whether a read is refused — the three things that pick a path.
+  window.__clipboard = { text: "", writes: [], reads: 0, items: null, denyWrites: false, denyReads: false };
+  window.navigator = {
+    clipboard: {
+      writeText: function (t) {
+        window.__clipboard.writes.push(t);
+        if (window.__clipboard.denyWrites) {
+          return new window.Promise(function (_, rej) { rej(new Error("denied")); });
+        }
+        window.__clipboard.text = t;
+        return new window.Promise(function (res) { res(); });
+      },
+      readText: function () {
+        window.__clipboard.reads++;
+        if (window.__clipboard.denyReads) {
+          return new window.Promise(function (_, rej) { rej(new Error("denied")); });
+        }
+        return new window.Promise(function (res) { res(window.__clipboard.text); });
+      },
+      read: function () {
+        window.__clipboard.reads++;
+        if (window.__clipboard.denyReads) {
+          return new window.Promise(function (_, rej) { rej(new Error("denied")); });
+        }
+        var items = window.__clipboard.items;
+        if (!items) items = window.__clipboard.text ? [window.__clipItem("text/plain", window.__clipboard.text)] : [];
+        return new window.Promise(function (res) { res(items); });
+      }
+    }
+  };
+  window.__setClipboard = function (text) { window.__clipboard.text = text; window.__clipboard.items = null; };
+  window.__setClipboardItems = function (items) { window.__clipboard.items = items; };
+  window.__denyClipboardWrites = function (deny) { window.__clipboard.denyWrites = !!deny; };
+  window.__dropClipboardAPI = function () { delete window.navigator.clipboard; };
+  window.__clipboardWrites = function () { return window.__clipboard.writes; };
+  window.__clipboardText = function () { return window.__clipboard.text; };
+  window.__clipboardReads = function () { return window.__clipboard.reads; };
+  // __execCommand is the legacy write path: it records the command and reports
+  // whatever a test configured (a browser refuses it when it has no clipboard).
+  window.__execResult = true;
+  window.__execCommands = [];
+  window.__setExecResult = function (ok) { window.__execResult = !!ok; };
+
   var els = {};
   // PARENT mirrors index.html's nesting, so a stub element is reachable from
   // its container the way the real DOM nests them (a test reading #grid's text
@@ -187,6 +260,9 @@ const domStub = `
   window.__el = function (id) {
     if (!els[id]) {
       els[id] = new El("div");
+      // index.html gives every element its id; focus() and the clipboard chords
+      // read it back to know which element holds the keyboard.
+      els[id].id = id;
       var parent = PARENT[id];
       if (parent) window.__el(parent).appendChild(els[id]);
     }
@@ -196,6 +272,12 @@ const domStub = `
   window.document = {
     getElementById: function (id) { return window.__el(id); },
     createElement: function (tag) { return new El(tag); },
+    // execCommand is the fallback copy path; the stub records it so a test can
+    // tell a refusal-and-fallback from a successful async write.
+    execCommand: function (cmd) {
+      window.__execCommands.push(cmd);
+      return window.__execResult;
+    },
     addEventListener: function (t, fn) {
       (docListeners[t] = docListeners[t] || []).push(fn);
     },
@@ -204,6 +286,10 @@ const domStub = `
     documentElement: {
       style: { setProperty: function () {}, getPropertyValue: function () { return ""; } }
     },
+    // activeElement tracks focus(), which the paste path uses to hand the
+    // clipboard to the browser's own paste (the hidden textarea) and to put the
+    // keyboard back on the grid afterwards.
+    activeElement: null,
     body: new El("div")
   };
   // fire dispatches a synthetic event through the document listeners, the way
@@ -254,6 +340,18 @@ const domStub = `
         }
         return false;
       };
+      // __fireTimerOf runs the first live timer scheduled with this delay, so a
+      // test can fire the paste window without depending on timer order.
+      window.__fireTimerOf = function (ms) {
+        for (var i = 0; i < timers.length; i++) {
+          if (!timers[i].cancelled && timers[i].ms === ms) {
+            var t = timers.splice(i, 1)[0];
+            t.fn();
+            return true;
+          }
+        }
+        return false;
+      };
 
       // Animation-frame stub. app.js coalesces follow-tail scrolling into one
       // frame, so the scroll happens when the test flushes the queue with
@@ -275,11 +373,29 @@ const domStub = `
         replace: function (url) { window.__replacedUrl = url; }
       };
       window.__replaced = function () { return window.__replacedUrl || ""; };
-      // getSelection is what decides whether Ctrl+C is the browser's copy or the
-      // terminal's interrupt; the default is "nothing selected".
+      // getSelection is what decides whether Ctrl+C is a copy or the terminal's
+      // interrupt, and the range it carries is what a cut deletes. The default is
+      // "nothing selected".
       window.__selection = "";
-      window.getSelection = function () { return { toString: function () { return window.__selection; } }; };
-      window.__setSelection = function (s) { window.__selection = s; };
+      window.__range = null;
+      window.getSelection = function () {
+        return {
+          toString: function () { return window.__selection; },
+          rangeCount: window.__range ? 1 : 0,
+          getRangeAt: function () { return window.__range; }
+        };
+      };
+      window.__setSelection = function (s) { window.__selection = s; window.__range = null; };
+      // __setSelectionRange installs a range whose client rects cover the cells
+      // [x0, x1) of the cursor's row (a cell is 8px wide in this stub), which is
+      // what the cut path measures the selection's columns from.
+      window.__setSelectionRange = function (text, x0, x1) {
+        window.__selection = text;
+        window.__range = {
+          toString: function () { return text; },
+          getClientRects: function () { return [{ left: x0, right: x1, top: 0, bottom: 16 }]; }
+        };
+      };
       window.WebSocket = function (url) {
         this.url = url;
         this.readyState = 1;
@@ -346,10 +462,13 @@ const domStub = `
       };
 
   window.__text = function (el) {
-    var out = el.textContent || "";
-    for (var i = 0; i < el.children.length; i++) out += window.__text(el.children[i]);
-    return out;
+    // textContent already concatenates the descendants, so recursion here would
+    // count a nested row's text twice.
+    return el.textContent || "";
   };
+  // __activeElement is the stub's focused element id, or "" when nothing is
+  // focused — the paste path's focus hand-off is asserted through it.
+  window.__activeElement = function () { return (document.activeElement && document.activeElement.id) || ""; };
   // __count returns the number of child nodes.
   window.__count = function (el) { return el.children.length; };
   // __setScrollHeight gives an element a realistic scroll range: the stub's
@@ -511,12 +630,20 @@ func frameDocSeq(t *testing.T, row int, text string, seq uint64) string {
 // resize test drives a geometry change.
 func frameDocRows(t *testing.T, rows int, text string) string {
 	t.Helper()
+	return frameDocCursor(t, rows, 0, 0, text)
+}
+
+// frameDocCursor is frameDocRows with the cursor placed on row/col and the text
+// painted ON that row: the clipboard chords point at the input line the cursor is
+// on, and the cut path measures the selection against that row's box.
+func frameDocCursor(t *testing.T, rows, row, col int, text string) string {
+	t.Helper()
 	b, err := NewFrameCodec().EncodeFrame(&Frame{
 		Cols:   80,
 		Rows:   rows,
-		Cursor: Cursor{Row: 0, Col: 0, Visible: true},
+		Cursor: Cursor{Row: row, Col: col, Visible: true},
 		Patches: []RowPatch{{
-			Row:  0,
+			Row:  row,
 			Runs: []Run{{Text: text}},
 		}},
 	})
@@ -820,11 +947,125 @@ func (h *clientHarness) sent(t *testing.T) []map[string]any {
 	return out
 }
 
+// reset drops every message sent so far, so a test can assert on one gesture
+// (the paste that inserted, the keys a cut sent) without the earlier ones.
+func (h *clientHarness) reset(t *testing.T) {
+	t.Helper()
+	h.vm.RunString("window.__socket.sent.length = 0")
+}
+
+// activeElement is the stub's focused element id, or "" when nothing is focused.
+func (h *clientHarness) activeElement(t *testing.T) string {
+	t.Helper()
+	return h.call(t, "__activeElement").String()
+}
+
+// fireTimerOf runs the first live timer scheduled with this delay. The paste
+// fallback is a timer, and firing it by delay keeps the test independent of
+// which other timers the page has parked.
+func (h *clientHarness) fireTimerOf(t *testing.T, ms int) bool {
+	t.Helper()
+	return h.call(t, "__fireTimerOf", ms).ToBoolean()
+}
+
+// sentInputs returns the payload of every {t:"input"} message the page sent.
+func (h *clientHarness) sentInputs(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	for _, m := range h.sent(t) {
+		if m["t"] == "input" {
+			data, _ := m["data"].(string)
+			out = append(out, data)
+		}
+	}
+	return out
+}
+
+// sentInput is the single input payload the page sent, or "" when it sent none.
+func (h *clientHarness) sentInput(t *testing.T) string {
+	t.Helper()
+	all := h.sentInputs(t)
+	if len(all) == 0 {
+		return ""
+	}
+	return all[len(all)-1]
+}
+
+// countInputs is how many input messages the page sent.
+func (h *clientHarness) countInputs(t *testing.T) int {
+	t.Helper()
+	return len(h.sentInputs(t))
+}
+
+// sentKeys renders the named keys the page sent, in order ("Backspace,Delete").
+// A synthesized cut is exactly this list, so it is what the tests assert on.
+func (h *clientHarness) sentKeys(t *testing.T) string {
+	t.Helper()
+	var names []string
+	for _, m := range h.sent(t) {
+		if m["t"] != "key" {
+			continue
+		}
+		kk, _ := m["key"].(map[string]any)
+		key, _ := kk["key"].(string)
+		names = append(names, key)
+	}
+	return strings.Join(names, ",")
+}
+
+// sentKey reports whether a key event for key with the given modifier was sent.
+func (h *clientHarness) sentKey(t *testing.T, key, modifier string) bool {
+	t.Helper()
+	for _, m := range h.sent(t) {
+		if m["t"] != "key" {
+			continue
+		}
+		kk, _ := m["key"].(map[string]any)
+		if kk["key"] != key {
+			continue
+		}
+		if flag, ok := kk[modifier].(bool); ok && flag {
+			return true
+		}
+	}
+	return false
+}
+
+// clipboardText is what the page's clipboard holds after a copy or cut.
+func (h *clientHarness) clipboardText(t *testing.T) string {
+	t.Helper()
+	return h.call(t, "__clipboardText").String()
+}
+
+// clipboardReads counts the page's clipboard reads; a copy must not read.
+func (h *clientHarness) clipboardReads(t *testing.T) int {
+	t.Helper()
+	return int(h.call(t, "__clipboardReads").ToInteger())
+}
+
+// execCommands lists the legacy execCommand calls the page made.
+func (h *clientHarness) execCommands(t *testing.T) []string {
+	t.Helper()
+	v := h.vm.Get("__execCommands")
+	var out []string
+	if err := h.vm.ExportTo(v, &out); err != nil {
+		t.Fatalf("export execCommands: %v", err)
+	}
+	return out
+}
+
 // keydown dispatches a synthetic keydown and reports whether the page claimed
 // it (preventDefault).
 func (h *clientHarness) keydown(t *testing.T, ev map[string]any) bool {
 	t.Helper()
 	return h.call(t, "__fire", "keydown", h.toValue(ev)).ToBoolean()
+}
+
+// keyup dispatches the keyup that closes a paste chord's window — the point the
+// page reads the clipboard from when the browser delivered no paste.
+func (h *clientHarness) keyup(t *testing.T, ev map[string]any) {
+	t.Helper()
+	h.call(t, "__fire", "keyup", h.toValue(ev))
 }
 
 // paste dispatches a synthetic text paste.
@@ -1117,33 +1358,288 @@ func TestClientJS_ShrinkTrimsGridRows(t *testing.T) {
 	}
 }
 
-// TestClientJS_ClipboardChordsStayWithTheBrowser pins the clipboard contract:
-// Ctrl/Cmd+V and Ctrl/Cmd+X must reach the browser, or preventDefault suppresses
-// the paste/cut the page needs; Ctrl+C is the browser's when text is selected
-// (native copy) and the terminal's interrupt when nothing is.
-func TestClientJS_ClipboardChordsStayWithTheBrowser(t *testing.T) {
+// The clipboard chords are the PAGE's: a non-editable grid gets neither a `copy`
+// nor a `paste` event from the browser, so the page performs them itself —
+// measured in Chrome with trusted chords and a real clipboard (bugs.md B5). These
+// tests pin one chord each: copy, the interrupt, paste, cut.
+func TestClientJS_CopyChordCopiesTheSelection(t *testing.T) {
 	h := newClientHarness(t)
 	h.open(t)
 
-	if h.keydown(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true}) {
-		t.Error("page claimed Ctrl+V; the paste event would never fire")
-	}
-	if h.keydown(t, map[string]any{"key": "x", "code": "KeyX", "ctrlKey": true}) {
-		t.Error("page claimed Ctrl+X; native cut is blocked")
-	}
+	// Ctrl+C with a selection: claimed, copied, and nothing sent to the terminal.
 	h.call(t, "__setSelection", "copied text")
-	if h.keydown(t, map[string]any{"key": "c", "code": "KeyC", "ctrlKey": true}) {
-		t.Error("page claimed Ctrl+C with a live selection; native copy is blocked")
+	if !h.keydown(t, map[string]any{"key": "c", "code": "KeyC", "ctrlKey": true}) {
+		t.Error("page let Ctrl+C through with a live selection; the copy would be lost")
 	}
+	if got := h.clipboardText(t); got != "copied text" {
+		t.Errorf("clipboard = %q after Ctrl+C, want the selection", got)
+	}
+	if got := h.clipboardReads(t); got != 0 {
+		t.Errorf("Ctrl+C read the clipboard %d times", got)
+	}
+
+	// Cmd+C with a selection is the same chord on macOS.
+	if !h.keydown(t, map[string]any{"key": "c", "code": "KeyC", "metaKey": true}) {
+		t.Error("page let Cmd+C through with a live selection; the copy would be lost")
+	}
+}
+
+// TestClientJS_CtrlCWithoutSelectionIsTheInterrupt pins the other half of the
+// copy chord: with nothing selected the page must send it to the engine (0x03),
+// or a running turn can no longer be interrupted.
+func TestClientJS_CtrlCWithoutSelectionIsTheInterrupt(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
 	h.call(t, "__setSelection", "")
 	if !h.keydown(t, map[string]any{"key": "c", "code": "KeyC", "ctrlKey": true}) {
 		t.Error("page let Ctrl+C through with no selection; the terminal lost its interrupt")
 	}
-	for _, m := range h.sent(t) {
-		kk, _ := m["key"].(map[string]any)
-		if kk["key"] == "v" || kk["key"] == "x" {
-			t.Errorf("clipboard chord was sent to the terminal: %v", m)
-		}
+	if !h.sentKey(t, "c", "ctrl") {
+		t.Error("Ctrl+C with no selection did not reach the engine as a key event")
+	}
+	if got := h.clipboardText(t); got != "" {
+		t.Errorf("Ctrl+C with no selection wrote %q to the clipboard", got)
+	}
+}
+
+// TestClientJS_PasteChordHandsOffToTheBrowser pins the paste contract: the page
+// focuses its hidden paste target and does NOT preventDefault, so the browser's
+// own paste can deliver the clipboard (the only read path that needs no
+// permission). The chord's keyup closes the window; when no paste event arrived —
+// what a script-dispatched chord does — the page reads the clipboard itself.
+func TestClientJS_PasteChordHandsOffToTheBrowser(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
+	h.call(t, "__setClipboard", "pasted text")
+	if h.keydown(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true}) {
+		t.Error("page claimed Ctrl+V; the browser's own paste would be suppressed")
+	}
+	if got := h.activeElement(t); got != "paste-target" {
+		t.Errorf("focus after Ctrl+V = %q, want the paste target the browser pastes into", got)
+	}
+	h.keyup(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true})
+	if got := h.sentInput(t); got != "pasted text" {
+		t.Errorf("paste sent %q as input, want the clipboard text", got)
+	}
+	if n := h.countInputs(t); n != 1 {
+		t.Errorf("paste inserted %d times; want exactly once", n)
+	}
+	if got := h.activeElement(t); got != "grid" {
+		t.Errorf("focus after the paste = %q, want the grid back", got)
+	}
+}
+
+// TestClientJS_CutChordCopiesAndDeletes pins the cut: the selection goes to the
+// clipboard and is removed from the input line with the engine's own keys. With
+// the selection ending at the cursor that is one Backspace per character.
+func TestClientJS_CutChordCopiesAndDeletes(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
+	h.deliver(t, frameDocCursor(t, 6, 2, 6, "abcdef"))
+	h.call(t, "__setSelectionRange", "def", 3*8, 6*8)
+	if !h.keydown(t, map[string]any{"key": "x", "code": "KeyX", "ctrlKey": true}) {
+		t.Error("page let Ctrl+X through with a live selection; the cut would be lost")
+	}
+	if got := h.clipboardText(t); got != "def" {
+		t.Errorf("clipboard = %q after Ctrl+X, want the selection", got)
+	}
+	if got := h.sentKeys(t); got != "Backspace,Backspace,Backspace" {
+		t.Errorf("cut sent %q, want three Backspaces for three characters", got)
+	}
+}
+
+// TestClientJS_NativePasteStopsTheFallback pins the double-insert guard: when
+// the browser's own paste arrives (the primary path — no permission involved),
+// its text is inserted once and the clipboard fallback must not insert it again.
+func TestClientJS_NativePasteStopsTheFallback(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
+	h.call(t, "__setClipboard", "clipboard text")
+	h.keydown(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true})
+	if got := h.activeElement(t); got != "paste-target" {
+		t.Fatalf("focus after Ctrl+V = %q, want the paste target", got)
+	}
+	if !h.paste(t, "clipboard text") {
+		t.Error("the browser's paste was not prevented; the text would land in the textarea")
+	}
+	if got := h.sentInput(t); got != "clipboard text" {
+		t.Errorf("native paste inserted %q, want the clipboard text", got)
+	}
+	if got := h.activeElement(t); got != "grid" {
+		t.Errorf("focus after the native paste = %q, want the grid back", got)
+	}
+	// The keyup closes the paste window with the browser's paste already in: it
+	// must stay silent, or the clipboard would be inserted twice.
+	h.keyup(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true})
+	if n := h.countInputs(t); n != 1 {
+		t.Errorf("paste inserted %d times; the fallback duplicated the browser's paste", n)
+	}
+}
+
+// TestClientJS_PasteWindowBackstopReadsWithoutAKeyup pins the backstop: a chord
+// delivered without its keyup still gets its clipboard read, so a remote-input or
+// synthetic chord cannot stall the paste.
+func TestClientJS_PasteWindowBackstopReadsWithoutAKeyup(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
+	h.call(t, "__setClipboard", "backstop text")
+	h.keydown(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true})
+	if !h.fireTimerOf(t, 500) {
+		t.Fatal("paste scheduled no backstop timer")
+	}
+	if got := h.sentInput(t); got != "backstop text" {
+		t.Errorf("backstop paste sent %q, want the clipboard text", got)
+	}
+	if got := h.activeElement(t); got != "grid" {
+		t.Errorf("focus after the backstop paste = %q, want the grid back", got)
+	}
+}
+
+// TestClientJS_PasteStaysWithTheBrowserWithoutAClipboardAPI pins the fallback:
+// on an origin with no async clipboard (plain http on a LAN address) the page
+// cannot read the clipboard itself, so it must LEAVE the chord to the browser —
+// claim it and a browser that does fire a `paste` event would be swallowed.
+func TestClientJS_PasteStaysWithTheBrowserWithoutAClipboardAPI(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+	h.call(t, "__dropClipboardAPI")
+	if h.keydown(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true}) {
+		t.Error("page claimed Ctrl+V; the browser's own paste would be suppressed")
+	}
+	// The paste window is always opened (the browser may still deliver a paste);
+	// with no clipboard API the fallback can only give up and put the focus back.
+	h.keyup(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true})
+	if n := h.countInputs(t); n != 0 {
+		t.Errorf("a paste the page could not read still sent %d input messages", n)
+	}
+	if got := h.activeElement(t); got != "grid" {
+		t.Errorf("focus after an unreadable paste = %q, want the grid back", got)
+	}
+}
+
+// TestClientJS_CopyFallsBackToExecCommand pins the legacy write path: an
+// insecure origin has no async clipboard, and a refused write must not lose the
+// copy while execCommand can still put the selection on the real clipboard.
+func TestClientJS_CopyFallsBackToExecCommand(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
+	// No clipboard API at all: the legacy path is the only one.
+	h.call(t, "__dropClipboardAPI")
+	h.call(t, "__setSelection", "legacy copy")
+	h.keydown(t, map[string]any{"key": "c", "code": "KeyC", "ctrlKey": true})
+	if cmds := h.execCommands(t); len(cmds) != 1 || cmds[0] != "copy" {
+		t.Errorf("execCommand calls = %v, want one copy", cmds)
+	}
+
+	// Async write refused: the page must fall back rather than give up.
+	h2 := newClientHarness(t)
+	h2.open(t)
+	h2.call(t, "__denyClipboardWrites", true)
+	h2.call(t, "__setSelection", "fallback")
+	h2.keydown(t, map[string]any{"key": "c", "code": "KeyC", "ctrlKey": true})
+	if cmds := h2.execCommands(t); len(cmds) != 1 || cmds[0] != "copy" {
+		t.Errorf("execCommand calls after a refused write = %v, want one copy", cmds)
+	}
+}
+
+// TestClientJS_ReadOnlyViewerStillCopiesButNeverDrives pins the viewer's half of
+// the contract: reading the screen is not driving it, so a copy works; paste and
+// cut never reach the session.
+func TestClientJS_ReadOnlyViewerStillCopiesButNeverDrives(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+	h.deliver(t, frameDocCursor(t, 6, 2, 6, "abcdef"))
+	h.call(t, "__deliver", h.vm.ToValue(map[string]any{"t": "read_only", "text": "viewer"}))
+	h.call(t, "__setSelection", "shared line")
+
+	h.keydown(t, map[string]any{"key": "c", "code": "KeyC", "ctrlKey": true})
+	if got := h.clipboardText(t); got != "shared line" {
+		t.Errorf("read-only viewer copied %q, want the selection", got)
+	}
+
+	h.reset(t)
+	h.call(t, "__setClipboard", "drives the session")
+	h.keydown(t, map[string]any{"key": "v", "code": "KeyV", "ctrlKey": true})
+	h.call(t, "__setSelectionRange", "def", 3*8, 6*8)
+	h.keydown(t, map[string]any{"key": "x", "code": "KeyX", "ctrlKey": true})
+	if n := h.countInputs(t); n != 0 {
+		t.Errorf("a read-only viewer sent %d input messages", n)
+	}
+	if got := h.sentKeys(t); got != "" {
+		t.Errorf("a read-only viewer sent keys to the session: %q", got)
+	}
+}
+
+// TestClientJS_CutWalksTheCursorToTheSelection pins the general cut: when the
+// selection is neither at the cursor nor reaching it, the cursor is walked to the
+// selection's end (column arithmetic over the row's pixels) and the selected
+// characters are deleted behind it.
+func TestClientJS_CutWalksTheCursorToTheSelection(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
+	// Cursor at column 1, selection covers columns 3..5 of a single-width row, so
+	// the cursor walks to the selection's end (column 5, four steps right) before
+	// the two selected characters are deleted behind it.
+	h.deliver(t, frameDocCursor(t, 6, 2, 1, "abcdef"))
+	h.call(t, "__setSelectionRange", "de", 3*8, 5*8)
+	if !h.keydown(t, map[string]any{"key": "x", "code": "KeyX", "ctrlKey": true}) {
+		t.Fatal("page let Ctrl+X through with a live selection")
+	}
+	if got := h.clipboardText(t); got != "de" {
+		t.Errorf("clipboard = %q after the cut, want the selection", got)
+	}
+	if got := h.sentKeys(t); got != "ArrowRight,ArrowRight,ArrowRight,ArrowRight,Backspace,Backspace" {
+		t.Errorf("cut sent %q, want four rights (cursor col 1 → selection end col 5) then two backspaces", got)
+	}
+}
+
+// TestClientJS_CutLeavesOutputAlone pins that a selection reaching outside the
+// cursor's row (the transcript above the input line) is copied, never deleted:
+// output is not the editor's buffer.
+func TestClientJS_CutLeavesOutputAlone(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
+	h.deliver(t, frameDocCursor(t, 6, 2, 1, "abcdef"))
+	// Rect outside the cursor row's box (top 0..16): the transcript.
+	h.call(t, "__setSelectionRange", "output line", 0, 8)
+	h.vm.RunString("window.__range.getClientRects = function () { return [{ left: 0, right: 80, top: -32, bottom: -16 }]; }")
+	if !h.keydown(t, map[string]any{"key": "x", "code": "KeyX", "ctrlKey": true}) {
+		t.Fatal("page let Ctrl+X through with a live selection")
+	}
+	if got := h.clipboardText(t); got != "output line" {
+		t.Errorf("clipboard = %q after the cut, want the selection", got)
+	}
+	if got := h.sentKeys(t); got != "" {
+		t.Errorf("cut deleted %q from the session although the selection is output", got)
+	}
+}
+
+// TestClientJS_CutSkipsTheWalkOnAWideGlyphLine pins the width guard: a line
+// holding a two-cell glyph makes cell columns and buffer characters disagree, so
+// a cut that does not touch the cursor copies and leaves the line alone instead
+// of deleting the wrong characters.
+func TestClientJS_CutSkipsTheWalkOnAWideGlyphLine(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t)
+
+	h.deliver(t, frameDocCursor(t, 6, 2, 1, "\u4f60\u597dabcdef"))
+	h.call(t, "__setSelectionRange", "de", 3*8, 5*8)
+	if !h.keydown(t, map[string]any{"key": "x", "code": "KeyX", "ctrlKey": true}) {
+		t.Fatal("page let Ctrl+X through with a live selection")
+	}
+	if got := h.clipboardText(t); got != "de" {
+		t.Errorf("clipboard = %q after the cut, want the selection", got)
+	}
+	if got := h.sentKeys(t); got != "" {
+		t.Errorf("cut walked a wide-glyph line and sent %q", got)
 	}
 }
 
