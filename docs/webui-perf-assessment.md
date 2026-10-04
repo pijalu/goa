@@ -155,8 +155,56 @@ real engine, transcript grown past the bound:
 | Grid height | `grid.offsetHeight == 16 + rows*16` (608 for 37 rows) — the phantom-blank-line fix holds |
 | Caret | visible, positioned at the input line |
 
+**Re-run on the fixed server (2026-10-04, second pass, `goa server` built from
+this revision):** the model-independent mechanics section of
+`e2e/w1_webui_browser.sh` executed against real Chrome — **10/10 PASS**, with the
+new `transcript_order` assertion (transcript rows keep ascending absolute
+indices across grow+shrink cycles):
+
+| Check | Result |
+|---|---|
+| Page live | `#status[data-state=live]` |
+| One scroll container | transcript in flow above the grid, caret in the grid |
+| Caret | shown at `left:8px top:536px` |
+| Scroll + follow-tail | transcript scrolls, pinned to the bottom (`rows:345`) |
+| Scroll-up detaches follow-tail | PASS |
+| Transcript bound | 1 656 rows held after ~30 more screens |
+| Resize trims | 53 → 27 rows across a shrink |
+| Grid height | 864 == 16 + 53×16 |
+| Clipboard chords | `Ctrl+V/X` browser-native, `Ctrl+C` interrupt unless selected |
+| Transcript order across resizes | 2 099 rows, ascending, no stale index |
+
 Two client bugs were found **only** by this pass (both now fixed and covered by
 regressions — see §5).
+
+---
+
+### 2.8 The dirty-mark backlog — the second O(history)-shaped defect
+
+Found while checking the benchmarks after the fixes: `BenchmarkPublishCost` was
+**not** flat (130 µs / 0.5 MB at 1 000 rows, 355 µs / 1.7 MB at 20 000). The
+cause was not the transcript but `CellGrid.pending`: the rows marked dirty since
+the last frame were kept as a **list of every mark taken**, appended once per
+`Process` call, then sorted and deduplicated by `normalizeRows` at the next
+`Patches`. Frames only consume it when a browser is attached, so a burst of
+output arriving without a frame paid for the whole burst on the first frame
+after it — for a screen that can only ever hold `maxRows` (200) distinct rows:
+
+| Rows printed since the last frame | first frame after the burst | bytes allocated |
+|---|---|---|
+| 2 000 | 157 µs | 0.58 MB |
+| 20 000 | 281 µs | 1.70 MB |
+| 200 000 | **2.46 ms** | **18.8 MB** |
+
+`Process` alone is flat in history (41875 B / 362 allocs at every size), which is
+what pinned the growth on the pending set rather than on the emulator.
+
+The fix is structural: `pending` is a **set with one flag per screen row**, so a
+frame costs one pass over the screen however much arrived since the last one, and
+its memory is bounded by the geometry (200 bytes). `Resize` re-sizes the set to
+the new geometry and marks every row (a geometry change is a repaint), so no row
+of an old screen can be shipped against a new one. `normalizeRows` (map + sort)
+became dead code and was deleted.
 
 ---
 
@@ -176,6 +224,9 @@ regressions — see §5).
    engine, shared with the terminal path, and it is what *produces* the screen.
    Moving it is out of scope for the web UI; the web UI's job is to not add to
    it. *Noted, not actioned.*
+7. **The dirty-mark backlog** — a frame after a burst of output cost the burst
+   (§2.8). 2.46 ms + 18.8 MB after 200 000 unframed rows, for at most 200
+   distinct rows. *High — fixed in the same pass (a set per screen row).*
 
 ---
 
@@ -207,6 +258,7 @@ regressions — see §5).
 | `CellGrid.TakeScrollback`: read only the rows since `sentScrollback`, clamped to the ring base | kills finding 1 |
 | Encode each frame **once** in the `Hub`; clients write the shared bytes | kills finding 4 |
 | Skip frame production when no client is attached | kills finding 5 |
+| `CellGrid.pending`: a dirty **set** (one flag per screen row) instead of a list of every mark; re-sized and fully marked on `Resize` | kills finding 7 |
 
 ### 4.3 Client
 
@@ -244,12 +296,31 @@ with the browser owning the whole scroll interaction and nothing to correct.
 ## 5. Verification plan
 
 * Go benchmarks `BenchmarkTakeScrollback` / `BenchmarkPublishCost` must be flat
-  in history length (they are the regression detector for finding 1).
+  in history length (the regression detector for findings 1 and 7). Both now run
+  up to 200 000 rows: `PublishCost` is 430 678 B / 541 allocs at 1 000 rows and
+  430 740 B / 543 allocs at 20 000 (was 508 140 → 1 698 846 B before the
+  dirty-set fix).
 * Unit tests: ring eviction, absolute-base clamping, resume/attach after
   eviction, one-encode-per-frame (hub), no-client frame skip.
+* Unit tests for finding 7 (`scrollback_cost_test.go`): the dirty set holds one
+  entry per screen row whatever the burst (2 479 entries at a 100-row burst
+  before the fix), one frame after a 200 000-row burst stays inside a 1 MB
+  allocation budget, and a resize re-sizes the set and repaints without shipping
+  a stale row.
 * goja client tests: window bound, spacer height, rehydration, follow-tail
   coalescing, caret position unchanged.
 * Real browser (`agent-browser`): scrollbar geometry, wheel + follow-tail
   detach/re-arm, overscroll → browser history, cut/copy/paste, resize.
 * `e2e/w1_webui_browser.sh`: add scroll/caret/resize/clipboard assertions so
-  these are regression-checked, not hand-checked.
+  these are regression-checked, not hand-checked. (Done; the mechanics section
+  was re-run against the fixed server — §2.7.)
+
+### 5.1 Open, unrelated to the per-frame cost
+
+`goa server` does not exit on SIGINT/SIGTERM: `runWebServer` builds the session
+with `signal.NotifyContext` and then blocks in `New(subs).Run()`, which does not
+observe that context, so the HTTP listener stops but the process stays up (and
+the profiling flags never write their files). Reproduced on the binary built for
+the §2.7 pass: `kill -INT` → `kill -0` still true 5 s later. Pre-existing, in the
+session lifecycle rather than the web layer; it is why the §2 numbers come from
+benchmarks rather than an end-to-end pprof capture.
