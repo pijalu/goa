@@ -460,6 +460,13 @@ func Main() {
 	defer crashCleanup()
 	defer handleShutdown()
 
+	// Help is answered before any subsystem starts, so `goa --help`,
+	// `goa help [topic]` and `goa <verb> --help` print documentation and exit
+	// without loading config, running the first-run wizard or starting the TUI.
+	if runHelpCLI(os.Args[1:]) {
+		return
+	}
+
 	// `goa mcp ...` is handled before flag parsing: it is a plain CLI
 	// subcommand (no TUI, no headless agent) for managing MCP servers.
 	if runMCPCLI(os.Args[1:]) {
@@ -469,11 +476,7 @@ func Main() {
 	// `goa server` is likewise a subcommand: the verb is stripped from argv
 	// before flag parsing, then handed to runApp as a mode selector (spec §19
 	// decision 5).
-	serverMode, err := stripSubcommand(os.Args, "server")
-	if err != nil {
-		fmt.Print(err)
-		os.Exit(2)
-	}
+	serverMode := stripSubcommand(os.Args, "server")
 
 	for {
 		relaunch := runApp(serverMode)
@@ -484,22 +487,15 @@ func Main() {
 }
 
 // stripSubcommand removes a leading `name` verb from argv so the flag parser
-// never sees it. It returns an error for `goa name --help`, which must not
-// print the agent's flag help.
-func stripSubcommand(argv []string, name string) (bool, error) {
+// never sees it, and reports whether the verb was present. Verb-scoped help
+// (`goa name --help`) never reaches this function: Main answers help before any
+// parsing.
+func stripSubcommand(argv []string, name string) bool {
 	if len(argv) < 2 || argv[1] != name {
-		return false, nil
+		return false
 	}
-	rest := argv[2:]
-	if len(rest) > 0 && (rest[0] == "--help" || rest[0] == "-h" || rest[0] == "help") {
-		if name == "server" {
-			fmt.Print(webServerUsage)
-			os.Exit(0)
-		}
-		return false, fmt.Errorf("goa %s: unknown command %q", name, rest[0])
-	}
-	os.Args = append([]string{argv[0]}, rest...)
-	return true, nil
+	os.Args = append([]string{argv[0]}, argv[2:]...)
+	return true
 }
 
 func runApp(serverMode bool) bool {

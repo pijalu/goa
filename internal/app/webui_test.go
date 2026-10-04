@@ -69,11 +69,7 @@ func TestStripSubcommand_Server(t *testing.T) {
 	t.Cleanup(func() { os.Args = orig })
 
 	os.Args = []string{"goa", "server", "--server-addr", "127.0.0.1:9000"}
-	got, err := stripSubcommand(os.Args, "server")
-	if err != nil {
-		t.Fatalf("stripSubcommand: %v", err)
-	}
-	if !got {
+	if !stripSubcommand(os.Args, "server") {
 		t.Error("server verb not detected")
 	}
 	if len(os.Args) != 3 || os.Args[1] != "--server-addr" {
@@ -86,11 +82,7 @@ func TestStripSubcommand_LeavesOtherArgvAlone(t *testing.T) {
 	t.Cleanup(func() { os.Args = orig })
 
 	os.Args = []string{"goa", "--model", "x"}
-	got, err := stripSubcommand(os.Args, "server")
-	if err != nil {
-		t.Fatalf("stripSubcommand: %v", err)
-	}
-	if got {
+	if stripSubcommand(os.Args, "server") {
 		t.Error("server mode must not be inferred from unrelated args")
 	}
 	if os.Args[1] != "--model" {

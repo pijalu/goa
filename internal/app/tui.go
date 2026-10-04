@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,8 +45,10 @@ func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
 
 	if err := engine.Start(); err != nil {
-		// TUI startup failure is fatal.
-		os.Exit(1)
+		// TUI startup failure is fatal — and must say so: exiting silently
+		// left the user staring at an unchanged terminal with no diagnosis.
+		fmt.Fprintf(os.Stderr, "goa: failed to start the terminal UI: %v\n", err)
+		exitAfterFlush(1)
 	}
 
 	a.finalizeTUI(engine, chat, agentContent, agentTabBar, statusFooter, statusBar, bgPanel, inp)

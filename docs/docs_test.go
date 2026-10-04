@@ -98,7 +98,7 @@ func TestGet_KnownDoc(t *testing.T) {
 // goa:// URLs): embedded docs carry SPDX headers on disk, but comments must
 // never reach the LLM context.
 func TestGet_StripsComments(t *testing.T) {
-	for _, name := range []string{"SKILLS", "TOOLS", "TUI", "SETUP"} {
+	for _, name := range []string{"SKILLS", "TOOLS", "TUI", "SETUP", "CLI"} {
 		content, err := Get(name)
 		if err != nil {
 			t.Fatalf("Get(%s) failed: %v", name, err)
@@ -167,5 +167,40 @@ func TestParseGoaURL_Invalid(t *testing.T) {
 		if ok {
 			t.Errorf("ParseGoaURL(%q) expected !ok, got %q", c, got)
 		}
+	}
+}
+
+// TestGet_CLI pins the command-line manual's content. docs/CLI.md is the
+// narrative half of `goa --help` (the option reference and the document index
+// are generated from the live flag set and embedded docs), so a mode that is
+// missing here is a mode the user cannot discover from the CLI.
+func TestGet_CLI(t *testing.T) {
+	content, err := Get("CLI")
+	if err != nil {
+		t.Fatalf("Get(CLI) failed: %v", err)
+	}
+	for _, want := range []string{
+		// Every invocation surface.
+		"goa server", "goa mcp", "goa help",
+		// Modes and the flags that select them.
+		"--prompt", "--prompt-file", "--goal", "--orchestrate", "--acp",
+		"--dream", "--export-output", "--check-update", "--perf-load",
+		"--with-profiling", "--cpuprofile", "--memprofile", "--trace",
+		// Configuration cascade and environment.
+		"~/.goa/config.yaml", ".goa/config.yaml", ".goa/config.local.yaml",
+		"GOA_HOME", "GOA_SERVER_AUTH_TOKEN", "GOA_CRASH_LOG", "${VAR:-default}",
+		// Files a user needs to find again.
+		"~/.goa/usage.db", ".goa/crash.log", ".goa/exports/",
+		// Headless exit codes: scripts depend on the numbers.
+		"`0`", "`1`", "`2`", "`3`", "`4`", "`5`", "`6`",
+		// Help topics the generated sections answer.
+		"goa help options", "goa help docs",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("CLI.md must document %q", want)
+		}
+	}
+	if _, err := Get("cli"); err != nil {
+		t.Errorf("Get(cli) must resolve case-insensitively: %v", err)
 	}
 }

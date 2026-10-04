@@ -5,10 +5,13 @@
 package app
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/pijalu/goa/config"
@@ -182,19 +185,84 @@ func validateColor(color string) error {
 	}
 }
 
+// cliFlagDefs is this process's command-line surface: the flag set plus the
+// typed pointers every registered flag wrote into.
+type cliFlagDefs struct {
+	fs      *flag.FlagSet
+	strPtrs map[string]*string
+	scalar  scalarFlags
+	runtime runtimeFlagDefs
+}
+
+var (
+	cliFlagDefsOnce sync.Once
+	cliFlagDefsInst *cliFlagDefs
+)
+
+// cliFlags returns the flag set with every goa flag registered, defining it on
+// first use.
+//
+// Registration is a single lazy step because two very different callers need the
+// same set: the parser, and the help subsystem — which renders the option
+// reference from the live flags *before* any parsing happens. It also makes the
+// definition idempotent, which matters because the flag package panics on a
+// duplicate definition and runApp can be re-entered by the relaunch loop.
+func cliFlags() *cliFlagDefs {
+	cliFlagDefsOnce.Do(func() {
+		fs := flag.NewFlagSet("goa", flag.ContinueOnError)
+		// The flag package's own output is never used: errors are reported by
+		// the caller in the manual's voice, and -h/--help is answered with the
+		// manual instead of a bare flag dump.
+		fs.SetOutput(io.Discard)
+		fs.Usage = func() {}
+		cliFlagDefsInst = &cliFlagDefs{
+			fs:      fs,
+			strPtrs: defineStringFlags(fs),
+			scalar:  defineScalarFlags(fs),
+			runtime: defineRuntimeFlags(fs),
+		}
+	})
+	return cliFlagDefsInst
+}
+
 // ParseCLIFlags parses command-line flags into a map of config overrides and
 // runtime options.
+//
+// Parsing is done in ContinueOnError mode with the flag package's output
+// silenced, so this function — not flag.Parse — owns every exit path. That
+// matters twice over: the flag package answers `-h`/`--help` by printing its own
+// bare flag dump and calling os.Exit(0) directly, which both truncated the output
+// (the stderr tee drains asynchronously) and documented nothing but flag names;
+// and a usage error must print the synopsis instead of that dump.
 func ParseCLIFlags() (map[string]string, RuntimeOptions) {
+	defs := cliFlags()
+
+	if err := parseArgv(defs.fs); err != nil {
+		// Not a help request: the error text carries the parser's message.
+		fmt.Fprintf(os.Stderr, "goa: %v\n\n%s", err, cliShortUsage)
+		exitAfterFlush(2)
+	}
+	if err := unknownCommandError(defs.fs.Args()); err != nil {
+		fmt.Fprintf(os.Stderr, "goa: %v\n", err)
+		exitAfterFlush(2)
+	}
+
 	flags := map[string]string{}
-	stringPtrs := defineStringFlags()
-	scalar := defineScalarFlags()
-	ro := defineRuntimeFlags()
+	collectStringFlags(flags, defs.strPtrs)
+	defs.scalar.collectInto(flags)
+	return flags, defs.runtime.collectInto(defs.fs)
+}
 
-	flag.Parse()
-
-	collectStringFlags(flags, stringPtrs)
-	scalar.collectInto(flags)
-	return flags, ro.collectInto()
+// parseArgv parses argv against the registered flag set. It returns an error for
+// a plain parse failure; a help request is answered and exits the process.
+// (runHelpCLI answers the help forms that must be recognized before parsing —
+// this one covers `goa --model x --help`.)
+func parseArgv(fs *flag.FlagSet) error {
+	err := fs.Parse(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		exitWithHelp("")
+	}
+	return err
 }
 
 type stringFlagDef struct {
@@ -203,7 +271,9 @@ type stringFlagDef struct {
 	desc string
 }
 
-func defineStringFlags() map[string]*string {
+// defineStringFlags registers every free-form string flag and returns the
+// pointers keyed by their config-override key.
+func defineStringFlags(fs *flag.FlagSet) map[string]*string {
 	defs := []stringFlagDef{
 		{"model", "model", "Override active model"},
 		{"profile", "profile", "Override active mode"},
@@ -224,7 +294,7 @@ func defineStringFlags() map[string]*string {
 	}
 	ptrs := make(map[string]*string, len(defs))
 	for _, d := range defs {
-		ptrs[d.key] = flag.String(d.name, "", d.desc)
+		ptrs[d.key] = fs.String(d.name, "", d.desc)
 	}
 	return ptrs
 }
@@ -290,69 +360,69 @@ type runtimeFlagDefs struct {
 	insecureNoAuth   *bool
 }
 
-func defineScalarFlags() scalarFlags {
+func defineScalarFlags(fs *flag.FlagSet) scalarFlags {
 	return scalarFlags{
-		temperature:              flag.Float64("temperature", 0, "Override model temperature"),
-		maxTokens:                flag.Int("max-tokens", 0, "Override model max output tokens"),
-		maxToolRepeatTotal:       flag.Int("max-tool-repeat-total", 0, "Override max total identical tool calls per turn"),
-		maxToolRepeatConsecutive: flag.Int("max-tool-repeat-consecutive", 0, "Override max consecutive identical tool calls"),
-		maxToolCalls:             flag.Int("max-tool-calls", 0, "Override max duplicate tool calls within the rolling window"),
-		maxStreamRounds:          flag.Int("max-stream-rounds", 0, "Override max LLM stream rounds per turn (0 = unlimited)"),
-		maxConsecutiveToolRounds: flag.Int("max-consecutive-tool-rounds", 0, "Override max consecutive tool-only rounds before forced-answer nudge (0 = disabled, default 15)"),
-		toolCallLimitResetWindow: flag.Int("tool-call-limit-reset-window", 0, "Override tool-call duplicate rolling-window size"),
-		reasoning:                flag.Bool("reasoning", false, "Enable model reasoning"),
-		showThinking:             flag.Bool("show-thinking", false, "Show main-agent thinking blocks"),
-		compression:              flag.Bool("compression", false, "Enable context compression"),
-		debug:                    flag.Bool("debug", false, "Enable debug logging"),
-		debugKeys:                flag.Bool("debug-keys", false, "Trace raw TUI keystrokes to a log file"),
+		temperature:              fs.Float64("temperature", 0, "Override model temperature"),
+		maxTokens:                fs.Int("max-tokens", 0, "Override model max output tokens"),
+		maxToolRepeatTotal:       fs.Int("max-tool-repeat-total", 0, "Override max total identical tool calls per turn"),
+		maxToolRepeatConsecutive: fs.Int("max-tool-repeat-consecutive", 0, "Override max consecutive identical tool calls"),
+		maxToolCalls:             fs.Int("max-tool-calls", 0, "Override max duplicate tool calls within the rolling window"),
+		maxStreamRounds:          fs.Int("max-stream-rounds", 0, "Override max LLM stream rounds per turn (0 = unlimited)"),
+		maxConsecutiveToolRounds: fs.Int("max-consecutive-tool-rounds", 0, "Override max consecutive tool-only rounds before forced-answer nudge (0 = disabled, default 15)"),
+		toolCallLimitResetWindow: fs.Int("tool-call-limit-reset-window", 0, "Override tool-call duplicate rolling-window size"),
+		reasoning:                fs.Bool("reasoning", false, "Enable model reasoning"),
+		showThinking:             fs.Bool("show-thinking", false, "Show main-agent thinking blocks"),
+		compression:              fs.Bool("compression", false, "Enable context compression"),
+		debug:                    fs.Bool("debug", false, "Enable debug logging"),
+		debugKeys:                fs.Bool("debug-keys", false, "Trace raw TUI keystrokes to a log file"),
 	}
 }
 
-func defineRuntimeFlags() runtimeFlagDefs {
+func defineRuntimeFlags(fs *flag.FlagSet) runtimeFlagDefs {
 	return runtimeFlagDefs{
-		prompt:           flag.String("prompt", "", "User prompt to execute (implies headless mode)"),
-		promptFile:       flag.String("prompt-file", "", "Read prompt from file (implies headless mode)"),
-		goal:             flag.Bool("goal", false, "Treat the prompt as a goal objective (headless mode only)"),
-		orchestrate:      flag.String("orchestrate", "", "Resume orchestrator run <run-id> headless"),
-		plain:            flag.Bool("plain", false, "Force plain, uncolored output in headless mode"),
-		yes:              flag.Bool("yes", false, "Auto-approve tool confirmations in headless mode"),
-		noMemory:         flag.Bool("no-memory", false, "Do not inject long-term memory into the system prompt"),
-		noPlugins:        flag.Bool("no-plugins", false, "Start without loading any plugins (bundled and installed)"),
-		memoryBudget:     flag.Int("memory-budget", 0, "Maximum tokens for memory injection (0=auto)"),
-		maxTurns:         flag.Int("max-turns", 0, "Maximum agent turns in headless mode (0=unlimited)"),
-		timeout:          flag.Duration("timeout", 0, "Overall session timeout in headless mode (0=none)"),
-		color:            flag.String("color", "auto", "Color output in headless mode: auto, always, or never"),
-		dream:            flag.Bool("dream", false, "Run memory consolidation (dream) and exit"),
-		dreamApply:       flag.Bool("dream-apply", false, "Run dream and apply consolidated memory immediately"),
-		acp:              flag.Bool("acp", false, "Run ACP server over stdin/stdout"),
-		checkUpdate:      flag.Bool("check-update", false, "Check for updates and exit"),
-		telemetry:        flag.Bool("telemetry", false, "Send anonymous telemetry"),
-		exportOutput:     flag.String("export-output", "", "Output path for goa export"),
-		exportSession:    flag.String("export-session", "", "Session ID to export"),
-		includeGlobalLog: flag.Bool("include-global-log", false, "Include global log in export"),
-		cpuProfile:       flag.String("cpuprofile", "", "Write CPU profile to `file`"),
-		memProfile:       flag.String("memprofile", "", "Write memory profile to `file`"),
-		traceFile:        flag.String("trace", "", "Write execution trace to `file`"),
-		perfLoad:         flag.Bool("perf-load", false, "Run a synthetic TUI performance load instead of an agent turn"),
-		perfLoadDuration: flag.Duration("perf-load-duration", 30*time.Second, "Duration of the synthetic performance load"),
-		withProfiling:    flag.Bool("with-profiling", false, "Capture CPU, memory, and trace profiles after exit (default names unless overridden)"),
-		serverAddr:       flag.String("server-addr", "", "Listen address for 'goa server' (default 127.0.0.1:8080)"),
-		serverReadOnly:   flag.Bool("server-read-only", false, "Serve 'goa server' as a viewer: browsers see the session but cannot drive it"),
-		serverMaxClients: flag.Int("server-max-clients", 0, "Maximum browsers attached to 'goa server' (0 = built-in default)"),
-		serverAuth:       flag.String("server-auth", "none", "Authentication for 'goa server': none, basic or token"),
-		serverAuthUser:   flag.String("server-auth-user", "", "Username for --server-auth=basic"),
-		serverAuthPass:   flag.String("server-auth-password", "", "Password for --server-auth=basic (prefer the env var GOA_SERVER_AUTH_PASSWORD)"),
-		serverAuthToken:  flag.String("server-auth-token", "", "Bearer token for --server-auth=token (prefer the env var GOA_SERVER_AUTH_TOKEN)"),
-		insecureNoAuth:   flag.Bool("insecure-no-auth", false, "Serve 'goa server' on a non-loopback address with no authentication (unsafe: anyone who can reach it drives the agent)"),
+		prompt:           fs.String("prompt", "", "User prompt to execute (implies headless mode)"),
+		promptFile:       fs.String("prompt-file", "", "Read prompt from file (implies headless mode)"),
+		goal:             fs.Bool("goal", false, "Treat the prompt as a goal objective (headless mode only)"),
+		orchestrate:      fs.String("orchestrate", "", "Resume orchestrator run <run-id> headless"),
+		plain:            fs.Bool("plain", false, "Force plain, uncolored output in headless mode"),
+		yes:              fs.Bool("yes", false, "Auto-approve tool confirmations in headless mode"),
+		noMemory:         fs.Bool("no-memory", false, "Do not inject long-term memory into the system prompt"),
+		noPlugins:        fs.Bool("no-plugins", false, "Start without loading any plugins (bundled and installed)"),
+		memoryBudget:     fs.Int("memory-budget", 0, "Maximum tokens for memory injection (0=auto)"),
+		maxTurns:         fs.Int("max-turns", 0, "Maximum agent turns in headless mode (0=unlimited)"),
+		timeout:          fs.Duration("timeout", 0, "Overall session timeout in headless mode (0=none)"),
+		color:            fs.String("color", "auto", "Color output in headless mode: auto, always, or never"),
+		dream:            fs.Bool("dream", false, "Run memory consolidation (dream) and exit"),
+		dreamApply:       fs.Bool("dream-apply", false, "Run dream and apply consolidated memory immediately"),
+		acp:              fs.Bool("acp", false, "Run ACP server over stdin/stdout"),
+		checkUpdate:      fs.Bool("check-update", false, "Check for updates and exit"),
+		telemetry:        fs.Bool("telemetry", false, "Send anonymous telemetry"),
+		exportOutput:     fs.String("export-output", "", "Output path for goa export"),
+		exportSession:    fs.String("export-session", "", "Session ID to export"),
+		includeGlobalLog: fs.Bool("include-global-log", false, "Include global log in export"),
+		cpuProfile:       fs.String("cpuprofile", "", "Write CPU profile to `file`"),
+		memProfile:       fs.String("memprofile", "", "Write memory profile to `file`"),
+		traceFile:        fs.String("trace", "", "Write execution trace to `file`"),
+		perfLoad:         fs.Bool("perf-load", false, "Run a synthetic TUI performance load instead of an agent turn"),
+		perfLoadDuration: fs.Duration("perf-load-duration", 30*time.Second, "Duration of the synthetic performance load"),
+		withProfiling:    fs.Bool("with-profiling", false, "Capture CPU, memory, and trace profiles after exit (default names unless overridden)"),
+		serverAddr:       fs.String("server-addr", "", "Listen address for 'goa server' (default 127.0.0.1:8080)"),
+		serverReadOnly:   fs.Bool("server-read-only", false, "Serve 'goa server' as a viewer: browsers see the session but cannot drive it"),
+		serverMaxClients: fs.Int("server-max-clients", 0, "Maximum browsers attached to 'goa server' (0 = built-in default)"),
+		serverAuth:       fs.String("server-auth", "none", "Authentication for 'goa server': none, basic or token"),
+		serverAuthUser:   fs.String("server-auth-user", "", "Username for --server-auth=basic"),
+		serverAuthPass:   fs.String("server-auth-password", "", "Password for --server-auth=basic (prefer the env var GOA_SERVER_AUTH_PASSWORD)"),
+		serverAuthToken:  fs.String("server-auth-token", "", "Bearer token for --server-auth=token (prefer the env var GOA_SERVER_AUTH_TOKEN)"),
+		insecureNoAuth:   fs.Bool("insecure-no-auth", false, "Serve 'goa server' on a non-loopback address with no authentication (unsafe: anyone who can reach it drives the agent)"),
 	}
 }
 
 // collectInto returns the parsed RuntimeOptions from flag pointers.
-func (r *runtimeFlagDefs) collectInto() RuntimeOptions {
+func (r *runtimeFlagDefs) collectInto(fs *flag.FlagSet) RuntimeOptions {
 	// Detect if --prompt was explicitly set (even to empty string).
-	// flag.Visit only iterates over flags that were explicitly changed by the user.
+	// fs.Visit only iterates over flags that were explicitly changed by the user.
 	promptSet := false
-	flag.Visit(func(f *flag.Flag) {
+	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "prompt" {
 			promptSet = true
 		}
@@ -487,7 +557,7 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 	}
 	if result.Cancelled {
 		fmt.Println("Setup skipped. Edit ~/.goa/config.yaml manually, then restart.")
-		os.Exit(0)
+		exitAfterFlush(0)
 	}
 	if !result.ConfigWritten {
 		return cfg, rep
