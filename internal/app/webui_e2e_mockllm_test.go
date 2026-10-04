@@ -89,6 +89,10 @@ func (s *recordingSink) Publish(f *webui.Frame) {
 	s.frames = append(s.frames, webUIFrame{patches: f.Patches, full: f.Full, cur: f.Cursor})
 }
 
+// HasClients always reports true: the recorder stands in for an attached
+// browser, so the terminal must build every frame for it.
+func (s *recordingSink) HasClients() bool { return true }
+
 // lastFrame returns the most recently published frame.
 func (s *recordingSink) lastFrame() webUIFrame {
 	if len(s.frames) == 0 {

@@ -45,6 +45,35 @@ func TestCellGrid_SGRRoundTrip(t *testing.T) {
 	}
 }
 
+// The grid's cursor visibility must follow DECTCEM, not a private flag: the
+// compositor conveys `show the cursor` only as \x1b[?25h, and a renderer that
+// draws its own caret reads it here. Before this the caret was always hidden.
+func TestCellGrid_CursorVisibilityFollowsDECTCEM(t *testing.T) {
+	g := NewCellGrid(10, 2)
+	if !g.Cursor().Visible {
+		t.Fatal("a fresh grid hid the cursor")
+	}
+	g.Process("\x1b[?25l")
+	if g.Cursor().Visible {
+		t.Error("cursor visible after \\x1b[?25l")
+	}
+	g.Process("\x1b[?25h")
+	if !g.Cursor().Visible {
+		t.Error("cursor hidden after \\x1b[?25h")
+	}
+}
+
+// A DECTCEM transition with no cell change must still report work to ship, or
+// the visibility would never reach the browser on a frame.
+func TestCellGrid_CursorToggleIsDirty(t *testing.T) {
+	g := NewCellGrid(10, 2)
+	g.Process("hello") // drain the initial state
+	g.Patches()
+	if !g.Process("\x1b[?25l") {
+		t.Error("hiding the cursor reported no change")
+	}
+}
+
 func TestCellGrid_SGRToHexRuns(t *testing.T) {
 	g := NewCellGrid(10, 1)
 	g.Process("\x1b[38;2;255;0;128mA\x1b[0mB\x1b[38;5;196mC")

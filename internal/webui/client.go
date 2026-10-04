@@ -8,9 +8,11 @@ package webui
 // publisher: a client that cannot keep up is dropped or skipped, because the
 // agent's event stream must not stall behind a slow browser (spec §4.5).
 type Client interface {
-	// Send queues a frame. It returns false when the client is too far behind
-	// to be worth keeping.
-	Send(f *Frame) bool
+	// Send queues an already-encoded payload. The Hub encodes a frame once and
+	// hands the same Payload to every client, so a transport only writes bytes —
+	// it never encodes. It returns false when the client is too far behind to
+	// be worth keeping.
+	Send(p *Payload) bool
 	// SendControl delivers an out-of-band control message.
 	SendControl(c Control) error
 	// Close detaches the client.

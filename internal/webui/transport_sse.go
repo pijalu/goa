@@ -44,14 +44,14 @@ const (
 	sseQueue = 8
 )
 
-// sseClient is a Client over one Server-Sent Events stream. Frames are encoded
-// with the shared FrameCodec and written as `data: {json}\n\n`; the writer owns
-// the ResponseWriter for the life of the stream.
+// sseClient is a Client over one Server-Sent Events stream. The hub encodes
+// each frame once and this client writes the bytes as `data: {json}\n\n`; the
+// writer owns the ResponseWriter for the life of the stream.
 type sseClient struct {
 	codec  *FrameCodec
 	writer sseWriter
 
-	frames  chan *Frame
+	frames  chan *Payload
 	control chan Control
 	prelude chan string
 	done    chan struct{}
@@ -81,7 +81,7 @@ func newSSEClient(w sseWriter, readOnly bool) *sseClient {
 	c := &sseClient{
 		codec:     NewFrameCodec(),
 		writer:    w,
-		frames:    make(chan *Frame, sseQueue),
+		frames:    make(chan *Payload, sseQueue),
 		control:   make(chan Control, 4),
 		prelude:   make(chan string, 1),
 		done:      make(chan struct{}),
@@ -112,11 +112,11 @@ func (c *sseClient) SetReadOnly(v bool) { c.readOnly.Store(v) }
 // ReadOnly reports the current mode (the hub and the handler consult it).
 func (c *sseClient) ReadOnly() bool { return c.readOnly.Load() }
 
-// Send queues a frame, dropping the oldest when the queue is full. It returns
-// false once the client has missed slowLimit frames in a row, which is the hub's
-// signal to drop it — identical to the WebSocket policy.
-func (c *sseClient) Send(f *Frame) bool {
-	if f == nil || c.closed.Load() {
+// Send queues an already-encoded payload, dropping the oldest when the queue is
+// full. It returns false once the client has missed slowLimit frames in a row,
+// which is the hub's signal to drop it — identical to the WebSocket policy.
+func (c *sseClient) Send(p *Payload) bool {
+	if p == nil || c.closed.Load() {
 		return false
 	}
 	for {
@@ -127,7 +127,7 @@ func (c *sseClient) Send(f *Frame) bool {
 			}
 		default:
 			select {
-			case c.frames <- f:
+			case c.frames <- p:
 				c.consecutive.Store(0)
 				return true
 			case <-c.done:
@@ -213,23 +213,16 @@ func resetTimer(t *time.Timer, d time.Duration) {
 	t.Reset(d)
 }
 
-// writeFrame emits one frame plus its scrollback batch as two events.
-func (c *sseClient) writeFrame(f *Frame) bool {
-	data, err := c.codec.EncodeFrame(f)
-	if err != nil {
-		return true // an unencodable frame must not kill the stream
-	}
-	if !c.writeEvent(data) {
+// writeFrame emits one payload: the frame document plus its scrollback batch as
+// two events. Both were encoded once by the hub, so this only writes bytes.
+func (c *sseClient) writeFrame(p *Payload) bool {
+	if !c.writeEvent(p.Data) {
 		return false
 	}
-	if len(f.Scrollback) == 0 {
+	if len(p.Scrollback) == 0 {
 		return true
 	}
-	batch, err := c.codec.EncodeScrollback(f.Seq, f.Scrollback)
-	if err != nil {
-		return true
-	}
-	return c.writeEvent(batch)
+	return c.writeEvent(p.Scrollback)
 }
 
 func (c *sseClient) writeControl(ctrl Control) bool {
@@ -333,7 +326,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// is already current opens silently. A joining client (no since) or one that
 	// fell behind gets the authoritative screen.
 	if f, due := s.term.Resync(sinceQuery(r)); due {
-		client.Send(f)
+		sendFrame(client, f)
 	}
 
 	// The handler owns the connection until the client goes away or the server

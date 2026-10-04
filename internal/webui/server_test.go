@@ -393,18 +393,28 @@ func readFrame(t *testing.T, conn *websocket.Conn) *Frame {
 }
 
 type fakeClient struct {
-	frames     []*Frame
+	frames     []*Payload
 	controls   []Control
 	closed     bool
 	alwaysSlow bool
 }
 
-func (c *fakeClient) Send(f *Frame) bool {
+func (c *fakeClient) Send(p *Payload) bool {
 	if c.alwaysSlow {
 		return false
 	}
-	c.frames = append(c.frames, f)
+	c.frames = append(c.frames, p)
 	return true
+}
+
+// lastFrame returns the frame carried by the most recently sent payload. The
+// hub encodes once and fans the same Payload out, so a test that wants the
+// frame's semantics reads it here rather than decoding the bytes.
+func (c *fakeClient) lastFrame() *Frame {
+	if len(c.frames) == 0 {
+		return nil
+	}
+	return c.frames[len(c.frames)-1].Frame
 }
 
 func (c *fakeClient) SendControl(ctrl Control) error {

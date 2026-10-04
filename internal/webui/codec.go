@@ -57,6 +57,57 @@ type FrameCodec struct{}
 // zero value being valid).
 func NewFrameCodec() *FrameCodec { return &FrameCodec{} }
 
+// Payload is one frame's encoded wire documents, ready to be written to every
+// attached client. The Hub encodes a frame ONCE per publish and hands the same
+// Payload to the whole fan-out: with N browsers attached, encoding per client
+// meant N JSON encodings of the same screen (and N copies of every run) for one
+// engine frame.
+//
+// Frame is retained alongside the bytes so a consumer can still see the frame's
+// semantics (seq, geometry, cursor) without decoding JSON — tests assert on it,
+// and it is what the transports use to decide whether a scrollback document is
+// part of this publish.
+type Payload struct {
+	Frame *Frame
+	// Data is the encoded frame document ("t":"frame").
+	Data []byte
+	// Scrollback is the encoded transcript batch that rides this frame, or nil
+	// when the screen did not scroll. It is a separate wire message so a client
+	// can append to its transcript without touching the live grid.
+	Scrollback []byte
+}
+
+// EncodePayload encodes a frame and its optional scrollback batch as the wire
+// documents every client receives. A frame that cannot be encoded yields an
+// error and nothing is published — an unencodable frame is a server bug, and
+// sending half of it would desync every client.
+func (c *FrameCodec) EncodePayload(f *Frame) (*Payload, error) {
+	if f == nil {
+		return nil, fmt.Errorf("webui: nil frame")
+	}
+	data, err := c.EncodeFrame(f)
+	if err != nil {
+		return nil, err
+	}
+	p := &Payload{Frame: f, Data: data}
+	if len(f.Scrollback) > 0 {
+		batch, err := c.EncodeScrollback(f.Seq, f.Scrollback)
+		if err != nil {
+			return nil, err
+		}
+		p.Scrollback = batch
+	}
+	return p, nil
+}
+
+// EncodePayload encodes a frame with the shared codec. FrameCodec is stateless
+// (the zero value is ready to use), so one package-level codec serves every
+// caller and there is no configuration to thread through.
+func EncodePayload(f *Frame) (*Payload, error) { return sharedCodec.EncodePayload(f) }
+
+// sharedCodec is the codec used by the fan-out paths.
+var sharedCodec FrameCodec
+
 // EncodeFrame renders a frame as one JSON document.
 func (c *FrameCodec) EncodeFrame(f *Frame) ([]byte, error) {
 	if f == nil {

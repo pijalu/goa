@@ -437,13 +437,22 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// there is nothing to replay. The frame carries the grid's current revision,
 	// which is what lets the client's own hello be answered with "you are
 	// current" when nothing changed while it was away.
-	client.Send(s.term.FullFrame())
+	sendFrame(client, s.term.FullFrame())
 	client.ReadLoop(ClientHandlers{
 		Input:  func(in string) { s.term.Input(in) },
 		Key:    func(ev KeyEvent) { s.term.Input(string(EncodeKey(ev))) },
 		Resize: func(cols, rows int) { s.term.Resize(cols, rows) },
 		Hello:  s.resyncer(client),
 	})
+}
+
+// sendFrame encodes one frame for a single client. Frames that go through the
+// hub are encoded once there, for the whole fan-out; the direct sends (attach,
+// resync) are single-client by definition, so they encode here.
+func sendFrame(client Client, f *Frame) {
+	if p, err := EncodePayload(f); err == nil {
+		client.Send(p)
+	}
 }
 
 // resyncer answers a client's hello with the revision it announced: nothing when
@@ -454,7 +463,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) resyncer(client Client) func(uint64) {
 	return func(since uint64) {
 		if f, due := s.term.Resync(since); due {
-			client.Send(f)
+			sendFrame(client, f)
 		}
 	}
 }

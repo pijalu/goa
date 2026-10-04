@@ -109,13 +109,13 @@ func TestHub_BroadcastAndPublishFull(t *testing.T) {
 	if len(c.frames) == 0 {
 		t.Fatal("PublishFull shipped no frame")
 	}
-	if !c.frames[len(c.frames)-1].Full {
+	if !c.lastFrame().Full {
 		t.Error("PublishFull must mark the frame full")
 	}
 	if vt.Seq() == 0 {
 		t.Error("Seq must advance with published frames")
 	}
-	if _, err := vt.EncodeFrame(c.frames[0]); err != nil {
+	if _, err := vt.EncodeFrame(c.frames[0].Frame); err != nil {
 		t.Errorf("EncodeFrame: %v", err)
 	}
 }

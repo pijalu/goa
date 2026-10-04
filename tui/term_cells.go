@@ -76,6 +76,18 @@ func (e *TermEmulator) CellsText(row int) string { return e.Visible(row) }
 // Cursor returns the cursor position (0-indexed).
 func (e *TermEmulator) Cursor() (row, col int) { return e.row, e.col }
 
+// CursorVisible reports whether the terminal cursor is currently shown
+// (DECTCEM, \x1b[?25h / \x1b[?25l). It defaults to true, like a terminal after
+// a reset, and is what a renderer that draws its own caret must consult:
+// the compositor signals the hardware cursor's visibility only through those
+// bytes, never through a side channel.
+func (e *TermEmulator) CursorVisible() bool { return e.cursorVisible }
+
+// SetCursorVisible sets the cursor-show mode directly. It is the Terminal
+// interface's HideCursor/ShowCursor path, which fires before any byte stream
+// arrives; DECTCEM sequences update the same state once rendering starts.
+func (e *TermEmulator) SetCursorVisible(v bool) { e.cursorVisible = v }
+
 // Size returns the emulator's dimensions (width, height).
 func (e *TermEmulator) Size() (w, h int) { return e.w, e.h }
 
@@ -208,10 +220,12 @@ func (e *TermEmulator) Reset() {
 	}
 	e.scrollback = nil
 	e.scrollbackAttrs = nil
+	e.scrollbackBase = 0
 	e.row, e.col, e.pendingWrap = 0, 0, false
 	e.oscBuf = ""
 	e.curFg, e.curBg, e.curFlags, e.curLink = "", "", 0, ""
 	e.scrollTop, e.scrollBot = 0, e.h-1
+	e.cursorVisible = true
 	e.markAllDirty()
 }
 

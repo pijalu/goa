@@ -84,6 +84,35 @@ func TestVirtualTerminal_WriteUpdatesGrid(t *testing.T) {
 	}
 }
 
+// The compositor signals the hardware cursor ONLY through DECTCEM bytes, so the
+// cursor the frames carry must follow them. Before this was modelled the caret
+// was permanently hidden — the "missing cursor in the input" symptom.
+func TestVirtualTerminal_CursorVisibilityFollowsDECTCEM(t *testing.T) {
+	vt := NewVirtualTerminal(20, 3)
+	rec := &recordSink{}
+	vt.SetSink(rec)
+
+	// A real terminal starts with the cursor shown; the engine then hides it at
+	// startup (tui.Start) before rendering.
+	vt.HideCursor()
+	vt.WriteString("input>")
+	if got := rec.frames[len(rec.frames)-1].Cursor.Visible; got {
+		t.Fatalf("cursor visible after HideCursor: %v", got)
+	}
+
+	// A render that wants the cursor emits \x1b[?25h in the same buffer.
+	vt.WriteString("\x1b[?25h")
+	if got := rec.frames[len(rec.frames)-1].Cursor.Visible; !got {
+		t.Error("cursor still hidden after \\x1b[?25h")
+	}
+
+	// Hiding it again takes effect even when no cell moved.
+	vt.WriteString("\x1b[?25l")
+	if got := rec.frames[len(rec.frames)-1].Cursor.Visible; got {
+		t.Error("cursor still visible after \\x1b[?25l")
+	}
+}
+
 func TestVirtualTerminal_ResizeFiresCallbackAndFullFrame(t *testing.T) {
 	vt := NewVirtualTerminal(20, 3)
 	rec := &recordSink{}
@@ -153,6 +182,10 @@ func (r *recordSink) Publish(f *Frame) {
 		r.titles = append(r.titles, f.Title)
 	}
 }
+
+// HasClients always reports true: a recorder stands in for an attached browser,
+// and a test that installs one wants every frame built.
+func (r *recordSink) HasClients() bool { return true }
 
 func (r *recordSink) lastTitle() string {
 	if len(r.titles) == 0 {

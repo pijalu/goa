@@ -125,6 +125,11 @@ func (h *Hub) driversLocked() int {
 
 // Publish fans a frame out to every attached client, dropping the ones that
 // report themselves too far behind. Slow clients are closed, not waited on.
+//
+// The frame is encoded ONCE here, before the fan-out: the hub is the only place
+// that knows how many clients a frame is for, so it is the only place that can
+// avoid paying the JSON encode (and the per-run allocation that goes with it)
+// once per attached browser. With nobody attached nothing is encoded at all.
 func (h *Hub) Publish(f *Frame) {
 	if f == nil {
 		return
@@ -134,9 +139,14 @@ func (h *Hub) Publish(f *Frame) {
 		h.mu.Unlock()
 		return
 	}
+	payload, err := EncodePayload(f)
+	if err != nil {
+		h.mu.Unlock()
+		return
+	}
 	slow := make([]Client, 0, 1)
 	for c := range h.clients {
-		if !c.Send(f) {
+		if !c.Send(payload) {
 			slow = append(slow, c)
 		}
 	}
@@ -170,6 +180,15 @@ func (h *Hub) Clients() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.clients)
+}
+
+// HasClients reports whether a published frame would reach anyone. The
+// VirtualTerminal consults it before building a frame, so a server with no
+// browser attached does not diff, collapse and encode a screen nobody receives.
+func (h *Hub) HasClients() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.closed && len(h.clients) > 0
 }
 
 // Drivers reports how many attached clients may type.

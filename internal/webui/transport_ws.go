@@ -70,7 +70,7 @@ type ClientHandlers struct {
 type wsClient struct {
 	conn    *websocket.Conn
 	codec   *FrameCodec
-	frames  chan *Frame
+	frames  chan *Payload
 	control chan Control
 	done    chan struct{}
 	once    sync.Once
@@ -100,7 +100,7 @@ func NewWSClient(conn *websocket.Conn, readOnly bool, ka Keepalive) *wsClient {
 	c := &wsClient{
 		conn:        conn,
 		codec:       NewFrameCodec(),
-		frames:      make(chan *Frame, wsQueue),
+		frames:      make(chan *Payload, wsQueue),
 		control:     make(chan Control, 4),
 		done:        make(chan struct{}),
 		slowLimit:   DefaultSlowClientLimit,
@@ -120,10 +120,11 @@ func NewWSClient(conn *websocket.Conn, readOnly bool, ka Keepalive) *wsClient {
 // browser is driving.
 func (c *wsClient) SetReadOnly(v bool) { c.readOnly.Store(v) }
 
-// Send queues a frame, dropping the oldest one when the queue is full. It
-// returns false once the client has missed slowLimit frames in a row.
-func (c *wsClient) Send(f *Frame) bool {
-	if f == nil || c.closed.Load() {
+// Send queues an already-encoded payload, dropping the oldest one when the
+// queue is full. It returns false once the client has missed slowLimit frames
+// in a row.
+func (c *wsClient) Send(p *Payload) bool {
+	if p == nil || c.closed.Load() {
 		return false
 	}
 	// Newest-wins: make room by discarding the stale head.
@@ -135,7 +136,7 @@ func (c *wsClient) Send(f *Frame) bool {
 			}
 		default:
 			select {
-			case c.frames <- f:
+			case c.frames <- p:
 				c.consecutive.Store(0)
 				return true
 			case <-c.done:
@@ -313,24 +314,17 @@ func (c *wsClient) sendPing() bool {
 	return c.conn.WriteMessage(websocket.PingMessage, nil) == nil
 }
 
-// writeFrame sends one frame, followed by its scrollback batch when the screen
-// scrolled. Returns false when the socket died.
-func (c *wsClient) writeFrame(f *Frame) bool {
-	data, err := c.codec.EncodeFrame(f)
-	if err != nil {
-		return true // an unencodable frame must not kill the connection
-	}
-	if !c.write(data) {
+// writeFrame sends one payload: the frame document, followed by its scrollback
+// batch when the screen scrolled. Both were encoded once by the hub, so this
+// only writes bytes. Returns false when the socket died.
+func (c *wsClient) writeFrame(p *Payload) bool {
+	if !c.write(p.Data) {
 		return false
 	}
-	if len(f.Scrollback) == 0 {
+	if len(p.Scrollback) == 0 {
 		return true
 	}
-	batch, err := c.codec.EncodeScrollback(f.Seq, f.Scrollback)
-	if err != nil {
-		return true
-	}
-	return c.write(batch)
+	return c.write(p.Scrollback)
 }
 
 func (c *wsClient) writeControl(ctrl Control) bool {

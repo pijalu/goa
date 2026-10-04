@@ -155,6 +155,10 @@ type recordingSink struct{ frames []*Frame }
 
 func (r *recordingSink) Publish(f *Frame) { r.frames = append(r.frames, f) }
 
+// HasClients always reports true: a recorder is a test's stand-in for an
+// attached browser, and a test that installs one wants every frame built.
+func (r *recordingSink) HasClients() bool { return true }
+
 // The virtual terminal must attach scrolled-off rows to the frame that caused
 // the scroll, so the transport can emit them as their own message.
 func TestVirtualTerminal_FrameCarriesScrollback(t *testing.T) {

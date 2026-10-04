@@ -49,8 +49,7 @@ type CellGrid struct {
 	// whoever asks for the delta.
 	pending []int
 
-	cursorVisible bool
-	title         string
+	title string
 
 	// sentScrollback counts the scrollback rows already handed to clients, so
 	// each row is shipped exactly once (the emulator's scrollback only grows).
@@ -64,11 +63,10 @@ func NewCellGrid(cols, rows int) *CellGrid {
 	emu := tui.NewTermEmulator(rows, cols)
 	emu.TrackDirty(true)
 	return &CellGrid{
-		emu:           emu,
-		cols:          cols,
-		rows:          rows,
-		prev:          blankSnapshot(cols, rows),
-		cursorVisible: true,
+		emu:  emu,
+		cols: cols,
+		rows: rows,
+		prev: blankSnapshot(cols, rows),
 	}
 }
 
@@ -100,7 +98,15 @@ const (
 // cursor state moved).
 func (g *CellGrid) Process(s string) bool {
 	g.mu.Lock()
+	before := g.emu.CursorVisible()
 	g.emu.Process(s)
+	if g.emu.CursorVisible() != before {
+		// Hiding/showing the cursor is a DECTCEM transition the compositor
+		// emits as bytes, with no cell change of its own: mark the screen so
+		// the visibility reaches clients on a frame even when the text did not
+		// move.
+		g.emu.MarkDirty()
+	}
 	dirty := g.emu.DrainDirty()
 	g.pending = append(g.pending, dirty...)
 	g.mu.Unlock()
@@ -122,19 +128,23 @@ func (g *CellGrid) Size() (cols, rows int) {
 	return g.cols, g.rows
 }
 
-// Cursor returns the cursor position and visibility.
+// Cursor returns the cursor position and visibility. Visibility is the
+// emulator's DECTCEM mode (the compositor only ever signals the hardware
+// cursor through \x1b[?25h / \x1b[?25l), so the grid and the browser agree with
+// a real terminal.
 func (g *CellGrid) Cursor() Cursor {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	r, c := g.emu.Cursor()
-	return Cursor{Row: r, Col: c, Visible: g.cursorVisible}
+	return Cursor{Row: r, Col: c, Visible: g.emu.CursorVisible()}
 }
 
-// SetCursorVisible toggles the caret carried by every frame.
+// SetCursorVisible toggles the caret carried by every frame (the Terminal
+// interface's HideCursor/ShowCursor path, used before rendering starts).
 func (g *CellGrid) SetCursorVisible(v bool) {
 	g.mu.Lock()
-	changed := g.cursorVisible != v
-	g.cursorVisible = v
+	changed := g.emu.CursorVisible() != v
+	g.emu.SetCursorVisible(v)
 	g.mu.Unlock()
 	if changed {
 		g.MarkState()
@@ -171,6 +181,22 @@ func (g *CellGrid) Resize(cols, rows int) {
 	g.mu.Unlock()
 }
 
+// DiscardChanges forgets the rows marked dirty since the last frame without
+// producing one. It is what a publish does when no client is attached: the
+// screen keeps being tracked (so a later attach can snapshot it), but the
+// per-frame diff/run/encode work nobody would receive is skipped.
+//
+// It deliberately leaves the diff baseline alone. Every path that attaches a
+// client or changes geometry publishes a FULL frame first (FullPatches
+// re-baselines every row), so a stale baseline can never leak into a delta a
+// client receives.
+func (g *CellGrid) DiscardChanges() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.emu.DrainDirty()
+	g.pending = nil
+}
+
 // Clear blanks the screen and scrollback, and re-baselines the diff.
 func (g *CellGrid) Clear() {
 	g.mu.Lock()
@@ -202,8 +228,17 @@ func (g *CellGrid) Scrollback() [][]tui.CellAttrs {
 // as row patches, and marks them as shipped. Row indices are the position in
 // the scrollback transcript (0-based), not screen rows.
 //
-// A grid whose scrollback was cleared (Clear, or CSI 3) re-bases the counter on
-// the next call, so the transcript simply restarts instead of losing rows.
+// The work is proportional to the rows that are NEW, never to how much history
+// the session has: the emulator is asked for its retained window and its base
+// index, and only the rows past the shipped mark are read — one at a time,
+// without copying the buffer. (Copying the whole transcript per frame was
+// measured at 12.5 ms and 190 MB per frame once a session had 20 000 rows of
+// history; the transcript only ever grows, so the cost grew with the session.)
+//
+// A grid whose scrollback was cleared (Clear, or CSI 3) re-bases the counter, so
+// the transcript simply restarts instead of losing rows. Rows evicted by the
+// emulator's retention cap are skipped the same way: the shipped mark is clamped
+// forward to the oldest row that still exists.
 //
 // The whole operation runs under the grid lock: the shipped counter is state
 // like any other, and two transports attaching at once (or the no-JS page
@@ -212,24 +247,31 @@ func (g *CellGrid) Scrollback() [][]tui.CellAttrs {
 func (g *CellGrid) TakeScrollback() []RowPatch {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	rows := g.emu.ScrollbackCells()
-	if g.sentScrollback > len(rows) {
-		g.sentScrollback = len(rows)
+	base := g.emu.ScrollbackBase()
+	end := base + g.emu.ScrollbackLen()
+	if g.sentScrollback < base {
+		// History the grid never shipped was evicted by the retention cap.
+		g.sentScrollback = base
 	}
-	fresh := rows[g.sentScrollback:]
-	g.sentScrollback = len(rows)
-	if len(fresh) == 0 {
+	if g.sentScrollback > end {
+		// The buffer was cleared (Clear, CSI 3): restart from what exists.
+		g.sentScrollback = end
+	}
+	first := g.sentScrollback
+	if first >= end {
 		return nil
 	}
-	out := make([]RowPatch, 0, len(fresh))
-	first := g.sentScrollback - len(fresh)
-	for i, cells := range fresh {
+	out := make([]RowPatch, 0, end-first)
+	for abs := first; abs < end; abs++ {
+		cells := g.emu.ScrollbackRow(abs)
 		if len(cells) != g.cols {
 			cells = fitCells(cells, g.cols)
 		}
-		normalizeCells(cells)
-		out = append(out, RowPatch{Row: first + i, Runs: RowRuns(cells)})
+		// RowRuns normalises blank cells itself (cellText maps "" to " "), so
+		// the emulator's own storage is never written to from here.
+		out = append(out, RowPatch{Row: abs, Runs: RowRuns(cells)})
 	}
+	g.sentScrollback = end
 	return out
 }
 

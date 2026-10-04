@@ -22,6 +22,11 @@ type FrameSink interface {
 	// Publish hands a frame to the sink. It must never block the caller for
 	// long: the render loop calls it synchronously.
 	Publish(f *Frame)
+	// HasClients reports whether the frame would reach anyone. A screen nobody
+	// is watching still has to be tracked, but it does not have to be diffed,
+	// run-collapsed and encoded 30 times a second — the sink is the only thing
+	// that knows, so it is the only thing that can say.
+	HasClients() bool
 }
 
 // VirtualTerminal implements tui.Terminal on top of a CellGrid. The whole TUI
@@ -210,11 +215,21 @@ func (v *VirtualTerminal) dispatch(cb func(string), s string) {
 
 // publish builds and ships a frame. full forces every row into the patch set
 // (used after a geometry change or a screen clear).
+//
+// With nobody attached the frame is not built at all: the dirty marks are
+// dropped and the grid keeps tracking its screen, so the next client to attach
+// gets an authoritative full snapshot (which is what an attach does anyway)
+// instead of the server spending a diff, a run collapse and a JSON encode per
+// engine frame on a screen no one can see.
 func (v *VirtualTerminal) publish(full bool) {
 	v.mu.RLock()
 	sink := v.sink
 	v.mu.RUnlock()
 	if sink == nil {
+		return
+	}
+	if !sink.HasClients() {
+		v.grid.DiscardChanges()
 		return
 	}
 	seq := v.frameNo.Add(1)

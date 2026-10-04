@@ -12,6 +12,21 @@ import (
 	"github.com/rivo/uniseg"
 )
 
+// Scrollback retention. The transcript is a bounded buffer, not an archive: it
+// only has to hold the rows a consumer has not read yet, because every consumer
+// ships each row exactly once. Two thousand rows is far more than any consumer
+// can fall behind by, and it caps the per-session cost at ~19 MB for a 120-column
+// screen (a scrolled row is stored per-cell, ~79 bytes/cell) instead of letting
+// it grow with the session — which is what a long-running server cannot afford.
+const (
+	MaxScrollbackRows = 2000
+	// scrollbackTrimBatch is how many rows are evicted at once once the cap is
+	// passed. Trimming row by row would copy the whole retained buffer per
+	// scrolled row (O(cap) per row); trimming a batch makes it O(cap) per batch,
+	// which is a few copies per row.
+	scrollbackTrimBatch = 256
+)
+
 // TermEmulator is a faithful, per-cell terminal emulator for verifying the
 // Compositor's output. Unlike the coarse screenEmulator, it tracks the cursor
 // column per character (grapheme-width-aware), models DEC-style DEFERRED
@@ -31,17 +46,27 @@ type TermEmulator struct {
 	// scrollbackAttrs mirrors scrollback with per-cell attributes so a scrolled
 	// row keeps its styling (phase 0 of the web UI cell pipeline).
 	scrollbackAttrs [][]CellAttrs
-	curFlags        AttrFlags // current SGR text attributes
-	curLink         string    // current OSC-8 hyperlink target ("" = none)
-	row, col        int
-	curBg           string // current SGR background params (e.g. "48;2;42;50;41")
-	curFg           string // current SGR foreground params (e.g. "38;2;139;148;158")
-	pendingWrap     bool   // DEC deferred wrap: last cell filled, next char wraps
+	// scrollbackBase is the ABSOLUTE index of scrollback[0]: how many rows have
+	// been dropped off the front of the bounded transcript. Consumers that ship
+	// each row exactly once (the web UI) count in absolute indices, so they can
+	// tell "rows I have not sent yet" from "rows that are gone" after eviction.
+	scrollbackBase int
+	curFlags       AttrFlags // current SGR text attributes
+	curLink        string    // current OSC-8 hyperlink target ("" = none)
+	row, col       int
+	curBg          string // current SGR background params (e.g. "48;2;42;50;41")
+	curFg          string // current SGR foreground params (e.g. "38;2;139;148;158")
+	pendingWrap    bool   // DEC deferred wrap: last cell filled, next char wraps
 	// oscBuf holds the tail of an OSC sequence whose terminator has not arrived
 	// yet. Without it a hyperlink split across two writes (title, chunked
 	// stream, a diffed repaint) would leak "8;;https://…" onto the screen as
 	// printable text.
 	oscBuf string
+	// cursorVisible models DECTCEM (\x1b[?25h / \x1b[?25l): the terminal's
+	// cursor-show mode. The compositor conveys the hardware cursor's visibility
+	// ONLY as those bytes, so a renderer that places its own caret (the web UI)
+	// reads the mode here. Defaults to true, like a real terminal after reset.
+	cursorVisible bool
 	// scrollTop/scrollBot model the DECSTBM scroll region (0-indexed,
 	// inclusive). \n scrolls only within [scrollTop, scrollBot]; rows outside
 	// the region never move, which is how pinned chrome is emulated. Defaults
@@ -56,7 +81,7 @@ type TermEmulator struct {
 }
 
 func NewTermEmulator(h, w int) *TermEmulator {
-	e := &TermEmulator{w: w, h: h, scrollTop: 0, scrollBot: h - 1}
+	e := &TermEmulator{w: w, h: h, scrollTop: 0, scrollBot: h - 1, cursorVisible: true}
 	e.screen = make([][]string, h)
 	e.screenBg = make([][]string, h)
 	e.screenFg = make([][]string, h)
@@ -174,6 +199,7 @@ func (e *TermEmulator) lineFeed() {
 		}
 		e.scrollback = append(e.scrollback, top.String())
 		e.scrollbackAttrs = append(e.scrollbackAttrs, e.Cells(e.scrollTop))
+		e.trimScrollback()
 		copy(e.screen[e.scrollTop:e.scrollBot], e.screen[e.scrollTop+1:e.scrollBot+1])
 		copy(e.screenBg[e.scrollTop:e.scrollBot], e.screenBg[e.scrollTop+1:e.scrollBot+1])
 		// The foreground (and flags) must move with the row: leaving them
@@ -246,6 +272,21 @@ func (e *TermEmulator) applyCSI(params string, final byte) {
 		e.applySGR(params)
 	case 'r':
 		e.applyScrollRegion(params)
+	case 'h', 'l':
+		e.applyPrivateMode(params, final == 'h')
+	}
+}
+
+// applyPrivateMode applies a DEC private mode set ('h') or reset ('l'). Only
+// DECTCEM (?25, cursor show/hide) is modelled: it is the one mode the
+// compositor uses to signal hardware-cursor visibility, and a client that
+// draws its own caret needs it. Every other private mode (?2026 synchronized
+// output, ?1049 alt screen, …) is deliberately ignored — what a real terminal
+// does with a mode it does not implement, and what keeps an unknown sequence
+// from silently changing behaviour here.
+func (e *TermEmulator) applyPrivateMode(params string, set bool) {
+	if params == "?25" {
+		e.cursorVisible = set
 	}
 }
 
@@ -351,6 +392,7 @@ func (e *TermEmulator) eraseDisplay(params string) {
 		if params == "3" {
 			e.scrollback = nil
 			e.scrollbackAttrs = nil
+			e.scrollbackBase = 0
 		}
 	case "0", "":
 		for c := e.col; c < e.w; c++ {
@@ -435,6 +477,64 @@ func (e *TermEmulator) RowFg(row int) string {
 }
 
 func (e *TermEmulator) Scrollback() []string { return e.scrollback }
+
+// ScrollbackBase is the absolute index of the oldest retained transcript row:
+// the number of rows evicted off the front of the bounded buffer. A consumer
+// that counts the rows it has shipped in absolute indices compares them against
+// this to notice that history it never read is gone.
+func (e *TermEmulator) ScrollbackBase() int { return e.scrollbackBase }
+
+// ScrollbackLen is the number of transcript rows currently retained.
+func (e *TermEmulator) ScrollbackLen() int { return len(e.scrollbackAttrs) }
+
+// ScrollbackRow returns one retained transcript row by ABSOLUTE index, without
+// copying it. It returns nil when the index is no longer retained (evicted, or
+// never written). The caller must not modify the result and must not retain it
+// past the lock that made the call safe — it aliases the emulator's own storage.
+// Use ScrollbackCells when a private copy is needed.
+func (e *TermEmulator) ScrollbackRow(abs int) []CellAttrs {
+	i := abs - e.scrollbackBase
+	if i < 0 || i >= len(e.scrollbackAttrs) {
+		return nil
+	}
+	return e.scrollbackAttrs[i]
+}
+
+// trimScrollback enforces MaxScrollbackRows by dropping a batch off the front
+// once the cap is passed. Both stores are trimmed together — they are two views
+// of the same rows, and letting them diverge would make Scrollback() and
+// ScrollbackCells() disagree about what history exists.
+func (e *TermEmulator) trimScrollback() {
+	if len(e.scrollback) <= MaxScrollbackRows {
+		return
+	}
+	keep := MaxScrollbackRows - scrollbackTrimBatch
+	if keep < 0 {
+		keep = 0
+	}
+	drop := len(e.scrollback) - keep
+	e.scrollback = dropFront(e.scrollback, drop)
+	e.scrollbackAttrs = dropFront(e.scrollbackAttrs, drop)
+	e.scrollbackBase += drop
+}
+
+// dropFront removes the first n elements of s in place, clearing the vacated
+// slots so the dropped rows (and their cell strings) become collectable. The
+// backing array is reused, so the buffer's memory stays bounded.
+func dropFront[T any](s []T, n int) []T {
+	if n <= 0 {
+		return s
+	}
+	if n >= len(s) {
+		return s[:0]
+	}
+	copy(s, s[n:])
+	var zero T
+	for i := len(s) - n; i < len(s); i++ {
+		s[i] = zero
+	}
+	return s[:len(s)-n]
+}
 
 func clampInt(v, lo, hi int) int {
 	if v < lo {
