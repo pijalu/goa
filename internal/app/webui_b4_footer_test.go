@@ -6,9 +6,15 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/creack/pty"
 	"github.com/pijalu/goa/internal/spinner"
 	"github.com/pijalu/goa/internal/webui"
 	"github.com/pijalu/goa/skills"
@@ -162,3 +168,192 @@ func TestWebUI_BottomBandIsInsideTheGrid(t *testing.T) {
 }
 
 func geoName(w, h int) string { return fmt.Sprintf("%dx%d", w, h) }
+
+// ---------------------------------------------------------------------------
+// PTY capture: the TUI's real terminal screen, replayed through TermEmulator.
+
+// b4Band describes where the bottom band sits on a screen: the two separator
+// rules, the input row between them, and the status/model rows below. B4 is
+// about these rows, so the PTY comparison is made on the band's rows.
+type b4Band struct {
+	sepTop, input, sepBottom, status, model int
+}
+
+// b4BandOf locates the bottom band on rows of a cols-wide screen: model line
+// last, status row above it, then separator / input row / separator. It reports
+// false when that shape is not present (e.g. a screen too short for the chrome).
+func b4BandOf(rows []string, cols int) (b4Band, bool) {
+	h := len(rows)
+	if h < 5 {
+		return b4Band{}, false
+	}
+	sep := strings.Repeat("─", cols)
+	b := b4Band{sepTop: h - 5, input: h - 4, sepBottom: h - 3, status: h - 2, model: h - 1}
+	if strings.TrimRight(rows[b.sepTop], " ") != sep || strings.TrimRight(rows[b.sepBottom], " ") != sep {
+		return b4Band{}, false
+	}
+	if strings.TrimSpace(rows[b.model]) == "" || strings.TrimSpace(rows[b.status]) == "" {
+		return b4Band{}, false
+	}
+	if strings.TrimRight(rows[b.input], " ") == sep {
+		return b4Band{}, false
+	}
+	return b, true
+}
+
+// b4BuildBinary builds the goa TUI into a temp dir (tests run in internal/app,
+// so the module root is ../..).
+func b4BuildBinary(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "goa")
+	cmd := exec.Command("go", "build", "-o", bin, "./cmd/goa")
+	cmd.Dir = "../.."
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build goa: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// b4Env returns a child environment with exactly one HOME/GOA_HOME, so the
+// session resolves the throwaway config directory (a duplicate key would leave
+// the inherited home first in the array, which is what getenv returns).
+func b4Env(home string) []string {
+	env := make([]string, 0, len(os.Environ())+3)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "GOA_HOME=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "HOME="+home, "GOA_HOME="+home, "TERM=xterm-256color")
+}
+
+// b4ReadQuiet reads from f until its output has been quiet for settle (the
+// startup screen finished painting) or max elapses, returning everything read.
+func b4ReadQuiet(f *os.File, settle, max time.Duration) string {
+	var mu sync.Mutex
+	var buf strings.Builder
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		chunk := make([]byte, 65536)
+		for {
+			n, err := f.Read(chunk)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			buf.Write(chunk[:n])
+			mu.Unlock()
+		}
+	}()
+
+	deadline := time.Now().Add(max)
+	last, lastGrow := -1, time.Now()
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := buf.Len()
+		mu.Unlock()
+		if n != last {
+			last, lastGrow = n, time.Now()
+		} else if n > 0 && time.Since(lastGrow) > settle {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = f.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	return buf.String()
+}
+
+// b4ReplayRows replays a terminal byte stream through tui.TermEmulator and
+// returns the resulting screen rows.
+func b4ReplayRows(raw string, cols, rows int) []string {
+	emu := tui.NewTermEmulator(rows, cols)
+	emu.Process(raw)
+	screen := make([]string, rows)
+	for i := range screen {
+		screen[i] = strings.TrimRight(emu.CellsText(i), " ")
+	}
+	return screen
+}
+
+// b4PTYScreen captures the real TUI in a PTY at cols×rows and replays the raw
+// output through tui.TermEmulator — exactly what `e2e/ptydrive --log` yields on
+// replay. HOME is a throwaway config so the session starts deterministically
+// (no first-run wizard).
+func b4PTYScreen(t *testing.T, bin string, cols, rows int) []string {
+	t.Helper()
+	home := t.TempDir()
+	goaDir := filepath.Join(home, ".goa")
+	if err := os.MkdirAll(goaDir, 0o755); err != nil {
+		t.Fatalf("mkdir .goa: %v", err)
+	}
+	cfg := "providers: []\nactive_provider: \"\"\nactive_model: \"\"\nmode:\n  default:\n    major: coder\n"
+	if err := os.WriteFile(filepath.Join(goaDir, "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := exec.Command(bin)
+	cmd.Dir = t.TempDir()
+	cmd.Env = b4Env(home)
+	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	if err != nil {
+		t.Fatalf("pty start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = f.Close()
+	})
+
+	return b4ReplayRows(b4ReadQuiet(f, 800*time.Millisecond, 20*time.Second), cols, rows)
+}
+
+// b4RequireSameBand fails unless both screens carry the bottom band on the same
+// rows, with byte-identical separators and a non-empty web input row.
+func b4RequireSameBand(t *testing.T, label string, ptyRows, webRows []string, cols int) {
+	t.Helper()
+	ptyBand, ok := b4BandOf(ptyRows, cols)
+	if !ok {
+		t.Fatalf("%s: PTY screen has no bottom band:\n%s", label, strings.Join(ptyRows, "\n"))
+	}
+	webBand, ok := b4BandOf(webRows, cols)
+	if !ok {
+		t.Fatalf("%s: web grid has no bottom band:\n%s", label, strings.Join(webRows, "\n"))
+	}
+	if ptyBand != webBand {
+		t.Errorf("%s: band sits at different rows: PTY %+v, web %+v", label, ptyBand, webBand)
+	}
+	for _, r := range []int{ptyBand.sepTop, ptyBand.sepBottom} {
+		if ptyRows[r] != webRows[r] {
+			t.Errorf("%s: separator row %d differs:\n PTY: %q\n web: %q", label, r, ptyRows[r], webRows[r])
+		}
+	}
+	if strings.TrimSpace(webRows[webBand.input]) == "" {
+		t.Errorf("%s: web input row %d is empty", label, webBand.input)
+	}
+}
+
+// TestWebUI_BottomBandMatchesPTY captures the real TUI in a PTY at the same
+// geometry as the web harness and asserts the bottom band matches it row for
+// row: the two separator rules are byte-identical, the input row sits between
+// them, and the status/model rows are the last two rows — the same rows, in the
+// same places, the web grid produces (bugs.md B4).
+func TestWebUI_BottomBandMatchesPTY(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs the goa binary in a PTY")
+	}
+	_, def := spinner.Default()
+	tui.SetSpinner(def)
+	t.Cleanup(func() { tui.SetSpinner(spinner.Definition{}) })
+
+	bin := b4BuildBinary(t)
+	for _, g := range [][2]int{{120, 30}, {100, 24}} {
+		w, h := g[0], g[1]
+		t.Run(geoName(w, h), func(t *testing.T) {
+			b4RequireSameBand(t, geoName(w, h), b4PTYScreen(t, bin, w, h), b4WebScreen(t, w, h), w)
+		})
+	}
+}

@@ -53,37 +53,42 @@ geometry, which is the page's connect flow. Row-for-row equality holds at:
 
 `158×53, 120×37, 117×35, 100×35, 120×30, 100×24, 80×20, 60×12, 40×10, 30×6`
 
-(fresh and post-resize), pinned by
+(fresh and post-resize), and the same hold against a **real PTY capture** of the
+built `goa` binary (run with `pty.StartWithSize`, replayed through
+`tui.TermEmulator`) at 120×30 and 100×24: the bottom band sits on the same rows
+and the two separator rules are byte-identical. Pinned by
 `internal/app/webui_b4_footer_test.go`:
 - `TestWebUI_BottomBandMatchesTerminal` — web grid == terminal screen, every row.
+- `TestWebUI_BottomBandMatchesPTY` — the real TUI captured in a PTY, replayed,
+  band-for-band equal to the web grid.
 - `TestWebUI_BottomBandIsInsideTheGrid` — the band is *present* and ordered:
   input row with the typed text, full-width separator, full-width separator,
   status row ending with the right-aligned upper-cased mode badge, model line as
   the last row.
 
-Real browser (Chrome via `agent-browser`), fresh load at the reported
-1000×600 → 35 rows:
+Real browser (Chrome via `agent-browser`), fresh load at three geometries, DOM
+geometry audit (all rows inside `#screen`, grid never crossing into `#status`):
 
-```
-rows=35  gridH=576 (== 16 + 35*16)  gridTop=0  gridBottom=576  statusTop=576
-firstRowTop=8  lastRowBottom=568  scrollTop=0  scrollH=clientH=576
-tail: 29 "" | 30 "────…────" | 31 "" | 32 "────…────"
-      33 "/tmp/b4run/proj … coding-posture │ YOLO"
-      34 "…(opencode-go) deepseek-v4.1-flash • xhigh • [11%|6%|16%]"
-```
+| viewport | rows | `#rows` height | expect `16+rows*16` | all rows inside | overlaps `#status` | last rows |
+|---|---|---|---|---|---|---|
+| 1280×633 | 37 | 608 | 608 | yes | no | sep / input / sep / status(YOLO) / model |
+| 1100×480 | 27 | 448 | 448 | yes | no | sep / input / sep / status(YOLO) / model |
+| 900×320 | 17 | 288 | 288 | yes | no | sep / input / sep / status(YOLO) / model |
 
-Every row is inside `#screen`'s client rect (top ≥ 8, bottom ≤ 568), the grid's
-bottom exactly meets `#status` (no overlap), and the last two rows are the status
-row (mode badge right-aligned) and the model line. Reproduced at 700×300 (16
-rows) and 1280×900 (53 rows) with the same invariants.
+Screenshots: [`b4-webui/1280x633.png`](b4-webui/1280x633.png),
+[`b4-webui/1100x480.png`](b4-webui/1100x480.png),
+[`b4-webui/900x320.png`](b4-webui/900x320.png). (Headless Chrome caps the
+viewport at 633 px high; the reported 1000×600 was also audited at 35 rows with
+the same invariants before the screenshots.)
 
 ## RED/GREEN
 
 - Sensitivity: temporarily forcing the web geometry off by one row
-  (`VirtualTerminal.Size()` returning `height-1`) makes
-  `TestWebUI_BottomBandMatchesTerminal` fail on every geometry with the band
-  shifted by a row; reverting restores green. The test detects exactly the
-  footer-band regression class.
+  (`VirtualTerminal.Size()` returning `height-1`) makes both
+  `TestWebUI_BottomBandMatchesTerminal` and `TestWebUI_BottomBandMatchesPTY` fail
+  (the band shifts by a row); reverting restores green. The tests detect exactly
+  the footer-band regression class, against both the harness terminal and a real
+  PTY.
 - The browser `footer_band` check added to `e2e/w1_webui_browser.sh` asserts all
   grid rows are inside `#screen`, the grid never crosses into `#status`, and the
   model line is the last row.
