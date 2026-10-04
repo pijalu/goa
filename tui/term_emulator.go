@@ -478,6 +478,17 @@ func (e *TermEmulator) RowFg(row int) string {
 
 func (e *TermEmulator) Scrollback() []string { return e.scrollback }
 
+// EraseScrollback drops the retained transcript rows (the CSI 3J wipe) without
+// touching the screen. A geometry change uses it: history recorded at the old
+// geometry no longer corresponds to the new screen, and the rows a re-anchoring
+// repaint pushes off are rows of the screen being replaced, not history of the
+// new one.
+func (e *TermEmulator) EraseScrollback() {
+	e.scrollback = nil
+	e.scrollbackAttrs = nil
+	e.scrollbackBase = 0
+}
+
 // ScrollbackBase is the absolute index of the oldest retained transcript row:
 // the number of rows evicted off the front of the bounded buffer. A consumer
 // that counts the rows it has shipped in absolute indices compares them against

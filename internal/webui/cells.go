@@ -60,6 +60,12 @@ type CellGrid struct {
 	// each row is shipped exactly once (the emulator's scrollback only grows).
 	// It is clamped back when the emulator's buffer is cleared.
 	sentScrollback int
+
+	// geometryChange is set by Resize and cleared once the repaint that
+	// re-anchors the screen at the new geometry has run. While it is set, rows
+	// the repaint pushes off are dropped instead of shipped: they belong to the
+	// screen the geometry change replaced, not to the new one (bugs.md B3).
+	geometryChange bool
 }
 
 // NewCellGrid creates a blank cols×rows grid with change tracking on.
@@ -189,6 +195,25 @@ func (g *CellGrid) Resize(cols, rows int) {
 	// are gone with it, so no stale index can be shipped.
 	g.pending = make([]bool, rows)
 	g.markAllPendingLocked()
+	// A geometry change replaces the screen. History retained from the old
+	// geometry can no longer correspond to the new one (the same reasoning the
+	// compositor applies to a width change), and the rows the re-anchoring
+	// repaint pushes off the top belong to the screen being replaced: shipping
+	// them as transcript is what corrupts the startup screen on load
+	// (bugs.md B3). Drop the retained history and suppress the repaint's own
+	// overflow until it has run.
+	g.emu.EraseScrollback()
+	g.sentScrollback = 0
+	g.geometryChange = true
+	g.mu.Unlock()
+}
+
+// EndGeometryChange ends the suppression Resize started, once the repaint that
+// re-anchors the screen at the new geometry has run — the terminal calls it
+// after the first write that changed the grid.
+func (g *CellGrid) EndGeometryChange() {
+	g.mu.Lock()
+	g.geometryChange = false
 	g.mu.Unlock()
 }
 
@@ -287,6 +312,14 @@ func (g *CellGrid) TakeScrollback() []RowPatch {
 		g.sentScrollback = end
 	}
 	first := g.sentScrollback
+	if g.geometryChange {
+		// The repaint re-anchoring the screen pushed these rows off the top of
+		// the screen being replaced. They are not history of the new screen:
+		// drop them instead of drawing the replaced screen above the live grid
+		// (bugs.md B3).
+		g.sentScrollback = end
+		return nil
+	}
 	if first >= end {
 		return nil
 	}

@@ -152,6 +152,11 @@ func (v *VirtualTerminal) WriteString(s string) {
 		return
 	}
 	v.publish(false)
+	// The first write that changed the screen after a geometry change IS the
+	// repaint that re-anchors it: its own scroll overflow (rows of the screen
+	// being replaced) has just been dropped, so the suppression ends here
+	// (bugs.md B3).
+	v.grid.EndGeometryChange()
 }
 
 // Size reports the virtual screen geometry.

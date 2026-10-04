@@ -105,6 +105,31 @@ startup rows duplicated into the transcript.
   DOM dump: mascot complete, transcript empty after load; e2e mechanics still
   green.
 
+**Status (partially fixed).** The geometry change no longer manufactures
+history: `CellGrid.Resize` now drops the emulator's retained scrollback
+(`TermEmulator.EraseScrollback`), re-bases the shipped mark, and suppresses the
+scroll overflow of the repaint that re-anchors the screen (the rows it pushes
+off belong to the screen being replaced). Implementation + tests:
+`internal/app/webui_b3_geometry_test.go` (`TestWebUI_StartupScreenSurvivesGeometryChange`,
+`TestWebUI_TranscriptRowsAreNotOnScreen`). Verified RED before the fix (the
+shrink shipped a mascot row) and green after, including the whole
+`./internal/app/ ./internal/webui/ ./tui/` suite.
+
+**Remaining (measured, corrected cause).** The reported 35-row browser still
+shows the grid starting mid-mascot, and this is NOT caused by the resize: the
+startup screen's canvas is taller than the terminal (measured 37 rows of content
+on a 35-row browser; header 10-12 + the boxed startup info panels ~21 + chrome
+6), so the compositor bottom-anchors the window and scrolls the header's top
+rows into the emulator's scrollback. A session *started* at that geometry
+(`GOA_B3_GEOM=117x35` probe) does the same, so the grid equals a fresh
+session's screen — the remaining defect is that the startup screen does not fit.
+Fixing it means either (a) the startup banner must fit the screen (single-line
+info entries via `ChatViewport.AddInfoMessage` instead of 3-row boxed
+`AddSystemMessage` panels), or (b) the compositor must pin the header band so
+the transcript region absorbs the overflow (a TUI change affecting the terminal
+path too). (a) is small; (b) is the general fix. Decide, then finish the browser
+validation at 3 geometries.
+
 ## B4 — Web UI: input line / bottom status bar not rendered correctly
 
 **Observed.** The bottom of the page (input line, separators, status and model
