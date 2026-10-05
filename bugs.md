@@ -28,50 +28,14 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B16 — Provider Quotas shows *that* a window will run out, not *when*: add "exhausted at HH:MM"
-
-Requested 2026-10-05.
-
-**Observed.** In `/quota`'s "Provider Quotas" table the per-window Status cell
-says only `over budget` when the current pace projects past the limit
-(`plugins/bundled/provider-quota/plugin.js:875` `windowStatus` →
-`projectedRatio(lim) > 1.0`), and the "At reset" column gives the projected
-usage at window end (`atResetPct`, `:866`). Both are projections that already
-know the window will be exhausted before it resets — `projectedRatio` (`:464`)
-scales `used/limit` by the elapsed fraction of the window, derived from
-`resetsAt` + `periodMs` — but the run-out *moment* is never shown, so the user
-has to derive "how long do I still have" from a percentage and the "Resets in"
-column. The footer segment is no help either: it carries percentages and colours
-only (`parts.push({ pct: pct + "%" })`, `:382`).
-
-**Expected.** The over-budget state names the moment it happens, in local time:
-
-* the Status cell reads `over budget — exhausted at 14:32`, next to the existing
-  words (so `plenty of room` / `close to limit` are unchanged and no window that
-  is not over budget grows a time),
-* the time is the projection's own: the window runs out when the current pace
-  consumes the remaining budget, i.e. before `resetsAt` by exactly the margin the
-  ratio already carries — one projection, two renderings, never two formulas
-  that can disagree,
-* the clock is the user's local time, and a minute is enough precision,
-* no time is shown when the projection cannot be made (no `resetsAt`/`periodMs`,
-  zero elapsed, a window already past its reset) — the cell degrades to today's
-  `over budget` rather than inventing a time,
-* `/quota:json` exposes the same moment as a machine-readable field so scripts do
-  not parse the sentence.
-
-**Test approach.** Unit (JS, plugin test harness or a Go-loaded runtime with the
-plugin's own clock seam `format._setNow`): a window at 2× the sustainable pace
-yields `exhausted at` the derived clock time and exactly `over budget — exhausted
-at HH:MM`; a window at 0.5× stays `plenty of room` with no time; a window whose
-snapshot lacks `resetsAt`/`periodMs` reports `over budget` with no time when its
-raw usage exceeds the limit; and the JSON field matches the rendered minute.
-Integration: `internal/app/plugins_quota_filmstrip_test.go`'s harness
-(`quotaCommandOutput` through the real registry) renders a fixture whose window is
-over budget and asserts the sentence reaches the visible TUI. Validation: run the
-real `/quota` against a stubbed over-budget snapshot and read the rendered table.
-
 ## Closed
+
+Closed 2026-10-05 — B16, quota run-out time: the Provider Quotas Status cell now
+reads `over budget — exhausted at HH:MM` (local time), derived from the same
+`projectedRatio` pace projection that produced the words and the "At reset"
+column, with `exhaustedAt` (epoch ms) added to `/quota:json` and the cell
+falling back to the bare words when there is nothing to project. See
+[`docs/archive/b16-quota-run-out-time.2026-10-05.md`](docs/archive/b16-quota-run-out-time.2026-10-05.md).
 
 Closed 2026-10-05 — B15, session-log retention: `sessions.retention` (default
 `enabled: true, days: 7`, counted from each file's last write, `0`/`enabled:

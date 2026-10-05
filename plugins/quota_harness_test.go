@@ -324,6 +324,19 @@ func (e *quotaTestEnv) evalJS(t *testing.T, stmt string) {
 	}
 }
 
+// evalJSValue evaluates a JS expression and returns its string form, for
+// building a useful failure message (assert on evalJSBool).
+func (e *quotaTestEnv) evalJSValue(t *testing.T, expr string) string {
+	t.Helper()
+	unlock := e.bridge.enterFrame()
+	defer unlock()
+	v, err := e.bridge.vm.RunString(expr)
+	if err != nil {
+		t.Fatalf("eval %q: %v", expr, err)
+	}
+	return v.String()
+}
+
 // callCommand runs a registered plugin command and returns its output.
 func (e *quotaTestEnv) callCommand(name string, args ...string) string {
 	run, ok := e.commands[name]

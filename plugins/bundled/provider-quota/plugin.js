@@ -476,6 +476,31 @@ function projectedRatio(lim) {
 	return projected / lim.limit;
 }
 
+// runOutAtMs returns the epoch-ms instant at which the current pace consumes the
+// window's remaining budget, or null when it does not run out before the window
+// resets (or when there is not enough timing info to project at all).
+//
+// It is the same projection as projectedRatio, read the other way round: at the
+// current pace the window would end with `projected` used instead of `limit`, so
+// the budget is consumed after the matching fraction of the window. Deriving it
+// from the ratio (rather than from a second rate calculation) keeps the word
+// "over budget" and the time next to it from ever disagreeing.
+function runOutAtMs(lim) {
+	if (!lim.limit || lim.limit <= 0) {
+		return null;
+	}
+	var resetsAtMs = format.toMs(lim.resetsAt);
+	if (!lim.periodMs || !resetsAtMs) {
+		return null;
+	}
+	var projected = projectedRatio(lim);
+	if (!(projected > 1.0)) {
+		return null;
+	}
+	var windowStart = resetsAtMs - lim.periodMs;
+	return windowStart + lim.periodMs * (1 / projected);
+}
+
 
 
 // --- /quota command -------------------------------------------------------
@@ -869,13 +894,21 @@ function atResetPct(lim) {
 	return Math.round(projectedRatio(lim) * 100) + "%";
 }
 
-// windowStatus returns the per-window budget level in words ("plenty of
-// room", "close to limit", "over budget"), matching the footer color for that
-// window's projected window-end usage.
+// windowStatus returns the per-window budget level, matching the footer color
+// for that window's projected window-end usage. An over-budget window also names
+// the moment it runs out ("over budget — exhausted at 14:32", local time): the
+// projection already knows the window will not make it to its reset, and a
+// percentage plus a countdown makes the user do that arithmetic. When the
+// projection cannot be made (no resetsAt/periodMs, or a window already past its
+// reset) the words stand alone rather than an invented time.
 function windowStatus(lim) {
 	var r = projectedRatio(lim);
 	if (r > 1.0) {
-		return "over budget";
+		var runOut = runOutAtMs(lim);
+		if (runOut === null) {
+			return "over budget";
+		}
+		return "over budget — exhausted at " + format.clock(runOut);
 	}
 	if (r > 0.8) {
 		return "close to limit";
@@ -899,7 +932,10 @@ function appendUnsupportedNote(out) {
 	}
 }
 
-// renderJSON emits machine-readable quota data.
+// renderJSON emits the machine-readable snapshot. Each limit carries the
+// projected exhaustion instant (`exhaustedAt`, epoch ms) next to its raw fields,
+// so a script does not have to parse the sentence the table prints in Status.
+// It is null when the window is not projected to run out (see runOutAtMs).
 function renderJSON() {
 	refreshAllDue(true);
 	var out = { providers: {}, session: goa.sessionUsage ? goa.sessionUsage() : {} };
@@ -909,7 +945,7 @@ function renderJSON() {
 			name: (_fetchers[id] && _fetchers[id].name) || id,
 			plan: e.plan || null,
 			error: e.error || null,
-			limits: e.limits || [],
+			limits: limitsWithRunOut(e.limits || []),
 			resetsCount: typeof e.resetsCount === "number" ? e.resetsCount : null,
 			resets: e.details || null,
 			codingPlan: e.codingPlan || null,
@@ -917,6 +953,21 @@ function renderJSON() {
 		};
 	}
 	return JSON.stringify(out, null, 2);
+}
+
+// limitsWithRunOut copies each limit and adds exhaustedAt (epoch ms, or null).
+function limitsWithRunOut(limits) {
+	var out = [];
+	for (var i = 0; i < limits.length; i++) {
+		var lim = limits[i];
+		var copy = {};
+		for (var k in lim) {
+			copy[k] = lim[k];
+		}
+		copy.exhaustedAt = runOutAtMs(lim);
+		out.push(copy);
+	}
+	return out;
 }
 
 // renderAuthStatus lists each provider's quota auth state as a markdown table.
