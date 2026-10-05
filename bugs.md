@@ -28,54 +28,59 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B15 — Session logs are kept forever: prune them after 7 days by default, behind a config flag
+## B16 — Provider Quotas shows *that* a window will run out, not *when*: add "exhausted at HH:MM"
 
 Requested 2026-10-05.
 
-**Observed.** Session logs accumulate with no retention at all. They are written
-by `core.SessionStore` to `<project>/.goa/sessions/<timestamp>_<name>.jsonl`
-(`core/sessionstore.go:174,212`; the store is rooted by
-`internal/app/subsystems_agent.go:149`), and the only ways a file leaves that
-directory are:
+**Observed.** In `/quota`'s "Provider Quotas" table the per-window Status cell
+says only `over budget` when the current pace projects past the limit
+(`plugins/bundled/provider-quota/plugin.js:875` `windowStatus` →
+`projectedRatio(lim) > 1.0`), and the "At reset" column gives the projected
+usage at window end (`atResetPct`, `:866`). Both are projections that already
+know the window will be exhausted before it resets — `projectedRatio` (`:464`)
+scales `used/limit` by the elapsed fraction of the window, derived from
+`resetsAt` + `periodMs` — but the run-out *moment* is never shown, so the user
+has to derive "how long do I still have" from a percentage and the "Resets in"
+column. The footer segment is no help either: it carries percentages and colours
+only (`parts.push({ pct: pct + "%" })`, `:382`).
 
-* `SessionStore.DeleteSession` — an explicit user action
-  (`core/sessionstore.go:384`),
-* `SessionStore.SaveCurrent` removing its own file when the session held no
-  events (`core/sessionstore.go:311`).
+**Expected.** The over-budget state names the moment it happens, in local time:
 
-There is no age- or size-based pruning, so the directory grows for the lifetime
-of the project. The same codebase already has the pattern this needs: pasted
-images live in a durable store with `ImageStoreLifetime` (30 days) and
-`PruneImages`, called opportunistically at startup (`internal/app/app.go:255`).
+* the Status cell reads `over budget — exhausted at 14:32`, next to the existing
+  words (so `plenty of room` / `close to limit` are unchanged and no window that
+  is not over budget grows a time),
+* the time is the projection's own: the window runs out when the current pace
+  consumes the remaining budget, i.e. before `resetsAt` by exactly the margin the
+  ratio already carries — one projection, two renderings, never two formulas
+  that can disagree,
+* the clock is the user's local time, and a minute is enough precision,
+* no time is shown when the projection cannot be made (no `resetsAt`/`periodMs`,
+  zero elapsed, a window already past its reset) — the cell degrades to today's
+  `over budget` rather than inventing a time,
+* `/quota:json` exposes the same moment as a machine-readable field so scripts do
+  not parse the sentence.
 
-**Expected.** A session file that has not been updated within the retention
-window is removed, so a project's `.goa/sessions` cannot grow without bound:
-
-* default to **7 days** (matching the request: "removed after 7days not updated
-  by default"),
-* the window is a **configuration flag**, so it can be widened, disabled or
-  shortened without a code change — an explicit `0` meaning "keep everything",
-  confirmed with the requester on 2026-10-05: retention is counted in days from
-  the file's **last write**, default 7, `0` = keep forever,
-* pruning is opportunistic and best-effort like `PruneImages`: never fatal, and
-  never in the streaming hot path,
-* the flag survives the config cascade (embedded → home → project → local → env
-  → flags) and is documented with the other limits,
-* a session currently being written is never pruned at any age: its mtime is the
-  guard and the active session id is the belt, because the writer holds the file
-  open across a long turn while its mtime stands still during a long tool call.
-
-**Test approach.** Unit: retention selection by mtime (inside the window kept,
-outside pruned, exact boundary kept), `0` disables, the active session id is
-spared at any age, directories and unreadable entries are skipped, and a prune
-failure is non-fatal. Config: the flag's default is 7 days and it round-trips
-through the cascade. Integration: a temp store seeded at t-8d, t-7d, t-6d plus a
-live session, run through the startup prune, asserting exactly the t-8d file
-gone. Validation: run the real binary against a scratch project with back-dated
-session files and confirm the expected file is removed and that the live session
-keeps appending to its own file across the prune.
+**Test approach.** Unit (JS, plugin test harness or a Go-loaded runtime with the
+plugin's own clock seam `format._setNow`): a window at 2× the sustainable pace
+yields `exhausted at` the derived clock time and exactly `over budget — exhausted
+at HH:MM`; a window at 0.5× stays `plenty of room` with no time; a window whose
+snapshot lacks `resetsAt`/`periodMs` reports `over budget` with no time when its
+raw usage exceeds the limit; and the JSON field matches the rendered minute.
+Integration: `internal/app/plugins_quota_filmstrip_test.go`'s harness
+(`quotaCommandOutput` through the real registry) renders a fixture whose window is
+over budget and asserts the sentence reaches the visible TUI. Validation: run the
+real `/quota` against a stubbed over-budget snapshot and read the rendered table.
 
 ## Closed
+
+Closed 2026-10-05 — B15, session-log retention: `sessions.retention` (default
+`enabled: true, days: 7`, counted from each file's last write, `0`/`enabled:
+false` = keep forever) with `SessionStore.PruneSessions` sweeping at startup and
+hourly, never touching the session this process has open. The two retention
+fields are tri-state so an explicit `false`/`0` from a higher config layer wins —
+the `Days != 0 || Enabled` rule the three older retention structs use cannot
+express that. See
+[`docs/archive/b15-session-log-retention.2026-10-05.md`](docs/archive/b15-session-log-retention.2026-10-05.md).
 
 Closed 2026-10-05 — B12/B13/B14, the clipboard backends brought to parity with
 the reference agent (pi) and with goa's own copy side: a three-state backend

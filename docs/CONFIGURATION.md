@@ -387,6 +387,15 @@ orchestrator:
   defaults:
     topology: hub                    # hub | fanout | pipeline
 
+# ── Sessions ───────────────────────────────────────────────────────
+# Session logs (<project>/.goa/sessions/*.jsonl) are pruned after the retention
+# window, counted from each file's last write. The window defaults to 7 days and
+# is never applied to the session currently open.
+sessions:
+  retention:
+    enabled: true                    # false keeps every session log forever
+    days: 7                          # 0 = keep forever; N = keep N days
+
 # ── Plugins ────────────────────────────────────────────────────────
 plugins:
   enabled: ["*"]                     # Enable all plugins, or list specific IDs

@@ -198,6 +198,14 @@ plan:
     enabled: true
     days: 7
 
+# Session logs (<project>/.goa/sessions/*.jsonl) are pruned after this window,
+# counted from each file's last write. Set enabled: false (or days: 0) to keep
+# every session log forever.
+sessions:
+  retention:
+    enabled: true
+    days: 7
+
 multi_agent:
   enabled: false
   pattern: "pair"

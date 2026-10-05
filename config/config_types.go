@@ -47,6 +47,9 @@ type Config struct {
 	Orchestrator       OrchestratorConfig       `yaml:"orchestrator,omitempty"`
 	Teams              TeamsConfig              `yaml:"teams,omitempty"`
 	Goals              GoalsConfig              `yaml:"goals,omitempty"`
+	// Sessions controls how long the durable session logs are kept
+	// (default: 7 days, counted from each file's last write).
+	Sessions SessionsConfig `yaml:"sessions,omitempty"`
 	// Features holds opt-in feature gates (e.g. features.remote_compaction).
 	// All gates default off; see FeaturesConfig.
 	Features        FeaturesConfig  `yaml:"features,omitempty"`

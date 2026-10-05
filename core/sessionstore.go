@@ -379,6 +379,48 @@ func (s *SessionStore) ListSessions() ([]SessionInfo, error) {
 	return sessions, nil
 }
 
+// PruneSessions deletes session logs whose last write is older than maxAge and
+// returns how many were removed. maxAge <= 0 keeps every file.
+//
+// The session currently open by this store is never removed, whatever its age:
+// the writer holds the file open for the life of the run, so its mtime stands
+// still while a long model turn or tool call is in flight — age alone would
+// eventually look like an abandoned session. Deletion is best-effort: a file
+// that disappears under us, or cannot be removed, never fails the caller (the
+// store is a record of history, not a source of truth).
+func (s *SessionStore) PruneSessions(maxAge time.Duration) int {
+	if maxAge <= 0 {
+		return 0
+	}
+	s.mu.Lock()
+	active := s.sessionID
+	s.mu.Unlock()
+
+	sessionDir := filepath.Join(s.dir, "sessions")
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		return 0
+	}
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		if active != "" && e.Name() == active+".jsonl" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if os.Remove(filepath.Join(sessionDir, e.Name())) == nil {
+			removed++
+		}
+	}
+	return removed
+}
+
 // LoadSession reads all events from a session file and returns them.
 // DeleteSession removes a saved session file.
 func (s *SessionStore) DeleteSession(name string) error {

@@ -29,8 +29,24 @@ func (c *Config) DeepMerge(other *Config) {
 	c.mergeTeams(other)
 	c.mergePlan(other)
 	c.mergeGoals(other)
+	c.mergeSessions(other)
 	c.mergeFeatures(other)
 	c.mergeMCP(other)
+}
+
+// mergeSessions merges the session-log retention field by field. Both of its
+// fields are tri-state, so a higher layer can express "off" and "keep forever":
+// whatever a layer does not state keeps the lower layer's value, and an explicit
+// false/0 always wins. That is deliberately *not* the `Days != 0 || Enabled`
+// replace rule the older retention structs use — with a default that is ON, that
+// rule would make `enabled: false` from a higher layer a no-op.
+func (c *Config) mergeSessions(other *Config) {
+	if other.Sessions.Retention.Enabled != nil {
+		c.Sessions.Retention.Enabled = other.Sessions.Retention.Enabled
+	}
+	if other.Sessions.Retention.Days != nil {
+		c.Sessions.Retention.Days = other.Sessions.Retention.Days
+	}
 }
 
 // mergeGoals merges the goals config section field by field. Scalars copy
