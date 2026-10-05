@@ -317,10 +317,13 @@
     }
     cursor = cur;
     caret.hidden = false;
+    // The band window has no top padding (see app.css) while the cells and
+    // overlay planes keep the full PAD — the inset follows the mode.
+    var topInset = (PLANE === "blocks" && !overlayMode) ? 0 : PAD;
     var rel = cur.r - Math.max(0, rows.length - bandChrome);
     if (overlayMode || rel < 0) rel = cur.r;
     caret.style.left = (PAD + cur.c * charWidth) + "px";
-    caret.style.top = (PAD + rel * lineHeight) + "px";
+    caret.style.top = (topInset + rel * lineHeight) + "px";
   }
 
   // ─────────────────────────────────────────────────────────────── block plane
@@ -463,6 +466,23 @@
           root.appendChild(det);
           break;
         }
+        case "system": {
+          // The TUI's goa panel renders command output as markdown unless the
+          // text looks preformatted (tui/chat_viewport_markdown.go heuristics
+          // mirrored below) — the page must agree with it or /quota and its
+          // siblings show raw source.
+          if (looksPreformatted(b.text)) {
+            var sper = document.createElement("pre");
+            sper.textContent = b.text;
+            root.appendChild(sper);
+          } else {
+            var span = document.createElement("div");
+            span.className = "md";
+            renderMarkdown(b.text, span);
+            root.appendChild(span);
+          }
+          break;
+        }
         case "tool": {
           var tdet = collapsible(wasOpen, meta.expanded !== "0");
           var tsum = document.createElement("summary");
@@ -481,6 +501,12 @@
           st.textContent = " [" + (meta.status || "pending") + (meta.duration ? " · " + meta.duration : "") + "]";
           tsum.appendChild(st);
           tdet.appendChild(tsum);
+          // Collapsed cards preview the head of the output (the TUI widget's
+          // preview); the open body carries everything, scroll-capped.
+          var prev = document.createElement("pre");
+          prev.className = "t-preview";
+          prev.textContent = headLines(b.text, 4);
+          tdet.appendChild(prev);
           var out = document.createElement("pre");
           out.className = "t-out";
           out.textContent = b.text || "";
@@ -505,6 +531,60 @@
     if (wasOpen !== undefined) det.open = wasOpen;
     else det.open = !!metaOpen;
     return det;
+  }
+
+  // ───────────────────────────────────────── markdown classification
+  //
+  // The TUI decides per message whether text is markdown or verbatim
+  // (isPreformatted / looksLikeMarkdown in tui/chat_viewport_markdown.go).
+  // The page mirrors those heuristics so both renderers agree on which
+  // blocks get the markdown treatment — /quota and friends arrive as system
+  // panels whose source is markdown.
+
+  // looksLikeMarkdown reports whether any line carries markdown syntax.
+  function looksLikeMarkdown(text) {
+    var lines = (text || "").split("\n");
+    if (lines.length < 3) return false;
+    for (var i = 0; i < lines.length; i++) {
+      var t = lines[i].trim();
+      if (!t) continue;
+      if (/^#{1,6} /.test(t)) return true;          // ATX heading
+      if (t.lastIndexOf("```", 0) === 0) return true; // fence
+      if ((t.charAt(0) === "-" || t.charAt(0) === "*") && t.charAt(1) === " ") return true;
+      if (t.charAt(0) >= "0" && t.charAt(0) <= "9" && t.charAt(1) === ".") return true;
+      if (t.charAt(0) === "|" && t.charAt(t.length - 1) === "|") return true; // table
+      if (/^(-{3,4}|\*{3,4})$/.test(t)) return true; // thematic break
+      if (t.indexOf("`") >= 0) return true;          // inline code
+    }
+    return false;
+  }
+
+  // looksPreformatted mirrors isPreformatted: markdown is rendered; plain
+  // tabular/indented text (wide lines, indented commands) is shown verbatim.
+  function looksPreformatted(text) {
+    if (looksLikeMarkdown(text)) return false;
+    var lines = (text || "").split("\n");
+    if (lines.length < 2) return false;
+    var indentedCommands = false;
+    var longLines = 0;
+    for (var i = 0; i < lines.length; i++) {
+      if (/^  \//.test(lines[i])) indentedCommands = true;
+      if (lines[i].length > 60) longLines++;
+    }
+    return indentedCommands || longLines >= 2;
+  }
+
+  // headLines returns the first n non-empty-biased lines of text for a
+  // collapsed card's preview.
+  function headLines(text, n) {
+    var lines = (text || "").split("\n");
+    var out = [];
+    for (var i = 0; i < lines.length && out.length < n; i++) {
+      out.push(lines[i]);
+    }
+    var joined = out.join("\n");
+    if (lines.length > n) joined += "\n… +" + (lines.length - n) + " lines";
+    return joined;
   }
 
   // ─────────────────────────────────────────────── markdown (goa's subset)
@@ -763,6 +843,8 @@
         socket.onmessage = function (ev) { handleWire(ev.data); };
         socket.onclose = function () {
           clearTimeout(handshake);
+          // A deliberate detach owns this tab's socket lifecycle: no retry.
+          if (detached) return;
           if (!wsOpened) {
             // Handshake failed (blocked, proxied, refused): fall back for good.
             connectSSE();
@@ -806,6 +888,12 @@
                 };
                 es.onerror = function () {
                   if (stream !== es) return;
+                  // A deliberate detach owns this tab's stream lifecycle.
+                  if (detached) {
+                    es.close();
+                    stream = null;
+                    return;
+                  }
                   // EventSource would reconnect on its own, replaying a URL with no
                   // resume hint. Reopening it here is what carries ?since=, so the
                   // server can answer with nothing when the screen is already current.
@@ -988,6 +1076,19 @@
   });
 
   document.addEventListener("keydown", function (ev) {
+    // A detached tab drives nothing.
+    if (detached) { ev.preventDefault(); return; }
+    // Ctrl/Cmd+D closes THIS window: the tab detaches from the session and
+    // the browser performs (or is invited to perform) its own close. It must
+    // never reach the engine — an EOF byte would end the whole session and
+    // take the server down for every other viewer; the server process is
+    // owned by the console it was started from (its Ctrl+C).
+    if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey &&
+        (ev.key || "").toLowerCase() === "d") {
+      ev.preventDefault();
+      detachTab();
+      return;
+    }
     // Chords the browser owns stay the browser's: reload, devtools and tab
     // switching are how a user escapes a page, and a terminal that swallows
     // them is a trap. Everything else — including the engine's own Ctrl+W /
@@ -1007,6 +1108,24 @@
     send({ t: "key", key: keyEvent(ev) });
     ev.preventDefault();
   });
+
+  // detached stops the key/paste paths after a detach: the tab no longer
+  // drives or watches the session.
+  var detached = false;
+
+  // detachTab disconnects this tab from the session and asks the browser to
+  // close the window (allowed outright for script-opened tabs; elsewhere the
+  // status line says the tab is free to close).
+  function detachTab() {
+    if (detached) return;
+    detached = true;
+    try { if (socket) socket.close(); } catch (e) { /* already closing */ }
+    if (stream) {
+      try { stream.close(); } catch (e) { /* already closing */ }
+    }
+    setStatus("closed", "detached — you can close this tab");
+    window.close();
+  }
 
   // BROWSER_OWNED is the set of chords the page never claims: the function
   // keys with no engine binding, plus the browser's own navigation and devtools

@@ -112,13 +112,20 @@ body {
    pitfall documented above applies to scroll containers; the band is not
    one). The band height is published per frame by app.js; margin-top:auto
    (inherited from .grid) keeps the band at the viewport bottom while the
-   conversation is shorter than the screen. */
+   conversation is shorter than the screen.
+
+   There is NO top padding in band mode, deliberately: overflow:hidden clips
+   at the PADDING box, so a top padding would show the bottom sliver of the
+   row above the window — the stale cells an overlay (the autocomplete
+   popup) left in the model, painting "behind the conversation". The caret
+   inset compensates in app.js. */
 body[data-plane="blocks"] .grid {
-  height: calc(var(--chrome) * var(--cell-h) + 2 * var(--pad));
+  height: calc(var(--chrome) * var(--cell-h) + var(--pad));
   overflow: hidden;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
+  padding-top: 0;
 }
 
 /* Overlay fallback: an input-capturing overlay owns the screen; #blocks
@@ -252,12 +259,15 @@ a {
 }
 .block .agent-chip { color: var(--accent); font-weight: 700; }
 
-/* System notices: the boxed panel the TUI draws. */
+/* System notices: the boxed panel the TUI draws (goa panel). Content is
+   markdown-rendered exactly like the TUI's renderGoaPanel, unless the text
+   looks preformatted (app.js mirrors that heuristic) — then it is verbatim. */
 .block.system {
   border: 1px solid var(--border);
   padding: var(--pad);
   color: var(--dim);
 }
+.block.system .md > *:last-child { margin-bottom: 0; }
 .block.info { color: var(--dim); }
 .block.result { color: var(--dim); }
 
@@ -272,7 +282,11 @@ a {
 .block.thinking .body { color: var(--dim); border-left: 2px solid var(--border); padding-left: 8px; }
 
 /* Tool cards: header line + collapsible output. Status colour follows the
-   TUI's (running amber-ish → accent, success green, error red). */
+   TUI's (running amber-ish → accent, success green, error red). Collapse
+   follows the TUI widget's own expanded state (the server ships it); a
+   collapsed card still previews the first lines of output, the way the
+   TUI's preview does, and an open one scrolls instead of dominating the
+   page. */
 .block.tool { border: 1px solid var(--border); padding: var(--pad); }
 .block.tool summary { cursor: pointer; list-style: none; }
 .block.tool summary::before { content: "▸ "; }
@@ -287,7 +301,18 @@ a {
   border-top: 1px solid var(--border);
   margin-top: var(--pad);
   padding-top: var(--pad);
+  max-height: calc(24 * var(--cell-h));
+  overflow-y: auto;
 }
+.block.tool .t-preview {
+  color: var(--dim);
+  margin-top: var(--pad);
+  padding-top: var(--pad);
+  border-top: 1px solid var(--border);
+  max-height: calc(4 * var(--cell-h));
+  overflow: hidden;
+}
+.block.tool details[open] .t-preview { display: none; }
 
 /* Companion output: the purple gutter. */
 .block.companion { border-left: 2px solid #a371f7; padding-left: 8px; color: var(--dim); }

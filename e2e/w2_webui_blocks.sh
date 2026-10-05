@@ -188,6 +188,56 @@ case "$B" in
   *'"back":true'*) record overlay_restore PASS "Escape restored the blocks view: $B" ;;
   *) record overlay_restore FAIL "blocks view not restored: $B" ;;
 esac
+
+# quota_md: a system block whose source is markdown renders AS markdown —
+# headings become elements, not literal `##` text (the TUI's goa panel
+# markdown path, mirrored by the page's preformatted heuristic).
+press_str "/quota"
+sleep 0.5
+ab press Enter
+if wait_for "(() => { const sys = document.querySelectorAll('.block.system .md h1, .block.system .md h2, .block.system .md table'); return sys.length > 0; })()" 25; then
+  record quota_md PASS "quota output rendered as markdown (headings/tables present)"
+else
+  record quota_md FAIL "quota output stayed raw markdown source"
+fi
+
+# popup_remnant: after a command ran (popup opened and closed above), the
+# band must not leak the stale popup rows: the band window has no top
+# padding, so nothing paints between the conversation and the band.
+REMNANT_JS='(() => { const g = getComputedStyle(document.getElementById("grid"));
+  const rows = document.getElementById("rows").children;
+  const grid = document.getElementById("grid").getBoundingClientRect();
+  let leak = null;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i].getBoundingClientRect();
+    if (r.height > 0 && r.bottom > grid.top + 1 && r.top < grid.top - 1) leak = i;
+  }
+  return JSON.stringify({padTop: g.paddingTop, leak: leak}); })()'
+R=$(abq "$REMNANT_JS")
+if printf '%s' "$R" | grep -q '"padTop":"0px"' && printf '%s' "$R" | grep -q '"leak":null'; then
+  record popup_remnant PASS "no stale rows paint above the band: $R"
+else
+  record popup_remnant FAIL "stale row peeking above the band: $R"
+fi
+
+# ctrl_d_detach: Ctrl+D detaches this tab — the socket closes, the page says
+# so, and the SERVER keeps running (the health endpoint still answers).
+abq '(() => { document.dispatchEvent(new KeyboardEvent("keydown", {key: "d", ctrlKey: true, bubbles: true})); return "sent"; })()' > /dev/null
+sleep 1
+DETACH_JS='(() => { const st = document.getElementById("status");
+  return JSON.stringify({state: st.dataset.state, text: st.textContent}); })()'
+D=$(abq "$DETACH_JS")
+HEALTH=$(curl -s "http://127.0.0.1:$WEB_PORT/healthz" 2>/dev/null || true)
+case "$D" in
+  *'"state":"closed"'*)
+    case "$HEALTH" in
+      *'"ok":true'*) record ctrl_d_detach PASS "tab detached, server still healthy: $D" ;;
+      *) record ctrl_d_detach FAIL "tab detached but server unhealthy: $HEALTH" ;;
+    esac
+    ;;
+  *) record ctrl_d_detach FAIL "Ctrl+D did not detach the tab: $D" ;;
+esac
+
 shot 02-blocks-final
 
 echo

@@ -88,3 +88,28 @@ maintains — no second renderer, nothing re-parsed from bytes.
 - Tool-block output ships as plain text in v2.0; styled runs are an
   upgrade path behind the same wire op.
 - The no-JS `/text` + plain mirrors stay grid-based by design.
+
+## Follow-up (same day) — four refinements from live use
+
+1. **System panels render markdown.** The TUI's goa panel runs command
+   output through the markdown renderer unless the text looks preformatted
+   (`isPreformatted`/`looksLikeMarkdown`, tui/chat_viewport_markdown.go);
+   the page now mirrors both heuristics, so `/quota` shows rendered
+   headings/tables instead of raw source.
+2. **The autocomplete-popup remnant.** `overflow:hidden` clips at the
+   PADDING box, so the band's 8px top padding showed the bottom sliver of
+   the stale popup rows the overlay left in the grid model ("content still
+   visible behind the conversation"). The band window has no top padding
+   now, and the caret inset compensates per mode.
+3. **Tool blocks collapse like the TUI widget.** The server already ships
+   the widget's live expanded state; the card adds a collapsed-output
+   preview (first lines, TUI-preview style), hides it when open, and caps
+   the open body at a scrollable 24 rows.
+4. **Ctrl/Cmd+D detaches the tab.** It used to deliver an EOF byte —
+   ending the session *and* stopping the server for every viewer. It now
+   closes this tab's socket, invites the browser to close the window, and
+   never reaches the engine; the server is owned by the console Ctrl+C.
+
+Pinned by `e2e/w2_webui_blocks.sh` (11 checks: quota_md, popup_remnant,
+ctrl_d_detach added; all PASS in a real Chrome) and a live tool-call pass
+(collapsed by default, preview hidden when open).
