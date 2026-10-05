@@ -768,9 +768,11 @@
   function onFrame(msg) {
     cols = msg.cols || cols;
     resizeRows(msg.rows || 0);
-    (msg.patches || []).forEach(applyRow);
-    placeCaret(msg.cur);
-    if (msg.title) document.title = msg.title;
+    // The band state is applied BEFORE the patches and the caret: the caret
+    // is positioned relative to the band window, and a frame that resized
+    // the band (popup opened/filtered/closed, editor wrapped) must not place
+    // it against the previous height — that put it outside the window on
+    // every band-resizing keystroke.
     if (PLANE === "blocks") {
       var chrome = msg.chrome | 0;
       if (chrome !== bandChrome) {
@@ -784,6 +786,9 @@
       }
       if (msg.blocks) applyBlocks(msg.blocks);
     }
+    (msg.patches || []).forEach(applyRow);
+    placeCaret(msg.cur);
+    if (msg.title) document.title = msg.title;
     // Follow-tail: only auto-scroll while the user has not scrolled away.
     followTail();
   }

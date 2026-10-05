@@ -214,6 +214,19 @@ func (a *App) attachInputHandlers(inp *tui.Editor, engine *tui.TUI) {
 	engine.OnEditSteering = func() { a.handleEditSteering(engine, subs.chat) }
 	a.wireOrchCommandCallbacks()
 	engine.OnCancelInputRequest = func() bool { return a.cancelPendingMainInput() }
+	// A server's life is owned by the console that started it, not by a
+	// keystroke: a browser Ctrl+C/Ctrl+D on an empty input flashes a hint
+	// instead of stopping the session — and with it the process every
+	// attached viewer is watching. webReady exists only in `goa server`
+	// wiring, which is what scopes the hook to server mode (the interactive
+	// TUI keeps quit-as-quit).
+	if a.subs.webReady != nil {
+		engine.OnStopRequest = func() {
+			if a.subs.chat != nil {
+				a.subs.chat.AddFlashMessage("⚡ served by `goa server` — stop it from the console it was started in (Ctrl+C there)")
+			}
+		}
+	}
 }
 
 func (a *App) handleEscape() {

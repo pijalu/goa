@@ -66,7 +66,7 @@ func (e *Editor) handleControlKeys(data string) bool {
 	case matchesKey(data, KeyCtrlD):
 		if len(e.buf) == 0 && e.tui != nil {
 			t := e.tui
-			e.queueCallback(func() { t.Stop() })
+			e.queueCallback(func() { t.stopRequested() })
 			return true
 		}
 		return false // Let handleEditKeys process it as delete-forward

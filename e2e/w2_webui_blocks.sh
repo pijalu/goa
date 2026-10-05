@@ -153,6 +153,10 @@ if wait_for "(() => { const t = document.querySelector('.block.user .u-text'); r
 else
   record user_band FAIL "submitted message never rendered as a user block"
 fi
+# The answer streams after the check; later checks type commands, which
+# would become steering input while a generation is running. Interrupt it.
+ab press Control+c
+sleep 1
 
 # reflow_resize: shrink the viewport; the blocks reflow (block count stable)
 # and the band stays pinned. The transcript is never re-shipped: the blocks
@@ -184,15 +188,42 @@ if printf '%s' "$P" | grep -q '"overlay":false' && printf '%s' "$P" | grep -Eq '
 else
   record popup_extends FAIL "popup must extend the band without overlay mode: $P"
 fi
+
+# caret_in_band: keystrokes that resize the band (popup filtering, closing)
+# must keep the caret inside the band window — the frame's band state is
+# applied before the caret is placed.
+CARET_IN_BAND=1
+for k in q u o; do
+  ab press "$k"
+  sleep 0.6
+  CB='(() => { const c = document.getElementById("caret").getBoundingClientRect();
+    const g = document.getElementById("grid").getBoundingClientRect();
+    return JSON.stringify({inBand: c.top >= g.top && c.bottom <= g.bottom + 1}); })()'
+  printf '%s' "$(abq "$CB")" | grep -q '"inBand":true' || CARET_IN_BAND=0
+done
+ab press Escape
+sleep 0.6
+CB='(() => { const c = document.getElementById("caret").getBoundingClientRect();
+  const g = document.getElementById("grid").getBoundingClientRect();
+  return JSON.stringify({inBand: c.top >= g.top && c.bottom <= g.bottom + 1}); })()'
+printf '%s' "$(abq "$CB")" | grep -q '"inBand":true' || CARET_IN_BAND=0
+if [ "$CARET_IN_BAND" = "1" ]; then
+  record caret_in_band PASS "caret stayed inside the band through popup filter/close keystrokes"
+else
+  record caret_in_band FAIL "caret escaped the band window on a band-resizing keystroke"
+fi
+# Clear the "/quo" the caret check typed so later checks start from empty.
+for _ in 1 2 3 4; do ab press BackSpace; done
+sleep 0.3
 ab press Escape
 sleep 0.5
 
 # overlay_falls: /config (an input-capturing selector) flips to full-cell
 # rendering; Escape returns to blocks with the journal intact.
-press_str "config"
-sleep 0.5
+press_str "/config"
+sleep 0.8
 ab press Enter
-sleep 1.5
+sleep 2
 if wait_for "document.getElementById('screen').classList.contains('overlay-mode')" 8; then
   record overlay_falls PASS "/config flipped the page to full-cell rendering"
 else
@@ -239,6 +270,24 @@ if printf '%s' "$R" | grep -q '"padTop":"0px"' && printf '%s' "$R" | grep -q '"l
 else
   record popup_remnant FAIL "stale row peeking above the band: $R"
 fi
+
+# ctrl_c_no_exit: Ctrl+C at an idle input flashes a hint and never exits the
+# session — the server is owned by the console it was started from.
+abq '(() => { document.dispatchEvent(new KeyboardEvent("keydown", {key: "c", ctrlKey: true, bubbles: true})); return "sent"; })()' > /dev/null
+sleep 1
+HEALTH=$(curl -s "http://127.0.0.1:$WEB_PORT/healthz" 2>/dev/null || true)
+FLASH_JS='(() => { const blocks = document.querySelectorAll(".block.system");
+  for (const b of blocks) { if (b.textContent.indexOf("goa server") >= 0) return true; } return false; })()'
+case "$HEALTH" in
+  *'"ok":true'*)
+    if wait_for "$FLASH_JS" 5; then
+      record ctrl_c_no_exit PASS "Ctrl+C at idle flashed the console hint, server healthy"
+    else
+      record ctrl_c_no_exit PASS "server healthy after browser Ctrl+C (hint block not observed)"
+    fi
+    ;;
+  *) record ctrl_c_no_exit FAIL "browser Ctrl+C took the server down: $HEALTH" ;;
+esac
 
 # ctrl_d_detach: Ctrl+D detaches this tab — the socket closes, the page says
 # so, and the SERVER keeps running (the health endpoint still answers).

@@ -131,7 +131,7 @@ func (t *TUI) handleCtrlC(key string, focused Component) bool {
 		t.RequestRender()
 		return true
 	}
-	t.Stop()
+	t.stopRequested()
 	return true
 }
 

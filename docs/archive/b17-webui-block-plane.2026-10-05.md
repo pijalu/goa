@@ -113,3 +113,23 @@ maintains — no second renderer, nothing re-parsed from bytes.
 Pinned by `e2e/w2_webui_blocks.sh` (11 checks: quota_md, popup_remnant,
 ctrl_d_detach added; all PASS in a real Chrome) and a live tool-call pass
 (collapsed by default, preview hidden when open).
+
+## Follow-up 2 (same day) — caret in the band, and a keystroke can no longer stop the server
+
+1. **The caret escaped the band while typing.** `onFrame` placed the caret
+   BEFORE applying the frame's band height, so any keystroke that resized
+   the band (autocomplete popup filtering open/closed, editor wrapping)
+   computed the caret against the previous height and threw it outside the
+   window. Band state is now applied first, and `caret_in_band` steps the
+   popup through filter keystrokes in a real browser.
+2. **A browser Ctrl+C stopped the whole server.** Ctrl+C on an empty input
+   (and Ctrl+D) are the TUI's quit — `handleCtrlC`/`Editor` called
+   `TUI.Stop()`, which in `goa server` ends the session and the process
+   every viewer watches. The engine now routes input-driven stops through
+   `TUI.OnStopRequest`: the interactive TUI leaves it nil (quit stays quit,
+   pinned by `tui/stop_request_test.go`), and server wiring installs a hook
+   that flashes "stop it from the console it was started in". Escape keeps
+   interrupting a running generation; `ctrl_c_no_exit` and `ctrl_d_detach`
+   pin the browser contract.
+
+`e2e/w2_webui_blocks.sh`: 14 checks, all PASS in real Chrome.
