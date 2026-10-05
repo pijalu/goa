@@ -81,6 +81,11 @@ type openAICompletionsCompat struct {
 	SupportsLongCacheRetention                  bool
 	SupportsPromptCache                         bool
 	ToolResultAsUser                            bool
+	// SupportsToolChoiceNone false suppresses the tool_choice change on the
+	// final-step text-only collapse: the round then repeats the previous
+	// round's tool_choice verbatim, keeping the body append-only in every
+	// field (schema.CompatFlags.SupportsToolChoiceNone).
+	SupportsToolChoiceNone bool
 	// SupportsTemperature false omits the temperature field (kimi-code
 	// rejects any value but its fixed default with HTTP 400).
 	SupportsTemperature bool
@@ -124,6 +129,10 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 	// provider/endpoint. Left unset, z.ai would never receive tool_stream:true
 	// and the flag in provider.OpenAICompletionsCompat would stay dead.
 	c.ZaiToolStream = profile.Compat.ToolStream || catalogToolStream(model)
+	// Tool_choice "none" is the collapse's text-only lever on every flavor
+	// whose upstream accepts it (default true). An explicit profile value wins;
+	// the Responses flavors resolve their own default (false).
+	c.SupportsToolChoiceNone = supportsToolChoiceNone(profile)
 	return c
 }
 

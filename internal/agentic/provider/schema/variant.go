@@ -77,6 +77,24 @@ type CompatFlags struct {
 	// endpoint understands /responses/compact. This is opt-in detection only
 	// (Codex Phase 2b.1); it never changes request shape by itself.
 	RemoteCompaction RemoteCompactionSupport `json:"remote_compaction,omitempty"`
+	// SupportsToolChoiceNone controls how the final-step text-only collapse
+	// (P7) is expressed on the wire.
+	//
+	// The collapse must never change the request's prompt-bearing surface
+	// (tool schemas, system prompt, history): that surface is part of the
+	// provider's cached prefix, so mutating it re-bills the whole prompt. The
+	// collapse therefore keeps the tools array and only toggles tool_choice,
+	// a prompt-neutral control field (true by default on the OpenAI
+	// completions, Anthropic, Mistral and Google flavors — verified live
+	// against api.kimi.com 2026-10-05: tools kept + tool_choice "none" → 200,
+	// prefix cache retained, and still no tool call).
+	//
+	// Explicitly false suppresses even that: the collapse round then repeats
+	// the previous round's tool_choice verbatim, leaving the body append-only
+	// in every field. Required on Responses upstreams that hard-400 on any
+	// tool_choice other than "auto" (opencode Zen / muse "Console",
+	// 2026-09-02); the Responses flavors therefore default to false.
+	SupportsToolChoiceNone *bool `json:"supports_tool_choice_none,omitempty"`
 }
 
 // Defaults holds per-variant default request parameters.

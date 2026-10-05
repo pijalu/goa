@@ -97,6 +97,67 @@ func TestBuildRequestFingerprint_ToolPolicyTransition(t *testing.T) {
 	}
 }
 
+// TestBuildRequestFingerprint_ToolChoiceCollapse pins the post-2026-10-05
+// collapse shape: the tool surface is byte-identical, only the prompt-neutral
+// tool_choice control field moves. That is cache-neutral by construction, so
+// it must never be reported as a miss cause (PrefixToolChoiceCollapse, not
+// PrefixToolPolicyTransition and not an opaque param_change).
+func TestBuildRequestFingerprint_ToolChoiceCollapse(t *testing.T) {
+	tools := []any{map[string]any{"function": map[string]any{"name": "bash"}}}
+	messages := []any{map[string]any{"role": "user", "content": "hi"}}
+	prev := marshalBody(t, map[string]any{"messages": messages, "tools": tools, "model": "k3"})
+	cur := marshalBody(t, map[string]any{
+		"messages":    append(append([]any{}, messages...), map[string]any{"role": "assistant", "content": "done"}),
+		"tools":       tools,
+		"model":       "k3",
+		"tool_choice": "none",
+	})
+	fp := BuildRequestFingerprint("kimi-code", "k3", "s", prev, cur, 2, 0, "sse", "t", false)
+	if fp.Classification != PrefixToolChoiceCollapse {
+		t.Fatalf("classification = %q, want %q", fp.Classification, PrefixToolChoiceCollapse)
+	}
+
+	// A collapse that also dropped the tools array is the pre-fix shape and
+	// stays flagged as the cache-busting tool_policy_transition.
+	broken := marshalBody(t, map[string]any{
+		"messages":    append(append([]any{}, messages...), map[string]any{"role": "assistant", "content": "done"}),
+		"model":       "k3",
+		"tool_choice": "none",
+	})
+	if fp := BuildRequestFingerprint("kimi-code", "k3", "s", prev, broken, 2, 0, "sse", "t", false); fp.Classification != PrefixToolPolicyTransition {
+		t.Fatalf("dropped-tools collapse classified %q, want %q", fp.Classification, PrefixToolPolicyTransition)
+	}
+
+	// A different non-message field changing alongside tool_choice is not the
+	// collapse: it stays an opaque param_change.
+	mixed := marshalBody(t, map[string]any{
+		"messages":    append(append([]any{}, messages...), map[string]any{"role": "assistant", "content": "done"}),
+		"tools":       tools,
+		"model":       "k3-other",
+		"tool_choice": "none",
+	})
+	if fp := BuildRequestFingerprint("kimi-code", "k3", "s", prev, mixed, 2, 0, "sse", "t", false); fp.Classification != PrefixParamChange {
+		t.Fatalf("mixed-param collapse classified %q, want %q", fp.Classification, PrefixParamChange)
+	}
+
+	// The per-flavor text-only spellings are recognized too: Anthropic's
+	// {"type":"none"} object and Google's NONE function-calling mode.
+	for name, choice := range map[string]any{
+		"anthropic-object": map[string]any{"type": "none"},
+		"google-mode":      map[string]any{"functionCallingConfig": map[string]any{"mode": "NONE"}},
+	} {
+		object := marshalBody(t, map[string]any{
+			"messages":    append(append([]any{}, messages...), map[string]any{"role": "assistant", "content": "done"}),
+			"tools":       tools,
+			"model":       "k3",
+			"tool_choice": choice,
+		})
+		if fp := BuildRequestFingerprint("kimi-code", "k3", "s", prev, object, 2, 0, "sse", "t", false); fp.Classification != PrefixToolChoiceCollapse {
+			t.Fatalf("%s classified %q, want %q", name, fp.Classification, PrefixToolChoiceCollapse)
+		}
+	}
+}
+
 // TestBuildRequestFingerprintDivergenceAndReplacement covers the negative
 // paths: rewriting an already-sent message is unexpected_divergence; the
 // replacement flag marks deliberate resets; key-order differences alone

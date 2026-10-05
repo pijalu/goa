@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 )
 
 // PrefixClassification describes how a request relates to the preceding
@@ -20,9 +21,15 @@ const (
 	PrefixExactAppend          PrefixClassification = "exact_append"
 	PrefixParamChange          PrefixClassification = "param_change"
 	PrefixToolPolicyTransition PrefixClassification = "tool_policy_transition"
-	PrefixReplacement          PrefixClassification = "replacement"
-	PrefixDivergence           PrefixClassification = "unexpected_divergence"
-	PrefixNoPredecessor        PrefixClassification = "no_predecessor"
+	// PrefixToolChoiceCollapse: messages append and the only non-message field
+	// that changed is tool_choice, set to its text-only value — the P7
+	// final-step/recovery collapse expressed on a prompt-neutral control field.
+	// Cache-neutral by construction (the cached prompt is unchanged), so it is
+	// reported as metadata, never as a miss cause.
+	PrefixToolChoiceCollapse PrefixClassification = "tool_choice_collapse"
+	PrefixReplacement        PrefixClassification = "replacement"
+	PrefixDivergence         PrefixClassification = "unexpected_divergence"
+	PrefixNoPredecessor      PrefixClassification = "no_predecessor"
 )
 
 // RequestFingerprint contains bounded, non-sensitive request diagnostics.
@@ -55,11 +62,12 @@ type RequestFingerprint struct {
 // bodies: the previous messages must canonically prefix the current ones and
 // every non-message field must be canonically equal. A messages-prefix with a
 // changed field (tools, thinking, …) is param_change — cache-relevant but
-// distinct from a history rewrite. One sub-case is classified separately:
-// dropping the tools array while forcing tool_choice "none" (the intentional
-// final-step/recovery collapse) is tool_policy_transition, not an opaque
-// param_change. Non-JSON bodies (exotic transports) fall back to the
-// historical byte-level test.
+// distinct from a history rewrite. Two sub-cases are classified separately:
+// toggling tool_choice alone to its text-only value while keeping the tool
+// surface is tool_choice_collapse (cache-neutral by construction), while
+// dropping the tools array with it — the P7 shape before 2026-10-05 — is
+// tool_policy_transition, the shape that re-bills the whole prompt. Non-JSON
+// bodies (exotic transports) fall back to the historical byte-level test.
 func BuildRequestFingerprint(providerName, model, sessionID string, previousRequest, request []byte, historyGeneration, compactionGeneration uint64, transport, turnID string, replacement bool) RequestFingerprint {
 	classification := classifyPrefix(previousRequest, request, replacement)
 	return RequestFingerprint{
@@ -74,29 +82,57 @@ func BuildRequestFingerprint(providerName, model, sessionID string, previousRequ
 
 // classifyPrefix derives the prefix classification for a request relative
 // to its predecessor. Precedence: exact_append (canonical messages-prefix +
-// identical params) > tool_policy_transition (messages-prefix, intentional
-// tools → tool_choice "none" collapse) > param_change (messages-prefix,
-// params differ) > replacement (flagged) > unexpected_divergence.
+// identical params) > tool_choice_collapse (messages-prefix, only the
+// text-only control field changed) > tool_policy_transition (messages-prefix,
+// the cached tool surface itself was dropped — the P7 shape before
+// 2026-10-05, still flagged because it re-bills the whole prompt) >
+// param_change (messages-prefix, params differ) > replacement (flagged) >
+// unexpected_divergence. Non-JSON bodies (exotic transports) keep the
+// historical byte-level semantics.
 func classifyPrefix(previousRequest, request []byte, replacement bool) PrefixClassification {
 	if len(previousRequest) == 0 {
-		if replacement {
-			return PrefixReplacement
-		}
-		return PrefixNoPredecessor
+		return classifyWithoutPredecessor(replacement)
 	}
-	if msgsPrefix, paramsEq, ok := compareBodies(previousRequest, request); ok {
-		switch {
-		case msgsPrefix && paramsEq:
-			return PrefixExactAppend
-		case msgsPrefix && isToolPolicyTransition(previousRequest, request):
-			return PrefixToolPolicyTransition
-		case msgsPrefix:
-			return PrefixParamChange
-		}
-	} else if bytes.HasPrefix(request, previousRequest) {
-		// Non-JSON bodies: keep the historical byte-level semantics.
+	msgsPrefix, paramsEqual, decomposable := compareBodies(previousRequest, request)
+	if decomposable {
+		return classifyDecomposed(previousRequest, request, msgsPrefix, paramsEqual, replacement)
+	}
+	if bytes.HasPrefix(request, previousRequest) {
 		return PrefixExactAppend
 	}
+	return classifyUnrelated(replacement)
+}
+
+// classifyDecomposed classifies two bodies whose messages array and non-message
+// fields could be compared; msgsPrefix reports whether the previous messages
+// canonically prefix the current ones and paramsEqual whether every
+// non-message field is canonically equal.
+func classifyDecomposed(previousRequest, request []byte, msgsPrefix, paramsEqual, replacement bool) PrefixClassification {
+	switch {
+	case msgsPrefix && paramsEqual:
+		return PrefixExactAppend
+	case msgsPrefix && isToolChoiceCollapse(previousRequest, request):
+		return PrefixToolChoiceCollapse
+	case msgsPrefix && isToolPolicyTransition(previousRequest, request):
+		return PrefixToolPolicyTransition
+	case msgsPrefix:
+		return PrefixParamChange
+	}
+	return classifyUnrelated(replacement)
+}
+
+// classifyWithoutPredecessor is the classification of the first request of a
+// sequence.
+func classifyWithoutPredecessor(replacement bool) PrefixClassification {
+	if replacement {
+		return PrefixReplacement
+	}
+	return PrefixNoPredecessor
+}
+
+// classifyUnrelated is the classification of a request sharing no prefix
+// relation with its predecessor.
+func classifyUnrelated(replacement bool) PrefixClassification {
 	if replacement {
 		return PrefixReplacement
 	}
@@ -129,9 +165,148 @@ func isToolPolicyTransition(previousRequest, request []byte) bool {
 	var prevTools, curTools []json.RawMessage
 	_ = json.Unmarshal(prev["tools"], &prevTools)
 	_ = json.Unmarshal(cur["tools"], &curTools)
-	var choice string
-	_ = json.Unmarshal(cur["tool_choice"], &choice)
-	return len(prevTools) > 0 && len(curTools) == 0 && choice == "none"
+	return len(prevTools) > 0 && len(curTools) == 0 && isTextOnlyToolChoice(cur["tool_choice"])
+}
+
+// isToolChoiceCollapse reports whether request is an append of previousRequest
+// whose only non-message difference is a prompt-neutral collapse control value
+// set to its text-only form ("none" / {"type":"none"} / NONE function
+// calling). That is the P7 collapse as expressed on a control field only, so
+// the cached prompt and its prefix are untouched. It accepts the field being
+// added (the normal round carried none) and changed (codex pins "auto").
+func isToolChoiceCollapse(previousRequest, request []byte) bool {
+	prev, cur, ok := decodeBodies(previousRequest, request)
+	if !ok {
+		return false
+	}
+	field := changedControlField(prev, cur)
+	return field != "" && isTextOnlyToolChoice(cur[field])
+}
+
+// collapseControlFields names the request fields a text-only collapse may move
+// without touching the provider's cached prompt: the OpenAI/Mistral/Anthropic
+// tool_choice and Google's function-calling config.
+var collapseControlFields = map[string]bool{
+	"tool_choice": true,
+	"toolConfig":  true,
+}
+
+// decodeBodies unmarshals two serialized bodies into their raw field maps.
+func decodeBodies(previousRequest, request []byte) (map[string]json.RawMessage, map[string]json.RawMessage, bool) {
+	var prev, cur map[string]json.RawMessage
+	if json.Unmarshal(previousRequest, &prev) != nil || json.Unmarshal(request, &cur) != nil {
+		return nil, nil, false
+	}
+	return prev, cur, true
+}
+
+// changedControlField returns the single non-message field that differs between
+// two bodies when that field is a prompt-neutral collapse control. It returns
+// "" when the bodies differ in no such field, in more than one, or in any
+// prompt-bearing field (tools above all).
+func changedControlField(prev, cur map[string]json.RawMessage) string {
+	field, single := differingField(prev, cur)
+	if !single || !collapseControlFields[field] {
+		return ""
+	}
+	return field
+}
+
+// differingField reports the one non-message field that separates two bodies,
+// counting a field missing from cur as differing. single is false when two or
+// more fields differ.
+func differingField(prev, cur map[string]json.RawMessage) (string, bool) {
+	differing := ""
+	for key, prevValue := range prev {
+		if key == "messages" {
+			continue
+		}
+		if curValue, present := cur[key]; present && rawJSONEqual(prevValue, curValue) {
+			continue
+		}
+		if differing != "" {
+			return "", false
+		}
+		differing = key
+	}
+	for key := range cur {
+		if key == "messages" {
+			continue
+		}
+		if _, existed := prev[key]; existed {
+			continue
+		}
+		if differing != "" {
+			return "", false
+		}
+		differing = key
+	}
+	return differing, true
+}
+
+// rawJSONEqual compares two raw JSON values byte-wise first, then canonically
+// (key order and whitespace differences are not differences).
+func rawJSONEqual(a, b json.RawMessage) bool {
+	return bytes.Equal(a, b) || canonicalEqual(a, b)
+}
+
+// isTextOnlyToolChoice reports whether a serialized collapse control value is
+// one of the per-flavor text-only forms: "none" (OpenAI completions, Responses,
+// Mistral), {"type":"none"} (Anthropic) or Google's function-calling mode NONE
+// (plain or wrapped in functionCallingConfig).
+func isTextOnlyToolChoice(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	if value, ok := jsonString(raw); ok {
+		return strings.EqualFold(value, "none")
+	}
+	object, ok := jsonObject(raw)
+	if !ok {
+		return false
+	}
+	return hasTextOnlyMarker(object)
+}
+
+// hasTextOnlyMarker reports whether a control object carries the text-only
+// value at its top level or inside Google's functionCallingConfig wrapper.
+func hasTextOnlyMarker(object map[string]json.RawMessage) bool {
+	if isNoneMarker(object["type"]) || isNoneMarker(object["mode"]) {
+		return true
+	}
+	inner, ok := jsonObject(object["functionCallingConfig"])
+	if !ok {
+		return false
+	}
+	return isNoneMarker(inner["mode"])
+}
+
+// isNoneMarker reports whether a raw JSON value is the string "none".
+func isNoneMarker(raw json.RawMessage) bool {
+	value, ok := jsonString(raw)
+	return ok && strings.EqualFold(value, "none")
+}
+
+func jsonString(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func jsonObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil {
+		return nil, false
+	}
+	return object, true
 }
 
 // splitMessages extracts the messages array as raw per-message JSON values.

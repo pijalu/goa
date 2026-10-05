@@ -96,7 +96,7 @@ func buildResponsesBody(model schema.Model, ctx schema.Context, opts schema.Stre
 	if isCodex {
 		applyCodexBodyFields(body, ctx)
 	}
-	applyResponsesToolFields(body, ctx)
+	applyResponsesToolFields(body, ctx, profile)
 	applyResponsesSessionFields(body, model, opts)
 	applyResponsesSamplingFields(body, model, opts, profile, isCodex)
 	if store := profile.Compat.SupportsStore; store != nil {
@@ -121,19 +121,34 @@ func applyCodexBodyFields(body map[string]any, ctx schema.Context) {
 	body["parallel_tool_calls"] = true
 }
 
-// applyResponsesToolFields wires the tool list, honoring the final-step
-// text-only collapse (P7): NoTools omits the tools array and the tool_choice
-// key entirely — a request carrying no tools cannot yield tool calls, so
-// "none" is redundant, and strict Responses upstreams (opencode Zen,
-// 2026-09-02) hard-400 on any tool_choice other than "auto". The
-// parallel-tool flag is dropped so the model answers text-only.
-func applyResponsesToolFields(body map[string]any, ctx schema.Context) {
-	if ctx.NoTools {
-		delete(body, "tool_choice")
-		delete(body, "parallel_tool_calls")
+// applyResponsesToolFields wires the tool list and the final-step text-only
+// collapse (P7).
+//
+// The tools array is attached on EVERY round that carries tools, collapse
+// rounds included: the tool schemas are part of the prompt the provider caches
+// (removing them moves the divergence point to the front of the conversation
+// and re-bills the whole prompt), and the Codex WebSocket incremental reuse
+// fingerprint compares tools, tool_choice and parallel_tool_calls — a collapse
+// that mutated all three forced a full replay of the conversation.
+//
+// The text-only intent therefore rides tool_choice alone, and only where the
+// upstream accepts it: strict Responses upstreams (opencode Zen / muse
+// "Console", 2026-09-02) hard-400 on anything but "auto", so those flavors
+// (the default for Responses; see supportsToolChoiceNoneResponses) leave
+// tool_choice exactly as a normal round would have it. parallel_tool_calls is
+// never dropped for the same reason: it is fingerprint-compared and cannot
+// produce a tool call on its own.
+func applyResponsesToolFields(body map[string]any, ctx schema.Context, profile schema.VariantProfile) {
+	if len(ctx.Tools) == 0 {
+		if ctx.NoTools && supportsToolChoiceNoneResponses(profile) {
+			body["tool_choice"] = "none"
+		}
 		return
 	}
 	body["tools"] = convertResponsesTools(ctx.Tools)
+	if ctx.NoTools && supportsToolChoiceNoneResponses(profile) {
+		body["tool_choice"] = "none"
+	}
 }
 
 // applyResponsesSessionFields wires session continuation and prompt caching.

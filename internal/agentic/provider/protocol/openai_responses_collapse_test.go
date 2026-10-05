@@ -13,15 +13,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestResponsesNoToolsCollapseOmitsToolChoice pins the fix for the force-stop /
-// recovery-round 400 on strict Responses upstreams (opencode Zen "Console":
-// `only "auto" is supported for tool_choice`, 2026-09-02). The final-step
-// text-only collapse (P7) must not send tool_choice "none"; a request carrying
-// no tools cannot yield tool calls, so the collapse is expressed by omitting
-// both the tools array and the tool_choice key entirely, and by dropping
-// parallel_tool_calls. This holds for every Responses flavor (plain, codex,
-// azure share buildResponsesBody).
-func TestResponsesNoToolsCollapseOmitsToolChoice(t *testing.T) {
+// TestResponsesNoToolsCollapseKeepsToolSurface pins the fix for the
+// 2026-10-05 kimi cache bust AND the strict-upstream constraint from
+// 2026-09-02 (opencode Zen "Console": `only "auto" is supported for
+// tool_choice`). The final-step text-only collapse (P7) must never mutate the
+// cached prompt surface: the tools array stays in the body on the collapse
+// round, and strict upstreams keep the previous round's tool_choice — the
+// collapse changes no field at all, so the request stays append-only.
+// parallel_tool_calls is never dropped either (it is fingerprint-compared by
+// the Codex WebSocket reuse path and cannot yield a tool call on its own).
+func TestResponsesNoToolsCollapseKeepsToolSurface(t *testing.T) {
 	flavors := []struct {
 		name   string
 		api    schema.Api
@@ -48,12 +49,14 @@ func TestResponsesNoToolsCollapseOmitsToolChoice(t *testing.T) {
 			var m map[string]any
 			require.NoError(t, json.Unmarshal(body, &m))
 
-			_, hasChoice := m["tool_choice"]
-			assert.False(t, hasChoice, "NoTools collapse must omit tool_choice (strict upstreams 400 on \"none\")")
-			_, hasTools := m["tools"]
-			assert.False(t, hasTools, "NoTools collapse must omit the tools array")
-			_, hasParallel := m["parallel_tool_calls"]
-			assert.False(t, hasParallel, "NoTools collapse must drop parallel_tool_calls")
+			assert.Contains(t, m, "tools", "collapse must keep the cached tool surface")
+			assert.NotEqual(t, "none", m["tool_choice"],
+				"strict Responses upstreams 400 on tool_choice \"none\"")
+			if f.flavor == "codex" {
+				assert.Equal(t, "auto", m["tool_choice"],
+					"codex collapse must repeat the normal round's tool_choice verbatim")
+				assert.Equal(t, true, m["parallel_tool_calls"])
+			}
 		})
 	}
 }

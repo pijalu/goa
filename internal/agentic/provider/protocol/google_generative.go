@@ -48,8 +48,18 @@ func (p *googleGenerative) BuildRequest(model schema.Model, ctx schema.Context, 
 	if opts.Temperature != nil {
 		genConfig["temperature"] = *opts.Temperature
 	}
-	if len(ctx.Tools) > 0 && !ctx.NoTools {
+	if len(ctx.Tools) > 0 {
+		// The tool surface is attached on every round that carries tools —
+		// including the final-step text-only collapse — because it is part of
+		// the prompt the provider caches.
 		body["tools"] = convertGoogleTools(ctx.Tools)
+	}
+	if ctx.NoTools && supportsToolChoiceNone(profile) {
+		// Text-only collapse (P7) expressed on the function-calling control
+		// field only, so the cached tool surface stays untouched.
+		body["toolConfig"] = map[string]any{
+			"functionCallingConfig": map[string]any{"mode": "NONE"},
+		}
 	}
 	if model.Reasoning {
 		budget := resolveThinkingBudget(profile)

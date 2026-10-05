@@ -194,9 +194,12 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		a.injectTimeContextIfDue(time.Now())
 		pCtx := a.buildProviderContext(ctx)
 		// Final-step collapse (P7): a pending stop-turn signal marks this
-		// round text-only — no tools, tool_choice none — so the model
-		// produces its summary instead of calling more tools. The flag is
-		// consumed here; the next round (or turn) restores the full set.
+		// round text-only — the same tool surface plus tool_choice none — so
+		// the model produces its summary instead of calling more tools. The
+		// tool schemas are never dropped here: they are part of the cached
+		// prompt, and removing them re-bills the whole conversation (2026-10-05
+		// kimi export). The flag is consumed here; the next round (or turn)
+		// restores the full set.
 		// The stats latch follows the collapse so THIS round's token stats
 		// carry TextOnlyCollapse (bugs.md 2026-08-30); a non-collapsed round
 		// clears any stale latch instead of leaking it forward.
@@ -320,10 +323,12 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 		a.injectTimeContextIfDue(time.Now())
 		pCtx := a.buildProviderContext(ctx)
 		// Final-step collapse (P7): recovery rounds are the turn's last
-		// step — the model must answer with what it has gathered, so the
-		// request carries no tools and tool_choice none. The stats latch
-		// marks the recovery round's token stats as a no-tools step
-		// (bugs.md 2026-08-30).
+		// step — the model must answer with what it has gathered. The tool
+		// surface stays as every other round sends it (dropping it would bust
+		// the provider prefix cache for the whole prompt) and the text-only
+		// intent is expressed on tool_choice where the upstream accepts it.
+		// The stats latch marks the recovery round's token stats as a
+		// text-only step (bugs.md 2026-08-30).
 		pCtx.NoTools = true
 		a.collapseStatsPending = true
 		a.logProviderContext(pCtx, round)

@@ -142,7 +142,11 @@ const (
 	// while appending history.
 	LikelyCauseParamChange LikelyCause = "param_change"
 	// LikelyCauseToolPolicyTransition: an intentional final-step/recovery
-	// request removed tools and selected tool_choice=none while appending.
+	// request dropped the cached tool surface while appending history — the P7
+	// collapse shape before 2026-10-05, which re-bills the whole prompt. The
+	// collapse now only toggles tool_choice (classification
+	// "tool_choice_collapse"), so this cause means either an old bundle or a
+	// regression in one of the protocol builders.
 	LikelyCauseToolPolicyTransition LikelyCause = "tool_policy_transition"
 	// LikelyCauseUnknown: not enough evidence to attribute (no attributable
 	// predecessor retained in the ring).
@@ -437,7 +441,10 @@ func (j *cacheForensicsJournal) attributionLocked(seqKey string, miss *CacheFore
 		return attr
 	}
 	// Client-side causes first — the fingerprint already classified the
-	// request's relation to its predecessor.
+	// request's relation to its predecessor. PrefixToolChoiceCollapse is
+	// deliberately absent: toggling the prompt-neutral tool_choice control
+	// field cannot evict a provider prefix, so a miss on such a request stays
+	// attributed to the server/idle evidence below.
 	switch miss.Fingerprint.Classification {
 	case PrefixParamChange:
 		attr.cause = LikelyCauseParamChange

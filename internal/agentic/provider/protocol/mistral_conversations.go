@@ -33,6 +33,10 @@ func (p *mistralConversations) BuildRequest(model schema.Model, ctx schema.Conte
 	compat := openAICompletionsCompat{
 		MaxTokensField: "max_tokens",
 		ThinkingFormat: profile.Compat.ThinkingFormat,
+		// Mistral's conversations API accepts tool_choice "none" next to a
+		// tools array, so the text-only collapse toggles that control field
+		// and never the cached tool surface (nil = default true).
+		SupportsToolChoiceNone: supportsToolChoiceNone(profile),
 	}
 	messages := convertMessages(model, ctx.Messages, ctx.SystemPrompt, compat)
 	tools := convertTools(ctx.Tools)
@@ -48,13 +52,12 @@ func (p *mistralConversations) BuildRequest(model schema.Model, ctx schema.Conte
 	if opts.Temperature != nil {
 		body["temperature"] = *opts.Temperature
 	}
-	if len(tools) > 0 && !ctx.NoTools {
-		body["tools"] = tools
-		if opts.ToolChoice != "" {
-			body["tool_choice"] = opts.ToolChoice
-		}
-	} else if ctx.NoTools {
-		// Final-step collapse (P7): the model must answer text-only.
+	if len(tools) > 0 {
+		// The tool surface is attached on every round that carries tools —
+		// including the final-step text-only collapse — because it is part of
+		// the prompt the provider caches.
+		applyToolChoice(body, tools, opts.ToolChoice, ctx.NoTools, compat.SupportsToolChoiceNone)
+	} else if ctx.NoTools && compat.SupportsToolChoiceNone {
 		body["tool_choice"] = "none"
 	}
 	applyThinking(body, model, opts, schema.VariantProfile{Compat: schema.CompatFlags{ThinkingFormat: compat.ThinkingFormat}}, compat)

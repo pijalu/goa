@@ -13,16 +13,29 @@ import (
 // ---------------------------------------------------------------------------
 
 // applyToolChoice attaches the tools array to the body and forces tool use
-// when ToolChoice is set (e.g., "required" for workflow agents). A NoTools
-// context (P7 final-step collapse) omits the tools array and forces
-// tool_choice "none" so the model must answer text-only.
-func applyToolChoice(body map[string]any, tools []map[string]any, toolChoice string, noTools bool) {
-	if noTools {
-		body["tool_choice"] = "none"
-		return
-	}
+// when ToolChoice is set (e.g., "required" for workflow agents).
+//
+// The tools array is attached for EVERY request that carries tools, including
+// the NoTools (P7 final-step collapse) round: the tool schemas are part of the
+// prompt the provider caches, so dropping them moves the prefix divergence
+// point to the front of the conversation and re-bills the whole prompt (kimi
+// k3-256k, 2026-10-05: 41,728 → 1,792 cached tokens against a byte-exact
+// message append). The text-only intent rides tool_choice instead — a
+// prompt-neutral control field (verified against api.kimi.com: tools kept +
+// tool_choice "none" → 200, prefix cache retained, no tool call emitted even
+// when the prompt demanded one).
+//
+// supportsNone false (schema.CompatFlags.SupportsToolChoiceNone) suppresses
+// even that: the round then repeats the caller's tool_choice verbatim so the
+// body stays append-only in every field, for upstreams that reject "none".
+func applyToolChoice(body map[string]any, tools []map[string]any, toolChoice string, noTools, supportsNone bool) {
 	body["tools"] = tools
-	if toolChoice != "" {
+	switch {
+	case noTools && supportsNone:
+		body["tool_choice"] = "none"
+	case noTools:
+		// Leave tool_choice exactly as a normal round would have it.
+	case toolChoice != "":
 		body["tool_choice"] = toolChoice
 	}
 }
@@ -30,17 +43,18 @@ func applyToolChoice(body map[string]any, tools []map[string]any, toolChoice str
 // applyTools attaches the tool-call surface to the body: the tools array with
 // its tool_choice, plus the z.ai-only "tool_stream": true that opens GLM's
 // dedicated tool-call SSE channel. tool_stream is only meaningful next to a
-// tools array, so it rides along with it and never appears on a NoTools
-// (final-step collapse) request.
+// tools array, so it rides along with it and is dropped on a NoTools
+// (final-step collapse) request — a control field outside the cached prompt.
 func applyTools(body map[string]any, tools []map[string]any, opts schema.StreamOptions, ctx schema.Context, compat openAICompletionsCompat) {
 	if len(tools) == 0 {
-		if ctx.NoTools {
-			// Final-step collapse (P7): the model must answer text-only.
+		if ctx.NoTools && compat.SupportsToolChoiceNone {
+			// Collapse with no tools available: nothing can be called, so the
+			// request shape is already tool-free — state it explicitly.
 			body["tool_choice"] = "none"
 		}
 		return
 	}
-	applyToolChoice(body, tools, opts.ToolChoice, ctx.NoTools)
+	applyToolChoice(body, tools, opts.ToolChoice, ctx.NoTools, compat.SupportsToolChoiceNone)
 	if compat.ZaiToolStream && !ctx.NoTools {
 		body["tool_stream"] = true
 	}
