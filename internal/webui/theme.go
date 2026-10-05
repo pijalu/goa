@@ -38,6 +38,8 @@ var themeTokens = []struct {
 	{"--fg", "assistant_msg"},
 	{"--dim", "toolOutput"},
 	{"--accent", "token_prompt"},
+	{"--user-bg", "user_msg_bg"},
+	{"--user-fg", "user_msg"},
 	{"--border", "separator"},
 	{"--selection-bg", "selection_bg"},
 	{"--selection-fg", "selection_fg"},

@@ -134,6 +134,26 @@ else
 fi
 ab press BackSpace; ab press BackSpace; ab press BackSpace
 
+# user_band: a submitted message renders as ONE band — the TUI's user_msg
+# background/foreground with the text flowing inside it (a block-level text
+# child used to strand the message on its own line below the prompt).
+press_str "say hi"
+sleep 0.5
+ab press Enter
+if wait_for "(() => { const t = document.querySelector('.block.user .u-text'); return !!t && t.textContent.indexOf('say hi') >= 0; })()" 10; then
+  BAND_JS='(() => { const b = document.querySelector(".block.user");
+    const t = b.querySelector(".u-text").getBoundingClientRect();
+    const bb = b.getBoundingClientRect();
+    return JSON.stringify({sameLine: Math.abs(t.top - bb.top) < 4, bg: getComputedStyle(b).backgroundColor}); })()'
+  U=$(abq "$BAND_JS")
+  case "$U" in
+    *'"sameLine":true'*) record user_band PASS "user message renders as one band: $U" ;;
+    *) record user_band FAIL "user text not inside the band: $U" ;;
+  esac
+else
+  record user_band FAIL "submitted message never rendered as a user block"
+fi
+
 # reflow_resize: shrink the viewport; the blocks reflow (block count stable)
 # and the band stays pinned. The transcript is never re-shipped: the blocks
 # plane emits no scrollback messages at all, so the pre/post block count and

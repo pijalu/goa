@@ -433,6 +433,16 @@
           root.appendChild(pre);
           break;
         }
+        case "user": {
+          // The TUI paints the user's text as one band (user_msg bg/fg); an
+          // inline pre-wrap span keeps multi-line input inside that band —
+          // a block-level child would start on a new line below it.
+          var utext = document.createElement("span");
+          utext.className = "u-text";
+          utext.textContent = b.text;
+          root.appendChild(utext);
+          break;
+        }
         case "assistant": {
           var md = document.createElement("div");
           md.className = "md";

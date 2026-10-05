@@ -217,12 +217,15 @@ a {
 /* Header art: the mascot/logo exactly as the TUI paints it. */
 .block.header pre { white-space: pre; overflow-x: auto; }
 
-/* User message: the prompt band. */
+/* User message: the TUI's band — user_msg background, user_msg foreground,
+   full-width rows. The text is an inline pre-wrap span so multi-line input
+   flows as one band (a block-level child would strand it below the band). */
 .block.user {
-  color: var(--accent);
-  font-weight: 700;
+  background: var(--user-bg, #20202c);
+  color: var(--user-fg, var(--fg));
+  padding: 2px 8px;
 }
-.block.user::before { content: "❯ "; }
+.block.user .u-text { white-space: pre-wrap; overflow-wrap: break-word; }
 
 /* Assistant / agent markdown. */
 .block.agent { border-left: 2px solid var(--accent); padding-left: 8px; }
