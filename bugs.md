@@ -28,63 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B9 — Goal exit mutates the cached prompt (tools dropped on the text-only collapse) → full-prompt cache miss
-
-**Observed.** Export `goa-export-20261005-135830.zip` (kimi-code `k3-256k`). Two
-provider cache misses, both `tool_policy_transition`. Raw provider frames:
-request 18 (52 msgs, tools present) `prompt_tokens=42,811 cached=41,728`;
-request 19 (54 msgs — a byte-exact message append) `prompt_tokens=41,086
-cached=1,792` with `tools` removed and `tool_choice:"none"`. The 39,294-token
-tail was recomputed and re-billed at full price; the same pair earlier in the
-session went 115,200 → 0. The warning lands at the goal *switch*, which is why
-it read as reset-related, but the reset is clean: the cache identity rotated
-(`goa_3333e5f8…` → `goa_cd2c6252…`) and the fresh chain's first request still
-hit 4,608 cached tokens.
-
-**Root cause.** `tools/goal/goal.go:881` (`Goal marked complete.`) returns
-`StopTurn: true` → `agent_turn_lifecycle.go:55` arms `toolCollapseNextRound` →
-`agent_streaming.go:203` sets `NoTools` → the protocol builders dropped the
-`tools` array for that one round (`openai_completions_messages.go`
-`applyToolChoice`, plus the anthropic/mistral/google/responses equivalents).
-The tool schemas are part of the provider's cached prefix, so removing them
-moved the divergence point from the tail of the conversation to right after the
-system prompt. Same class on the Codex WebSocket path, whose reuse fingerprint
-compares `tools`, `tool_choice` and `parallel_tool_calls`
-(`openai_responses/ws_incremental.go`) — the collapse broke all three.
-
-**Expected.** A goal exit stays on the same context: the request is an
-append-only continuation of its predecessor (messages appended, prompt-bearing
-fields byte-identical). The text-only intent may move only `tool_choice`, a
-prompt-neutral control field.
-
-**Fix plan.**
-1. Invariant test first
-   (`protocol/no_tools_test.go:TestCollapse_PreservesCachedPromptSurface`):
-   per flavor, build the normal and the collapse body from one context and fail
-   if any field differs except the allowed control key
-   (`tool_choice`/`toolConfig`); assert `tools` is byte-identical.
-2. Keep the tool surface in every protocol builder; express the collapse on
-   `tool_choice` where the upstream accepts `none` (verified live against
-   `api.kimi.com`: tools kept + `tool_choice:"none"` → HTTP 200, prefix cache
-   retained, and still no tool call even when the prompt demanded one).
-3. Per-model knob `schema.CompatFlags.SupportsToolChoiceNone` (default true;
-   **false on the Responses flavors**, where strict upstreams 400 on anything
-   but `auto`) suppresses even that, leaving the round byte-identical.
-   Resolved by `protocol/tool_choice.go`.
-4. Stop dropping `parallel_tool_calls` (fingerprint-compared, cannot yield a
-   tool call on its own).
-5. Cache forensics: new `tool_choice_collapse` classification for the
-   cache-neutral shape; `tool_policy_transition` now means the buggy/legacy
-   shape only, so a reappearance is flagged.
-6. Update the tests that pinned the old contract (`no_tools_test.go`,
-   `openai_responses_collapse_test.go`, `openai_codex_responses_test.go`,
-   `zai_tool_stream_test.go`) and `docs/PROVIDER-CACHE.md`.
-
-**Validation.** Unit: `go test -count=1 -race -cover ./internal/agentic/...`.
-Live: four-request A/B against kimi-code with a ~3k-token prompt — tools kept +
-`tool_choice:none` on an appended pair `cached=2,816/3,111` vs tools removed
-`cached=0/3,034`, both HTTP 200 and text-only. Then the five quality gates below.
-
 ## B8 — Web UI: a screen-taller *view* command drops the transcript above it
 
 **Observed.** At the reported window size (984×692), `/help` on a fresh page puts
