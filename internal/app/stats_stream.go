@@ -375,6 +375,7 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 		Profile:                string(subs.effectiveModeState().Major),
 		Mode:                   string(subs.effectiveModeState().Autonomy),
 		Stats:                  formatFooterStats(stats),
+		StatsSegments:          buildFooterStatSegments(stats),
 		Activity:               "",
 		MainActivity:           "",
 		CompanionModel:         companionModelDisplay(subs),

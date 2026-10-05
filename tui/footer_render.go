@@ -52,26 +52,22 @@ func (f *Footer) Render(width int) []string {
 	// the footer carries only the ◈ active-goal marker on line 1.
 	left2 := f.buildLeftSide(fg)
 
-	// Calculate available width for the model display based on left-side content,
-	// not raw terminal width. This ensures the provider prefix and thinking level
-	// are shown if there's actual room, not just because width > arbitrary threshold.
-	leftW := visibleWidth(left2)
+	// Build the model side for the space that actually remains — never for a
+	// hypothetical minimum: claiming 30 columns that do not exist is what made
+	// the ladder cut the model name instead of the fields above it (B11).
 	minPad := 2
-	availW := width - leftW - minPad
-	if availW < 30 {
-		availW = 30 // minimum useful width for model display
+	availW := width - visibleWidth(left2) - minPad
+	if availW < 0 {
+		availW = 0
 	}
 
 	right2 := f.buildModelDisplay(fg, availW)
 	right2 = f.appendPluginSegments(right2, fg)
 
-	// If still doesn't fit — compact the right side by stripping lower-priority items
-	if leftW+visibleWidth(right2)+minPad > width {
-		targetW := width - leftW - minPad
-		if targetW > 10 {
-			right2 = f.compactRightSide(right2, fg, targetW)
-		}
-	}
+	// Width ladder (B11): drop the lowest-value field first until the line
+	// fits. The model name is ellipsized rather than cut, and the result can
+	// never be wider than the terminal.
+	left2, right2 = f.fitStatusLine(left2, right2, width, fg)
 
 	line2 := renderTwoCol(left2, right2, width, styler)
 
@@ -183,12 +179,23 @@ func appendThinkingLevel(modelPart, level string) string {
 func renderTwoCol(left, right string, width int, styler func(string) string) string {
 	leftW := visibleWidth(left)
 	rightW := visibleWidth(right)
+	// A line wider than the terminal is clipped by the screen mid-glyph, so the
+	// right side is trimmed here as the final guarantee (the caller's ladder has
+	// already dropped everything droppable).
+	if leftW+rightW+1 > width {
+		right = truncateToWidth(right, maxInt(width-leftW-1, 0), ellipsisGlyph)
+		rightW = visibleWidth(right)
+	}
 	pad := width - leftW - rightW
 	if pad < 1 {
 		pad = 1
 	}
 	bar := left + strings.Repeat(" ", pad) + right
 	vw := visibleWidth(bar)
+	if vw > width {
+		bar = truncateToWidth(bar, width, "")
+		vw = visibleWidth(bar)
+	}
 	if vw < width {
 		bar += strings.Repeat(" ", width-vw)
 	}
@@ -307,27 +314,17 @@ func stripProviderPrefix(model string) string {
 }
 
 // buildMainModelDisplay renders the main model section of the status bar.
-// availWidth is the actual space available for the right side, not raw terminal width.
-// The provider prefix and thinking level are shown when there's enough room.
+// availWidth is the space left of the terminal after the stats side.
+//
+// The provider prefix and thinking badge are rendered whenever they exist: the
+// width decision belongs to the B11 ladder (fitStatusLine), which drops them in
+// priority order — provider first, thinking only alongside the model identity —
+// instead of an independent width threshold dropping the provider before
+// fields that rank below it.
 func (f *Footer) buildMainModelDisplay(fg string, availWidth int) string {
 	var right2 string
 	if f.data.Model != "" {
-		// Determine model name with or without provider prefix based on available width
-		modelName := f.data.Model
-		showProvider := availWidth > 40
-		if !showProvider {
-			stripped := stripProviderPrefix(modelName)
-			if stripped != "" {
-				modelName = stripped
-			}
-		}
-		// Determine if we have room for thinking level
-		showLevel := availWidth > 35 && f.data.ThinkingLevel != "" && f.data.ThinkingLevel != "off"
-		level := ""
-		if showLevel {
-			level = f.data.ThinkingLevel
-		}
-		part := FormatModelPart(modelName, level, f.data.MainActivity, f.data.ModelBusy, true, peakStatusForProvider(f.data.Provider, time.Now()))
+		part := FormatModelPart(f.data.Model, f.data.ThinkingLevel, f.data.MainActivity, f.data.ModelBusy, true, peakStatusForProvider(f.data.Provider, time.Now()))
 		right2 = part
 	} else {
 		right2 = "no-model"
@@ -345,32 +342,114 @@ func (f *Footer) buildMainModelDisplay(fg string, availWidth int) string {
 	return right2
 }
 
-// compactRightSide progressively strips lower-priority items from the right side
-// until it fits within targetWidth. Stripping order for companion mode:
-// (companion) label → thinking levels → provider prefixes → cycle count → model truncation.
-// For main mode: thinking level → activity text → provider prefix → model truncation.
-func (f *Footer) compactRightSide(right2, fg string, targetWidth int) string {
-	steps := []func(string) string{
-		f.stripPluginSegments,
-		f.stripCompanionLabel,
-		f.stripThinkingLevels,
-		f.stripProviderPrefixes,
-		f.stripCycleCount,
-		f.stripActivityText,
-	}
+// fitStatusLine applies the B11 width ladder: while the assembled status line
+// does not fit, the least valuable field is dropped, in the order documented in
+// bugs.md (amount → provider → ↑/↓ → tool count → token speed → last CH → avg
+// CH), then the model name is ellipsized, and only as a last resort is the
+// result hard-truncated — the quota figure is the last survivor and a line is
+// never wider than the terminal (a wider line is clipped mid-glyph by the
+// screen, which is exactly the reported defect).
+func (f *Footer) fitStatusLine(left, right string, width int, fg string) (string, string) {
+	leftSegments := f.widthLadderSegments()
+	fits := func() bool { return visibleWidth(left)+1+visibleWidth(right) <= width }
 
-	for _, step := range steps {
-		if visibleWidth(right2) <= targetWidth {
+	for _, drop := range []func(){
+		func() { leftSegments = dropFooterTier(leftSegments, FooterTierAmount) },
+		func() { right = f.stripProviderPrefixes(right) },
+		func() { leftSegments = dropFooterTier(leftSegments, FooterTierTokens) },
+		func() { leftSegments = dropFooterTier(leftSegments, FooterTierTools) },
+		func() { leftSegments = dropFooterTier(leftSegments, FooterTierSpeed) },
+		func() { leftSegments = dropFooterTier(leftSegments, FooterTierLastCH) },
+		func() { leftSegments = dropFooterTier(leftSegments, FooterTierAvgCH) },
+		// Tier 8 decorations, removed before the model name is shortened: the
+		// plugin contributions, the companion label, the thinking badge, the
+		// companion cycle count and the activity word.
+		func() { right = f.stripPluginSegments(right) },
+		func() { right = f.stripCompanionLabel(right) },
+		func() { right = f.stripThinkingLevels(right) },
+		func() { right = f.stripCycleCount(right) },
+		func() { right = f.stripActivityText(right) },
+	} {
+		if fits() {
 			break
 		}
-		right2 = step(right2)
+		drop()
+		if leftSegments != nil {
+			left = joinFooterSegments(leftSegments)
+		}
 	}
-
-	if visibleWidth(right2) > targetWidth && targetWidth > 10 {
-		right2 = truncateToWidth(right2, targetWidth, "")
+	if fits() {
+		return left, right
 	}
-	return right2
+	// Last identity-preserving step: shorten the model name instead of losing it.
+	right = ellipsizeModelName(right, width-visibleWidth(left)-1)
+	if fits() {
+		return left, right
+	}
+	// Nothing droppable is left (a very narrow terminal): truncate the model
+	// side to the remaining room and keep the line inside the viewport.
+	right = truncateToWidth(right, maxInt(width-visibleWidth(left)-1, 0), ellipsisGlyph)
+	return left, right
 }
+
+// ellipsisGlyph is the single-cell marker used when a status-line field must be
+// shortened rather than dropped.
+const ellipsisGlyph = "\u2026"
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// widthLadderSegments returns the line-2 left side split into droppable
+// segments. Callers that provide only the pre-joined Stats string get a single
+// never-dropped segment, so their behaviour is unchanged.
+func (f *Footer) widthLadderSegments() []FooterSegment {
+	if len(f.data.StatsSegments) > 0 {
+		return append([]FooterSegment(nil), f.data.StatsSegments...)
+	}
+	if f.data.Stats == "" {
+		return nil
+	}
+	return []FooterSegment{{Tier: FooterTierQuota, Text: f.data.Stats}}
+}
+
+// dropFooterTier removes every segment of one tier, returning nil when the
+// input was nil (the "no tiered segments available" case, where the ladder must
+// not substitute anything for the caller's own string).
+func dropFooterTier(segments []FooterSegment, tier int) []FooterSegment {
+	if segments == nil {
+		return nil
+	}
+	kept := segments[:0]
+	for _, s := range segments {
+		if s.Tier != tier {
+			kept = append(kept, s)
+		}
+	}
+	return kept
+}
+
+// ellipsizeModelName shortens the model name inside an already-styled model
+// display to maxWidth, keeping the ANSI-free text readable and the result
+// marked as shortened ("deepseek-v4.…") instead of cut mid-word.
+func ellipsizeModelName(right string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if visibleWidth(right) <= maxWidth {
+		return right
+	}
+	return truncateToWidth(right, maxWidth, ellipsisGlyph)
+}
+
+// compactRightSide was the pre-B11 right-side-only compaction ladder. It is
+// gone: fitStatusLine now drops fields from BOTH sides in one priority order
+// (bugs.md B11), so there is a single place that decides what a narrow terminal
+// gives up. The individual strip steps it used are still the ladder's tier-8
+// actions.
 
 // stripCompanionLabel drops the verbose "(companion)" label in companion mode.
 func (f *Footer) stripCompanionLabel(s string) string {

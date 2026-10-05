@@ -28,6 +28,85 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
+## B11 — Status line is clipped: no width ladder, the model name is cut mid-word
+
+**Status:** fixed & validated (2026-10-05) — see
+`docs/archive/bugs-20261005-status-line-width-ladder.md`.
+
+**Observed.** With a live session the line-2 status bar overflows the terminal
+and its right edge is clipped:
+
+```
+↑291.6K ↓130.4K 72.5 tok/s CH:99.0%▸99.4% TC:190 $0.6259 28.1%/1.0M                   (opencode-go) deepseek-v4.1-fla
+```
+
+The model name arrives cut mid-word with no ellipsis (`deepseek-v4.1-fla`), and
+the composed line is wider than the terminal, so the final column is lost to the
+screen edge as well. The better-shaped data is what gets sacrificed: the stats
+keep every field while the model identity — the thing the line exists to name —
+is destroyed.
+
+**Expected.** The line degrades gracefully: low-value fields drop as the width
+shrinks, the model name is ellipsized rather than cut, and the context/quota
+figure survives to the end. Minimal form (deliberately still meaningful):
+
+```
+28.1%/1.0M  deepseek-v4.1-flash • xhigh • [41%]
+```
+
+Drop order, **low → high** priority (each step applied only while the line no
+longer fits):
+
+| # | field | example |
+|---|-------|---------|
+| 1 | amount | `$0.6259` |
+| 2 | provider | `(opencode-go)` |
+| 3 | up/down counters | `↑291.6K ↓130.4K` |
+| 4 | tool count | `TC:190` |
+| 5 | token speed | `72.5 tok/s` |
+| 6 | last CH | `▸99.4%` |
+| 7 | avg CH | `CH:99.0%` |
+| 8 | ellipsize the model name | `deepseek-v4.…` |
+| 9 | quota / context | `28.1%/1.0M` — never dropped |
+
+The same line is the web UI's footer band, so this is one fix for both surfaces.
+
+**Root cause.**
+
+- `tui/footer_render.go:119` `buildLeftSide` returns `f.data.Stats` verbatim —
+  the stats string is not width-aware at all, so the left side can consume the
+  whole terminal and never yields.
+- `tui/footer_render.go:352` `compactRightSide` is the only ladder, and it only
+  shortens the *right* side. Its last resort is
+  `truncateToWidth(right2, targetW, "")` with an **empty** ellipsis
+  (`tui/utils.go:42`), i.e. a hard cut — hence `deepseek-v4.1-fla`.
+- `tui/footer_render.go:56` clamps the model's budget upward:
+  `availW := width - leftW - minPad; if availW < 30 { availW = 30 }`. The model
+  display is therefore built *with* the provider prefix and thinking badge even
+  when almost no space is left; the later compaction then pays for the
+  over-claim by cutting the model name instead of the droppable fields.
+- `tui/footer_render.go:183` `renderTwoCol` forces `pad = 1` whenever the two
+  sides already overflow, so the assembled line is wider than `width` and the
+  terminal clips the tail silently.
+
+**Fix plan.**
+
+1. RED test first (`tui/footer_render_test.go`): `Footer.Render(120)` with the
+   stat set above — assert `visibleWidth(line) <= width` for every line and that
+   the model name is present, ellipsized, never cut mid-word.
+2. Feed the stats side through the same tiering as the model side (explicit
+   per-field priorities instead of one pre-joined string), so the ladder can
+   drop from *either* side.
+3. Enforce the drop order in the table above; the model-name truncation must
+   pass an ellipsis (`truncateToWidth(..., "…")`).
+4. Keep the quota/context field as the last survivor and drop the amount first.
+5. Make the model's budget honest: build the display for the space that actually
+   remains (never claim 30 columns when fewer exist), and make `renderTwoCol`
+   unable to emit a line wider than `width`.
+6. Width-sweep test (200/160/120/100/80/60/40) over one stat set asserting the
+   width invariant plus monotonicity: a narrower width shows a subset of the
+   wider width's fields, in the same order.
+
 ## B8 — Web UI: a screen-taller *view* command drops the transcript above it
 
 **Observed.** At the reported window size (984×692), `/help` on a fresh page puts

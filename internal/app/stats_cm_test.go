@@ -488,7 +488,7 @@ func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
 	withMisses.CacheMissesUnexpected = 2
 	withMisses.CacheMissesPartial = 1
 	withMisses.CacheMissedTokens = 45213
-	joined := ansi.Strip(strings.Join(buildFooterStatParts(withMisses), " "))
+	joined := ansi.Strip(joinFooterSegments(buildFooterStatSegments(withMisses)))
 	if !strings.Contains(joined, "CM:2|1") {
 		t.Errorf("parts %q missing CM:2|1", joined)
 	}
@@ -504,7 +504,7 @@ func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
 	}
 
 	noMisses := base
-	joined = ansi.Strip(strings.Join(buildFooterStatParts(noMisses), " "))
+	joined = ansi.Strip(joinFooterSegments(buildFooterStatSegments(noMisses)))
 	if strings.Contains(joined, "CM:") {
 		t.Errorf("CM must be hidden when both kinds are zero: %q", joined)
 	}

@@ -438,19 +438,27 @@ func TestFooter_Render_AdaptiveWidth_ProviderPrefix(t *testing.T) {
 		t.Errorf("expected model name on wide terminal, got %q", wideStripped)
 	}
 
-	// Narrow terminal (38 cols): provider prefix should be dropped, model name stays
-	// The threshold uses available width (terminal width - left-side width - padding).
-	// With empty left side, availW ≈ termW - 2.
+	// Narrow but still fitting (38 cols): the line fits, so the ladder drops
+	// nothing — the provider prefix stays. Since B11 the provider is not dropped
+	// by an arbitrary width threshold but by the priority ladder, i.e. only once
+	// the assembled line genuinely no longer fits.
 	linesNarrow := f.Render(38)
 	if len(linesNarrow) < 2 {
 		t.Fatal("expected two footer lines")
 	}
 	narrowStripped := ansi.Strip(linesNarrow[1])
-	if strings.Contains(narrowStripped, "(lmstudio)") {
-		t.Errorf("expected provider prefix STRIPPED on narrow terminal, got %q", narrowStripped)
+	if !strings.Contains(narrowStripped, "(lmstudio)") {
+		t.Errorf("provider prefix must survive while the line fits, got %q", narrowStripped)
 	}
-	if !strings.Contains(narrowStripped, "llama3") {
-		t.Errorf("expected model name on narrow terminal, got %q", narrowStripped)
+
+	// Truly cramped: the pair no longer fits, so the provider (the
+	// lowest-priority model-side field) goes and the model name stays.
+	cramped := ansi.Strip(f.Render(14)[1])
+	if strings.Contains(cramped, "(lmstudio)") {
+		t.Errorf("expected provider prefix STRIPPED when the line cannot fit, got %q", cramped)
+	}
+	if !strings.Contains(cramped, "llama3") {
+		t.Errorf("expected model name on a cramped terminal, got %q", cramped)
 	}
 }
 
