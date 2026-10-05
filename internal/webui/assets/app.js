@@ -258,7 +258,21 @@
   // grows AND shrinks: a shrinking window that kept its old rows would leave
   // stale rows below the new bottom, inflating the scroll height and putting
   // the input box (and the caret) off-screen.
+  //
+  // A row-count change is LAYOUT work, not user intent, but it moves the scroll
+  // offset too — a shrink clamps scrollTop when the content no longer reaches
+  // that far, which fires a scroll event. The listener below reads any scroll as
+  // "the user scrolled away", so a window resize silently disarmed follow-tail
+  // for the rest of the session and the live output stopped being followed
+  // (bugs.md footer_band). The pin below re-asserts the intent synchronously: by
+  // the time that clamp's scroll event is delivered the view is already back at
+  // the bottom, so the listener re-computes the same answer.
+  //
+  // Unchanged row counts return immediately — the common per-frame case — so the
+  // "one layout read per painted frame" contract of followTail still holds.
   function resizeRows(n) {
+    if (n === rows.length) return;
+    var wasFollowing = following;
     while (rows.length < n) {
       rows.push(null);
       rowsEl.appendChild(document.createElement("div")).className = "row";
@@ -267,6 +281,10 @@
       rows.pop();
       var last = rowsEl.children[rowsEl.children.length - 1];
       if (last) rowsEl.removeChild(last);
+    }
+    if (wasFollowing && screenEl) {
+      following = true;
+      screenEl.scrollTop = screenEl.scrollHeight;
     }
   }
 
@@ -356,6 +374,8 @@
           // Tell the server the last frame we saw, then push our geometry.
           send({ t: "hello", since: lastSeq });
           send({ t: "resize", cols: measureCols(), rows: measureRows() });
+          // Anything the user typed while the socket was connecting goes out now.
+          flushSendQueue();
         };
         socket.onmessage = function (ev) { handleWire(ev.data); };
         socket.onclose = function () {
@@ -495,7 +515,30 @@
         }
         if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify(obj));
+          return;
         }
+        // The socket may still be connecting — the moment the listener answers
+        // but the session is still wiring itself up. A keystroke typed in that
+        // window is the user's input, not noise: hold it and flush on open
+        // (bounded, so a permanently dead socket cannot grow the queue). The
+        // server replays what reaches it before its engine starts, so the two
+        // halves together make typing effective from the first frame.
+        if (socket && socket.readyState === WebSocket.CONNECTING) {
+          if (sendQueue.length < SEND_QUEUE_MAX) sendQueue.push(obj);
+        }
+      }
+
+      // SEND_QUEUE_MAX bounds the pre-open input buffer.
+      var SEND_QUEUE_MAX = 256;
+      // sendQueue holds messages produced before the socket opened.
+      var sendQueue = [];
+
+      // flushSendQueue delivers the buffered messages in order, once.
+      function flushSendQueue() {
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        var queued = sendQueue;
+        sendQueue = [];
+        for (var i = 0; i < queued.length; i++) socket.send(JSON.stringify(queued[i]));
       }
 
       // sendViaPost delivers one message over HTTP when the fallback transport is

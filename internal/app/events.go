@@ -16,10 +16,9 @@ import (
 )
 
 func (a *App) setupEventHandlers(engine *tui.TUI, chat *tui.ChatViewport, inp *tui.Editor) chan struct{} {
-	inp.SetOnSubmit(a.makeSubmitHandler(engine, chat))
-	inp.OnImagePaste = func(path string) {
-		a.handlePastedImage(engine, chat, path)
-	}
+	// The input callbacks (submit, image paste) are wired in buildTUI, BEFORE
+	// engine.Start, so a key replayed from the pre-start buffer is acted on — see
+	// the comment there (bugs.md B7).
 	done := make(chan struct{})
 
 	bus := a.subs.events

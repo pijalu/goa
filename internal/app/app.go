@@ -293,6 +293,11 @@ func (a *App) RunContext(ctx context.Context) bool {
 	a.startAsyncPluginLoad(engine)
 
 	done := a.setupEventHandlers(engine, chat, inp)
+	// The session is wired now — the engine is started, the input editor is
+	// focused and its submit path is installed. Release the web server's readiness
+	// gate so held browser requests are answered by a session that can act on
+	// their input (bugs.md B7). No-op unless `goa server` is running.
+	a.markWebReady()
 	// External stop: `goa server` has no TTY for Ctrl+C, so the shutdown signal
 	// arrives as a cancelled context. Installed AFTER setupEventHandlers (the
 	// stop rides the control-event path, whose reader must exist) and before the

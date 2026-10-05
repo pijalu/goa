@@ -142,11 +142,18 @@ func (c *client) prepare(pageURL, origin string) error {
 	if _, err := c.call("Page.reload", nil, c.session); err != nil {
 		return fmt.Errorf("reload: %w", err)
 	}
-	// Wait for the page to come back and draw its grid: the checks read the DOM,
-	// and a half-loaded page has no rows to select.
-	for i := 0; i < 40; i++ {
+	// Wait for the page to come back and draw its grid WITH CONTENT: the checks
+	// read the DOM, and an empty grid is indistinguishable from a page that never
+	// reconnected — waiting only for `#rows .row` to exist returns as soon as the
+	// first frame creates the row divs, which can precede their text and made
+	// every check report "no visible grid row with text to select" against a
+	// perfectly healthy page.
+	for i := 0; i < 60; i++ {
 		time.Sleep(100 * time.Millisecond)
-		if n, ok := c.eval("document.querySelectorAll('#rows .row').length", false).(float64); ok && n > 0 {
+		if txt, ok := c.eval(
+			`(function(){var r=document.getElementById('rows');if(!r)return '';
+				for(var i=0;i<r.children.length;i++){var t=(r.children[i].textContent||'').trim();if(t.length>0)return t}
+				return ''})()`, false).(string); ok && txt != "" {
 			break
 		}
 	}

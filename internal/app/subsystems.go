@@ -153,6 +153,13 @@ type subsystems struct {
 	replayRunner *agentctx.ReplayRunner
 	bgPanel      *bgpanel.Panel
 
+	// webReady is closed once the interactive session is fully wired, releasing
+	// the web server's readiness gate so an early browser is served by a session
+	// that can act on its input (bugs.md B7). Nil unless `goa server` is running;
+	// webReadyOnce makes the close idempotent.
+	webReady     chan struct{}
+	webReadyOnce sync.Once
+
 	// Logger for structured stats output
 	logger    *agentic.Logger
 	statusMsg *tui.StatusMsg

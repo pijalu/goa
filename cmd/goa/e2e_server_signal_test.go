@@ -214,6 +214,12 @@ func TestGoaE2E_ServerBrowserQuitStopsProcessWithStatusZero(t *testing.T) {
 
 	app := startServerApp(t, binary, "server", "--server-addr", "127.0.0.1:0")
 	addr := serverAddr(t, app)
+	// One send at connect time is the deterministic assertion (bugs.md B7): the
+	// listener accepts clients the moment it binds, so these bytes arrive while the
+	// session is still wiring itself up. They are held by the VirtualTerminal and
+	// replayed at engine start, and the submit path is now wired BEFORE that start,
+	// so the replayed Enter is acted on. No re-send loop: a gate that only works
+	// when the test keeps retrying is not a gate.
 	code := exitWatcher(app)
 
 	conn, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/ws", nil)
@@ -226,31 +232,9 @@ func TestGoaE2E_ServerBrowserQuitStopsProcessWithStatusZero(t *testing.T) {
 		t.Fatalf("send /quit: %v", err)
 	}
 
-	// Re-send until the session acts on it. The listener accepts clients the
-	// moment it binds, while the session is still wiring itself up: bytes sent
-	// in that window are held by the VirtualTerminal (see
-	// TestVirtualTerminal_InputBeforeStartIsReplayedOnStart) but the submit path
-	// is installed a moment after the terminal starts, so an Enter that arrives
-	// in between is consumed with nothing attached (the typed text stays in the
-	// editor). Recorded as its own defect in bugs.md — it is a startup-input
-	// window, not a shutdown failure. The assertion stays "the browser's /quit
-	// stops the server, status 0, within a few seconds".
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		select {
-		case c := <-code:
-			if c != 0 {
-				t.Fatalf("exit status after browser /quit = %d, want 0 (output %.300s)", c, app.outputStr())
-			}
-			assertListenerClosed(t, addr)
-			return
-		case <-time.After(2 * time.Second):
-		}
-		if time.Now().After(deadline) {
-			_ = app.cmd.Process.Kill()
-			<-code
-			t.Fatalf("goa server did not stop within 15s of the browser's /quit (output %.300s)", app.outputStr())
-		}
-		_ = sendQuitKeys(t, conn) // the socket may close as the session goes down
+	got := waitForExit(t, app, code, 15*time.Second)
+	if got != 0 {
+		t.Fatalf("exit status after browser /quit = %d, want 0 (output %.300s)", got, app.outputStr())
 	}
+	assertListenerClosed(t, addr)
 }

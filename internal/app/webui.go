@@ -172,6 +172,11 @@ func newWebServer(subs *subsystems, opts RuntimeOptions) (*webui.Server, error) 
 	cols, rows := webui.DefaultCols, webui.DefaultRows
 	vt := webui.NewVirtualTerminal(cols, rows)
 	subs.terminal = vt
+	// Requests are held until the app has finished wiring itself (see
+	// webui.ServerOptions.Ready): the listener binds before the engine exists, and
+	// an early browser must be answered by a session that can act on its input
+	// rather than have its keystrokes land in a half-built engine (bugs.md B7).
+	subs.webReady = make(chan struct{})
 	return webui.NewServer(vt, cols, rows, webui.ServerOptions{
 		Addr:           addr,
 		SessionID:      webSessionID(subs),
@@ -179,7 +184,23 @@ func newWebServer(subs *subsystems, opts RuntimeOptions) (*webui.Server, error) 
 		MaxClients:     opts.ServerMaxClients,
 		Auth:           authCfg,
 		InsecureNoAuth: opts.InsecureNoAuth,
+		Ready:          subs.webReady,
 	}), nil
+}
+
+// markWebReady releases the web server's readiness gate. It is called once the
+// interactive session is fully wired (the engine is started, the input editor is
+// focused and its submit path is installed), so every held browser request is
+// then served by a session that can act on it. Safe to call more than once.
+func (a *App) markWebReady() {
+	if a.subs == nil {
+		return
+	}
+	a.subs.webReadyOnce.Do(func() {
+		if a.subs.webReady != nil {
+			close(a.subs.webReady)
+		}
+	})
 }
 
 // serverAddr resolves the listen address, applying the loopback default. The

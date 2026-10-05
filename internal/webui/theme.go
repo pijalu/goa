@@ -23,14 +23,20 @@ type CSSVar struct {
 // themeTokens maps each CSS custom property to the tui theme token it mirrors,
 // in emission order. Keeping it an ordered slice (not a map) makes the rendered
 // stylesheet deterministic, which is what the page test asserts.
+//
+// Tokens are chosen by ROLE, and that matters: `--dim` used to mirror
+// `token_thinking` (the purple thinking blocks use) and `--fg` mirrored
+// `toolOutput` (a dim grey), so "dim" text rendered purple and the page's
+// foreground was the secondary colour (bugs.md B10). `--dim` now mirrors the
+// theme's dim/secondary text and `--fg` its normal text.
 var themeTokens = []struct {
 	css   string
 	token string
 }{
 	{"--bg", "log_bg"},
 	{"--panel-bg", "sidebar_bg"},
-	{"--fg", "toolOutput"},
-	{"--dim", "token_thinking"},
+	{"--fg", "assistant_msg"},
+	{"--dim", "toolOutput"},
 	{"--accent", "token_prompt"},
 	{"--border", "separator"},
 	{"--selection-bg", "selection_bg"},

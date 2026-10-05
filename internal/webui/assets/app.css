@@ -74,9 +74,16 @@ body {
    browser still owns scrolling, it just does not do work for what nobody can
    see. Measured in Chrome at 10 000 rows: 3.81 ms per appending frame without
    it, 1.40 ms with it. */
+/* NO colour here on purpose. The transcript holds lines the terminal already
+   painted, so history must resolve colours exactly like the live grid does: a
+   `color` on this container recolours every run the server sent without an
+   explicit colour, which made the scrollback render in `--dim` while the same
+   rows in the grid rendered in `--fg` — the reported "scrollback colours are
+   wrong" (bugs.md B10: the same table rule came out #8b949e live and #8957e5,
+   the thinking purple, in history). Inheritance from the page is the only
+   correct source of colour for a run that carries none. */
 .scrollback {
   padding: 0 8px;
-  color: var(--dim);
   flex: none;
 }
 
@@ -85,12 +92,24 @@ body {
   contain-intrinsic-size: auto var(--cell-h);
 }
 
-/* The live screen. position:relative makes it the containing block for the
-   absolutely-positioned caret, so the caret scrolls with the grid. margin-top:
-   auto pins it to the bottom of the scroll container while the content is
-   short, and yields to normal scrolling the moment it is not. */
+/* The live screen. position:sticky is what keeps it in the viewport: the grid
+   carries the input line and the status band, so it must stay visible exactly
+   like a terminal's bottom rows do while its scrollback moves. With plain
+   relative + margin-top:auto it was only bottom-anchored while the content was
+   short; once the transcript grew, scrolling up (or a page-driven scroll)
+   carried the whole grid — input box and status line included — thousands of
+   pixels above the fold (bugs.md B8/footer_band: measured at 29 844 px below
+   the scroller's viewport).
+
+   position:sticky (not fixed) keeps the grid in the transcript's flow, so the
+   container stays the single scroller and the scroll range still ends at the
+   grid's real height; it also still establishes the containing block for the
+   absolutely-positioned caret. The opaque background is what lets the
+   transcript scroll UNDER the band instead of showing through it. */
 .grid {
-  position: relative;
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
   margin-top: auto;
   padding: 8px;
   outline: none;

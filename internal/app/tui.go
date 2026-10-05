@@ -44,6 +44,18 @@ func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	a.startBackgroundHistoryLoad(inp, engine)
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
 
+	// The submit path must exist BEFORE the engine starts. `engine.Start` flushes
+	// the input bytes a client sent while the listener was already accepting but
+	// the session was still wiring itself up (webui.VirtualTerminal replays them);
+	// if SetOnSubmit is wired afterwards, a replayed Enter is consumed with no
+	// handler attached and the typed text sits in the editor forever — the
+	// reported "keystrokes typed while the session is still starting are not acted
+	// on" (bugs.md B7). Wiring here makes every replayed key effective.
+	inp.SetOnSubmit(a.makeSubmitHandler(engine, chat))
+	inp.OnImagePaste = func(path string) {
+		a.handlePastedImage(engine, chat, path)
+	}
+
 	if err := engine.Start(); err != nil {
 		// TUI startup failure is fatal — and must say so: exiting silently
 		// left the user staring at an unchanged terminal with no diagnosis.

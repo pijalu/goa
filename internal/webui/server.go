@@ -86,6 +86,13 @@ type ServerOptions struct {
 	InsecureNoAuth bool
 	// Keepalive tunes the WebSocket liveness policy (zero = defaults).
 	Keepalive Keepalive
+	// Ready, when non-nil, holds every request until the session behind the
+	// server has finished wiring itself up. The listener binds before the app
+	// builds its engine, so without this an early client can attach and type
+	// into a half-built session — keystrokes that are silently lost (bugs.md
+	// B7). Waiting is deterministic where replaying into a partially assembled
+	// engine is not: the request is answered by a session that can act on it.
+	Ready <-chan struct{}
 	// Logger receives lifecycle messages; nil uses the standard logger.
 	Logger *log.Logger
 }
@@ -191,13 +198,31 @@ func NewServer(term *VirtualTerminal, cols, rows int, opts ServerOptions) *Serve
 	//   originGuard     — no cross-origin state change reaches a handler
 	//   authGate        — no unauthenticated request reaches a handler
 	//   gzip            — transport only, once the answer is already decided
-	s.handler = s.securityHeaders(s.bodyLimit(s.originGuard(s.authGate(gzipMiddleware(s.mux)))))
+	s.handler = s.securityHeaders(s.bodyLimit(s.originGuard(s.authGate(gzipMiddleware(s.readyGate(s.mux))))))
 	s.http = &http.Server{
 		Addr:              opts.Addr,
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
+}
+
+// readyGate holds requests until the session behind the server is ready (see
+// ServerOptions.Ready). A client that arrives during startup is answered as soon
+// as the app is wired, instead of being served by a session that cannot yet act
+// on its input. A request whose own context ends first (the client went away)
+// is not served at all.
+func (s *Server) readyGate(next http.Handler) http.Handler {
+	if s.opts.Ready == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-s.opts.Ready:
+			next.ServeHTTP(w, r)
+		case <-r.Context().Done():
+		}
+	})
 }
 
 // Handler exposes the server's handler for tests and for embedding.

@@ -54,7 +54,10 @@ func TestServer_ServesSessionPage(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`data-session="sess-1"`, "/assets/app.css", "/assets/app.js", `id="grid"`} {
+	// id="grid" is not enough on its own: the page moves the keyboard back to the
+	// grid after a paste chord (focusTerminal) and on a click, which is only
+	// possible because the grid is programmatically focusable.
+	for _, want := range []string{`data-session="sess-1"`, "/assets/app.css", "/assets/app.js", `id="grid"`, `tabindex="0"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page missing %q", want)
 		}
@@ -425,4 +428,50 @@ func (c *fakeClient) SendControl(ctrl Control) error {
 func (c *fakeClient) Close() error {
 	c.closed = true
 	return nil
+}
+
+// TestServer_ReadyGateHoldsRequestsUntilWired pins the B7 gate: a request that
+// arrives before the session is wired is held (not answered by a half-built
+// session) and served once readiness is signalled.
+func TestServer_ReadyGateHoldsRequestsUntilWired(t *testing.T) {
+	ready := make(chan struct{})
+	srv := NewServer(NewVirtualTerminal(80, 24), 80, 24, ServerOptions{
+		Addr:  "127.0.0.1:0",
+		Ready: ready,
+	})
+	handler := srv.Handler()
+
+	done := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		done <- rec.Code
+	}()
+
+	select {
+	case code := <-done:
+		t.Fatalf("request was served before the session was ready (status %d)", code)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(ready)
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Fatalf("status after ready = %d, want 200", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("request still held after readiness was signalled")
+	}
+}
+
+// TestServer_NilReadyDoesNotGate pins that the gate is opt-in: servers built
+// without a Ready channel (tests, embedded use) answer immediately.
+func TestServer_NilReadyDoesNotGate(t *testing.T) {
+	srv := NewServer(NewVirtualTerminal(80, 24), 80, 24, ServerOptions{Addr: "127.0.0.1:0"})
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
 }

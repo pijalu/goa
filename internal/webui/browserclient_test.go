@@ -1766,3 +1766,61 @@ func TestClientJS_SSEPostBodiesMatchTheServerSchema(t *testing.T) {
 		})
 	}
 }
+
+// TestClientJS_InputTypedWhileConnectingIsHeldAndFlushed pins the page half of
+// B7: the socket can be CONNECTING (the listener answered, the session is still
+// wiring itself up) and a keystroke typed in that window is the user's input —
+// it must be held and delivered when the socket opens, not dropped on the floor.
+func TestClientJS_InputTypedWhileConnectingIsHeldAndFlushed(t *testing.T) {
+	h := newClientHarness(t)
+	// CONNECTING must be visible to the page's comparison, and the socket has to
+	// report that state (the stub opens instantly, which hides the window).
+	if _, err := h.vm.RunString(`WebSocket.CONNECTING = 0; 1`); err != nil {
+		t.Fatalf("define CONNECTING: %v", err)
+	}
+	sock := h.vm.Get("__socket").ToObject(h.vm)
+	if err := sock.Set("readyState", int64(0)); err != nil {
+		t.Fatalf("set readyState: %v", err)
+	}
+
+	// A key typed while the socket is still connecting.
+	h.keydown(t, map[string]any{"key": "a", "code": "KeyA"})
+	if got := sentOf(t, sock); len(got) != 0 {
+		t.Fatalf("page sent %d messages before the socket opened, want 0 (held): %v", len(got), got)
+	}
+
+	// The socket opens. A browser sets readyState=OPEN before invoking onopen, so
+	// the stub must too — otherwise the page would (correctly) refuse to flush.
+	if err := sock.Set("readyState", int64(1)); err != nil {
+		t.Fatalf("set readyState=OPEN: %v", err)
+	}
+	h.call(t, "__opened")
+	got := sentOf(t, sock)
+	var held int
+	for _, msg := range got {
+		if strings.Contains(msg, `"key"`) {
+			held++
+		}
+	}
+	if held != 1 {
+		t.Fatalf("messages after open = %v, want the held key event exactly once", got)
+	}
+	if len(got) < 3 {
+		t.Fatalf("open must also send hello + resize, got %v", got)
+	}
+}
+
+// sentOf returns the raw messages the stub socket has been given.
+func sentOf(t *testing.T, sock *goja.Object) []string {
+	t.Helper()
+	raw := sock.Get("sent").Export()
+	list, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("socket.sent is %T, want a slice", raw)
+	}
+	out := make([]string, 0, len(list))
+	for _, v := range list {
+		out = append(out, v.(string))
+	}
+	return out
+}
