@@ -99,9 +99,9 @@ var flagGroups = []flagGroup{
 		"prompt", "prompt-file", "goal", "orchestrate", "yes", "plain", "color",
 	}},
 	{"Web UI (goa server)", []string{
-		"server-addr", "server-read-only", "server-max-clients", "server-auth",
-		"server-auth-user", "server-auth-password", "server-auth-token",
-		"insecure-no-auth",
+		"server-addr", "server-read-only", "server-max-clients", "server-cells",
+		"server-auth", "server-auth-user", "server-auth-password",
+		"server-auth-token", "insecure-no-auth",
 	}},
 	{"Other interfaces", []string{"acp"}},
 	{"Configuration & paths", []string{"config", "home"}},

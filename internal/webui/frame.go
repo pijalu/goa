@@ -60,6 +60,20 @@ type Frame struct {
 	// Full marks a frame that carries every row (a fresh or reconnecting
 	// client), so the client can reset its model instead of patching.
 	Full bool
+
+	// Chrome is the blocks-plane band height: the last Chrome rows of the
+	// grid are the pinned bottom chrome (editor, status), rendered by the
+	// page as a cell footer. 0 in the cells plane (the whole grid is the
+	// screen).
+	Chrome int
+	// Overlay is true while an input-capturing overlay (selector, confirm)
+	// owns the screen: a blocks-plane client falls back to full-cell
+	// rendering until it clears.
+	Overlay bool
+	// Blocks carries the block-plane deltas of this frame (specs/webui.md
+	// §22). Nil most frames. The first op of a rebuild set is flagged
+	// Meta["reset"]="1": the client drops its DOM and rebuilds.
+	Blocks []BlockOp
 }
 
 // NewFrame assembles a frame from a grid's current state. patches is the diff

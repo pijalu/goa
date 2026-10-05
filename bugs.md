@@ -30,6 +30,135 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 ## Closed
 
+Closed 2026-10-05 — B17, the web UI's VT-simulation seam: the browser re-derived UI semantics
+(comparator wipes, caret, colours, band geometry) from compositor bytes — the root every fixed
+webui bug shared — and could never meet the v2 goals (browser-native resize/history). The reported
+symptoms themselves (broken mascot, misplaced input, blinking text, missing status bar) reproduced
+only on the stale repo-root binary built before 32c395af; rebuilding removed them, and the block
+plane (specs/webui.md §22) removed the seam: `goa server` now ships semantic conversation blocks
+rendered as HTML by the browser (native reflow, native scroll, journal resume) with the editor
+band as a cell footer; input-capturing overlays fall back to full-cell frames; `--server-cells`
+serves the v1 pipeline unchanged. Pinned by the tui block-export tests, the webui BlockTracker/
+publish/codec tests (webui at 91.2% coverage), `e2e/w2_webui_blocks.sh` (8 checks, all PASS in a
+real Chrome) and w1 pinned to `--server-cells`.
+See [`docs/archive/b17-webui-block-plane.2026-10-05.md`](docs/archive/b17-webui-block-plane.2026-10-05.md)
+for the assessment, the root causes and the validation record.
+
+
+**Observed.** On `feature/webui`, a user reports the web UI as unusable: the
+logo/mascot area shows a blinking element, typed input does not appear inside
+the input line, text blinks, and the bottom status bar is missing.
+
+**Assessment (2026-10-05, headless Chromium at 1280×800 / 700×900 / 1280×300).**
+At HEAD the page renders the mascot, the input band and the status bar
+correctly, follows the tail, scrolls history and resizes without visible
+corruption. The reported symptoms reproduce on the stale repo-root binary
+(built 2026-10-04 10:44, *before* commit 32c395af which fixed B5/B7/B8/B9/B10 —
+pinned live band, colour parity in history, startup input gate): rebuild
+eliminates them. **However** the visual assessment also confirmed the
+structural critique: every one of the eight webui bugs closed so far
+(B2, B3, B4, B5, B7, B8, B9, B10) lives at the same seam — a browser
+re-deriving UI semantics (transcript wipes, DECTCEM caret, colour
+inheritance, geometry resets) from an escape-byte stream built for a glass
+TTY. The cell pipeline also structurally cannot meet the stated goals:
+resize re-renders and re-ships the whole transcript server-side, history is
+a simulated bounded row list, and layout is fixed-cell.
+
+**Fix plan (block plane — spec §22).** Keep the TUI engine as the single
+renderer, but ship the conversation as *semantic blocks* from the Scene
+(the protocol-free IR the compositor already consumes) instead of shipping
+transcript cells:
+
+1. `tui`: `SceneBlock` IR (`ID/Kind/Text/Meta/Lines`), `ChatViewport`
+   exports its entries (the Model/View split already stores content
+   width-independently), the header exports its styled art lines, and
+   `renderOneFrame` notifies an optional `SceneObserver` on the Terminal.
+2. `internal/webui`: a `Plane` switch (`blocks` default in production,
+   `cells` preserved verbatim behind `?mode=cells` and a CLI escape flag).
+   A `BlockTracker` diffs Scene snapshots into id-keyed upserts
+   (append-delta when text grows, full reset when history is rewritten).
+   `publish` ships only the bottom chrome band (editor + status rows) as
+   cells — the transcript cells and scrollback are no longer shipped —
+   plus the block deltas. Input-capturing overlays (config selector,
+   confirm cards) fall back to full-cell frames; the autocomplete popup
+   (no input capture) just extends the band.
+3. `assets`: the page becomes an HTML document — blocks render as real
+   flow content (markdown, tool cards, collapsible thinking) so resize is
+   pure browser reflow and history is the browser's own scroll. A small
+   cell-rendered footer keeps the editor band pixel-identical to the TUI.
+   A minimal SGR→span converter and a dependency-free markdown renderer
+   stay inside the page (no framework, no external fonts/CDN).
+
+**Tests.** `tui`: block export golden (kinds, tool meta, header art),
+SceneObserver tap. `webui`: BlockTracker (set/append/reset), styled-line
+SGR→runs converter, band-filtered publish, overlay transitions, blocks-mode
+attach, codec round-trip; all existing cells-plane tests keep passing.
+Browser: real-Chromium checks of blocks DOM, band, typing echo, overlay
+swap, and resize without transcript re-ship.
+
+**Validation.** `go vet`, `go test -count=1 -race -cover`, staticcheck,
+gocognit/gocyclo on touched packages; headless-browser visual pass at three
+geometries in both planes; existing `e2e/w1_webui_browser.sh` pinned to the
+cells plane, new `e2e/w2_webui_blocks.sh` for the blocks plane.
+
+
+**Observed.** On `feature/webui`, a user reports the web UI as unusable: the
+logo/mascot area shows a blinking element, typed input does not appear inside
+the input line, text blinks, and the bottom status bar is missing.
+
+**Assessment (2026-10-05, headless Chromium at 1280×800 / 700×900 / 1280×300).**
+At HEAD the page renders the mascot, the input band and the status bar
+correctly, follows the tail, scrolls history and resizes without visible
+corruption. The reported symptoms reproduce on the stale repo-root binary
+(built 2026-10-04 10:44, *before* commit 32c395af which fixed B5/B7/B8/B9/B10 —
+pinned live band, colour parity in history, startup input gate): rebuild
+eliminates them. **However** the visual assessment also confirmed the
+structural critique: every one of the eight webui bugs closed so far
+(B2, B3, B4, B5, B7, B8, B9, B10) lives at the same seam — a browser
+re-deriving UI semantics (transcript wipes, DECTCEM caret, colour
+inheritance, geometry resets) from an escape-byte stream built for a glass
+TTY. The cell pipeline also structurally cannot meet the stated goals:
+resize re-renders and re-ships the whole transcript server-side, history is
+a simulated bounded row list, and layout is fixed-cell.
+
+**Fix plan (block plane — spec §22).** Keep the TUI engine as the single
+renderer, but ship the conversation as *semantic blocks* from the Scene
+(the protocol-free IR the compositor already consumes) instead of shipping
+transcript cells:
+
+1. `tui`: `SceneBlock` IR (`ID/Kind/Text/Meta/Lines`), `ChatViewport`
+   exports its entries (the Model/View split already stores content
+   width-independently), the header exports its styled art lines, and
+   `renderOneFrame` notifies an optional `SceneObserver` on the Terminal.
+2. `internal/webui`: a `Plane` switch (`blocks` default in production,
+   `cells` preserved verbatim behind `?mode=cells` and a CLI escape flag).
+   A `BlockTracker` diffs Scene snapshots into id-keyed upserts
+   (append-delta when text grows, full reset when history is rewritten).
+   `publish` ships only the bottom chrome band (editor + status rows) as
+   cells — the transcript cells and scrollback are no longer shipped —
+   plus the block deltas. Input-capturing overlays (config selector,
+   confirm cards) fall back to full-cell frames; the autocomplete popup
+   (no input capture) just extends the band.
+3. `assets`: the page becomes an HTML document — blocks render as real
+   flow content (markdown, tool cards, collapsible thinking) so resize is
+   pure browser reflow and history is the browser's own scroll. A small
+   cell-rendered footer keeps the editor band pixel-identical to the TUI.
+   A minimal SGR→span converter and a dependency-free markdown renderer
+   stay inside the page (no framework, no external fonts/CDN).
+
+**Tests.** `tui`: block export golden (kinds, tool meta, header art),
+SceneObserver tap. `webui`: BlockTracker (set/append/reset), styled-line
+SGR→runs converter, band-filtered publish, overlay transitions, blocks-mode
+attach, codec round-trip; all existing cells-plane tests keep passing.
+Browser: real-Chromium checks of blocks DOM, band, typing echo, overlay
+swap, and resize without transcript re-ship.
+
+**Validation.** `go vet`, `go test -count=1 -race -cover`, staticcheck,
+gocognit/gocyclo on touched packages; headless-browser visual pass at three
+geometries in both planes; existing `e2e/w1_webui_browser.sh` pinned to the
+cells plane, new `e2e/w2_webui_blocks.sh` for the blocks plane.
+
+
 Closed 2026-10-05 — B16, quota run-out time: the Provider Quotas Status cell now
 reads `over budget — exhausted at HH:MM` (local time), derived from the same
 `projectedRatio` pace projection that produced the words and the "At reset"

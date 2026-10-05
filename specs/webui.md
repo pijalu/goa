@@ -1058,3 +1058,74 @@ Server → client control:
   §7, `docs/SETUP.md` "Web UI (`goa server`)", `docs/ARCHITECTURE.md` "The
   Virtual Terminal", `docs/HOTKEYS.md` "Browser keys", plus README and COMMANDS
   cross-links. `go test ./docs/...` green.
+
+## 22. Block plane (v2) — semantic blocks + cell band
+
+### 22.1 Why
+
+The cell pipeline (§3–§9) is faithful but every defect it has produced lives
+at one seam: the browser re-deriving UI semantics from compositor bytes
+(B2 transcript wipes, B3 geometry resets, B4 footer geometry, B5 startup
+races, B7 input gating, B8/B9 band pinning, B10 colour inheritance). It also
+cannot meet the v2 goals: resize re-renders and re-ships the whole
+transcript server-side, history is a simulated bounded row list, and
+fixed-cell layout cannot reflow natively.
+
+The Scene (§4.3) is already the protocol-free IR with two consumers
+(Compositor, AgentView). v2 adds a third: semantic conversation blocks,
+rendered by the browser as HTML flow content.
+
+### 22.2 Design
+
+- **`tui.SceneBlock`** `{ID, Kind, Text, Meta, Lines}`: one conversation
+  entry (the width-independent `MessageData` plus view-derived metadata for
+  tool widgets) or the header art (`Lines`, styled). Exported by the
+  ChatViewport/Header during `buildScene` — no second renderer, the export
+  reads the Model the TUI already maintains.
+- **`tui.SceneObserver`**: optional Terminal interface; `renderOneFrame`
+  hands the Scene to the VirtualTerminal before the compositor consumes it.
+- **`internal/webui.Plane`**: `cells` (today's pipeline, unchanged, zero
+  value — every existing test and the `?mode=cells` page keep their exact
+  behaviour) and `blocks` (production default).
+- **`BlockTracker`**: diffs Scene block snapshots into id-keyed wire ops —
+  `set` (full), append-`set` with a `from` offset when text strictly grows
+  (streaming), `del`, and a whole-journal `reset` when history is rewritten
+  (compression, `/clear`). The tracker keeps the journal so a fresh attach
+  is answered with band + journal, exactly like FullFrame + scrollback in
+  the cells plane.
+- **Band cells**: the transcript cells and scrollback are no longer shipped
+  in the blocks plane. `publish` ships only the bottom `ChromeHeight` rows
+  (editor, status lines, live strip, bubbles) plus the block deltas. The
+  autocomplete popup (an overlay that does NOT capture input) extends the
+  band upward for its height. An input-capturing overlay (config selector,
+  confirm card) sets `overlay` on the frame and the page falls back to the
+  full cell grid until it closes.
+- **Client**: `#blocks` is normal HTML flow (markdown, tool cards,
+  collapsible thinking) — resize is browser reflow (no resize storm, no
+  server transcript re-render on the wire), history is the browser's own
+  scroll. A cell-rendered footer band keeps the editor/status pixel-identical
+  to the TUI. Colours come from the same theme variables (§12.3); a small
+  SGR→span converter renders `Lines` blocks (header art); the markdown
+  renderer is a dependency-free ~200-line subset matched to what goa
+  emits. The plane is server-wide — `goa server` defaults to blocks;
+  `--server-cells` serves the v1 cell-terminal plane (its whole test
+  suite is the regression net).
+
+### 22.3 Non-goals (v2)
+
+- No per-block editor: input stays byte-exact terminal input (§7.5) echoed
+  by the engine into the band cells.
+- No server-side HTML rendering: the server ships data; the page renders.
+- No multi-session (still §16 Phase 6).
+
+### 22.4 Risks
+
+- Markdown-subset drift between the TUI renderer and the page renderer:
+  bounded by shipping the same source text and pinning the palette; the
+  page's renderer only needs the subset goa emits (§14 markdown blocks).
+- Tool-block fidelity: tool output ships as plain text (+ structured
+  metadata) in v2.0; styled runs for tool bodies are an upgrade path behind
+  the same wire op.
+- Two planes to test: mitigated by keeping the cells plane byte-identical
+  (its whole test suite is the regression net) and the blocks plane's
+  server side being pure diffing over data the engine already produces.

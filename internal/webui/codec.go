@@ -37,9 +37,29 @@ type wireFrame struct {
 	Title   string `json:"title,omitempty"`
 	Full    bool   `json:"full,omitempty"`
 
+	// Block plane (specs/webui.md §22): the band height, the overlay
+	// fallback flag, and the block deltas that ride this frame.
+	Chrome  int         `json:"chrome,omitempty"`
+	Overlay bool        `json:"ovl,omitempty"`
+	Blocks  []wireBlock `json:"blocks,omitempty"`
+
 	Kind    string `json:"kind,omitempty"`
 	Session string `json:"session,omitempty"`
 	Text    string `json:"text,omitempty"`
+}
+
+// wireBlock is one block operation on the wire. Runs are the same positional
+// tuples cell rows use; a del carries only op+id. A rebuild set flags its
+// first op with Meta["reset"]="1" (set by the tracker), so the client clears
+// its DOM before applying.
+type wireBlock struct {
+	Op   string            `json:"op"`
+	ID   int               `json:"id"`
+	Kind string            `json:"kind,omitempty"`
+	Text string            `json:"text,omitempty"`
+	From int               `json:"from,omitempty"`
+	Meta map[string]string `json:"meta,omitempty"`
+	Runs []wireRun         `json:"runs,omitempty"`
 }
 
 type wireRow struct {
@@ -117,16 +137,32 @@ func (c *FrameCodec) EncodeFrame(f *Frame) ([]byte, error) {
 		return nil, fmt.Errorf("webui: nil frame")
 	}
 	w := wireFrame{
-		T:     MsgFrame,
-		Seq:   f.Seq,
-		Cols:  f.Cols,
-		Rows:  f.Rows,
-		Cur:   f.Cursor,
-		Title: f.Title,
-		Full:  f.Full,
+		T:       MsgFrame,
+		Seq:     f.Seq,
+		Cols:    f.Cols,
+		Rows:    f.Rows,
+		Cur:     f.Cursor,
+		Title:   f.Title,
+		Full:    f.Full,
+		Chrome:  f.Chrome,
+		Overlay: f.Overlay,
 	}
 	for _, p := range f.Patches {
 		w.Patches = append(w.Patches, wireRow{Row: p.Row, Runs: encodeRuns(p.Runs)})
+	}
+	for _, b := range f.Blocks {
+		wb := wireBlock{
+			Op:   b.Op,
+			ID:   b.ID,
+			Kind: b.Kind,
+			Text: b.Text,
+			From: b.From,
+			Meta: b.Meta,
+		}
+		for _, r := range b.Runs {
+			wb.Runs = append(wb.Runs, encodeRun(r))
+		}
+		w.Blocks = append(w.Blocks, wb)
 	}
 	return json.Marshal(w)
 }
@@ -142,15 +178,29 @@ func (c *FrameCodec) DecodeFrame(data []byte) (*Frame, error) {
 		return nil, fmt.Errorf("webui: unexpected message type %q", w.T)
 	}
 	f := &Frame{
-		Seq:    w.Seq,
-		Cols:   w.Cols,
-		Rows:   w.Rows,
-		Cursor: w.Cur,
-		Title:  w.Title,
-		Full:   w.Full,
+		Seq:     w.Seq,
+		Cols:    w.Cols,
+		Rows:    w.Rows,
+		Cursor:  w.Cur,
+		Title:   w.Title,
+		Full:    w.Full,
+		Chrome:  w.Chrome,
+		Overlay: w.Overlay,
 	}
 	for _, r := range w.Patches {
 		f.Patches = append(f.Patches, RowPatch{Row: r.Row, Runs: decodeRuns(r.Runs)})
+	}
+	for _, b := range w.Blocks {
+		ob := BlockOp{
+			Op:   b.Op,
+			ID:   b.ID,
+			Kind: b.Kind,
+			Text: b.Text,
+			From: b.From,
+			Meta: b.Meta,
+		}
+		ob.Runs = decodeRuns(b.Runs)
+		f.Blocks = append(f.Blocks, ob)
 	}
 	return f, nil
 }
@@ -217,13 +267,18 @@ func (c *FrameCodec) DecodeControl(data []byte) (Control, error) {
 func encodeRuns(runs []Run) []wireRun {
 	out := make([]wireRun, 0, len(runs))
 	for _, r := range runs {
-		link := ""
-		if r.IsLink() {
-			link = r.Link
-		}
-		out = append(out, wireRun{r.Text, uint16(r.Flags), r.FG, r.BG, link})
+		out = append(out, encodeRun(r))
 	}
 	return out
+}
+
+// encodeRun renders one run as its positional wire tuple.
+func encodeRun(r Run) wireRun {
+	link := ""
+	if r.IsLink() {
+		link = r.Link
+	}
+	return wireRun{r.Text, uint16(r.Flags), r.FG, r.BG, link}
 }
 
 func decodeRuns(in []wireRun) []Run {

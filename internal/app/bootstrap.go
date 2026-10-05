@@ -56,6 +56,10 @@ type RuntimeOptions struct {
 	ServerAddr       string
 	ServerReadOnly   bool
 	ServerMaxClients int
+	// ServerCells serves the v1 cell-terminal plane (--server-cells). The
+	// default is the blocks plane (specs/webui.md §22): semantic conversation
+	// blocks rendered as HTML by the browser, with the editor band as cells.
+	ServerCells bool
 	// ServerAuth selects the web UI's auth scheme ("none", "basic", "token").
 	// Without it the server only binds loopback; see webui.CheckExposure.
 	ServerAuth      string
@@ -353,6 +357,7 @@ type runtimeFlagDefs struct {
 	serverAddr       *string
 	serverReadOnly   *bool
 	serverMaxClients *int
+	serverCells      *bool
 	serverAuth       *string
 	serverAuthUser   *string
 	serverAuthPass   *string
@@ -409,6 +414,7 @@ func defineRuntimeFlags(fs *flag.FlagSet) runtimeFlagDefs {
 		serverAddr:       fs.String("server-addr", "", "Listen address for 'goa server' (default 127.0.0.1:8080)"),
 		serverReadOnly:   fs.Bool("server-read-only", false, "Serve 'goa server' as a viewer: browsers see the session but cannot drive it"),
 		serverMaxClients: fs.Int("server-max-clients", 0, "Maximum browsers attached to 'goa server' (0 = built-in default)"),
+		serverCells:      fs.Bool("server-cells", false, "Serve 'goa server' in the legacy cell-terminal plane (default: blocks plane — HTML blocks + cell band)"),
 		serverAuth:       fs.String("server-auth", "none", "Authentication for 'goa server': none, basic or token"),
 		serverAuthUser:   fs.String("server-auth-user", "", "Username for --server-auth=basic"),
 		serverAuthPass:   fs.String("server-auth-password", "", "Password for --server-auth=basic (prefer the env var GOA_SERVER_AUTH_PASSWORD)"),
@@ -459,6 +465,7 @@ func (r *runtimeFlagDefs) collectInto(fs *flag.FlagSet) RuntimeOptions {
 		ServerAddr:       *r.serverAddr,
 		ServerReadOnly:   *r.serverReadOnly,
 		ServerMaxClients: *r.serverMaxClients,
+		ServerCells:      *r.serverCells,
 		ServerAuth:       *r.serverAuth,
 		ServerAuthUser:   *r.serverAuthUser,
 		ServerAuthPass:   serverAuthSecret(*r.serverAuthPass, "GOA_SERVER_AUTH_PASSWORD"),

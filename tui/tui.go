@@ -540,6 +540,15 @@ func (t *TUI) renderOneFrame() {
 	reply := make(chan *Scene, 1)
 	t.snapReq <- reply
 	scene := <-reply
+	// The block-plane consumer reads the Scene before the compositor mutates
+	// it (WidthChanged is compositor-written). A panic in an observer must not
+	// take the render loop down.
+	if obs, ok := t.terminal.(SceneObserver); ok {
+		func() {
+			defer recoverToLog("observe")
+			obs.ObserveScene(scene)
+		}()
+	}
 	func() {
 		defer recoverToLog("render")
 		t.compositor.Render(scene)

@@ -5,7 +5,9 @@
 package webui
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -25,6 +27,15 @@ type PageData struct {
 	SessionID string
 	Theme     string   // "dark" | "light" — mirrors tui.TheTheme
 	ThemeVars []CSSVar // CSS custom properties from tui.TheTheme.ColorHex
+	// Plane is the rendering plane the page drives ("cells" | "blocks",
+	// specs/webui.md §22).
+	Plane string
+	// AssetV versions the asset URLs (?v=…): the assets are served with
+	// `Cache-Control: immutable`, so a browser that saw an older binary
+	// would otherwise keep last year's app.js for a year. The version is the
+	// content hash of the assets, so a changed binary changes the URL and an
+	// unchanged one keeps its cache.
+	AssetV string
 	// CSS is the rendered ":root{…}" block for ThemeVars (see cssVarsText).
 	CSS template.CSS
 	// Nonce is the per-response CSP nonce. The page's own inline <style> and
@@ -37,6 +48,8 @@ type PageData struct {
 type HTMLPage struct {
 	tpl  *template.Template
 	data fs.FS
+	// assetV is the ?v= stamped onto asset URLs (see PageData.AssetV).
+	assetV string
 }
 
 // NewHTMLPage parses the embedded shell once (a parse error is a build-time
@@ -47,7 +60,21 @@ func NewHTMLPage() *HTMLPage {
 	if err != nil {
 		panic(err)
 	}
-	return &HTMLPage{tpl: tpl, data: sub}
+	return &HTMLPage{tpl: tpl, data: sub, assetV: assetVersion(sub)}
+}
+
+// assetVersion hashes the asset contents into a short cache-busting token.
+func assetVersion(sub fs.FS) string {
+	h := sha256.New()
+	for _, name := range []string{"app.css", "app.js"} {
+		data, err := fs.ReadFile(sub, name)
+		if err != nil {
+			continue
+		}
+		h.Write([]byte(name))
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
 // Render writes the session page.
@@ -56,6 +83,7 @@ func (p *HTMLPage) Render(w http.ResponseWriter, d PageData) error {
 		d.Theme = "dark"
 	}
 	d.CSS = cssVarsText(d.ThemeVars)
+	d.AssetV = p.assetV
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	return p.tpl.Execute(w, d)
 }

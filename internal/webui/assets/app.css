@@ -1,5 +1,11 @@
 /* goa web UI — the browser is the terminal: one monospace grid of cells,
-   styled by the runs the server sends. No framework, no external fonts. */
+   styled by the runs the server sends. No framework, no external fonts.
+
+   Two planes share this sheet (specs/webui.md §22): the cells plane styles
+   the whole screen as cell rows; the blocks plane styles the conversation as
+   HTML flow content (#blocks) with the editor band (#grid) as a cell footer,
+   plus the overlay fallback that flips the page back to full cells while an
+   input-capturing overlay is up. */
 
 :root {
   --bg: #0d1117;
@@ -9,6 +15,9 @@
   --border: #30363d;
   --cell-w: 8px;
   --cell-h: 16px;
+  --pad: 8px;
+  --code-bg: #161b22;
+  --chrome: 4;
 }
 
 html[data-theme="light"] {
@@ -17,6 +26,7 @@ html[data-theme="light"] {
   --dim: #59636e;
   --accent: #4b32c3;
   --border: #d1d9e0;
+  --code-bg: #f6f8fa;
 }
 
 * { box-sizing: border-box; }
@@ -37,10 +47,11 @@ body {
   line-height: var(--cell-h);
 }
 
-/* The one scroll container. The transcript (rows that scrolled off the top)
-   comes first, the live screen last, so the bottom of the container is the
-   terminal's normal view and scrolling up reveals history — the same relation
-   a terminal has between its scrollback buffer and its screen.
+/* The one scroll container. The transcript (blocks plane: the HTML
+   conversation; cells plane: rows that scrolled off the live grid) comes
+   first, the live grid last, so the bottom of the container is the
+   terminal's normal view and scrolling up reveals history — the same
+   relation a terminal has between its scrollback buffer and its screen.
 
    The grid is bottom-anchored with `margin-top:auto` rather than
    `justify-content:flex-end`: an overflowing flex end clips the content ABOVE
@@ -50,8 +61,8 @@ body {
 
    overscroll-behavior is left at its default (auto) on purpose: once the
    transcript is scrolled to the top the gesture chains to the browser, so a
-   trackpad swipe can fall back to browser history instead of being trapped by a
-   terminal with nothing left to scroll. */
+   trackpad swipe can fall back to browser history instead of being trapped by
+   a terminal with nothing left to scroll. */
 .screen {
   position: absolute;
   inset: 0 0 var(--status-h, 24px) 0;
@@ -61,29 +72,17 @@ body {
   flex-direction: column;
 }
 
-/* Scrollback transcript: rows that scrolled off the live grid. It is part of
-   the scroll container's flow (NOT a pointer-events:none overlay), so the
-   wheel reaches it and the content is actually reachable.
+/* Scrollback transcript (cells plane): rows that scrolled off the live grid.
+   It is part of the scroll container's flow, so the wheel reaches it and the
+   content is actually reachable. The transcript is BOUNDED (app.js drops the
+   oldest rows past its cap), which keeps the scroll geometry and the layout
+   cost flat.
 
-   The transcript is BOUNDED (app.js drops the oldest rows past its cap, the way
-   a terminal's scrollback buffer does), so this list cannot grow with the
-   session — which is what keeps the scroll geometry and the layout cost flat.
-
-   content-visibility lets the browser skip layout and paint for the rows that
-   are scrolled out of view: the transcript is a real list of real rows and the
-   browser still owns scrolling, it just does not do work for what nobody can
-   see. Measured in Chrome at 10 000 rows: 3.81 ms per appending frame without
-   it, 1.40 ms with it. */
-/* NO colour here on purpose. The transcript holds lines the terminal already
-   painted, so history must resolve colours exactly like the live grid does: a
-   `color` on this container recolours every run the server sent without an
-   explicit colour, which made the scrollback render in `--dim` while the same
-   rows in the grid rendered in `--fg` — the reported "scrollback colours are
-   wrong" (bugs.md B10: the same table rule came out #8b949e live and #8957e5,
-   the thinking purple, in history). Inheritance from the page is the only
-   correct source of colour for a run that carries none. */
+   NO colour here on purpose: the transcript holds lines the terminal already
+   painted, and inheritance from the page is the only correct source of colour
+   for a run that carries none (bugs.md B10). */
 .scrollback {
-  padding: 0 8px;
+  padding: 0 var(--pad);
   flex: none;
 }
 
@@ -92,28 +91,43 @@ body {
   contain-intrinsic-size: auto var(--cell-h);
 }
 
-/* The live screen. position:sticky is what keeps it in the viewport: the grid
-   carries the input line and the status band, so it must stay visible exactly
-   like a terminal's bottom rows do while its scrollback moves. With plain
-   relative + margin-top:auto it was only bottom-anchored while the content was
-   short; once the transcript grew, scrolling up (or a page-driven scroll)
-   carried the whole grid — input box and status line included — thousands of
-   pixels above the fold (bugs.md B8/footer_band: measured at 29 844 px below
-   the scroller's viewport).
-
-   position:sticky (not fixed) keeps the grid in the transcript's flow, so the
-   container stays the single scroller and the scroll range still ends at the
-   grid's real height; it also still establishes the containing block for the
-   absolutely-positioned caret. The opaque background is what lets the
-   transcript scroll UNDER the band instead of showing through it. */
+/* The live screen (cells plane: whole screen; blocks plane: the chrome band).
+   position:sticky is what keeps it in the viewport while the transcript
+   scrolls (bugs.md B8/B9). The opaque background is what lets the transcript
+   scroll UNDER the band instead of showing through it. */
 .grid {
   position: sticky;
   bottom: 0;
   background: var(--bg);
   margin-top: auto;
-  padding: 8px;
+  padding: var(--pad);
   outline: none;
   flex: none;
+}
+
+/* Blocks plane: #grid is a footer band showing the LAST --chrome rows of the
+   grid model (editor, status lines, live strip). The full row list still
+   lives in #rows; the band is a window onto its bottom. Bottom-anchoring via
+   justify-content:flex-end clips the TOP — exactly what a band wants (the
+   pitfall documented above applies to scroll containers; the band is not
+   one). The band height is published per frame by app.js; margin-top:auto
+   (inherited from .grid) keeps the band at the viewport bottom while the
+   conversation is shorter than the screen. */
+body[data-plane="blocks"] .grid {
+  height: calc(var(--chrome) * var(--cell-h) + 2 * var(--pad));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+/* Overlay fallback: an input-capturing overlay owns the screen; #blocks
+   hides and #grid grows back to the whole screen (still bottom-anchored, so
+   it reads like the terminal the cells plane draws). */
+body[data-plane="blocks"] .screen.overlay-mode #blocks { display: none; }
+body[data-plane="blocks"] .screen.overlay-mode .grid {
+  height: auto;
+  margin-top: auto;
 }
 
 /* white-space:pre belongs on the ROW, not on #grid: on the container it would
@@ -163,7 +177,7 @@ a {
   bottom: 0;
   height: 24px;
   line-height: 24px;
-  padding: 0 8px;
+  padding: 0 var(--pad);
   border-top: 1px solid var(--border);
   color: var(--dim);
   font-size: 12px;
@@ -173,3 +187,107 @@ a {
 .status[data-state="live"] { color: var(--accent); }
 .status[data-state="closed"],
 .status[data-state="error"] { color: var(--error, #f85149); }
+
+/* ── Blocks plane: the conversation as HTML flow content ──────────────────
+   The palette is the TUI's (the server injects the theme as CSS variables);
+   the layout is the browser's: blocks reflow at any width, so a resize costs
+   nothing on the wire. */
+
+.blocks {
+  padding: var(--pad) var(--pad) 0;
+  flex: none;
+}
+
+.block { margin: 0 0 var(--cell-h); }
+.block pre {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 8;
+}
+
+/* Header art: the mascot/logo exactly as the TUI paints it. */
+.block.header pre { white-space: pre; overflow-x: auto; }
+
+/* User message: the prompt band. */
+.block.user {
+  color: var(--accent);
+  font-weight: 700;
+}
+.block.user::before { content: "❯ "; }
+
+/* Assistant / agent markdown. */
+.block.agent { border-left: 2px solid var(--accent); padding-left: 8px; }
+.block .md > * { margin: 0 0 var(--cell-h); }
+.block .md h1, .block .md h2, .block .md h3, .block .md h4 {
+  font-size: inherit;
+  color: var(--accent);
+  margin: calc(2 * var(--cell-h)) 0 var(--cell-h);
+}
+.block .md h1 { font-weight: 700; text-decoration: underline; }
+.block .md h2, .block .md h3 { font-weight: 700; }
+.block .md ul, .block .md ol { margin: 0 0 var(--cell-h); padding-left: 2ch; }
+.block .md li { margin: 0; }
+.block .md blockquote {
+  margin: 0 0 var(--cell-h);
+  padding-left: 1ch;
+  border-left: 2px solid var(--border);
+  color: var(--dim);
+}
+.block .md hr { border: 0; border-top: 1px solid var(--border); margin: var(--cell-h) 0; }
+.block .md pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  padding: var(--pad);
+  overflow-x: auto;
+}
+.block .md code { background: var(--code-bg); padding: 0 2px; }
+.block .md pre code { background: none; padding: 0; }
+.block .md table { border-collapse: collapse; }
+.block .md th, .block .md td {
+  border: 1px solid var(--border);
+  padding: 0 1ch;
+  text-align: left;
+}
+.block .agent-chip { color: var(--accent); font-weight: 700; }
+
+/* System notices: the boxed panel the TUI draws. */
+.block.system {
+  border: 1px solid var(--border);
+  padding: var(--pad);
+  color: var(--dim);
+}
+.block.info { color: var(--dim); }
+.block.result { color: var(--dim); }
+
+/* Thinking: a native collapsible, defaulting to the TUI's collapse state. */
+.block.thinking summary {
+  cursor: pointer;
+  color: var(--accent);
+  list-style: none;
+}
+.block.thinking summary::before { content: "▸ "; }
+.block.thinking[open] summary::before { content: "▾ "; }
+.block.thinking .body { color: var(--dim); border-left: 2px solid var(--border); padding-left: 8px; }
+
+/* Tool cards: header line + collapsible output. Status colour follows the
+   TUI's (running amber-ish → accent, success green, error red). */
+.block.tool { border: 1px solid var(--border); padding: var(--pad); }
+.block.tool summary { cursor: pointer; list-style: none; }
+.block.tool summary::before { content: "▸ "; }
+.block.tool[open] summary::before { content: "▾ "; }
+.block.tool .t-args { color: var(--dim); }
+.block.tool .t-meta { color: var(--dim); }
+.block.tool[data-status="running"] .t-status { color: var(--warning, #d29922); }
+.block.tool[data-status="success"] .t-status { color: var(--ok, #3fb950); }
+.block.tool[data-status="error"] .t-status { color: var(--error, #f85149); }
+.block.tool .t-out {
+  color: var(--dim);
+  border-top: 1px solid var(--border);
+  margin-top: var(--pad);
+  padding-top: var(--pad);
+}
+
+/* Companion output: the purple gutter. */
+.block.companion { border-left: 2px solid #a371f7; padding-left: 8px; color: var(--dim); }

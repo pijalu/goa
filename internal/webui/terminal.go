@@ -61,6 +61,96 @@ type VirtualTerminal struct {
 
 	frameNo atomic.Uint64
 	codec   FrameCodec
+
+	// plane selects what publish ships (specs/webui.md §22). Set once via
+	// SetPlane before Start; read without a lock on the render goroutine.
+	plane Plane
+
+	// blocksMu guards the block-plane state: the last observed Scene view and
+	// the tracker diffing Scene snapshots into wire ops. ObserveScene and
+	// publish run on the render goroutine, but AttachFrame (which needs the
+	// current journal) runs on transport goroutines.
+	blocksMu sync.Mutex
+	observed SceneView
+	tracker  *BlockTracker
+	// overlayShown is the overlay flag of the last shipped blocks-plane
+	// frame, and bandShipped the band height it carried: a scene whose band
+	// geometry moved without any cell changing (a resize the engine answered
+	// with an identical screen) must still ship a band frame, or the page
+	// renders its footer one row off.
+	overlayShown bool
+	bandShipped  int
+}
+
+// SceneView is the part of a Scene the block plane consumes, normalised for
+// shipping: the block snapshot, the pinned chrome height, and the band
+// extension the non-input-capturing overlays (the autocomplete popup) add.
+type SceneView struct {
+	Blocks []tui.SceneBlock
+	// Chrome is the pinned bottom-chrome row count.
+	Chrome int
+	// BandExtra is how many rows ABOVE the chrome band the page must render
+	// as part of the band (the autocomplete popup riding on top of it).
+	BandExtra int
+	// Overlay is true while an input-capturing overlay (selector, confirm)
+	// owns the screen: the page falls back to full-cell rendering.
+	Overlay bool
+	// Width is the width the header art was rendered at.
+	Width int
+}
+
+var _ tui.SceneObserver = (*VirtualTerminal)(nil)
+
+// ObserveScene implements tui.SceneObserver. It captures what the block
+// plane needs from the Scene before the compositor consumes it. Cheap: the
+// block slice is shared, the overlay math walks only the overlay layers.
+func (v *VirtualTerminal) ObserveScene(scene *tui.Scene) {
+	if v.plane != PlaneBlocks || scene == nil {
+		return
+	}
+	view := SceneView{
+		Blocks: scene.Blocks,
+		Chrome: scene.ChromeHeight,
+		Overlay: scene.OverlayCapturesInput,
+		Width:  scene.BlockWidth,
+	}
+	if !view.Overlay {
+		view.BandExtra = bandExtra(scene, view.Chrome)
+	}
+	v.blocksMu.Lock()
+	v.observed = view
+	v.blocksMu.Unlock()
+}
+
+// bandExtra reports how far non-capturing overlays reach above the chrome
+// band. Only overlays seated on the band (the autocomplete popup, whose
+// bottom touches the band's top) extend it; a floating passive overlay is
+// not part of the band.
+func bandExtra(scene *tui.Scene, chrome int) int {
+	bandTop := scene.TerminalH - chrome
+	extra := 0
+	for i := range scene.Layers {
+		l := &scene.Layers[i]
+		if l.Kind != tui.LayerOverlay || l.CapturesInput {
+			continue
+		}
+		if l.Rect.Y+l.Rect.H < bandTop {
+			continue
+		}
+		if reach := bandTop - l.Rect.Y; reach > extra {
+			extra = reach
+		}
+	}
+	return extra
+}
+
+// SetPlane selects what publish ships. It must be called before the engine
+// starts rendering.
+func (v *VirtualTerminal) SetPlane(p Plane) {
+	v.plane = p
+	if p == PlaneBlocks && v.tracker == nil {
+		v.tracker = NewBlockTracker()
+	}
 }
 
 var _ tui.Terminal = (*VirtualTerminal)(nil)
@@ -264,7 +354,16 @@ func (v *VirtualTerminal) dispatch(cb func(string), s string) {
 // gets an authoritative full snapshot (which is what an attach does anyway)
 // instead of the server spending a diff, a run collapse and a JSON encode per
 // engine frame on a screen no one can see.
+//
+// The blocks plane (§22) ships only the bottom chrome band as cells plus the
+// block deltas; the transcript cells and the scrollback never leave the
+// process. The tracker baseline still advances on every frame — shipped or
+// not — so a later attach's journal and the ops that follow it always agree.
 func (v *VirtualTerminal) publish(full bool) {
+	if v.plane == PlaneBlocks {
+		v.publishBlocks(full)
+		return
+	}
 	v.mu.RLock()
 	sink := v.sink
 	v.mu.RUnlock()
@@ -295,6 +394,78 @@ func (v *VirtualTerminal) publish(full bool) {
 	sink.Publish(frame)
 }
 
+// publishBlocks is the blocks-plane publish: chrome band cells + block deltas.
+func (v *VirtualTerminal) publishBlocks(full bool) {
+	v.blocksMu.Lock()
+	view := v.observed
+	ops := v.syncTrackerLocked(view.Blocks)
+	overlay := view.Overlay
+	band := view.Chrome + view.BandExtra
+	entering, leaving := overlay && !v.overlayShown, !overlay && v.overlayShown
+	// A band-geometry change must ship even when no cell moved — otherwise a
+	// resize answered by an identical screen leaves the page's footer window
+	// one row off (the synchronous resize publish carries the PREVIOUS
+	// frame's scene view; the corrected one arrives on the next engine frame,
+	// which may be a no-op).
+	bandMoved := band != v.bandShipped
+	v.overlayShown = overlay
+	v.bandShipped = band
+	v.blocksMu.Unlock()
+
+	v.mu.RLock()
+	sink := v.sink
+	v.mu.RUnlock()
+	if sink == nil {
+		return
+	}
+	if !sink.HasClients() {
+		v.grid.DiscardChanges()
+		return
+	}
+	full = full || entering || leaving || bandMoved
+	chrome := band
+	_, rows := v.grid.Size()
+	var patches []RowPatch
+	if full {
+		patches = v.grid.FullPatches()
+	} else {
+		patches = v.grid.Patches()
+	}
+	if !overlay {
+		patches = filterRows(patches, rows-chrome)
+	}
+	seq := v.frameNo.Add(1)
+	frame := NewFrame(seq, v.grid, patches, v.grid.Title(), full)
+	frame.Chrome = chrome
+	frame.Overlay = overlay
+	frame.Blocks = ops
+	sink.Publish(frame)
+}
+
+// filterRows keeps only the patches at or below top (the chrome band). The
+// transcript rows above it are represented by the block plane, never by cells.
+func filterRows(patches []RowPatch, top int) []RowPatch {
+	if top <= 0 {
+		return patches
+	}
+	out := make([]RowPatch, 0, len(patches))
+	for _, p := range patches {
+		if p.Row >= top {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// syncTrackerLocked advances the tracker to the snapshot and returns the ops
+// a client still needs. Callers hold blocksMu.
+func (v *VirtualTerminal) syncTrackerLocked(blocks []tui.SceneBlock) []BlockOp {
+	if v.tracker == nil {
+		v.tracker = NewBlockTracker()
+	}
+	return v.tracker.Sync(blocks)
+}
+
 // PublishFull ships a full-snapshot frame — what a newly attached client gets
 // as its first frame.
 func (v *VirtualTerminal) PublishFull() {
@@ -302,7 +473,8 @@ func (v *VirtualTerminal) PublishFull() {
 }
 
 // FullFrame builds (without publishing) a frame carrying the whole current
-// screen — what a joining, reconnecting or resyncing client receives.
+// screen — what a joining, reconnecting or resyncing cells-plane client
+// receives.
 //
 // It reports the grid's *current* revision rather than consuming a new one: a
 // snapshot describes the state a client already holding Seq() has, so bumping
@@ -317,6 +489,33 @@ func (v *VirtualTerminal) FullFrame() *Frame {
 	return f
 }
 
+// AttachFrame is the authoritative snapshot a NEW client receives: in the
+// cells plane that is FullFrame (whole grid + scrollback); in the blocks
+// plane it is the chrome band plus the full block journal, because the
+// conversation reaches the page as blocks, not as cells.
+func (v *VirtualTerminal) AttachFrame() *Frame {
+	if v.plane != PlaneBlocks {
+		return v.FullFrame()
+	}
+	v.blocksMu.Lock()
+	view := v.observed
+	v.syncTrackerLocked(view.Blocks) // baseline current; the ops are superseded by the journal
+	ops := v.tracker.Journal()
+	v.blocksMu.Unlock()
+
+	chrome := view.Chrome + view.BandExtra
+	patches := v.grid.FullPatches()
+	if !view.Overlay {
+		_, rows := v.grid.Size()
+		patches = filterRows(patches, rows-chrome)
+	}
+	f := NewFrame(v.Seq(), v.grid, patches, v.grid.Title(), true)
+	f.Chrome = chrome
+	f.Overlay = view.Overlay
+	f.Blocks = ops
+	return f
+}
+
 // Resync decides what a client that announced the revision it holds must be
 // sent. A client whose seq matches the grid is already showing the truth and is
 // sent nothing; anything else — behind, or ahead of a grid that was reset under
@@ -326,7 +525,7 @@ func (v *VirtualTerminal) Resync(since uint64) (*Frame, bool) {
 	if since != 0 && since == v.Seq() {
 		return nil, false
 	}
-	return v.FullFrame(), true
+	return v.AttachFrame(), true
 }
 
 // Seq reports the last frame number published.

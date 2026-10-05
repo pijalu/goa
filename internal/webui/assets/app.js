@@ -4,6 +4,16 @@
 // spans, keeps the rows that scrolled off in a transcript list, and turns
 // keydown/paste into the raw bytes a real terminal would send (spec §7.5).
 // Plain ES2018, no dependencies, no build step.
+//
+// Two planes share this file (specs/webui.md §22):
+//
+//   cells  the v1 pipeline: the whole screen as cell rows, a bounded row
+//          list as history. PLANE === "cells".
+//   blocks the conversation as semantic blocks rendered into HTML flow
+//          content (#blocks) — native reflow, native history — while the
+//          bottom chrome band (editor + status) stays cell-rendered in
+//          #grid. An input-capturing overlay flips the page to full-cell
+//          rendering until it closes. PLANE === "blocks".
 
 (function () {
   "use strict";
@@ -11,13 +21,16 @@
   var SESSION = window.GOA_SESSION || "";
   // screenEl is the ONE scroll container (transcript + live grid); the grid and
   // the caret live inside it, so a scroll moves the caret with the content it
-  // marks. scrollEl is the transcript list itself.
+  // marks. scrollEl is the transcript list itself (cells plane only).
   var screenEl = document.getElementById("screen");
   var scrollEl = document.getElementById("scrollback");
+  var blocksEl = document.getElementById("blocks");
   var gridEl = document.getElementById("grid");
   var rowsEl = document.getElementById("rows");
   var caret = document.getElementById("caret");
   var status = document.getElementById("status");
+
+  var PLANE = document.body.dataset.plane === "blocks" ? "blocks" : "cells";
 
   var rows = [];      // per-row run cache — skip untouched rows
   var cols = 0;
@@ -32,30 +45,28 @@
   // back to the bottom re-arms it (spec §7.3).
   var following = true;
 
+  if (PLANE === "blocks") {
+    scrollEl.hidden = true;
+    blocksEl.hidden = false;
+  }
+
   // ---------------------------------------------------------------- transcript
 
-  // The transcript (the rows that scrolled off the live grid) is the one part of
-  // the page that grows with the session, so it is BOUNDED — exactly like a
-  // terminal's scrollback buffer, which also discards the oldest lines once it
-  // is full.
-  //
-  // Bounding it this way (rather than keeping every row and windowing the DOM
-  // against a spacer) is what keeps the scrolling entirely the browser's: the
-  // scroll range is the transcript that actually exists, the scrollbar never
-  // promises rows that cannot be shown, and there is no script-driven scroll
-  // correction to get wrong. The only thing script does when the oldest rows
-  // fall off is compensate scrollTop by their height, so the view does not jump.
-  //
-  // Measured in Chrome: appending a row and following the tail costs ~1.8 ms per
-  // frame once 10 000 transcript rows are in the DOM, and ~0.33 ms flat once the
-  // transcript is bounded — unbounded, the cost grew with the session for as
-  // long as the tab stayed open.
+  // The transcript is the one part of the page that grows with the session, so
+  // it is BOUNDED — exactly like a terminal's scrollback buffer, which also
+  // discards the oldest lines once it is full. The cells plane bounds row divs,
+  // the blocks plane bounds block elements (their heights vary, so the scroll
+  // compensation reads each removed element's height instead of counting rows).
+
   var TRANSCRIPT_MAX = 2000;
   // TRANSCRIPT_TRIM_BATCH is how many rows fall off at once. Dropping one at a
   // time would shift the row list (and re-flow) for every single line.
   var TRANSCRIPT_TRIM_BATCH = 100;
 
-  var transcriptRows = 0; // rows currently in the transcript list
+  var BLOCKS_MAX = 800;
+  var BLOCKS_TRIM_BATCH = 50;
+
+  var transcriptRows = 0; // rows currently in the transcript list (cells plane)
 
   // raf is requestAnimationFrame where it exists; the timer fallback keeps the
   // page working in an engine that only has timers.
@@ -175,14 +186,15 @@
   }
 
   // onScrollback appends the rows that scrolled off the live grid to the
-  // transcript. Each row is shipped exactly once, so a plain append is all that
-  // is needed — except when the server says the batch REPLACES the transcript
-  // (msg.sbr): the transcript was wiped there (the compositor clears it before
+  // transcript (cells plane only; the blocks plane never receives one). Each
+  // row is shipped exactly once, so a plain append is all that is needed —
+  // except when the server says the batch REPLACES the transcript (msg.sbr):
+  // the transcript was wiped there (the compositor clears it before
   // re-emitting the whole history at a new width, exactly as CSI 3J empties a
   // terminal's scrollback), so the rows it holds now are the whole transcript
   // and appending them would paint the same lines twice.
   function onScrollback(msg) {
-    if (!scrollEl) return;
+    if (PLANE !== "cells" || !scrollEl) return;
     if (msg.sbr) clearTranscript();
     var list = msg.sb || [];
     if (!list.length) return;
@@ -219,9 +231,6 @@
   // which the next scroll event would read as "the user scrolled away" and
   // follow-tail would detach. (Found in a real browser: after a few trims the
   // view had drifted all the way to the top of the transcript.)
-  //
-  // It trims a batch at a time so the row list is not shifted (and re-flowed)
-  // for every single line.
   function trimTranscript(incoming) {
     var total = transcriptRows + incoming;
     if (total <= TRANSCRIPT_MAX + TRANSCRIPT_TRIM_BATCH) return;
@@ -293,6 +302,13 @@
   // input line — the one editable row on the page.
   var cursor = null;
 
+  // bandChrome/overlayMode describe the blocks-plane band the caret lives in:
+  // the caret is positioned relative to #grid, which shows only the LAST
+  // bandChrome rows of the grid model until an overlay flips the page to
+  // full-cell rendering. In cells mode bandChrome stays 0 (grid == screen).
+  var bandChrome = 0;
+  var overlayMode = false;
+
   function placeCaret(cur) {
     if (!cur || !cur.v) {
       cursor = null;
@@ -301,8 +317,362 @@
     }
     cursor = cur;
     caret.hidden = false;
+    var rel = cur.r - Math.max(0, rows.length - bandChrome);
+    if (overlayMode || rel < 0) rel = cur.r;
     caret.style.left = (PAD + cur.c * charWidth) + "px";
-    caret.style.top = (PAD + cur.r * lineHeight) + "px";
+    caret.style.top = (PAD + rel * lineHeight) + "px";
+  }
+
+  // ─────────────────────────────────────────────────────────────── block plane
+
+  // blocks holds the client-side model of every conversation block: id →
+  // {id, kind, text, meta, el, body}. applyBlocks is the only writer.
+  var blocks = {};
+
+  // applyBlocks wires one frame's block operations into #blocks. A "reset"
+  // op clears everything first (history compressed or cleared); "set"
+  // creates or updates one block; a From offset means the text is a suffix
+  // to append (a streaming block strictly growing).
+  function applyBlocks(ops) {
+    if (!ops || !ops.length) return;
+    var dirty = false;
+    for (var i = 0; i < ops.length; i++) {
+      var op = ops[i];
+      if (op.op === "reset") {
+        blocksEl.textContent = "";
+        blocks = {};
+        dirty = true;
+        continue;
+      }
+      if (op.op === "del") {
+        var gone = blocks[op.id];
+        if (gone && gone.el.parentNode) gone.el.parentNode.removeChild(gone.el);
+        delete blocks[op.id];
+        dirty = true;
+        continue;
+      }
+      if (op.op !== "set") continue;
+      var b = blocks[op.id];
+      if (!b) {
+        b = blocks[op.id] = { id: op.id, kind: "", text: "", meta: {}, el: null, body: null };
+      }
+      if (op.from > 0 && b.text.length <= op.from) {
+        b.text = b.text.substring(0, op.from) + (op.text || "");
+      } else if (op.from > 0 && b.text.length > op.from) {
+        // The suffix assumption broke (a rewrite raced a delta): fall back to
+        // replacing the tail wholesale, which is always a safe superset.
+        b.text = b.text.substring(0, op.from) + (op.text || "");
+      } else {
+        b.text = op.text || "";
+        if (op.kind) b.kind = op.kind;
+        if (op.meta) b.meta = op.meta;
+      }
+      if (op.runs) b.runs = op.runs;
+      renderBlock(b);
+      dirty = true;
+    }
+    if (dirty) {
+      trimBlocks();
+      followTail();
+    }
+  }
+
+  // trimBlocks bounds the block list the way trimTranscript bounds rows,
+  // compensating the scroll offset by the removed elements' real heights
+  // (blocks reflow, so no two blocks are the same height).
+  function trimBlocks() {
+    var kids = blocksEl.children;
+    if (kids.length <= BLOCKS_MAX + BLOCKS_TRIM_BATCH) return;
+    var drop = kids.length - BLOCKS_MAX;
+    var height = 0;
+    for (var i = 0; i < drop; i++) {
+      var el = kids[0];
+      if (!el) break;
+      height += el.offsetHeight;
+      delete blocks[Number(el.getAttribute("data-bid"))];
+      blocksEl.removeChild(el);
+    }
+    if (!following && screenEl.scrollTop > 0) {
+      screenEl.scrollTop = Math.max(0, screenEl.scrollTop - height);
+    }
+  }
+
+  // el clears and fills one element from a maker function (all content goes
+  // through DOM APIs — no innerHTML for anything the server sent).
+  function fill(el, make) {
+    el.textContent = "";
+    make(el);
+    return el;
+  }
+
+  // renderBlock (re)builds one block's DOM from its model. Interactive state
+  // the user owns (a <details> they opened or closed) survives the re-render:
+  // streaming updates must not fight the reader.
+  function renderBlock(b) {
+    var kind = b.kind || "info";
+    if (!b.el) {
+      b.el = document.createElement("div");
+      b.el.className = "block";
+      b.el.setAttribute("data-bid", b.id);
+      blocksEl.appendChild(b.el);
+    }
+    b.el.className = "block " + kind;
+    if (kind === "tool") b.el.setAttribute("data-status", (b.meta && b.meta.status) || "pending");
+    var wasOpen = b.body && b.body.open;
+    fill(b.el, function (root) {
+      b.body = null;
+      var meta = b.meta || {};
+      switch (kind) {
+        case "header": {
+          var pre = document.createElement("pre");
+          var runs = b.runs || [];
+          for (var i = 0; i < runs.length; i++) pre.appendChild(runElement(runs[i]));
+          root.appendChild(pre);
+          break;
+        }
+        case "assistant": {
+          var md = document.createElement("div");
+          md.className = "md";
+          renderMarkdown(b.text, md);
+          root.appendChild(md);
+          break;
+        }
+        case "agent": {
+          if (meta.agent) {
+            var chip = document.createElement("div");
+            chip.className = "agent-chip";
+            chip.textContent = "[" + meta.agent + "]";
+            root.appendChild(chip);
+          }
+          var amd = document.createElement("div");
+          amd.className = "md";
+          renderMarkdown(b.text, amd);
+          root.appendChild(amd);
+          break;
+        }
+        case "thinking": {
+          var det = collapsible(wasOpen, meta.expanded !== "0");
+          var sum = document.createElement("summary");
+          sum.textContent = "thinking" + (meta.agent ? " — " + meta.agent : "") + "…";
+          det.appendChild(sum);
+          var body = document.createElement("div");
+          body.className = "body";
+          body.textContent = b.text;
+          det.appendChild(body);
+          b.body = det;
+          root.appendChild(det);
+          break;
+        }
+        case "tool": {
+          var tdet = collapsible(wasOpen, meta.expanded !== "0");
+          var tsum = document.createElement("summary");
+          var name = document.createElement("span");
+          name.className = "t-name";
+          name.textContent = meta.tool || b.text || "tool";
+          tsum.appendChild(name);
+          if (meta.args) {
+            var args = document.createElement("span");
+            args.className = "t-args";
+            args.textContent = " " + meta.args;
+            tsum.appendChild(args);
+          }
+          var st = document.createElement("span");
+          st.className = "t-status";
+          st.textContent = " [" + (meta.status || "pending") + (meta.duration ? " · " + meta.duration : "") + "]";
+          tsum.appendChild(st);
+          tdet.appendChild(tsum);
+          var out = document.createElement("pre");
+          out.className = "t-out";
+          out.textContent = b.text || "";
+          tdet.appendChild(out);
+          b.body = tdet;
+          root.appendChild(tdet);
+          break;
+        }
+        default: {
+          var plain = document.createElement("pre");
+          plain.textContent = b.text;
+          root.appendChild(plain);
+        }
+      }
+    });
+  }
+
+  // collapsible builds a <details> whose open state honours the block's
+  // metadata but never undoes an explicit user toggle (wasOpen wins).
+  function collapsible(wasOpen, metaOpen) {
+    var det = document.createElement("details");
+    if (wasOpen !== undefined) det.open = wasOpen;
+    else det.open = !!metaOpen;
+    return det;
+  }
+
+  // ─────────────────────────────────────────────── markdown (goa's subset)
+
+  // renderMarkdown renders the markdown subset goa emits into DOM nodes:
+  // ATX headings, fenced code, bullet/numbered lists, blockquotes, pipe
+  // tables, hr, paragraphs; inline: bold, italic, strikethrough, inline
+  // code, links. Everything lands via textContent — server text can never
+  // become markup.
+  function renderMarkdown(src, root) {
+    var lines = (src || "").split("\n");
+    var i = 0;
+    while (i < lines.length) {
+      var line = lines[i];
+      if (/^\s*$/.test(line)) { i++; continue; }
+      var fence = /^\s*```\s*(\S*)\s*$/.exec(line);
+      if (fence) {
+        var code = [];
+        i++;
+        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+          code.push(lines[i]);
+          i++;
+        }
+        i++; // closing fence (or EOF)
+        var pre = document.createElement("pre");
+        var c = document.createElement("code");
+        if (fence[1]) c.setAttribute("data-lang", fence[1]);
+        c.textContent = code.join("\n");
+        pre.appendChild(c);
+        root.appendChild(pre);
+        continue;
+      }
+      var h = /^(#{1,4})\s+(.*)$/.exec(line);
+      if (h) {
+        var hd = document.createElement("h" + h[1].length);
+        renderInline(h[2], hd);
+        root.appendChild(hd);
+        i++;
+        continue;
+      }
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        root.appendChild(document.createElement("hr"));
+        i++;
+        continue;
+      }
+      if (/^\s*>\s?/.test(line)) {
+        var q = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+          q.push(lines[i].replace(/^\s*>\s?/, ""));
+          i++;
+        }
+        var bq = document.createElement("blockquote");
+        renderMarkdown(q.join("\n"), bq);
+        root.appendChild(bq);
+        continue;
+      }
+      if (/^\s*[-*+]\s+/.test(line)) {
+        var ul = document.createElement("ul");
+        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+          var li = document.createElement("li");
+          renderInline(lines[i].replace(/^\s*[-*+]\s+/, ""), li);
+          ul.appendChild(li);
+          i++;
+        }
+        root.appendChild(ul);
+        continue;
+      }
+      if (/^\s*\d+[.)]\s+/.test(line)) {
+        var ol = document.createElement("ol");
+        while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+          var oli = document.createElement("li");
+          renderInline(lines[i].replace(/^\s*\d+[.)]\s+/, ""), oli);
+          ol.appendChild(oli);
+          i++;
+        }
+        root.appendChild(ol);
+        continue;
+      }
+      if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+        var tbl = document.createElement("table");
+        var head = splitRow(line);
+        var thead = document.createElement("tr");
+        head.forEach(function (cell) {
+          var th = document.createElement("th");
+          renderInline(cell, th);
+          thead.appendChild(th);
+        });
+        tbl.appendChild(thead);
+        i += 2;
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+          var tr = document.createElement("tr");
+          splitRow(lines[i]).forEach(function (cell) {
+            var td = document.createElement("td");
+            renderInline(cell, td);
+            tr.appendChild(td);
+          });
+          tbl.appendChild(tr);
+          i++;
+        }
+        root.appendChild(tbl);
+        continue;
+      }
+      // Paragraph: consecutive non-blank, non-structural lines.
+      var para = [];
+      while (i < lines.length && !/^\s*$/.test(lines[i]) &&
+             !/^\s*```/.test(lines[i]) && !/^#{1,4}\s/.test(lines[i]) &&
+             !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+[.)]\s+/.test(lines[i]) &&
+             !/^\s*>\s?/.test(lines[i]) && !/^\s*\|.*\|\s*$/.test(lines[i])) {
+        para.push(lines[i]);
+        i++;
+      }
+      if (para.length) {
+        var p = document.createElement("p");
+        renderInline(para.join("\n"), p);
+        root.appendChild(p);
+      } else {
+        i++; // structural-line safety net: never stall the walk
+      }
+    }
+  }
+
+  function splitRow(line) {
+    var t = line.trim();
+    t = t.replace(/^\|/, "").replace(/\|$/, "");
+    var cells = t.split("|");
+    for (var i = 0; i < cells.length; i++) cells[i] = cells[i].trim();
+    return cells;
+  }
+
+  // INLINE_RE matches, in priority order: bold, inline code, italic,
+  // strikethrough, links. The first matching alternative wins.
+  var INLINE_RE = /\*\*([^*]+)\*\*|`([^`]+)`|\*([^*\n]+)\*|~~([^~]+)~~|\[([^\]]+)\]\(([^)\s]+)\)/g;
+
+  // renderInline appends the inline-level rendering of text to el.
+  function renderInline(text, el) {
+    var m;
+    var last = 0;
+    INLINE_RE.lastIndex = 0;
+    while ((m = INLINE_RE.exec(text)) !== null) {
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+      if (m[1] !== undefined) {
+        var b = document.createElement("strong");
+        b.textContent = m[1];
+        el.appendChild(b);
+      } else if (m[2] !== undefined) {
+        var c = document.createElement("code");
+        c.textContent = m[2];
+        el.appendChild(c);
+      } else if (m[3] !== undefined) {
+        var it = document.createElement("em");
+        it.textContent = m[3];
+        el.appendChild(it);
+      } else if (m[4] !== undefined) {
+        var d = document.createElement("del");
+        d.textContent = m[4];
+        el.appendChild(d);
+      } else if (m[5] !== undefined) {
+        if (external(m[6])) {
+          var a = linkElement(m[6]);
+          a.textContent = m[5];
+          el.appendChild(a);
+        } else {
+          el.appendChild(document.createTextNode(m[5] + " (" + m[6] + ")"));
+        }
+      }
+      last = INLINE_RE.lastIndex;
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
   }
 
   function onFrame(msg) {
@@ -311,6 +681,19 @@
     (msg.patches || []).forEach(applyRow);
     placeCaret(msg.cur);
     if (msg.title) document.title = msg.title;
+    if (PLANE === "blocks") {
+      var chrome = msg.chrome | 0;
+      if (chrome !== bandChrome) {
+        bandChrome = chrome;
+        document.documentElement.style.setProperty("--chrome", String(Math.max(chrome, 1)));
+      }
+      var wantOverlay = !!msg.ovl;
+      if (wantOverlay !== overlayMode) {
+        overlayMode = wantOverlay;
+        screenEl.classList.toggle("overlay-mode", overlayMode);
+      }
+      if (msg.blocks) applyBlocks(msg.blocks);
+    }
     // Follow-tail: only auto-scroll while the user has not scrolled away.
     followTail();
   }
@@ -909,6 +1292,10 @@
   // input line: the cursor is walked to the selection when it is not already
   // there, then Backspace (delete behind the cursor) or Delete (delete ahead of
   // it) removes exactly the selected characters.
+  //
+  // In both planes #rows holds the whole grid model and the cursor indexes it,
+  // so the cursor's row element is looked up the same way; the blocks plane
+  // merely HIDES the rows above the band with CSS.
   function deleteSelectedRange(range) {
     var row = cursor && rowsEl ? rowsEl.children[cursor.r] : null;
     if (!row) return;
@@ -1052,7 +1439,10 @@
 
   // A resize burst is debounced (spec §14.6): the cell metrics are re-measured
   // immediately (the layout is already changing), but the geometry message the
-  // server turns into a full repaint waits for the drag to settle.
+  // server turns into a full repaint waits for the drag to settle. In the
+  // blocks plane the conversation reflows by itself — the geometry only drives
+  // the band and the engine's layout — so the page never repaints history on
+  // resize.
   var resizeTimer = null;
 
   window.addEventListener("resize", function () {
@@ -1068,8 +1458,6 @@
   // returning to the bottom re-attaches. The listener is passive so it never
   // blocks the browser's scrolling, and it is on the scroll container — the
   // element that actually scrolls — not on the transcript list inside it.
-  // Nothing else needs to run on scroll: the transcript is a real list of real
-  // rows, so the browser owns the whole interaction.
   if (screenEl) {
     screenEl.addEventListener("scroll", function () {
       following = atBottom();

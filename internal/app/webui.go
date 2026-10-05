@@ -20,17 +20,20 @@ const webServerUsage = `goa server — serve the Goa UI as a web page
 Usage:
     goa server [--server-addr 127.0.0.1:8080] [--server-read-only]
                [--server-auth basic|token] [--insecure-no-auth]
+               [--server-cells]
 
-The browser is the terminal: the same TUI engine renders into a virtual
-screen and the resulting cells are streamed to the page over a WebSocket.
-Keys typed in the browser reach the agent exactly as keystrokes do in a real
-terminal.
+The browser renders the conversation as HTML blocks (native scrolling and
+resize) and keeps the input line/status band as live terminal cells, so
+typing behaves exactly like the TUI. --server-cells serves the legacy
+plane instead: the whole screen as terminal cells (the browser is the
+terminal).
 
 Options:
     --server-addr       listen address (default 127.0.0.1:8080)
     --server-read-only  viewer mode: browsers see the session, keystrokes and
                         image uploads are refused (use for screen sharing)
     --server-max-clients  maximum attached browsers (0 = built-in default)
+    --server-cells      legacy whole-screen-as-cells plane
 
 Security:
     Without --server-auth the server only listens on loopback: a browser can
@@ -177,6 +180,10 @@ func newWebServer(subs *subsystems, opts RuntimeOptions) (*webui.Server, error) 
 	// an early browser must be answered by a session that can act on its input
 	// rather than have its keystrokes land in a half-built engine (bugs.md B7).
 	subs.webReady = make(chan struct{})
+	plane := webui.PlaneBlocks
+	if opts.ServerCells {
+		plane = webui.PlaneCells
+	}
 	return webui.NewServer(vt, cols, rows, webui.ServerOptions{
 		Addr:           addr,
 		SessionID:      webSessionID(subs),
@@ -184,6 +191,7 @@ func newWebServer(subs *subsystems, opts RuntimeOptions) (*webui.Server, error) 
 		MaxClients:     opts.ServerMaxClients,
 		Auth:           authCfg,
 		InsecureNoAuth: opts.InsecureNoAuth,
+		Plane:          plane,
 		Ready:          subs.webReady,
 	}), nil
 }

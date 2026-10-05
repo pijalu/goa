@@ -86,6 +86,11 @@ type ServerOptions struct {
 	InsecureNoAuth bool
 	// Keepalive tunes the WebSocket liveness policy (zero = defaults).
 	Keepalive Keepalive
+	// Plane selects what the server ships (specs/webui.md §22). The zero
+	// value is PlaneCells — the proven v1 pipeline — so every caller that
+	// does not opt in keeps today's exact behaviour. Production `goa server`
+	// opts into PlaneBlocks.
+	Plane Plane
 	// Ready, when non-nil, holds every request until the session behind the
 	// server has finished wiring itself up. The listener binds before the app
 	// builds its engine, so without this an early client can attach and type
@@ -175,6 +180,7 @@ func NewServer(term *VirtualTerminal, cols, rows int, opts ServerOptions) *Serve
 	}
 	term.Resize(cols, rows)
 	term.SetSink(s.hub)
+	term.SetPlane(opts.Plane)
 	s.upgr = websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
@@ -371,11 +377,16 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 // 'unsafe-inline'.
 func (s *Server) pageData(id string, r *http.Request) PageData {
 	th := tui.TheTheme
+	// The plane is server-wide (the transcript cells the cells plane ships
+	// exist only when the server was started with --server-cells), so a page
+	// query cannot switch it: the rendering plane follows ServerOptions.Plane
+	// and `?mode=plain` remains the no-JS fallback.
 	return PageData{
 		SessionID: id,
 		Theme:     ThemeName(th),
 		ThemeVars: ThemeVars(th),
 		Nonce:     nonceOf(r),
+		Plane:     s.opts.Plane.String(),
 	}
 }
 
@@ -458,11 +469,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// told where it now lives, so it reconnects to the canonical URL instead of
 	// retrying a 404 forever.
 	s.announceRotation(client, id)
-	// A joining client gets the authoritative screen: the grid is the truth, so
-	// there is nothing to replay. The frame carries the grid's current revision,
-	// which is what lets the client's own hello be answered with "you are
-	// current" when nothing changed while it was away.
-	sendFrame(client, s.term.FullFrame())
+	// A joining client gets the authoritative snapshot: in the cells plane
+	// that is the whole grid plus the transcript it missed; in the blocks
+	// plane it is the chrome band plus the conversation journal (the grid is
+	// the truth, so there is nothing to replay either way). The frame carries
+	// the grid's current revision, which is what lets the client's own hello
+	// be answered with "you are current" when nothing changed while it was
+	// away.
+	sendFrame(client, s.term.AttachFrame())
 	client.ReadLoop(ClientHandlers{
 		Input:  func(in string) { s.term.Input(in) },
 		Key:    func(ev KeyEvent) { s.term.Input(string(EncodeKey(ev))) },

@@ -5,16 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>goa — {{.SessionID}}</title>
-<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/app.css?v={{.AssetV}}">
   <style nonce="{{.Nonce}}">{{.CSS}}</style>
 </head>
-<body data-session="{{.SessionID}}">
-    <!-- #screen is the one scroll container: the transcript (#scrollback, the
-         rows that scrolled off the top) sits above the live screen (#grid), so
-         "at the bottom" is the normal terminal view and scrolling up reveals
-         history. #rows holds the row divs; #caret is positioned inside #grid so
-         it scrolls with the content it marks. -->
+<body data-session="{{.SessionID}}" data-plane="{{.Plane}}">
+    <!-- #screen is the one scroll container. Two planes drive it (spec §22):
+         blocks — #blocks holds the conversation as HTML flow content (native
+           reflow, native history) and #grid renders only the bottom chrome
+           band (editor + status) as a cell footer;
+         cells — #scrollback holds the rows that scrolled off the top and
+           #grid is the whole live screen, exactly like the v1 terminal.
+         In blocks mode an input-capturing overlay (selector, confirm) flips
+         the page to overlay-mode: #blocks hides and #grid grows to the full
+         screen until the overlay closes. #caret is positioned inside #grid
+         so it scrolls with the content it marks. -->
     <div id="screen" class="screen">
+      <div id="blocks" class="blocks" role="log" aria-live="polite" aria-label="goa conversation" hidden></div>
       <div id="scrollback" class="scrollback" aria-hidden="true"></div>
       <div id="grid" class="grid" role="log" aria-live="polite" aria-label="goa terminal" tabindex="0">
         <div id="rows" class="rows"></div>
@@ -23,6 +29,6 @@
     </div>
   <div id="status" class="status" data-state="connecting">connecting…</div>
   <script nonce="{{.Nonce}}">window.GOA_SESSION = {{.SessionID}};</script>
-  <script src="/assets/app.js"></script>
+  <script src="/assets/app.js?v={{.AssetV}}"></script>
 </body>
 </html>

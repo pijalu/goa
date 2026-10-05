@@ -8,15 +8,17 @@ Copyright (C) 2026 Pierre Poissinger
 
 `goa server` runs the ordinary interactive Goa session against a virtual
 terminal instead of a TTY, and serves the resulting screen to browsers over
-HTTP. The browser **is** the terminal: the same `tui` engine renders, the same
-editor holds the input, and keys typed in the page reach the agent exactly as
-keystrokes do in a real terminal.
+HTTP. The conversation is streamed as semantic blocks the page renders as
+HTML — scrolling, resize and history are the browser's own — while the input
+line and status band stay live terminal cells, so typing behaves exactly like
+the TUI and keys reach the agent byte-for-byte as they do in a real terminal.
 
 ```bash
 goa server                                   # loopback only, no credentials
 goa server --server-auth=token                # reachable beyond this machine
 goa server --server-addr 0.0.0.0:7331 --server-auth=token
 goa server --server-read-only                 # screen sharing: viewers only
+goa server --server-cells                     # legacy: the whole screen as terminal cells
 ```
 
 ---

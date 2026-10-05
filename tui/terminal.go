@@ -31,6 +31,14 @@ type Terminal interface {
 	io.Writer
 }
 
+// SceneObserver is an optional Terminal extension: a terminal that wants the
+// protocol-free Scene each frame is built from (the web block plane consumes
+// it to ship semantic blocks instead of re-parsing compositor bytes). The TUI
+// notifies it from renderOneFrame, before the compositor takes the scene.
+type SceneObserver interface {
+	ObserveScene(scene *Scene)
+}
+
 // screenOwnerCount tracks live ProcessTerminal sessions holding raw mode —
 // i.e. a full-screen TUI currently owns the display. While it is non-zero,
 // stray process-level writes to stdout/stderr (macOS libmalloc warnings such

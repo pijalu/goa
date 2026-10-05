@@ -82,7 +82,10 @@ log "building goa"
 go build -o "$GOA_BIN" ./cmd/goa/
 
 log "starting 'goa server' on 127.0.0.1:$WEB_PORT pinned to $GOA_ACTIVE_PROVIDER/$GOA_ACTIVE_MODEL"
-"$GOA_BIN" server --server-addr "127.0.0.1:$WEB_PORT" \
+# --server-cells pins the v1 cell-terminal plane: this script asserts the
+# page mechanics of THAT plane (scroll container, caret, footer band,
+# transcript bounding). The blocks plane has its own script (w2).
+"$GOA_BIN" server --server-addr "127.0.0.1:$WEB_PORT" --server-cells \
   > "$E2E_ROOT/webui.log" 2>&1 &
 WEB_PID=$!
 

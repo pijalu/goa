@@ -80,8 +80,38 @@ func (t *TUI) buildScene(w, h int) *Scene {
 	scene.Layers, scene.Nodes = t.buildBaseLayers(rendered, w, h)
 	scene.ChromeHeight = t.bottomChromeHeight(rendered)
 	scene.OverlayCapturesInput = t.buildOverlayLayers(scene, w, h)
+	scene.Blocks, scene.BlockWidth = t.exportSceneBlocks(rendered, w)
 	extractCursorMarker(scene)
 	return scene
+}
+
+// exportSceneBlocks collects the Scene's semantic blocks: the header art
+// (every child rendered above the scrollable transcript) and the transcript
+// viewport's conversation blocks. Runs on the commandLoop; components with
+// nothing to export are simply absent.
+func (t *TUI) exportSceneBlocks(rendered [][]string, w int) ([]SceneBlock, int) {
+	var blocks []SceneBlock
+	var header []string
+	transcriptIdx := t.transcriptChildIndex()
+	for i := range t.children {
+		if i == transcriptIdx {
+			break
+		}
+		header = append(header, rendered[i]...)
+	}
+	if len(header) > 0 {
+		blocks = append(blocks, SceneBlock{
+			ID:    HeaderBlockID,
+			Kind:  BlockHeader,
+			Lines: header,
+		})
+	}
+	for _, child := range t.children {
+		if be, ok := child.(BlockExporter); ok {
+			blocks = append(blocks, be.ExportBlocks()...)
+		}
+	}
+	return blocks, w
 }
 
 // publishScrollWatermark pushes the compositor's scrollback watermark (the
@@ -286,6 +316,10 @@ func buildPopupOverlays(seeds []popupSeed, w, h, baseHeight int) ([]Layer, []Age
 			Z:       1,
 			Rect:    rect,
 			Content: content,
+			// The popup is advisory: the editor keeps the keyboard, so in the
+			// web block plane it extends the band instead of forcing the
+			// full-cell fallback.
+			CapturesInput: false,
 		})
 		nodes = append(nodes, AgentNode{Name: "popup", Type: "*tui.Popup", Rect: rect})
 	}
@@ -311,11 +345,12 @@ func (t *TUI) buildOverlayLayers(scene *Scene, w, h int) bool {
 		startRow := overlayStartRow(ov.opts, oh, h)
 		rect := Rect{X: 0, Y: startRow, W: w, H: oh}
 		scene.Layers = append(scene.Layers, Layer{
-			Name:    componentLayerName(ov.comp),
-			Kind:    LayerOverlay,
-			Z:       1 + len(scene.Layers),
-			Rect:    rect,
-			Content: append([]string(nil), olines[:oh]...),
+			Name:          componentLayerName(ov.comp),
+			Kind:          LayerOverlay,
+			Z:             1 + len(scene.Layers),
+			Rect:          rect,
+			Content:       append([]string(nil), olines[:oh]...),
+			CapturesInput: ov.opts.CaptureInput,
 		})
 		scene.Nodes = append(scene.Nodes, agentNodeFor(ov.comp, rect, olines[:oh]))
 	}

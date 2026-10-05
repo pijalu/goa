@@ -24,6 +24,11 @@ type Layer struct {
 	Z       int      // higher draws on top of lower
 	Rect    Rect     // position/size in the virtual buffer
 	Content []string // styled lines; expected len == Rect.H
+	// CapturesInput marks an overlay that owns the keyboard while visible
+	// (selectors, confirms). The web block plane falls back to full-cell
+	// frames while one is up; overlays without it (the autocomplete popup)
+	// merely extend the rendered band.
+	CapturesInput bool
 }
 
 // CursorPos is a logical cursor position in virtual-buffer coordinates.
@@ -67,6 +72,16 @@ type Scene struct {
 	// re-sync a deferred scrollback exactly once instead of on every stream
 	// chunk.
 	MutationGen uint64
+
+	// Blocks is the conversation as semantic blocks (specs/webui.md §22): one
+	// per transcript entry plus the header art. Built by buildScene from the
+	// components' own Model state; the compositor ignores it. The web block
+	// plane diffs it into id-keyed upserts, so the page renders HTML flow
+	// content instead of re-deriving semantics from cell rows.
+	Blocks []SceneBlock
+	// BlockWidth is the width the header art Lines were rendered at, so a
+	// consumer knows when they must be re-shipped.
+	BlockWidth int
 }
 
 // compose builds the virtual-buffer canvas from the Scene's base layers, each
