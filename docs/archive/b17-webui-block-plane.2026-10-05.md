@@ -133,3 +133,15 @@ ctrl_d_detach added; all PASS in a real Chrome) and a live tool-call pass
    pin the browser contract.
 
 `e2e/w2_webui_blocks.sh`: 14 checks, all PASS in real Chrome.
+
+## Follow-up 3 (same day) — the caret is limited to the input line
+
+After a command like /quota the caret could vanish: a frame whose emulator
+cursor sat at a transcript row (mid-output position) hit placeCaret's
+grid-absolute fallback, which put the caret outside the band window where
+the clip made it invisible — and no further frame needed to arrive for it
+to stay that way. The caret is now LIMITED to the band, as the user put
+it: a cursor outside the band draws nothing, and the input-line caret
+reappears with the first frame that places it back in the band. Pinned by
+the e2e caret_limited check (after /quota: hidden or inside the band,
+never outside) — 15 checks, all PASS.

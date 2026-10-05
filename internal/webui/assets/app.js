@@ -316,14 +316,25 @@
       return;
     }
     cursor = cur;
-    caret.hidden = false;
-    // The band window has no top padding (see app.css) while the cells and
-    // overlay planes keep the full PAD — the inset follows the mode.
-    var topInset = (PLANE === "blocks" && !overlayMode) ? 0 : PAD;
-    var rel = cur.r - Math.max(0, rows.length - bandChrome);
-    if (overlayMode || rel < 0) rel = cur.r;
     caret.style.left = (PAD + cur.c * charWidth) + "px";
-    caret.style.top = (topInset + rel * lineHeight) + "px";
+    // The blocks-plane band renders only the input line and the status
+    // rows: the caret is LIMITED to it. A frame whose cursor sits outside
+    // the band (mid-transcript output positions the emulator cursor
+    // elsewhere) draws nothing — the grid-absolute fallback used here
+    // before placed the caret outside the window, where the clip made it
+    // invisible after a command like /quota.
+    if (PLANE === "blocks" && !overlayMode) {
+      var rel = cur.r - Math.max(0, rows.length - bandChrome);
+      if (rel < 0 || rel >= bandChrome) {
+        caret.hidden = true;
+        return;
+      }
+      caret.hidden = false;
+      caret.style.top = (rel * lineHeight) + "px";
+      return;
+    }
+    caret.hidden = false;
+    caret.style.top = (PAD + cur.r * lineHeight) + "px";
   }
 
   // ─────────────────────────────────────────────────────────────── block plane

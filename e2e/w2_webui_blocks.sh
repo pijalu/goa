@@ -252,6 +252,21 @@ else
   record quota_md FAIL "quota output stayed raw markdown source"
 fi
 
+# caret_limited: after the command's output, the caret is either hidden or
+# inside the band — never stranded outside the window where the clip makes
+# it invisible.
+sleep 1
+LIMIT_JS='(() => { const c = document.getElementById("caret");
+  if (c.hidden) return JSON.stringify({ok: true, hidden: true});
+  const r = c.getBoundingClientRect();
+  const g = document.getElementById("grid").getBoundingClientRect();
+  return JSON.stringify({ok: r.top >= g.top - 1 && r.bottom <= g.bottom + 1, hidden: false}); })()'
+L=$(abq "$LIMIT_JS")
+case "$L" in
+  *'"ok":true'*) record caret_limited PASS "caret limited to the band after /quota: $L" ;;
+  *) record caret_limited FAIL "caret outside the band after /quota: $L" ;;
+esac
+
 # popup_remnant: after a command ran (popup opened and closed above), the
 # band must not leak the stale popup rows: the band window has no top
 # padding, so nothing paints between the conversation and the band.
