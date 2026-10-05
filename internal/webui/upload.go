@@ -10,8 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"strings"
 
 	"github.com/pijalu/goa/internal"
 )
@@ -76,44 +74,32 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 // a crafted multipart part can neither choose the on-disk extension nor smuggle
 // a non-image past the check.
 func saveUploadedImage(r io.Reader) (string, int64, error) {
-	head := make([]byte, sniffLen)
+	head := make([]byte, internal.SniffLen)
 	n, err := io.ReadFull(r, head)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", 0, fmt.Errorf("read upload: %w", err)
 	}
 	head = head[:n]
 
-	// Only the bytes decide. A declared Content-Type is attacker-controlled,
-	// so trusting it as a fallback would let any file be stored as an image.
-	ext := detectImageExt(head)
-	if ext == "" {
-		return "", 0, errNotImage
-	}
-
-	body := io.MultiReader(strings.NewReader(string(head)), r)
-	// Stored in the durable image store, not os.TempDir: the path is embedded in
-	// conversation history and re-read on every later request, so it must survive
-	// a reboot or a tmp cleaner.
-	f, err := internal.NewImageFile(ext)
+	// The bytes alone decide the format, and the store is the one place that
+	// decides which formats exist: internal.StoreImage applies the magic table
+	// the terminal paste path uses too, so the two paths cannot disagree about
+	// what an image is. A declared Content-Type or filename is never consulted
+	// — either is attacker-controlled, and trusting one would let any file be
+	// stored as an image.
+	//
+	// The file lands in the durable image store, not os.TempDir: the path is
+	// embedded in conversation history and re-read on every later request, so it
+	// must survive a reboot or a tmp cleaner.
+	path, written, err := internal.StoreImage(head, r, MaxUploadBytes)
 	if err != nil {
+		if errors.Is(err, internal.ErrNotImage) {
+			return "", 0, errNotImage
+		}
 		return "", 0, err
 	}
-	defer f.Close()
-	written, err := io.Copy(f, io.LimitReader(body, MaxUploadBytes+1))
-	if err != nil {
-		os.Remove(f.Name())
-		return "", 0, fmt.Errorf("write upload: %w", err)
-	}
-	if written > MaxUploadBytes {
-		os.Remove(f.Name())
-		return "", 0, fmt.Errorf("image larger than %d bytes", MaxUploadBytes)
-	}
-	return f.Name(), written, nil
+	return path, written, nil
 }
-
-// sniffLen is how many leading bytes identify every format we accept (the
-// longest signature, RIFF….WEBP, is 12 bytes; 64 leaves room to spare).
-const sniffLen = 64
 
 // detectImageExt maps the leading bytes of a file to an extension. The magic
 // table lives in package internal (internal.SniffImageExt) so the terminal

@@ -5,16 +5,24 @@
 package tui
 
 import (
-	"image"
 	"testing"
 )
 
+// testClipboardImage is the image payload the paste tests hand back: real PNG
+// bytes, because the editor stores what the clipboard published rather than
+// re-encoding a decoded image.
+func testClipboardImage(t *testing.T) []byte {
+	t.Helper()
+	return clipboardImageBytes(t)
+}
+
 // newPasteEditor returns an editor whose clipboard readers are all stubbed so a
-// test never touches the developer's real clipboard.
-func newPasteEditor(t *testing.T, img image.Image, paths []string, text string, textOK bool) *Editor {
+// test never touches the developer's real clipboard. image is the clipboard's
+// image bytes, or nil for "no image on the clipboard".
+func newPasteEditor(t *testing.T, image []byte, paths []string, text string, textOK bool) *Editor {
 	t.Helper()
 	e := NewEditor()
-	e.readClipboardImage = func() (image.Image, error) { return img, nil }
+	e.readClipboardImage = func() ([]byte, bool) { return image, image != nil }
 	e.readClipboardFilePaths = func() []string { return paths }
 	e.readClipboardText = func() (string, bool) { return text, textOK }
 	return e
@@ -24,9 +32,9 @@ func newPasteEditor(t *testing.T, img image.Image, paths []string, text string, 
 // the explicit paste: with no OnImagePaste hook the path is inserted as text so
 // the agent receives it as an attachment.
 func TestEditor_PasteFromClipboard_InsertsImageReference(t *testing.T) {
-	e := newPasteEditor(t, image.NewRGBA(image.Rect(0, 0, 1, 1)), nil, "", false)
+	e := newPasteEditor(t, testClipboardImage(t), nil, "", false)
 	oldSave := saveClipboardImage
-	saveClipboardImage = func(image.Image) (string, error) { return "/tmp/test-paste.png", nil }
+	saveClipboardImage = func([]byte) (string, error) { return "/tmp/test-paste.png", nil }
 	defer func() { saveClipboardImage = oldSave }()
 
 	e.pasteFromClipboard()
@@ -40,9 +48,9 @@ func TestEditor_PasteFromClipboard_InsertsImageReference(t *testing.T) {
 // public input entry so the ctrl+v binding and the callback batching are
 // exercised exactly as in production.
 func TestEditor_PasteFromClipboard_CallsOnImagePaste(t *testing.T) {
-	e := newPasteEditor(t, image.NewRGBA(image.Rect(0, 0, 1, 1)), nil, "", false)
+	e := newPasteEditor(t, testClipboardImage(t), nil, "", false)
 	oldSave := saveClipboardImage
-	saveClipboardImage = func(image.Image) (string, error) { return "/tmp/test-paste.png", nil }
+	saveClipboardImage = func([]byte) (string, error) { return "/tmp/test-paste.png", nil }
 	defer func() { saveClipboardImage = oldSave }()
 
 	var gotPath string
@@ -85,7 +93,7 @@ func TestEditor_PasteFromClipboard_TextFallback(t *testing.T) {
 // (paths → image → text) that a Finder/Explorer copy depends on: copying a file
 // often publishes both a file list and image data.
 func TestEditor_PasteFromClipboard_FilePathsWinOverImage(t *testing.T) {
-	e := newPasteEditor(t, image.NewRGBA(image.Rect(0, 0, 1, 1)), []string{"/a/one.png", "/b/two.txt"}, "", false)
+	e := newPasteEditor(t, testClipboardImage(t), []string{"/a/one.png", "/b/two.txt"}, "", false)
 
 	e.pasteFromClipboard()
 
@@ -110,9 +118,9 @@ func TestEditor_PasteFromClipboard_EmptyClipboard(t *testing.T) {
 // the clipboard-image hijack: a pasted text blob must never be replaced by a
 // clipboard image that happens to be present (the clipboard can hold both).
 func TestEditor_TextPaste_KeepsTextWhenClipboardHasImage(t *testing.T) {
-	e := newPasteEditor(t, image.NewRGBA(image.Rect(0, 0, 1, 1)), nil, "clipboard text", true)
+	e := newPasteEditor(t, testClipboardImage(t), nil, "clipboard text", true)
 	oldSave := saveClipboardImage
-	saveClipboardImage = func(image.Image) (string, error) { return "/tmp/test-paste.png", nil }
+	saveClipboardImage = func([]byte) (string, error) { return "/tmp/test-paste.png", nil }
 	defer func() { saveClipboardImage = oldSave }()
 
 	// A text paste arrives as a single multi-line event, as in production.

@@ -15,6 +15,10 @@ import (
 	"time"
 )
 
+// Per-backend unit tests. The platform *dispatch* they feed is covered in
+// clipboard_dispatch_test.go; these pin what each backend does with the bytes it
+// is given.
+
 // fakeClipboard replaces the clipboard command runner for the duration of a
 // test. handler receives the command name and args and returns stdout/ok.
 func fakeClipboard(t *testing.T, handler func(name string, args []string) ([]byte, bool)) {
@@ -61,6 +65,8 @@ func macScriptPath(t *testing.T, script string) string {
 // write permission` fails if the file already exists, so the destination must be
 // removed before osascript runs.
 func TestReadDarwinClipboardImage(t *testing.T) {
+	noSessionEnv(t)
+	withPlatform(t, "darwin", "osascript")
 	want := tinyPNG(t)
 	var sawPath string
 	fakeClipboard(t, func(name string, args []string) ([]byte, bool) {
@@ -77,9 +83,9 @@ func TestReadDarwinClipboardImage(t *testing.T) {
 		return nil, true
 	})
 
-	got, ok := readDarwinClipboardImage()
-	if !ok {
-		t.Fatal("readDarwinClipboardImage reported no image")
+	got, out := readDarwinClipboardImage()
+	if out != clipFound {
+		t.Fatalf("readDarwinClipboardImage reported %v, want clipFound", out)
 	}
 	if !bytes.Equal(got, want) {
 		t.Error("returned bytes are not the clipboard payload")
@@ -90,23 +96,44 @@ func TestReadDarwinClipboardImage(t *testing.T) {
 }
 
 // TestReadDarwinClipboardImage_NoImage: osascript fails when the clipboard holds
-// text or a file, which must read as "no image", not as an error.
+// text or a file, which must read as "no image here" — the chain may move on to
+// the next flavour, but no image was found.
 func TestReadDarwinClipboardImage_NoImage(t *testing.T) {
+	noSessionEnv(t)
+	withPlatform(t, "darwin", "osascript")
 	fakeClipboard(t, func(string, []string) ([]byte, bool) { return nil, false })
 
-	got, ok := readDarwinClipboardImage()
-	if ok || got != nil {
-		t.Errorf("readDarwinClipboardImage = (%v,%v), want (nil,false)", got, ok)
+	got, out := readDarwinClipboardImage()
+	if out != clipAbsent || got != nil {
+		t.Errorf("readDarwinClipboardImage = (%v,%v), want (nil,clipAbsent)", got, out)
 	}
 }
 
 // TestReadDarwinClipboardImage_EmptyOutput guards against reporting an image when
 // the script exited 0 but wrote nothing.
 func TestReadDarwinClipboardImage_EmptyOutput(t *testing.T) {
+	noSessionEnv(t)
+	withPlatform(t, "darwin", "osascript")
 	fakeClipboard(t, func(string, []string) ([]byte, bool) { return nil, true })
 
-	if _, ok := readDarwinClipboardImage(); ok {
-		t.Error("an empty clipboard file must not count as an image")
+	if _, out := readDarwinClipboardImage(); out != clipAbsent {
+		t.Errorf("empty clipboard file reported %v, want clipAbsent", out)
+	}
+}
+
+// TestReadDarwinClipboardImage_NoOsascript: without the helper the backend cannot
+// answer at all, which is what lets the chain try another backend instead of
+// concluding "no image".
+func TestReadDarwinClipboardImage_NoOsascript(t *testing.T) {
+	noSessionEnv(t)
+	withPlatform(t, "darwin") // osascript not on PATH
+	fakeClipboard(t, func(string, []string) ([]byte, bool) {
+		t.Fatal("a missing helper must not be run")
+		return nil, false
+	})
+
+	if _, out := readDarwinClipboardImage(); out != clipUnavailable {
+		t.Errorf("missing osascript reported %v, want clipUnavailable", out)
 	}
 }
 
@@ -114,6 +141,7 @@ func TestReadDarwinClipboardImage_EmptyOutput(t *testing.T) {
 // the offered MIME list is inspected so a JPEG is not requested as PNG (which
 // wl-paste would refuse).
 func TestReadWlPasteImage_SelectsOfferedType(t *testing.T) {
+	withPlatform(t, "linux", "wl-paste")
 	want := []byte("jpeg-bytes")
 	var requested string
 	fakeClipboard(t, func(name string, args []string) ([]byte, bool) {
@@ -131,9 +159,9 @@ func TestReadWlPasteImage_SelectsOfferedType(t *testing.T) {
 		return nil, false
 	})
 
-	got, ok := readWlPasteImage()
-	if !ok || !bytes.Equal(got, want) {
-		t.Fatalf("readWlPasteImage = (%q,%v), want (%q,true)", got, ok, want)
+	got, out := readWlPasteImage()
+	if out != clipFound || !bytes.Equal(got, want) {
+		t.Fatalf("readWlPasteImage = (%q,%v), want (%q,clipFound)", got, out, want)
 	}
 	if requested != "image/jpeg" {
 		t.Errorf("requested type = %q, want image/jpeg", requested)
@@ -144,6 +172,7 @@ func TestReadWlPasteImage_SelectsOfferedType(t *testing.T) {
 // fall through to a blind PNG request (that is how a stale X11 clipboard leaked
 // into a Wayland read).
 func TestReadWlPasteImage_NoImageTypeStops(t *testing.T) {
+	withPlatform(t, "linux", "wl-paste")
 	fakeClipboard(t, func(_ string, args []string) ([]byte, bool) {
 		if len(args) == 1 && args[0] == "--list-types" {
 			return []byte("text/plain\n"), true
@@ -152,33 +181,50 @@ func TestReadWlPasteImage_NoImageTypeStops(t *testing.T) {
 		return nil, false
 	})
 
-	if _, ok := readWlPasteImage(); ok {
-		t.Error("text-only clipboard reported as an image")
+	if _, out := readWlPasteImage(); out != clipAbsent {
+		t.Errorf("text-only clipboard reported %v, want clipAbsent", out)
 	}
 }
 
-// TestReadWlPasteImage_LegacyNoListTypes keeps the old wl-clipboard working.
-func TestReadWlPasteImage_LegacyNoListTypes(t *testing.T) {
-	want := []byte("png-bytes")
+// TestReadWlPasteImage_FailedListIsUnavailable: a wl-paste that cannot list types
+// (no Wayland display, or an ancient wl-clipboard) is a backend that could not
+// answer. Requesting an unadvertised type instead would ask the owning app for a
+// conversion it never offered, so the read moves to another backend.
+func TestReadWlPasteImage_FailedListIsUnavailable(t *testing.T) {
+	withPlatform(t, "linux", "wl-paste")
 	fakeClipboard(t, func(_ string, args []string) ([]byte, bool) {
 		if len(args) == 1 && args[0] == "--list-types" {
 			return nil, false
 		}
-		if len(args) == 3 && args[0] == "--type" && args[1] == "image/png" {
-			return want, true
-		}
-		t.Fatalf("unexpected args %v", args)
+		t.Fatalf("unadvertised type requested: %v", args)
 		return nil, false
 	})
 
-	got, ok := readWlPasteImage()
-	if !ok || !bytes.Equal(got, want) {
-		t.Errorf("readWlPasteImage = (%q,%v), want the PNG fallback", got, ok)
+	if _, out := readWlPasteImage(); out != clipUnavailable {
+		t.Errorf("failed --list-types reported %v, want clipUnavailable", out)
+	}
+}
+
+// TestReadWlPasteImage_AdvertisedButUnserved: the owner advertises an image it
+// cannot actually serve. That is the backend failing, not "no image" — the X11
+// clipboard may still have one.
+func TestReadWlPasteImage_AdvertisedButUnserved(t *testing.T) {
+	withPlatform(t, "linux", "wl-paste")
+	fakeClipboard(t, func(_ string, args []string) ([]byte, bool) {
+		if args[0] == "--list-types" {
+			return []byte("image/png\n"), true
+		}
+		return nil, false
+	})
+
+	if _, out := readWlPasteImage(); out != clipUnavailable {
+		t.Errorf("unserved type reported %v, want clipUnavailable", out)
 	}
 }
 
 // TestReadXclipImage_SelectsOfferedTarget mirrors the Wayland test for X11.
 func TestReadXclipImage_SelectsOfferedTarget(t *testing.T) {
+	withPlatform(t, "linux", "xclip")
 	want := []byte("x11-png")
 	var requested string
 	fakeClipboard(t, func(name string, args []string) ([]byte, bool) {
@@ -196,12 +242,41 @@ func TestReadXclipImage_SelectsOfferedTarget(t *testing.T) {
 		return nil, false
 	})
 
-	got, ok := readXclipImage()
-	if !ok || !bytes.Equal(got, want) {
-		t.Fatalf("readXclipImage = (%q,%v), want bytes", got, ok)
+	got, out := readXclipImage()
+	if out != clipFound || !bytes.Equal(got, want) {
+		t.Fatalf("readXclipImage = (%q,%v), want bytes", got, out)
 	}
 	if requested != "image/png" {
 		t.Errorf("requested target = %q, want image/png", requested)
+	}
+}
+
+// TestReadXclipImage_EmptyTargetsIsAbsent: TARGETS answers with no image type, so
+// the X11 clipboard holds no image — distinct from the backend being unavailable.
+func TestReadXclipImage_EmptyTargetsIsAbsent(t *testing.T) {
+	withPlatform(t, "linux", "xclip")
+	fakeClipboard(t, func(_ string, args []string) ([]byte, bool) {
+		if args[3] != "TARGETS" {
+			t.Fatalf("unadvertised target requested: %v", args)
+		}
+		return []byte("TEXT\nUTF8_STRING\n"), true
+	})
+
+	if _, out := readXclipImage(); out != clipAbsent {
+		t.Errorf("text-only TARGETS reported %v, want clipAbsent", out)
+	}
+}
+
+// TestReadXclipImage_NoXclip: without the helper the X11 backend cannot answer.
+func TestReadXclipImage_NoXclip(t *testing.T) {
+	withPlatform(t, "linux") // xclip not installed
+	fakeClipboard(t, func(string, []string) ([]byte, bool) {
+		t.Fatal("a missing helper must not be run")
+		return nil, false
+	})
+
+	if _, out := readXclipImage(); out != clipUnavailable {
+		t.Errorf("missing xclip reported %v, want clipUnavailable", out)
 	}
 }
 
@@ -209,6 +284,8 @@ func TestReadXclipImage_SelectsOfferedTarget(t *testing.T) {
 // path: osascript output is filtered to real files so a stale entry cannot inject
 // a bogus token into the input line.
 func TestReadClipboardFilePaths_DarwinKeepsOnlyExistingFiles(t *testing.T) {
+	noSessionEnv(t)
+	withPlatform(t, "darwin", "osascript")
 	dir := t.TempDir()
 	real := filepath.Join(dir, "shot.png")
 	if err := os.WriteFile(real, tinyPNG(t), 0o600); err != nil {
@@ -234,6 +311,9 @@ func TestReadClipboardFilePaths_DarwinKeepsOnlyExistingFiles(t *testing.T) {
 
 // TestReadClipboardFilePaths_URIParsing covers the Linux text/uri-list flavour.
 func TestReadClipboardFilePaths_URIParsing(t *testing.T) {
+	noSessionEnv(t)
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	withPlatform(t, "linux", "wl-paste")
 	dir := t.TempDir()
 	real := filepath.Join(dir, "a file.png") // space forces percent-encoding
 	if err := os.WriteFile(real, tinyPNG(t), 0o600); err != nil {
@@ -244,6 +324,9 @@ func TestReadClipboardFilePaths_URIParsing(t *testing.T) {
 	fakeClipboard(t, func(name string, args []string) ([]byte, bool) {
 		if name != "wl-paste" {
 			t.Fatalf("unexpected command %q", name)
+		}
+		if args[0] != "--type" || args[1] != "text/uri-list" {
+			t.Fatalf("unexpected args %v", args)
 		}
 		return []byte("# comment\n" + uri + "\n\n"), true
 	})
@@ -257,6 +340,8 @@ func TestReadClipboardFilePaths_URIParsing(t *testing.T) {
 // TestReadClipboardText_Darwin keeps the text branch of the paste precedence
 // covered.
 func TestReadClipboardText_Darwin(t *testing.T) {
+	noSessionEnv(t)
+	withPlatform(t, "darwin", "pbpaste")
 	fakeClipboard(t, func(name string, args []string) ([]byte, bool) {
 		if name != "pbpaste" {
 			t.Fatalf("unexpected command %q", name)
@@ -273,6 +358,8 @@ func TestReadClipboardText_Darwin(t *testing.T) {
 // TestReadClipboardText_UnavailableIsSilent: no reader must be a quiet no-op, not
 // an error, so a paste on an exotic platform simply does nothing.
 func TestReadClipboardText_UnavailableIsSilent(t *testing.T) {
+	noSessionEnv(t)
+	withPlatform(t, "darwin", "pbpaste")
 	fakeClipboard(t, func(string, []string) ([]byte, bool) { return nil, false })
 
 	if text, ok := ReadClipboardText(); ok || text != "" {

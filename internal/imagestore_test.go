@@ -22,8 +22,15 @@ func TestPreferredImageMime(t *testing.T) {
 	}{
 		{"prefers png over jpeg", []string{"image/jpeg", "image/png"}, "image/png"},
 		{"jpeg when no png", []string{"text/plain", "image/jpeg"}, "image/jpeg"},
+		{"jpeg before webp", []string{"image/webp", "image/jpeg"}, "image/jpeg"},
+		{"webp before gif", []string{"image/gif", "image/webp"}, "image/webp"},
 		{"skips charset parameter", []string{"image/png;charset=binary"}, "image/png"},
-		{"any image fallback", []string{"image/bmp"}, "image/bmp"},
+		{"case insensitive", []string{"IMAGE/JPEG"}, "image/jpeg"},
+		{"blank entries ignored", []string{"", "  ", "image/gif"}, "image/gif"},
+		// A format the store cannot keep is not a flavour to select: reading it
+		// would end in a paste that silently does nothing (see SniffImageExt).
+		{"unsupported format is not selected", []string{"image/bmp"}, ""},
+		{"tiff is not selected", []string{"image/tiff", "image/bmp"}, ""},
 		{"no image", []string{"text/plain", "text/html"}, ""},
 		{"empty", nil, ""},
 	}

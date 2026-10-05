@@ -28,7 +28,67 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
+## B15 — Session logs are kept forever: prune them after 7 days by default, behind a config flag
+
+Requested 2026-10-05.
+
+**Observed.** Session logs accumulate with no retention at all. They are written
+by `core.SessionStore` to `<project>/.goa/sessions/<timestamp>_<name>.jsonl`
+(`core/sessionstore.go:174,212`; the store is rooted by
+`internal/app/subsystems_agent.go:149`), and the only ways a file leaves that
+directory are:
+
+* `SessionStore.DeleteSession` — an explicit user action
+  (`core/sessionstore.go:384`),
+* `SessionStore.SaveCurrent` removing its own file when the session held no
+  events (`core/sessionstore.go:311`).
+
+There is no age- or size-based pruning, so the directory grows for the lifetime
+of the project. The same codebase already has the pattern this needs: pasted
+images live in a durable store with `ImageStoreLifetime` (30 days) and
+`PruneImages`, called opportunistically at startup (`internal/app/app.go:255`).
+
+**Expected.** A session file that has not been updated within the retention
+window is removed, so a project's `.goa/sessions` cannot grow without bound:
+
+* default to **7 days** (matching the request: "removed after 7days not updated
+  by default"),
+* the window is a **configuration flag**, so it can be widened, disabled or
+  shortened without a code change — an explicit `0` meaning "keep everything",
+  confirmed with the requester on 2026-10-05: retention is counted in days from
+  the file's **last write**, default 7, `0` = keep forever,
+* pruning is opportunistic and best-effort like `PruneImages`: never fatal, and
+  never in the streaming hot path,
+* the flag survives the config cascade (embedded → home → project → local → env
+  → flags) and is documented with the other limits,
+* a session currently being written is never pruned at any age: its mtime is the
+  guard and the active session id is the belt, because the writer holds the file
+  open across a long turn while its mtime stands still during a long tool call.
+
+**Test approach.** Unit: retention selection by mtime (inside the window kept,
+outside pruned, exact boundary kept), `0` disables, the active session id is
+spared at any age, directories and unreadable entries are skipped, and a prune
+failure is non-fatal. Config: the flag's default is 7 days and it round-trips
+through the cascade. Integration: a temp store seeded at t-8d, t-7d, t-6d plus a
+live session, run through the startup prune, asserting exactly the t-8d file
+gone. Validation: run the real binary against a scratch project with back-dated
+session files and confirm the expected file is removed and that the live session
+keeps appending to its own file across the prune.
+
 ## Closed
+
+Closed 2026-10-05 — B12/B13/B14, the clipboard backends brought to parity with
+the reference agent (pi) and with goa's own copy side: a three-state backend
+result (`found`/`absent`/`unavailable`) plus a platform seam so every platform's
+backends run in tests on any host, no unadvertised type probes, WSL detection with
+the Windows clipboard as its last resort, `xsel`/`termux-clipboard-get` text
+reads, and image bytes stored verbatim through the shared
+`internal.StoreImage` writer instead of being re-encoded (which is what made a
+WebP-only clipboard paste nothing). See
+[`docs/archive/b12-clipboard-backend-contract.2026-10-05.md`](docs/archive/b12-clipboard-backend-contract.2026-10-05.md),
+[`docs/archive/b13-clipboard-read-symmetry.2026-10-05.md`](docs/archive/b13-clipboard-read-symmetry.2026-10-05.md)
+and
+[`docs/archive/b14-clipboard-image-format-parity.2026-10-05.md`](docs/archive/b14-clipboard-image-format-parity.2026-10-05.md).
 
 Closed 2026-10-05 — B6, terminal image paste: no code change was needed (the
 chain `Ctrl+V` → file paths → image → text already existed); the gap was coverage

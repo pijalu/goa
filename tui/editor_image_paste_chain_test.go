@@ -28,15 +28,11 @@ func clipboardImageBytes(t *testing.T) []byte {
 
 // imageOnlyClipboard returns an editor whose clipboard holds image bytes and
 // nothing else, with the production store left in place: a paste on it runs the
-// real "decode → store → path" chain, exactly as the terminal does.
-func imageOnlyClipboard(t *testing.T) *Editor {
+// real "read → store" chain, exactly as the terminal does.
+func imageOnlyClipboard(t *testing.T, payload []byte) *Editor {
 	t.Helper()
-	payload := clipboardImageBytes(t)
 	e := NewEditor()
-	e.readClipboardImage = func() (image.Image, error) {
-		img, _, err := image.Decode(bytes.NewReader(payload))
-		return img, err
-	}
+	e.readClipboardImage = func() ([]byte, bool) { return payload, len(payload) > 0 }
 	e.readClipboardFilePaths = func() []string { return nil }
 	e.readClipboardText = func() (string, bool) { return "", false }
 	return e
@@ -62,9 +58,14 @@ func isolateImageStore(t *testing.T) string {
 // image through the real store and leaves the stored path in the input line, so
 // the agent receives it as an attachment (internal.IsImageFile is the submit
 // path's own attachment predicate).
+//
+// The stored file is byte-identical to the clipboard: the paste path keeps what
+// the clipboard published, exactly as the web upload path does, so a format the
+// upload accepts (WebP) also pastes.
 func TestEditor_PasteFromClipboard_StoresImageAndInsertsStoredPath(t *testing.T) {
 	store := isolateImageStore(t)
-	e := imageOnlyClipboard(t)
+	payload := clipboardImageBytes(t)
+	e := imageOnlyClipboard(t, payload)
 
 	e.SetFocused(true)
 	e.HandleInput(KeyCtrlV)
@@ -79,8 +80,46 @@ func TestEditor_PasteFromClipboard_StoresImageAndInsertsStoredPath(t *testing.T)
 	if !internal.IsImageFile(got) {
 		t.Errorf("IsImageFile(%q) = false: the inserted path is not an attachment", got)
 	}
+	stored, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, payload) {
+		t.Error("stored image is not the clipboard payload")
+	}
 	if entries, err := os.ReadDir(store); err != nil || len(entries) != 1 {
 		t.Errorf("image store holds %d files (err=%v), want the one pasted image", len(entries), err)
+	}
+}
+
+// TestEditor_PasteFromClipboard_StoresWebP pins the format parity with the web
+// upload path at the paste entry point: WebP is accepted by the sniffer, the
+// store and the provider, so a WebP clipboard must paste (it used to be dropped
+// by the PNG re-encode, which had no WebP decoder).
+func TestEditor_PasteFromClipboard_StoresWebP(t *testing.T) {
+	store := isolateImageStore(t)
+	payload := []byte("RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00webp-payload")
+	e := imageOnlyClipboard(t, payload)
+
+	e.SetFocused(true)
+	e.HandleInput(KeyCtrlV)
+
+	got := e.Text()
+	if got == "" {
+		t.Fatal("Ctrl+V on a clipboard WebP inserted nothing")
+	}
+	if filepath.Ext(got) != ".webp" {
+		t.Errorf("inserted %q, want a .webp path inside %s", got, store)
+	}
+	if !internal.IsImageFile(got) {
+		t.Errorf("IsImageFile(%q) = false: the inserted path is not an attachment", got)
+	}
+	stored, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, payload) {
+		t.Error("stored WebP is not the clipboard payload")
 	}
 }
 
@@ -89,7 +128,7 @@ func TestEditor_PasteFromClipboard_StoresImageAndInsertsStoredPath(t *testing.T)
 func TestEditor_PasteFromClipboard_NoImageOnClipboardInsertsNothing(t *testing.T) {
 	store := isolateImageStore(t)
 	e := NewEditor()
-	e.readClipboardImage = func() (image.Image, error) { return nil, nil }
+	e.readClipboardImage = func() ([]byte, bool) { return nil, false }
 	e.readClipboardFilePaths = func() []string { return nil }
 	e.readClipboardText = func() (string, bool) { return "", false }
 	e.SetText("keep me")

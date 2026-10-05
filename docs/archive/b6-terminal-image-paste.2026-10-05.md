@@ -174,9 +174,15 @@ Restored: all three tests pass and the script reports `[PASS]` (see
 ## Residual risk
 
 * The chain is validated against the clipboard tools of the *host* OS (macOS
-  here). Linux/Windows backends are covered only by the fake-runner tests that
-  assert each backend's command shape, not by a live `wl-paste`/`xclip`/
-  PowerShell run.
+  here). Linux/Windows coverage was, at the time this closed, only the
+  fake-runner tests above — which turned out **not** to execute those platforms'
+  backends at all, because backend selection keyed on `runtime.GOOS`. That gap is
+  what B12 closed (`internal/clipboard_dispatch_test.go` drives every platform
+  through an injected platform seam); see
+  [`b12-clipboard-backend-contract.2026-10-05.md`](b12-clipboard-backend-contract.2026-10-05.md).
+* The paste stored a re-encoded PNG, so a clipboard offering only WebP pasted
+  nothing; image bytes are now stored verbatim (B14,
+  [`b14-clipboard-image-format-parity.2026-10-05.md`](b14-clipboard-image-format-parity.2026-10-05.md)).
 * A wayland/X11 session without `wl-paste`/`xclip` still pastes nothing but text;
   `readClipboardText` falls back to the terminal's own paste when the key
   delivers text, so only the image case degrades — silently, by design (a paste

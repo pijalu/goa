@@ -5,7 +5,9 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -102,6 +104,62 @@ var imageSigs = []struct {
 	{ext: ".webp", sig: "WEBP", offset: 8},
 }
 
+// SniffLen is how many leading bytes identify every accepted format (the
+// longest signature, RIFF….WEBP, is 12 bytes; 64 leaves room to spare). Callers
+// that read a stream to classify it read this many bytes first.
+const SniffLen = 64
+
+// ErrNotImage reports content that is not in a format the image store keeps.
+var ErrNotImage = errors.New("not a recognised image format")
+
+// ErrImageTooLarge reports content above the caller's byte cap.
+var ErrImageTooLarge = errors.New("image too large")
+
+// StoreImage writes an image into the durable image store and returns its path
+// and total size. head holds the leading bytes already read (they decide the
+// format, and are part of what is stored); body supplies the rest. At most
+// maxBytes are written: larger content is rejected with ErrImageTooLarge and
+// leaves no file behind, and content that does not sniff as an image is rejected
+// with ErrNotImage.
+//
+// This is the single writer for images that arrive from outside — a terminal
+// clipboard paste and a web upload both go through it — so the two paths share
+// one format table, one size rule and one store, and cannot drift apart.
+func StoreImage(head []byte, body io.Reader, maxBytes int64) (string, int64, error) {
+	ext := SniffImageExt(head)
+	if ext == "" {
+		return "", 0, ErrNotImage
+	}
+	f, err := NewImageFile(ext)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	// head is part of the content, not just of the sniff: it was read off the
+	// stream by the caller, so it has to be written back first.
+	if _, err := f.Write(head); err != nil {
+		os.Remove(f.Name())
+		return "", 0, fmt.Errorf("write image: %w", err)
+	}
+	// The cap covers head + body, so read one byte past what is left of it and
+	// let that byte prove the content is over the limit.
+	room := maxBytes + 1 - int64(len(head))
+	if room < 0 {
+		room = 0
+	}
+	written, err := io.Copy(f, io.LimitReader(body, room))
+	total := int64(len(head)) + written
+	if err != nil {
+		os.Remove(f.Name())
+		return "", 0, fmt.Errorf("write image: %w", err)
+	}
+	if total > maxBytes {
+		os.Remove(f.Name())
+		return "", 0, fmt.Errorf("image larger than %d bytes: %w", maxBytes, ErrImageTooLarge)
+	}
+	return f.Name(), total, nil
+}
+
 // SniffImageExt maps the leading bytes of a file to an image extension, or ""
 // when they match no accepted format.
 func SniffImageExt(head []byte) string {
@@ -114,6 +172,3 @@ func SniffImageExt(head []byte) string {
 	}
 	return ""
 }
-
-// sniffImageExt is the internal spelling used by IsImageFile.
-func sniffImageExt(head []byte) string { return SniffImageExt(head) }

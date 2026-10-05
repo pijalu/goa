@@ -6,7 +6,6 @@ package tui
 
 import (
 	"fmt"
-	"image"
 	"strings"
 	"sync"
 	"time"
@@ -15,9 +14,9 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 )
 
-// saveClipboardImage saves a clipboard image to a temp file. It is swappable
-// in tests.
-var saveClipboardImage = internal.SaveClipboardImage
+// saveClipboardImage stores clipboard image bytes in the durable image store and
+// returns the stored path. It is swappable in tests.
+var saveClipboardImage = internal.SaveClipboardImageBytes
 
 // Editor is a multi-line text editor component with readline behavior,
 // undo/redo, kill-ring/yank, word navigation, and tab completion.
@@ -118,8 +117,9 @@ type Editor struct {
 	// If nil, the editor inserts the image file path instead.
 	OnImagePaste func(path string)
 
-	// readClipboardImage reads an image from the clipboard. Swapped in tests.
-	readClipboardImage func() (image.Image, error)
+	// readClipboardImage reads the clipboard's image bytes, if any. Swapped in
+	// tests.
+	readClipboardImage func() ([]byte, bool)
 
 	// readClipboardFilePaths returns paths of files copied from a file manager
 	// (Finder/Explorer/Nautilus). Swapped in tests.
@@ -156,7 +156,7 @@ func NewEditor() *Editor {
 		compDebounce:           150 * time.Millisecond,
 		compAbort:              make(chan struct{}),
 		preferredVisualCol:     -1,
-		readClipboardImage:     internal.ReadClipboardImage,
+		readClipboardImage:     internal.ReadClipboardImageBytes,
 		readClipboardFilePaths: internal.ReadClipboardFilePaths,
 		readClipboardText:      internal.ReadClipboardText,
 	}
@@ -488,17 +488,19 @@ func (e *Editor) insertPastedPaths(paths []string) {
 	e.InsertTextAtCursor(before + joined + after)
 }
 
-// tryPasteImage attempts to read and save an image from the clipboard.
-// It returns the saved file path and true on success.
+// tryPasteImage stores a clipboard image, if the clipboard holds one, and
+// returns the stored path. The bytes keep the format they arrived in — the store
+// is the same one the web upload path writes to, so a format that can be dragged
+// into the web UI can also be pasted here.
 func (e *Editor) tryPasteImage() (string, bool) {
 	if e.readClipboardImage == nil {
 		return "", false
 	}
-	img, err := e.readClipboardImage()
-	if err != nil || img == nil {
+	data, ok := e.readClipboardImage()
+	if !ok || len(data) == 0 {
 		return "", false
 	}
-	path, err := saveClipboardImage(img)
+	path, err := saveClipboardImage(data)
 	if err != nil {
 		return "", false
 	}

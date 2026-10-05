@@ -12,9 +12,9 @@ import (
 )
 
 // fakeImageClipboard makes every platform backend hand back payload, so the
-// whole "clipboard bytes → decode → store → stored path" chain can run on any
-// OS without touching the developer's real clipboard: the darwin script writes
-// the payload to the file it was told to use, wl-paste/xclip answer the MIME
+// whole "clipboard bytes → sniff → store → stored path" chain can run on any OS
+// without touching the developer's real clipboard: the darwin script writes the
+// payload to the file it was told to use, wl-paste/xclip answer the MIME
 // interrogation and then the payload, and PowerShell returns its base64 form.
 // It is the single clipboard fake the image-paste chain tests are built on.
 func fakeImageClipboard(t *testing.T, payload []byte) {
@@ -59,28 +59,29 @@ func isolateImageStore(t *testing.T) string {
 	return dir
 }
 
-// TestReadClipboardImage_FromClipboardBytesToStoredPath is the whole-chain test
-// for image paste: a fake clipboard backend hands over real PNG bytes (no OS
-// clipboard involved), the real decoder turns them into an image, and the real
-// image store persists them under a durable path.
-func TestReadClipboardImage_FromClipboardBytesToStoredPath(t *testing.T) {
-	fakeImageClipboard(t, tinyPNG(t))
+// TestReadClipboardImageBytes_ToStoredPath is the whole-chain test for image
+// paste on this host: a fake clipboard backend hands over real PNG bytes (no OS
+// clipboard involved) and the real image store persists them under a durable
+// path that IsImageFile accepts — the same predicate the submit path uses to
+// decide "this token is an attachment".
+func TestReadClipboardImageBytes_ToStoredPath(t *testing.T) {
+	noSessionEnv(t)
+	withPlatform(t, clipboardGOOS, "osascript", "wl-paste", "xclip", "powershell.exe")
+	payload := tinyPNG(t)
+	fakeImageClipboard(t, payload)
 	store := isolateImageStore(t)
 
-	img, err := ReadClipboardImage()
-	if err != nil {
-		t.Fatalf("ReadClipboardImage: %v", err)
+	data, ok := ReadClipboardImageBytes()
+	if !ok {
+		t.Fatal("clipboard image bytes were not read")
 	}
-	if img == nil {
-		t.Fatal("clipboard image bytes did not decode into an image")
-	}
-	if b := img.Bounds(); b.Dx() != 2 || b.Dy() != 2 {
-		t.Errorf("decoded bounds = %v, want the 2x2 clipboard image", b)
+	if string(data) != string(payload) {
+		t.Error("returned bytes are not the clipboard payload")
 	}
 
-	path, err := SaveClipboardImage(img)
+	path, err := SaveClipboardImageBytes(data)
 	if err != nil {
-		t.Fatalf("SaveClipboardImage: %v", err)
+		t.Fatalf("SaveClipboardImageBytes: %v", err)
 	}
 	if filepath.Dir(path) != store {
 		t.Errorf("stored at %q, want a file inside the image store %q", path, store)
@@ -88,31 +89,112 @@ func TestReadClipboardImage_FromClipboardBytesToStoredPath(t *testing.T) {
 	if !IsImageFile(path) {
 		t.Errorf("IsImageFile(%q) = false: the stored path would not be sent as an attachment", path)
 	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != string(payload) {
+		t.Error("stored bytes differ from the clipboard: the paste must not re-encode")
+	}
+	if filepath.Ext(path) != ".png" {
+		t.Errorf("stored extension = %q, want .png", filepath.Ext(path))
+	}
 }
 
-// TestReadClipboardImage_NoImageOnClipboardIsSilent: a clipboard holding text or
-// a file list (or nothing) must read as "no image", never as an error — the
-// paste then falls through to the text branch.
-func TestReadClipboardImage_NoImageOnClipboardIsSilent(t *testing.T) {
+// TestSaveClipboardImageBytes_KeepsWebP is the regression test for the format
+// gap between the terminal paste path and the web upload path: WebP is a format
+// the sniffer, the store and the provider all accept, but the clipboard path used
+// to decode and re-encode to PNG with no WebP decoder registered, so a clipboard
+// offering only WebP pasted nothing at all.
+func TestSaveClipboardImageBytes_KeepsWebP(t *testing.T) {
+	noSessionEnv(t)
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	withPlatform(t, "linux", "wl-paste")
+	store := isolateImageStore(t)
+	// A minimal RIFF/WEBP container: the bytes are opaque to us, and that is the
+	// point — the store must keep what the clipboard published.
+	payload := []byte("RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00webp-payload")
+	fakeClipboard(t, func(_ string, args []string) ([]byte, bool) {
+		if args[0] == "--list-types" {
+			return []byte("image/webp\n"), true
+		}
+		if args[1] != "image/webp" {
+			t.Fatalf("requested %q, want image/webp", args[1])
+		}
+		return payload, true
+	})
+
+	data, ok := ReadClipboardImageBytes()
+	if !ok {
+		t.Fatal("a clipboard offering WebP read as no image")
+	}
+	path, err := SaveClipboardImageBytes(data)
+	if err != nil {
+		t.Fatalf("SaveClipboardImageBytes: %v", err)
+	}
+	if filepath.Dir(path) != store {
+		t.Errorf("stored at %q, want a file inside %q", path, store)
+	}
+	if filepath.Ext(path) != ".webp" {
+		t.Errorf("stored extension = %q, want .webp", filepath.Ext(path))
+	}
+	if !IsImageFile(path) {
+		t.Errorf("IsImageFile(%q) = false: the stored WebP would not be sent as an attachment", path)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != string(payload) {
+		t.Error("stored WebP differs from the clipboard bytes")
+	}
+}
+
+// TestSaveClipboardImageBytes_RejectsNonImage: the store is the same one the web
+// upload path writes to, so a non-image is refused by content, and no file is
+// left behind.
+func TestSaveClipboardImageBytes_RejectsNonImage(t *testing.T) {
+	store := isolateImageStore(t)
+
+	if _, err := SaveClipboardImageBytes([]byte("this is text, not an image")); err == nil {
+		t.Error("non-image bytes were stored")
+	}
+	if _, err := SaveClipboardImageBytes(nil); err == nil {
+		t.Error("empty bytes were stored")
+	}
+	if entries, _ := os.ReadDir(store); len(entries) != 0 {
+		t.Errorf("image store holds %d files after a refused paste, want none", len(entries))
+	}
+}
+
+// TestReadClipboardImageBytes_NoImageIsSilent: a clipboard holding text, a file
+// list, or nothing must read as "no image", never as an error — the paste then
+// falls through to the text branch.
+func TestReadClipboardImageBytes_NoImageIsSilent(t *testing.T) {
+	noSessionEnv(t)
+	withPlatform(t, "linux", "wl-paste", "xclip", "powershell.exe")
 	fakeClipboard(t, func(string, []string) ([]byte, bool) { return nil, false })
 
-	img, err := ReadClipboardImage()
-	if img != nil || err != nil {
-		t.Errorf("ReadClipboardImage = (%v,%v), want (nil,nil)", img, err)
+	if data, ok := ReadClipboardImageBytes(); ok || data != nil {
+		t.Errorf("ReadClipboardImageBytes = (%q,%v), want (nil,false)", data, ok)
 	}
 }
 
-// TestReadClipboardImage_UndecodableBytesReportsDecodeFailure: a backend that
-// answers with non-image bytes is a genuine decode failure, distinct from the
-// silent no-image case above (the editor turns it into "nothing pasted").
-func TestReadClipboardImage_UndecodableBytesReportsDecodeFailure(t *testing.T) {
-	fakeImageClipboard(t, []byte("this is text, not an image"))
+// TestReadClipboardImageBytes_UnknownFormatIsSilent: a backend that answers with
+// bytes in a format the store cannot keep must read as "no image" here, so the
+// paste never inserts a path that the agent cannot attach.
+func TestReadClipboardImageBytes_UnknownFormatIsSilent(t *testing.T) {
+	noSessionEnv(t)
+	t.Setenv("DISPLAY", ":0")
+	withPlatform(t, "linux", "xclip")
+	fakeClipboard(t, func(_ string, args []string) ([]byte, bool) {
+		if args[3] == "TARGETS" {
+			return []byte("image/png\n"), true
+		}
+		return []byte("bytes that sniff as nothing"), true
+	})
 
-	img, err := ReadClipboardImage()
-	if img != nil {
-		t.Errorf("undecodable bytes decoded into %v", img)
-	}
-	if err == nil {
-		t.Error("undecodable clipboard bytes must report a decode failure")
+	if data, ok := ReadClipboardImageBytes(); ok || data != nil {
+		t.Errorf("ReadClipboardImageBytes = (%q,%v), want (nil,false)", data, ok)
 	}
 }
