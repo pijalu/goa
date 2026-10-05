@@ -128,6 +128,9 @@ func (c *FrameCodec) EncodePayload(f *Frame) (*Payload, error) {
 // caller and there is no configuration to thread through.
 func EncodePayload(f *Frame) (*Payload, error) { return sharedCodec.EncodePayload(f) }
 
+// EncodeControl renders an out-of-band control message with the shared codec.
+func EncodeControl(ctrl Control) ([]byte, error) { return sharedCodec.EncodeControl(ctrl) }
+
 // sharedCodec is the codec used by the fan-out paths.
 var sharedCodec FrameCodec
 

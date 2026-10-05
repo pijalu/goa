@@ -40,22 +40,33 @@ func waitStopped(t *testing.T, engine *TUI) bool {
 	}
 }
 
-// TestStopRequest_HookOwnsInputStop pins the server-mode contract: with a
-// host hook installed, Ctrl+C and Ctrl+D on an empty editor route to the
-// hook and the engine keeps running — a browser keystroke can never take a
-// served session down.
-func TestStopRequest_HookOwnsInputStop(t *testing.T) {
+// TestStopRequest_HookOwnsCtrlC pins the server-mode contract: with a host
+// hook installed, Ctrl+C on an empty editor routes to the hook and the
+// engine keeps running — the session's interrupt key can never take a
+// served process down.
+func TestStopRequest_HookOwnsCtrlC(t *testing.T) {
 	engine, stops := newStopTestTUI(t)
 	engine.SendKey(KeyCtrlC)
 	if *stops != 1 {
 		t.Fatalf("after Ctrl+C stops = %d, want 1", *stops)
 	}
-	engine.SendKey(KeyCtrlD)
-	if *stops != 2 {
-		t.Fatalf("after Ctrl+D stops = %d, want 2", *stops)
-	}
 	if waitStopped(t, engine) {
 		t.Fatal("engine stopped despite the host hook owning the stop request")
+	}
+}
+
+// TestCtrlDAlwaysQuits pins the EOF contract: Ctrl+D on an empty editor
+// stops the session even when a host hook is installed — the served
+// session's owner asked for exactly that (it is not the process-level
+// Ctrl+C, which stays the console's).
+func TestCtrlDAlwaysQuits(t *testing.T) {
+	engine, stops := newStopTestTUI(t)
+	engine.SendKey(KeyCtrlD)
+	if !waitStopped(t, engine) {
+		t.Fatal("Ctrl+D on an empty editor did not stop the engine")
+	}
+	if *stops != 0 {
+		t.Fatalf("hook calls = %d, want 0 (Ctrl+D quits directly)", *stops)
 	}
 }
 

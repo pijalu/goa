@@ -198,9 +198,16 @@ func (h *Hub) Drivers() int {
 	return h.driversLocked()
 }
 
-// Close detaches every client and refuses further attachments.
+// Close detaches every client and refuses further attachments. Before the
+// sockets close, every client is told the session is over: a page that
+// receives the bye shows "closed" and stops its reconnect machinery instead
+// of retrying a server that is intentionally gone.
 func (h *Hub) Close() {
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return
+	}
 	h.closed = true
 	clients := make([]Client, 0, len(h.clients))
 	for c := range h.clients {
@@ -208,7 +215,9 @@ func (h *Hub) Close() {
 	}
 	h.clients = make(map[Client]AttachMode)
 	h.mu.Unlock()
+	bye := Control{Kind: CtrlBye, Text: "session ended"}
 	for _, c := range clients {
+		_ = c.SendControl(bye)
 		_ = c.Close()
 	}
 }

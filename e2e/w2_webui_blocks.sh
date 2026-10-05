@@ -304,22 +304,30 @@ case "$HEALTH" in
   *) record ctrl_c_no_exit FAIL "browser Ctrl+C took the server down: $HEALTH" ;;
 esac
 
-# ctrl_d_detach: Ctrl+D detaches this tab — the socket closes, the page says
-# so, and the SERVER keeps running (the health endpoint still answers).
+# ctrl_d_stops_session: Ctrl+D is the TUI's EOF — the session ends, this
+# window closes itself, and the server (one session per process) exits with
+# it. The health endpoint stops answering. This is deliberately the LAST
+# check: it tears the server down.
 abq '(() => { document.dispatchEvent(new KeyboardEvent("keydown", {key: "d", ctrlKey: true, bubbles: true})); return "sent"; })()' > /dev/null
-sleep 1
+sleep 3
 DETACH_JS='(() => { const st = document.getElementById("status");
   return JSON.stringify({state: st.dataset.state, text: st.textContent}); })()'
 D=$(abq "$DETACH_JS")
-HEALTH=$(curl -s "http://127.0.0.1:$WEB_PORT/healthz" 2>/dev/null || true)
+HEALTH=""
+for _ in 1 2 3 4 5 6; do
+  HEALTH="$(curl -s --max-time 2 "http://127.0.0.1:$WEB_PORT/healthz" 2>/dev/null || true)"
+  [ -z "$HEALTH" ] && break
+  sleep 1
+done
 case "$D" in
   *'"state":"closed"'*)
-    case "$HEALTH" in
-      *'"ok":true'*) record ctrl_d_detach PASS "tab detached, server still healthy: $D" ;;
-      *) record ctrl_d_detach FAIL "tab detached but server unhealthy: $HEALTH" ;;
-    esac
+    if [ -z "$HEALTH" ]; then
+      record ctrl_d_stops_session PASS "Ctrl+D ended the session and the server exited: $D"
+    else
+      record ctrl_d_stops_session FAIL "session closed but the server still answers: $HEALTH"
+    fi
     ;;
-  *) record ctrl_d_detach FAIL "Ctrl+D did not detach the tab: $D" ;;
+  *) record ctrl_d_stops_session FAIL "Ctrl+D did not close the session: $D" ;;
 esac
 
 shot 02-blocks-final

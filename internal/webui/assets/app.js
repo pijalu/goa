@@ -997,7 +997,12 @@
           setStatus(mode === "sse" ? "degraded" : "live",
             msg.text ? "read-only — " + msg.text : "read-only viewer");
         }
-        else if (msg.t === "bye") setStatus("closed", "closed: " + (msg.text || ""));
+        else if (msg.t === "bye") {
+          // The session is over (Ctrl+D, /quit, server shutdown): the tab's
+          // life as a terminal ends with it — no reconnect machinery.
+          detached = true;
+          setStatus("closed", "closed: " + (msg.text || "session ended"));
+        }
         else if (msg.t === "error") setStatus("error", msg.text || "error");
       }
 
@@ -1104,15 +1109,16 @@
   document.addEventListener("keydown", function (ev) {
     // A detached tab drives nothing.
     if (detached) { ev.preventDefault(); return; }
-    // Ctrl/Cmd+D closes THIS window: the tab detaches from the session and
-    // the browser performs (or is invited to perform) its own close. It must
-    // never reach the engine — an EOF byte would end the whole session and
-    // take the server down for every other viewer; the server process is
-    // owned by the console it was started from (its Ctrl+C).
+    // Ctrl/Cmd+D is the TUI's EOF: the session ends. The key goes to the
+    // engine (the editor quits an empty input through the same path a real
+    // terminal does), and this window closes itself — the session it was
+    // driving is gone. The server PROCESS keeps its console Ctrl+C; what
+    // ends here is the session.
     if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey &&
         (ev.key || "").toLowerCase() === "d") {
       ev.preventDefault();
-      detachTab();
+      send({ t: "key", key: keyEvent(ev) });
+      detachTab("session stopped — you can close this tab");
       return;
     }
     // Chords the browser owns stay the browser's: reload, devtools and tab
@@ -1135,21 +1141,17 @@
     ev.preventDefault();
   });
 
-  // detached stops the key/paste paths after a detach: the tab no longer
-  // drives or watches the session.
+  // detached stops the key/paste paths and the reconnect machinery after a
+  // deliberate goodbye (Ctrl+D, or the server's own bye).
   var detached = false;
 
-  // detachTab disconnects this tab from the session and asks the browser to
-  // close the window (allowed outright for script-opened tabs; elsewhere the
-  // status line says the tab is free to close).
-  function detachTab() {
+  // detachTab stops driving the session and asks the browser to close the
+  // window (allowed outright for script-opened tabs; elsewhere the status
+  // line says the tab is free to close).
+  function detachTab(note) {
     if (detached) return;
     detached = true;
-    try { if (socket) socket.close(); } catch (e) { /* already closing */ }
-    if (stream) {
-      try { stream.close(); } catch (e) { /* already closing */ }
-    }
-    setStatus("closed", "detached — you can close this tab");
+    setStatus("closed", note);
     window.close();
   }
 

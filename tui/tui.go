@@ -165,11 +165,12 @@ type TUI struct {
 	// suppressed.
 	OnCancelInputRequest func() bool
 
-	// OnStopRequest, when set, owns what an input-driven stop does (Ctrl+C
-	// on an empty editor, Ctrl+D on an empty buffer). The interactive TUI
-	// leaves it nil and quit stays quit; a host whose lifetime is not the
-	// terminal's — `goa server`, stopped from its own console — installs a
-	// hook so a browser keystroke can never take the process down.
+	// OnStopRequest, when set, owns what the interactive quit key (Ctrl+C on
+	// an empty editor) does. The interactive TUI leaves it nil and quit stays
+	// quit; a host whose lifetime is not the terminal's — `goa server`,
+	// stopped from its own console — installs a hook so the session's
+	// interrupt key can never take the process down. Ctrl+D is not hooked:
+	// EOF means "stop the session" everywhere, by the owner's request.
 	OnStopRequest func()
 
 	// pluginHotkeys holds JS-plugin-registered keyboard shortcuts, checked

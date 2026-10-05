@@ -64,9 +64,13 @@ func (e *Editor) handleControlKeys(data string) bool {
 		e.pasteFromClipboard()
 		return true
 	case matchesKey(data, KeyCtrlD):
+		// EOF: the TUI's quit. It stops the session unconditionally —
+		// including a served one, whose owner asked for exactly that; the
+		// process-level stop remains the console's Ctrl+C (TUI.OnStopRequest
+		// scopes the interactive-TUI quit key, Ctrl+C, per host).
 		if len(e.buf) == 0 && e.tui != nil {
 			t := e.tui
-			e.queueCallback(func() { t.stopRequested() })
+			e.queueCallback(func() { t.Stop() })
 			return true
 		}
 		return false // Let handleEditKeys process it as delete-forward

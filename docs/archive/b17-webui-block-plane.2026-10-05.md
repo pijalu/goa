@@ -145,3 +145,18 @@ it: a cursor outside the band draws nothing, and the input-line caret
 reappears with the first frame that places it back in the band. Pinned by
 the e2e caret_limited check (after /quota: hidden or inside the band,
 never outside) — 15 checks, all PASS.
+
+## Follow-up 4 (same day) — Ctrl+D stops the session and closes the window
+
+The owner refined the contract: Ctrl+D is the TUI's EOF and should end the
+served session, then close the tab — not merely detach. The page sends the
+keystroke to the engine (the editor quits an empty input through the same
+path a real terminal uses), then closes the window; the editor's Ctrl+D
+quits unconditionally again (only Ctrl+C is host-hooked — at an idle input
+it still flashes the console hint instead of stopping the process). When a
+session ends for any reason, the hub now delivers a `bye` ("session ended")
+before the sockets close, so a page shows "closed" and stands down its
+reconnect machinery instead of retrying a server that is intentionally
+gone. Pinned by `TestCtrlDAlwaysQuits` and the e2e `ctrl_d_stops_session`
+(Ctrl+D → page closed, health endpoint stops answering) — 15 checks, all
+PASS in real Chrome.
