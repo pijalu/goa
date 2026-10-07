@@ -230,10 +230,14 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// backoff doubles the reconnect delay up to a 5s cap.
+// backoffCap bounds the reconnect delay.
+const backoffCap = 5 * time.Second
+
+// backoff doubles the reconnect delay up to the cap.
 func backoff(d time.Duration) time.Duration {
-	if d < 5*time.Second {
-		return d * 2
+	d *= 2
+	if d > backoffCap {
+		return backoffCap
 	}
 	return d
 }

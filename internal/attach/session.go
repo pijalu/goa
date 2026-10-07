@@ -7,6 +7,7 @@ package attach
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -19,11 +20,18 @@ import (
 // the live session id.
 func resolveSession(base string, opts Options) (string, error) {
 	if opts.Path != "" {
-		if id, err := connectForPath(base, opts); err == nil {
+		id, err := connectForPath(base, opts)
+		switch {
+		case err == nil:
 			return id, nil
+		case errors.Is(err, errNoConnect):
+			// A plain (single-project) server has no /connect: fall through
+			// to /healthz, which every server answers.
+		default:
+			// A supervisor that ANSWERED owns the reason (bad path, limit…)
+			// — echoing "no active session" instead would hide it.
+			return "", err
 		}
-		// A plain (single-project) server has no /connect: fall through to
-		// /healthz, which every server answers.
 	}
 	req, err := newRequest(base, "/healthz", http.MethodGet, "", opts)
 	if err != nil {
@@ -41,22 +49,44 @@ func resolveSession(base string, opts Options) (string, error) {
 	return h.Session, nil
 }
 
+// errNoConnect marks a server that offers no /connect endpoint at all —
+// the one case where falling back to /healthz is correct.
+var errNoConnect = errors.New("connect: not offered")
+
 // connectForPath asks a supervisor to open (or reuse) the session for path.
+// A refusal carries the supervisor's reason in the body's error field, and
+// that reason — not a bare status — is what the user sees.
 func connectForPath(base string, opts Options) (string, error) {
 	body, _ := json.Marshal(map[string]string{"path": opts.Path})
 	req, err := newRequest(base, "/connect", http.MethodPost, string(body), opts)
 	if err != nil {
 		return "", err
 	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
 	var r struct {
 		Session string `json:"session"`
 		Error   string `json:"error"`
 	}
-	if err := doJSON(req, &r); err != nil {
-		return "", err
+	_ = json.NewDecoder(resp.Body).Decode(&r)
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		return "", errNoConnect
+	}
+	if resp.StatusCode != http.StatusOK {
+		if r.Error != "" {
+			return "", fmt.Errorf("connect: %s", r.Error)
+		}
+		return "", fmt.Errorf("connect: %s", resp.Status)
 	}
 	if r.Session == "" {
-		return "", fmt.Errorf("connect: %s", r.Error)
+		if r.Error != "" {
+			return "", fmt.Errorf("connect: %s", r.Error)
+		}
+		return "", fmt.Errorf("connect: server returned no session")
 	}
 	return r.Session, nil
 }

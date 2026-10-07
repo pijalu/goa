@@ -47,13 +47,20 @@ const (
 	// no proxied request is kept before it is stopped. Its transcript stays
 	// on disk in the project, resumable like any session.
 	DefaultIdleTimeout = 30 * time.Minute
-	// reapInterval is how often the reaper looks at the children.
-	reapInterval = 30 * time.Second
+	// DefaultReapInterval is how often the reaper looks at the children in
+	// production.
+	DefaultReapInterval = 30 * time.Second
+
 	// DefaultReadyTimeout bounds how long a child may take to wire its
 	// session (config load, plugin load, model catalog) before /connect
 	// gives up on it.
 	DefaultReadyTimeout = 2 * time.Minute
 )
+
+// reapInterval is the reaper's tick. A var rather than a constant, like the
+// webui Keepalive policy, so a test can shrink it: a reaper that cannot be
+// exercised is a reaper that rots.
+var reapInterval = DefaultReapInterval
 
 // Options configures a supervisor.
 type Options struct {
