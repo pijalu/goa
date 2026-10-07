@@ -73,6 +73,9 @@ type RuntimeOptions struct {
 	// session per project directory under this root, created on demand by
 	// the /connect handshake (goa attach --path, the browser index page).
 	ServerProjectsRoot string
+	// ServerMaxSessions caps how many project sessions the supervisor keeps
+	// live at once (0 = built-in default; --server-max-sessions).
+	ServerMaxSessions int
 	// ServerSessionIdle reaps a project session no client has touched for
 	// this long; 0 keeps the built-in default, a negative value disables
 	// reaping (--server-session-idle).
@@ -374,6 +377,7 @@ type runtimeFlagDefs struct {
 	insecureNoAuth     *bool
 	serverProjectsRoot *string
 	serverSessionIdle  *time.Duration
+	serverMaxSessions  *int
 }
 
 func defineScalarFlags(fs *flag.FlagSet) scalarFlags {
@@ -432,6 +436,7 @@ func defineRuntimeFlags(fs *flag.FlagSet) runtimeFlagDefs {
 		serverAuthToken:    fs.String("server-auth-token", "", "Bearer token for --server-auth=token (prefer the env var GOA_SERVER_AUTH_TOKEN)"),
 		insecureNoAuth:     fs.Bool("insecure-no-auth", false, "Serve 'goa server' on a non-loopback address with no authentication (unsafe: anyone who can reach it drives the agent)"),
 		serverProjectsRoot: fs.String("server-projects-root", "", "Run 'goa server' as a multi-project supervisor: one child session per project directory under this root, opened on demand"),
+		serverMaxSessions:  fs.Int("server-max-sessions", 0, "Maximum live project sessions in --server-projects-root mode (0 = built-in default)"),
 		serverSessionIdle:  fs.Duration("server-session-idle", 30*time.Minute, "Reap a project session no client has touched for this long (0 = default, negative = keep until the server stops)"),
 	}
 }
@@ -487,6 +492,7 @@ func (r *runtimeFlagDefs) collectInto(fs *flag.FlagSet) RuntimeOptions {
 
 		ServerProjectsRoot: *r.serverProjectsRoot,
 		ServerSessionIdle:  *r.serverSessionIdle,
+		ServerMaxSessions:  *r.serverMaxSessions,
 	}
 }
 

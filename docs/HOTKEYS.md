@@ -134,3 +134,18 @@ Read-only servers (`--server-read-only`) accept every view and reject every
 keystroke, so viewers can navigate and scroll but cannot drive the session.
 
 See [WEBUI.md](WEBUI.md) for the full transport and security model.
+
+## Attach keys (`goa attach`)
+
+An attached terminal forwards every keystroke verbatim — the session's
+bindings are the terminal tables above, unchanged. The client keeps exactly
+one chord for itself:
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+]` | Detach: the terminal is restored and `goa attach` exits; the session keeps running on the server (`/quit` inside the session ends it, or stop the server from its console) |
+
+`Ctrl+]` (byte `0x1d`) is deliberately not bound anywhere in the session's
+keymap, which is what makes it safe to reserve. Reconnect after a network
+drop is automatic; `/quit` inside the session is reported and attach exits.
+

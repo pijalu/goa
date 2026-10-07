@@ -55,6 +55,8 @@ Security:
                           demand (a browser's index page, or goa attach
                           --path) and reaped when no client has touched them
                           for --server-session-idle
+    --server-max-sessions N
+                          maximum live project sessions (default 8)
     --server-session-idle DURATION
                           idle reaping for project sessions (default 30m;
                           0 = default, negative = keep until shutdown)
@@ -119,6 +121,7 @@ func runSupervisorServer(opts RuntimeOptions) {
 		Addr:           serverAddr(opts),
 		Auth:           authCfg,
 		InsecureNoAuth: opts.InsecureNoAuth,
+		MaxSessions:    opts.ServerMaxSessions,
 		IdleTimeout:    idleTimeoutFor(opts),
 		Log:            log.New(os.Stderr, "", 0),
 	})

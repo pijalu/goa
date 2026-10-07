@@ -463,7 +463,8 @@ Copyright (C) 2026 Pierre Poissinger
     <h1>The AI coding agent<br><span class="grad">that lives in your terminal.</span></h1>
     <p class="subtitle">
       Goa brings full LLM transparency, multi-agent collaboration, and a rich
-      ANSI TUI to any OpenAI-compatible model &mdash; with no opaque black boxes.
+      ANSI TUI to any OpenAI-compatible model &mdash; served to your browser,
+      attachable from any terminal, with no opaque black boxes.
     </p>
     <div class="cta-row">
       <a class="btn btn-primary" href="#quickstart">
@@ -577,6 +578,66 @@ Copyright (C) 2026 Pierre Poissinger
         <div class="ficon"><span class="ic"><svg><use href="#i-terminal"/></svg></span></div>
         <h4>Rich TUI</h4>
         <p>Differential-rendering ANSI UI: chat, thinking stream, tool ledger, side panels, modals.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-eye"/></svg></span></div>
+        <h4>Web UI</h4>
+        <p><code>goa server</code> serves the same session as a web page &mdash; HTML blocks + live cell band, token auth, read-only mode.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-terminal"/></svg></span></div>
+        <h4>TUI/WEB Interop</h4>
+        <p>One session, every surface: browsers and attached terminals (<code>goa attach</code>) watch and drive the identical conversation.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-layers"/></svg></span></div>
+        <h4>Multi-Project Server</h4>
+        <p><code>--server-projects-root</code> fronts one full session per project &mdash; path ACL, idle reaping, process isolation.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-save"/></svg></span></div>
+        <h4>Session Tree</h4>
+        <p>Visualize, clone and fork session history trees &mdash; every branch of a conversation, kept.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-users"/></svg></span></div>
+        <h4>Swarm &amp; Pair Mode</h4>
+        <p>Multi-agent swarm with fan-out/fan-in, plus the planner + coder pair pipeline.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-cpu"/></svg></span></div>
+        <h4>Thinking Levels</h4>
+        <p>Reasoning effort per provider: off, low, medium, high &mdash; and thinking-block visibility.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-scaling"/></svg></span></div>
+        <h4>Context Compression</h4>
+        <p>Compress conversation history to fit the context window without losing the thread.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-arrow"/></svg></span></div>
+        <h4>Steering</h4>
+        <p>Guide agent behavior mid-session &mdash; queued input reaches the agent between steps.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-keyboard"/></svg></span></div>
+        <h4>History Persistence</h4>
+        <p>Input history saved across sessions and restored into the editor.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-wrench"/></svg></span></div>
+        <h4>Model/Provider Mgmt</h4>
+        <p>Delete models and providers via <code>/config:remove</code> or backspace in the pickers.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-star"/></svg></span></div>
+        <h4>Priority Search</h4>
+        <p>Search results ordered by file type (source first) with match counts.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-check"/></svg></span></div>
+        <h4>Configurable Spinner</h4>
+        <p>50+ spinner styles via <code>/config</code> or <code>tui.spinner</code> &mdash; the title bar animates too.</p>
       </div>
       <div class="feature-card">
         <div class="ficon"><span class="ic"><svg><use href="#i-question"/></svg></span></div>

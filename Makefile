@@ -130,7 +130,11 @@ WEB_GEN_GLOB := architecture.html setup.html configuration.html commands.html \
                 tools.html skills.html tui.html profiles.html docs.html \
                 agentic-sdk.html plugins.html providers.html workflows.html \
                 orchestration-design.html skill-execution.html development.html \
-                profiling.html goals.html
+                profiling.html goals.html webui.html user-guide.html hotkeys.html \
+                loop-detection.html plan.html provider-connectivity.html review-file-subcommand.html \
+                no-file-mode-triggers.html recontext-plan.html gogit-migration-plan.html \
+                code-quality-gate-plan.html complexity-cleanup-plan.html orchestrator-bugfix-plan.html \
+                orchestrator-tabs-plan.html plan-mode-tasks.html
 
 web-build:
 	$(WEB_BUILD)

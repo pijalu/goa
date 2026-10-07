@@ -27,10 +27,15 @@ On first run, Goa walks you through:
 2. Selecting an agent profile (coder, planner, reviewer)
 3. Choosing an execution mode (yolo, confirm, review)
 
-## Web UI
+## Web UI & Terminal Interop
 
-The TUI is not a second rendering path — `goa server` runs the *same* session
-against a virtual terminal and serves the resulting cells to a browser:
+The UI has exactly one engine and three equal surfaces. `goa server` runs the
+*same* interactive session against a virtual terminal; a browser renders that
+screen as HTML blocks with the input line as live cells, and a **real terminal
+attaches as a client over the same WebSocket** — whatever one surface sees,
+the other sees, because it *is* the same screen.
+
+**Serve (browser + terminal):**
 
 ```bash
 # Loopback only, no credentials needed
@@ -43,11 +48,28 @@ GOA_SERVER_AUTH_TOKEN=$(openssl rand -hex 32) ./goa server --server-addr 0.0.0.0
 ./goa server --server-read-only
 ```
 
+**Attach a terminal to the served session** (`Ctrl+]` detaches; the session
+keeps running server-side):
+
+```bash
+./goa attach --server 127.0.0.1:7331
+```
+
+**One server, many projects.** `--server-projects-root` turns `goa server`
+into a supervisor that opens one full session per project directory — its own
+config, plugins and skills — on demand, from the browser's session index or
+from `goa attach --path`:
+
+```bash
+./goa server --server-projects-root ~/repos --server-addr 0.0.0.0:7331 --server-auth=token
+./goa attach --server 127.0.0.1:7331 --path ~/repos/goa
+```
+
 Binding a non-loopback address without credentials is refused at startup — the
-unsafe choice is the one you have to type (`--insecure-no-auth`). Keys typed in
-the browser reach the agent as the bytes a real terminal would have written, so
+unsafe choice is the one you have to type (`--insecure-no-auth`). Keys reach
+the agent as the bytes a real terminal would have written in every surface, so
 multiline editing, kill-ring, history, autocomplete and overlays behave
-identically. Full details: [docs/WEBUI.md](docs/WEBUI.md).
+identically everywhere. Full details: [docs/WEBUI.md](docs/WEBUI.md).
 
 ## Features
 
@@ -68,7 +90,10 @@ identically. Full details: [docs/WEBUI.md](docs/WEBUI.md).
 | **💾 Session Persistence** | Full JSONL session history with `/save` and `/restore` |
 | **📦 Diagnostic Export** | Self-contained ZIP bundle via `/export` with events, logs, config, and issue description |
 | **🖥 Rich TUI** | Chat, thinking stream, tool ledger, log, token budget, side panel, modals |
-| **🌐 Web UI** | `goa server` serves the same TUI as a web page — loopback-only by default, optional token/basic auth, read-only mode |
+| **🌐 Web UI** | `goa server` serves the same TUI as a web page — HTML blocks + live cell band, loopback-only by default, optional token/basic auth, read-only mode |
+| **🔗 TUI/WEB Interop** | One session, every surface: browsers and attached terminals (`goa attach`) share the same screen — a browser on the HTML blocks plane and a terminal on the cells plane watch and drive the identical conversation |
+| **🕹 Terminal Attach** | `goa attach` renders the served session in a real terminal — truecolor, native scrollback, verbatim keystrokes — and detaches with `Ctrl+]` while the session keeps running |
+| **🗂 Multi-Project Server** | `--server-projects-root` fronts one full session per project directory (own config/plugins/skills) with a session index, path ACL, idle reaping and per-child process isolation |
 | **🔌 JS Plugins** | Extend Goa with JavaScript plugins via Goja |
 | **🔄 Execution Modes** | yolo (auto-approve), confirm (pause before each tool), review (queue edits) |
 | **🔒 Git Worktree Isolation** | Sandboxed agent filesystem via `git worktree` |
@@ -148,7 +173,7 @@ identically. Full details: [docs/WEBUI.md](docs/WEBUI.md).
 | [SKILL-EXECUTION.md](docs/SKILL-EXECUTION.md) | Skill execution modes and sub-agent isolation |
 | [PROFILES.md](docs/PROFILES.md) | Agent profiles & resolution |
 | [TUI.md](docs/TUI.md) | TUI layout & usage |
-| [WEBUI.md](docs/WEBUI.md) | Web UI (`goa server`) — security model, transports, URLs |
+| [WEBUI.md](docs/WEBUI.md) | Web UI & terminal interop (`goa server`, `goa attach`) — security model, planes, multi-project serving |
 | [HOTKEYS.md](docs/HOTKEYS.md) | Keyboard shortcuts reference |
 | [AGENTIC-SDK.md](docs/AGENTIC-SDK.md) | How Goa wraps the agentic SDK |
 | [WORKFLOWS.md](docs/WORKFLOWS.md) | Workflow system reference |
@@ -177,7 +202,10 @@ goa/
 │   ├── commands/            # 30+ commands (auto-registered via init())
 │   └── orchestrator/        # Orchestration runtime: bounded pool, handle, store, topology, goal binding
 ├── internal/                # Shared types, enums, errors, git worktree manager
-│   └── agentic/             # Agent SDK
+│   ├── agentic/             # Agent SDK
+│   ├── webui/               # `goa server`: virtual terminal, cell/block planes,
+│   │   └── supervisor/      #   multi-project supervisor (child sessions, proxy)
+│   └── attach/              # `goa attach`: WebSocket terminal client (frames→ANSI)
 ├── tui/                     # ANSI TUI: engine, components, overlays, styles
 │   ├── goal/                # Goal status panel
 │   ├── swarm/               # Swarm mode renderer

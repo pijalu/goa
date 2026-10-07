@@ -886,8 +886,25 @@ do in a terminal — see [HOTKEYS.md](HOTKEYS.md) for the browser key map.
 | Remote box | Leave it on loopback and forward the port: `ssh -L 8080:127.0.0.1:8080 host` |
 | Tempted to bind `0.0.0.0` without a token | Refused at startup. `--insecure-no-auth` exists, is spelled out, and means "anyone who reaches this port drives your agent" |
 
-One session per process for now: `goa server` serves the one session it is
-running. Multiple concurrent sessions in a single process are future work.
+### Attach a terminal (`goa attach`)
+
+Your terminal can be one of the viewers: `goa attach --server 127.0.0.1:8080`
+renders the served session in a real terminal (truecolor, native scrollback)
+and forwards your keyboard verbatim. `Ctrl+]` detaches while the session keeps
+running — close the laptop, re-attach later, the conversation is still there.
+Add `--path` on a multi-project server (below) to pick the project.
+
+### One server, many projects (`--server-projects-root`)
+
+```bash
+./goa server --server-projects-root ~/repos --server-addr 0.0.0.0:7331 --server-auth=token
+```
+
+The server becomes a session index: each project directory you open (browser
+form or `goa attach --path ~/repos/goa`) gets its own full session with that
+project's config, plugins and skills. Sessions no client has touched for
+`--server-session-idle` (default 30m) are stopped with their transcripts kept,
+and re-open on the next connect.
 
 Full reference: [WEBUI.md](WEBUI.md).
 
@@ -945,7 +962,7 @@ so all of them receive the same well-formed image payload.
 
 ## See Also
 
-- [WEBUI.md](WEBUI.md) — Web UI reference: security model, transports, URLs
+- [WEBUI.md](WEBUI.md) — Web UI & terminal interop reference: `goa server`, `goa attach`, multi-project
 
 - [WORKFLOWS.md](WORKFLOWS.md) — Workflow system reference
 - [ORCHESTRATOR.md](ORCHESTRATOR.md) — Orchestrator technical reference

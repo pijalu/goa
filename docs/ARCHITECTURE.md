@@ -199,6 +199,32 @@ command loop (`TUI.Apply`), which is why the web session is a plain
 
 See [WEBUI.md](WEBUI.md) for transports, auth and the URL map;
 [specs/webui.md](../specs/webui.md) for the full design.
+## The Attached Terminal (`internal/attach/`)
+
+`goa attach` is the mirror image of the web page: the terminal is the client.
+It dials the same `/ws` endpoint (requesting the `cells` plane), feeds every
+received frame through a renderer that emits truecolor SGR, OSC-8 links and
+the server's cursor as the local caret, and pushes scrolled-off transcript
+rows into the terminal's native scrollback. Input needs no decoding table of
+its own: the client's terminal is in raw mode, and the bytes it produces are
+forwarded verbatim — the engine decodes exactly what a local session would
+read. Reconnects re-announce the last seen frame sequence; keystrokes typed
+while offline are held (bounded) and replayed.
+
+## The Multi-Project Supervisor (`internal/webui/supervisor/`)
+
+`goa server --server-projects-root` hosts no session itself. Each project
+directory is served by an ordinary child `goa server` process bound to a
+private Unix socket inside a `0700` directory, authenticated with a per-child
+random bearer token that only the supervisor's proxy presents. The parent
+serves one hardened HTTP surface — the same `Guard` chain as the session
+server — with a session index, a connect-by-path handshake (`POST /connect`,
+validated absolute/existing/under-root before any child spawns), and a
+reverse proxy keyed by session id, including ids a child has rotated away
+from. One engine per project keeps config, plugins and conversation cache
+identities exact by construction; idle children are reaped with their
+transcripts left on disk.
+
 
 ## Key Design Decisions
 

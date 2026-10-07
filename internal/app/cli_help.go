@@ -108,7 +108,7 @@ var flagGroups = []flagGroup{
 		"server-addr", "server-read-only", "server-max-clients", "server-cells",
 		"server-auth", "server-auth-user", "server-auth-password",
 		"server-auth-token", "insecure-no-auth", "server-projects-root",
-		"server-session-idle",
+		"server-session-idle", "server-max-sessions",
 	}},
 	{"Other interfaces", []string{"acp"}},
 	{"Configuration & paths", []string{"config", "home"}},

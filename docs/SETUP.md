@@ -151,6 +151,33 @@ export GOA_SERVER_AUTH_TOKEN=$(openssl rand -hex 32)
   is the explicit, typed opt-out.
 * Opening `http://127.0.0.1:8080/` redirects to the live session
   (`/s/<id>`); `/s/<id>/text` is a plain-text mirror of the screen.
+### Attach a terminal (`goa attach`)
+
+A real terminal can be a client of the served session — the same screen,
+colors and keystrokes as the TUI, with the transcript in your terminal's own
+scrollback:
+
+```bash
+./goa attach --server 127.0.0.1:7331                 # attach
+./goa attach --server 127.0.0.1:7331 --session <id>  # a specific session
+```
+
+`Ctrl+]` detaches; the session keeps running server-side. Requires the server
+credentials when auth is on (`--server-auth-token` / `--server-auth-user` +
+`GOA_SERVER_AUTH_PASSWORD`).
+
+### One server, many projects (`--server-projects-root`)
+
+```bash
+export GOA_SERVER_AUTH_TOKEN=$(openssl rand -hex 32)
+./goa server --server-projects-root ~/repos --server-addr 0.0.0.0:7331 --server-auth=token
+./goa attach --server 127.0.0.1:7331 --path ~/repos/goa
+```
+
+Each project directory gets its own full session (its own config, plugins,
+skills) on demand; `http://host:7331/` lists the live sessions with an
+open-project form. Paths must live under the root.
+
 * The same flags apply over SSH port-forwarding, so a remote box stays
   loopback-only and you still reach it from your laptop:
   `ssh -L 8080:127.0.0.1:8080 host`.

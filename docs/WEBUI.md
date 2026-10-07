@@ -119,6 +119,24 @@ rendering code path:
 `--server-read-only` makes every attached browser a viewer: keystrokes and
 uploads are refused with an explicit notice rather than silently ignored.
 
+### Rendering planes
+
+The plane is what a client asks to be *shipped*, and it is a per-client
+property of the session, not a server-wide mode:
+
+* **`blocks`** (the browser's default) — the conversation ships as semantic
+  HTML-ready blocks with the input line/status band as live cells. Scrolling
+  and resize are the browser's own reflow.
+* **`cells`** (what `goa attach` requests) — the whole screen as terminal
+  cells: row patches with resolved truecolor, the cursor, and the transcript
+  as scrollback batches.
+
+The hub fans every published frame out per plane: one engine frame produces
+each plane's document with one shared sequence number, so a browser and an
+attached terminal watch the identical conversation through different
+documents, and a `hello {since}` resync is answerable on either plane.
+`--server-cells` only changes the *default* for clients that name no plane.
+
 ---
 
 ## 3. URLs
@@ -132,6 +150,15 @@ uploads are refused with an explicit notice rather than silently ignored.
 | `/assets/…` | embedded page assets, immutable cache |
 | `/healthz` | JSON status (session id, attached browsers) |
 | `/ws`, `/events` | live transports |
+
+Multi-project mode (`--server-projects-root`) adds:
+
+| Path | Purpose |
+|------|---------|
+| `/` | session index: live project sessions + an "open project directory" form |
+| `/connect` | `POST {path}` → opens (or reuses) that project's session, returns `{session}`; the browser form gets a redirect to `/s/<id>` |
+| `/sessions` | JSON list of live project sessions |
+| `/s/<id>`, `/ws?s=<id>`, `/input`, `/key`, `/resize`, `/upload` | proxied to the child session that owns the id (current **or** rotated-away) |
 
 ---
 
@@ -202,6 +229,19 @@ Sessions are opened on demand:
   session page.
 * **Terminal** — `goa attach --server host:8080 --path ~/repos/foo`
   resolves the path through the same handshake before attaching.
+
+The handshake itself is one call, shared by both clients:
+
+```
+POST /connect  {"path": "/repos/foo"}          Authorization: <server credentials>
+→ 200 {"session": "1791398430_dd8s6twg", "path": "/repos/foo"}
+→ 400 {"error": "path outside the projects root"}
+```
+
+A plain (single-project) server has no `/connect`; `goa attach` detects that
+(404) and falls back to `/healthz`, which names the live session. A supervisor
+that *answers* with an error owns the reason the user sees — the fallback
+never masks it.
 
 Boundaries and lifecycle:
 
