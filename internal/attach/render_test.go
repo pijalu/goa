@@ -258,3 +258,38 @@ func TestScreenGeometryChangeRepaints(t *testing.T) {
 		t.Errorf("geometry change must paint rows of the new size: %q", out)
 	}
 }
+
+// A row painted edge to edge must NOT be followed by an erase: the terminal
+// sits in pending-wrap after the last column, and an EL issued there erases
+// the last written cell — the row arrived one column short (caught by the
+// filmstrip wire-parity test on the footer separator rows).
+func TestScreenFullWidthRowKeepsLastCell(t *testing.T) {
+	var w bufWriter
+	s := NewScreen(&w, 10, 2)
+	s.Start()
+	s.Frame(&webui.Frame{
+		Seq: 1, Cols: 10, Rows: 2, Full: true,
+		Cursor: webui.Cursor{Row: 0, Col: 0, Visible: true},
+		Patches: []webui.RowPatch{
+			{Row: 0, Runs: []webui.Run{{Text: "──────────"}}},
+			{Row: 1, Runs: []webui.Run{{Text: "short"}}},
+		},
+	}, nil)
+	out := w.b.String()
+	first := strings.Index(out, "──────────")
+	rest := out[first+len("──────────"):]
+	if strings.HasPrefix(rest, eraseBelow) || strings.HasPrefix(rest, "\x1b[0m\x1b[K") {
+		t.Errorf("full-width row was followed by an erase: %q", rest[:minStr(12, len(rest))])
+	}
+	// The underfilled row still gets its tail blanked.
+	if !strings.Contains(out, "\x1b[0m\x1b[K") {
+		t.Errorf("underfilled row lost its tail erase: %q", out)
+	}
+}
+
+func minStr(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

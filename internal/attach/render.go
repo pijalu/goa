@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/webui"
 	"github.com/pijalu/goa/tui"
 )
@@ -364,9 +365,11 @@ func (s *Screen) paintRow(row int) {
 	s.writeRuns(s.model[row], true)
 }
 
-// writeRuns emits runs through the pen-diffing SGR writer. tail clears the
-// remainder of the row (live rows; transcript stamps run at the top line,
-// where the following line feed scrolls the row away untouched).
+// writeRuns emits runs through the pen-diffing SGR writer. tail blanks the
+// remainder of the row — but only when there IS a remainder: a row painted
+// edge to edge leaves the terminal in pending-wrap, and an EL issued there
+// erases the LAST WRITTEN CELL (the cursor still sits on it), shaving one
+// column off the row. Full-width rows therefore get the pen reset only.
 func (s *Screen) writeRuns(runs []webui.Run, tail bool) {
 	p := pen{}
 	for _, r := range runs {
@@ -380,8 +383,21 @@ func (s *Screen) writeRuns(runs []webui.Run, tail bool) {
 	}
 	if tail {
 		s.out.WriteString(sgrReset)
-		s.out.WriteString(eraseBelow)
+		if runWidth(runs) < s.cols {
+			s.out.WriteString(eraseBelow)
+		}
 	}
+}
+
+// runWidth returns the display width the runs paint, measured with the same
+// cluster-width function the emulator writes with — the terminal's pending
+// wrap fires at exactly this many columns.
+func runWidth(runs []webui.Run) int {
+	w := 0
+	for _, r := range runs {
+		w += ansi.Width(r.Text)
+	}
+	return w
 }
 
 // transitionPen emits whatever separates the run the pen just wrote from the
