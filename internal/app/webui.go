@@ -7,11 +7,14 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/pijalu/goa/internal/webui"
+	"github.com/pijalu/goa/internal/webui/supervisor"
 )
 
 // webServerUsage documents the `goa server` subcommand.
@@ -20,7 +23,7 @@ const webServerUsage = `goa server — serve the Goa UI as a web page
 Usage:
     goa server [--server-addr 127.0.0.1:8080] [--server-read-only]
                [--server-auth basic|token] [--insecure-no-auth]
-               [--server-cells]
+               [--server-cells] [--server-projects-root DIR]
 
 The browser renders the conversation as HTML blocks (native scrolling and
 resize) and keeps the input line/status band as live terminal cells, so
@@ -45,6 +48,24 @@ Security:
     --insecure-no-auth    serve without credentials on any address — anything
                           that can reach the port can drive the agent
 
+    --server-projects-root DIR
+                          multi-project mode: serve one session per project
+                          directory under this root instead of the CWD's.
+                          Sessions are child goa server processes, opened on
+                          demand (a browser's index page, or goa attach
+                          --path) and reaped when no client has touched them
+                          for --server-session-idle
+    --server-session-idle DURATION
+                          idle reaping for project sessions (default 30m;
+                          0 = default, negative = keep until shutdown)
+
+Attach:
+    goa attach --server 127.0.0.1:8080 [--path DIR]
+                          drive the served session from a real terminal: the
+                          same screen, colours and keystrokes, with the
+                          transcript in the terminal's own scrollback.
+                          Ctrl+] detaches without stopping the session.
+
 Repeated wrong credentials lock the client out for a minute. Every response
 carries a strict Content-Security-Policy, and cross-origin writes are refused.
 `
@@ -62,6 +83,60 @@ func runWebServer(subs *subsystems, opts RuntimeOptions) {
 	if err := serveWebUI(subs, opts, New(subs), ctx); err != nil {
 		fatalExitf("Error: %v\n", err)
 	}
+}
+
+// maybeRunSupervisor reports whether this invocation is multi-project mode
+// (`goa server --server-projects-root`) and runs it if so. The supervisor
+// needs no session of its own: it fronts child processes and must not build
+// this process's subsystems (or run the first-run wizard against the CWD).
+func maybeRunSupervisor(opts RuntimeOptions) bool {
+	if !opts.Server || opts.ServerProjectsRoot == "" {
+		return false
+	}
+	runSupervisorServer(opts)
+	return true
+}
+
+// runSupervisorServer runs `goa server --server-projects-root`: a
+// multi-project front end with no session of its own. Every project session
+// is an ordinary child `goa server` process on a private Unix socket — per
+// project config, plugins and trust are exact because the child IS the
+// single-project server — and the supervisor fronts them with one
+// authenticated surface: the session index, the connect-by-path handshake
+// (goa attach --path, the browser's open form), and a reverse proxy.
+func runSupervisorServer(opts RuntimeOptions) {
+	ctx, releaseSignals := shutdownSignals()
+	defer releaseSignals()
+	authCfg, err := webuiAuthConfig(opts)
+	if err != nil {
+		fatalExitf("Error: %v\n", err)
+	}
+	if err := webui.CheckExposure(serverAddr(opts), authCfg, opts.InsecureNoAuth); err != nil {
+		fatalExitf("Error: %v\n", err)
+	}
+	sup, err := supervisor.New(supervisor.Options{
+		Root:           opts.ServerProjectsRoot,
+		Addr:           serverAddr(opts),
+		Auth:           authCfg,
+		InsecureNoAuth: opts.InsecureNoAuth,
+		IdleTimeout:    idleTimeoutFor(opts),
+		Log:            log.New(os.Stderr, "", 0),
+	})
+	if err != nil {
+		fatalExitf("Error: %v\n", err)
+	}
+	if err := sup.ListenAndServe(ctx); err != nil {
+		fatalExitf("Error: %v\n", err)
+	}
+}
+
+// idleTimeoutFor maps the flag onto the supervisor's policy: 0 keeps the
+// built-in default, a negative value disables reaping.
+func idleTimeoutFor(opts RuntimeOptions) time.Duration {
+	if opts.ServerSessionIdle < 0 {
+		return -1
+	}
+	return opts.ServerSessionIdle
 }
 
 // webSession is the interactive session the web UI serves. *App implements it

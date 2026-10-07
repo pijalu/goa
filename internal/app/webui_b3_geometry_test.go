@@ -29,7 +29,7 @@ type b3Frame struct {
 
 func (s *b3Sink) attach(vt *webui.VirtualTerminal) { s.grid = vt.Grid() }
 
-func (s *b3Sink) Publish(f *webui.Frame) {
+func (s *b3Sink) Publish(_ webui.Plane, f *webui.Frame) {
 	var fr b3Frame
 	for _, p := range f.Scrollback {
 		fr.rows = append(fr.rows, strings.TrimRight(webui.RunsText(p.Runs), " "))
@@ -42,7 +42,8 @@ func (s *b3Sink) Publish(f *webui.Frame) {
 	s.frames = append(s.frames, fr)
 }
 
-func (s *b3Sink) HasClients() bool { return true }
+func (s *b3Sink) HasClients() bool               { return true }
+func (s *b3Sink) HasClientsFor(webui.Plane) bool { return true }
 
 // shipped returns every transcript row the sink saw, in frame order.
 func (s *b3Sink) shipped() []string {

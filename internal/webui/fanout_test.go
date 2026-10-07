@@ -20,8 +20,8 @@ func TestHubEncodesFrameOncePerFanOut(t *testing.T) {
 	vt.SetSink(hub)
 
 	first, second := &fakeClient{}, &fakeClient{}
-	hub.Attach(first)
-	hub.Attach(second)
+	hub.Attach(first, PlaneCells)
+	hub.Attach(second, PlaneCells)
 
 	vt.WriteString("hello")
 
@@ -69,7 +69,7 @@ func TestPublishWithNoClientsStillServesTheNextAttach(t *testing.T) {
 	vt.WriteString("\x1b[3;1Hcharlie")
 
 	client := &fakeClient{}
-	hub.Attach(client)
+	hub.Attach(client, PlaneCells)
 	sendFrame(client, vt.FullFrame())
 
 	if len(client.frames) != 1 {

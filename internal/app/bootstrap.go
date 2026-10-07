@@ -68,6 +68,15 @@ type RuntimeOptions struct {
 	ServerAuthToken string
 	// InsecureNoAuth waives the loopback requirement (--insecure-no-auth).
 	InsecureNoAuth bool
+	// ServerProjectsRoot turns `goa server` into a multi-project supervisor:
+	// instead of serving the CWD's session, the process fronts one child
+	// session per project directory under this root, created on demand by
+	// the /connect handshake (goa attach --path, the browser index page).
+	ServerProjectsRoot string
+	// ServerSessionIdle reaps a project session no client has touched for
+	// this long; 0 keeps the built-in default, a negative value disables
+	// reaping (--server-session-idle).
+	ServerSessionIdle time.Duration
 }
 
 // Headless reports whether the user requested headless execution.
@@ -328,41 +337,43 @@ type scalarFlags struct {
 }
 
 type runtimeFlagDefs struct {
-	prompt           *string
-	promptFile       *string
-	goal             *bool
-	orchestrate      *string
-	plain            *bool
-	yes              *bool
-	noMemory         *bool
-	noPlugins        *bool
-	memoryBudget     *int
-	maxTurns         *int
-	timeout          *time.Duration
-	color            *string
-	dream            *bool
-	dreamApply       *bool
-	acp              *bool
-	checkUpdate      *bool
-	telemetry        *bool
-	exportOutput     *string
-	exportSession    *string
-	includeGlobalLog *bool
-	cpuProfile       *string
-	memProfile       *string
-	traceFile        *string
-	perfLoad         *bool
-	perfLoadDuration *time.Duration
-	withProfiling    *bool
-	serverAddr       *string
-	serverReadOnly   *bool
-	serverMaxClients *int
-	serverCells      *bool
-	serverAuth       *string
-	serverAuthUser   *string
-	serverAuthPass   *string
-	serverAuthToken  *string
-	insecureNoAuth   *bool
+	prompt             *string
+	promptFile         *string
+	goal               *bool
+	orchestrate        *string
+	plain              *bool
+	yes                *bool
+	noMemory           *bool
+	noPlugins          *bool
+	memoryBudget       *int
+	maxTurns           *int
+	timeout            *time.Duration
+	color              *string
+	dream              *bool
+	dreamApply         *bool
+	acp                *bool
+	checkUpdate        *bool
+	telemetry          *bool
+	exportOutput       *string
+	exportSession      *string
+	includeGlobalLog   *bool
+	cpuProfile         *string
+	memProfile         *string
+	traceFile          *string
+	perfLoad           *bool
+	perfLoadDuration   *time.Duration
+	withProfiling      *bool
+	serverAddr         *string
+	serverReadOnly     *bool
+	serverMaxClients   *int
+	serverCells        *bool
+	serverAuth         *string
+	serverAuthUser     *string
+	serverAuthPass     *string
+	serverAuthToken    *string
+	insecureNoAuth     *bool
+	serverProjectsRoot *string
+	serverSessionIdle  *time.Duration
 }
 
 func defineScalarFlags(fs *flag.FlagSet) scalarFlags {
@@ -385,41 +396,43 @@ func defineScalarFlags(fs *flag.FlagSet) scalarFlags {
 
 func defineRuntimeFlags(fs *flag.FlagSet) runtimeFlagDefs {
 	return runtimeFlagDefs{
-		prompt:           fs.String("prompt", "", "User prompt to execute (implies headless mode)"),
-		promptFile:       fs.String("prompt-file", "", "Read prompt from file (implies headless mode)"),
-		goal:             fs.Bool("goal", false, "Treat the prompt as a goal objective (headless mode only)"),
-		orchestrate:      fs.String("orchestrate", "", "Resume orchestrator run <run-id> headless"),
-		plain:            fs.Bool("plain", false, "Force plain, uncolored output in headless mode"),
-		yes:              fs.Bool("yes", false, "Auto-approve tool confirmations in headless mode"),
-		noMemory:         fs.Bool("no-memory", false, "Do not inject long-term memory into the system prompt"),
-		noPlugins:        fs.Bool("no-plugins", false, "Start without loading any plugins (bundled and installed)"),
-		memoryBudget:     fs.Int("memory-budget", 0, "Maximum tokens for memory injection (0=auto)"),
-		maxTurns:         fs.Int("max-turns", 0, "Maximum agent turns in headless mode (0=unlimited)"),
-		timeout:          fs.Duration("timeout", 0, "Overall session timeout in headless mode (0=none)"),
-		color:            fs.String("color", "auto", "Color output in headless mode: auto, always, or never"),
-		dream:            fs.Bool("dream", false, "Run memory consolidation (dream) and exit"),
-		dreamApply:       fs.Bool("dream-apply", false, "Run dream and apply consolidated memory immediately"),
-		acp:              fs.Bool("acp", false, "Run ACP server over stdin/stdout"),
-		checkUpdate:      fs.Bool("check-update", false, "Check for updates and exit"),
-		telemetry:        fs.Bool("telemetry", false, "Send anonymous telemetry"),
-		exportOutput:     fs.String("export-output", "", "Output path for goa export"),
-		exportSession:    fs.String("export-session", "", "Session ID to export"),
-		includeGlobalLog: fs.Bool("include-global-log", false, "Include global log in export"),
-		cpuProfile:       fs.String("cpuprofile", "", "Write CPU profile to `file`"),
-		memProfile:       fs.String("memprofile", "", "Write memory profile to `file`"),
-		traceFile:        fs.String("trace", "", "Write execution trace to `file`"),
-		perfLoad:         fs.Bool("perf-load", false, "Run a synthetic TUI performance load instead of an agent turn"),
-		perfLoadDuration: fs.Duration("perf-load-duration", 30*time.Second, "Duration of the synthetic performance load"),
-		withProfiling:    fs.Bool("with-profiling", false, "Capture CPU, memory, and trace profiles after exit (default names unless overridden)"),
-		serverAddr:       fs.String("server-addr", "", "Listen address for 'goa server' (default 127.0.0.1:8080)"),
-		serverReadOnly:   fs.Bool("server-read-only", false, "Serve 'goa server' as a viewer: browsers see the session but cannot drive it"),
-		serverMaxClients: fs.Int("server-max-clients", 0, "Maximum browsers attached to 'goa server' (0 = built-in default)"),
-		serverCells:      fs.Bool("server-cells", false, "Serve 'goa server' in the legacy cell-terminal plane (default: blocks plane — HTML blocks + cell band)"),
-		serverAuth:       fs.String("server-auth", "none", "Authentication for 'goa server': none, basic or token"),
-		serverAuthUser:   fs.String("server-auth-user", "", "Username for --server-auth=basic"),
-		serverAuthPass:   fs.String("server-auth-password", "", "Password for --server-auth=basic (prefer the env var GOA_SERVER_AUTH_PASSWORD)"),
-		serverAuthToken:  fs.String("server-auth-token", "", "Bearer token for --server-auth=token (prefer the env var GOA_SERVER_AUTH_TOKEN)"),
-		insecureNoAuth:   fs.Bool("insecure-no-auth", false, "Serve 'goa server' on a non-loopback address with no authentication (unsafe: anyone who can reach it drives the agent)"),
+		prompt:             fs.String("prompt", "", "User prompt to execute (implies headless mode)"),
+		promptFile:         fs.String("prompt-file", "", "Read prompt from file (implies headless mode)"),
+		goal:               fs.Bool("goal", false, "Treat the prompt as a goal objective (headless mode only)"),
+		orchestrate:        fs.String("orchestrate", "", "Resume orchestrator run <run-id> headless"),
+		plain:              fs.Bool("plain", false, "Force plain, uncolored output in headless mode"),
+		yes:                fs.Bool("yes", false, "Auto-approve tool confirmations in headless mode"),
+		noMemory:           fs.Bool("no-memory", false, "Do not inject long-term memory into the system prompt"),
+		noPlugins:          fs.Bool("no-plugins", false, "Start without loading any plugins (bundled and installed)"),
+		memoryBudget:       fs.Int("memory-budget", 0, "Maximum tokens for memory injection (0=auto)"),
+		maxTurns:           fs.Int("max-turns", 0, "Maximum agent turns in headless mode (0=unlimited)"),
+		timeout:            fs.Duration("timeout", 0, "Overall session timeout in headless mode (0=none)"),
+		color:              fs.String("color", "auto", "Color output in headless mode: auto, always, or never"),
+		dream:              fs.Bool("dream", false, "Run memory consolidation (dream) and exit"),
+		dreamApply:         fs.Bool("dream-apply", false, "Run dream and apply consolidated memory immediately"),
+		acp:                fs.Bool("acp", false, "Run ACP server over stdin/stdout"),
+		checkUpdate:        fs.Bool("check-update", false, "Check for updates and exit"),
+		telemetry:          fs.Bool("telemetry", false, "Send anonymous telemetry"),
+		exportOutput:       fs.String("export-output", "", "Output path for goa export"),
+		exportSession:      fs.String("export-session", "", "Session ID to export"),
+		includeGlobalLog:   fs.Bool("include-global-log", false, "Include global log in export"),
+		cpuProfile:         fs.String("cpuprofile", "", "Write CPU profile to `file`"),
+		memProfile:         fs.String("memprofile", "", "Write memory profile to `file`"),
+		traceFile:          fs.String("trace", "", "Write execution trace to `file`"),
+		perfLoad:           fs.Bool("perf-load", false, "Run a synthetic TUI performance load instead of an agent turn"),
+		perfLoadDuration:   fs.Duration("perf-load-duration", 30*time.Second, "Duration of the synthetic performance load"),
+		withProfiling:      fs.Bool("with-profiling", false, "Capture CPU, memory, and trace profiles after exit (default names unless overridden)"),
+		serverAddr:         fs.String("server-addr", "", "Listen address for 'goa server' (default 127.0.0.1:8080)"),
+		serverReadOnly:     fs.Bool("server-read-only", false, "Serve 'goa server' as a viewer: browsers see the session but cannot drive it"),
+		serverMaxClients:   fs.Int("server-max-clients", 0, "Maximum browsers attached to 'goa server' (0 = built-in default)"),
+		serverCells:        fs.Bool("server-cells", false, "Serve 'goa server' in the legacy cell-terminal plane (default: blocks plane — HTML blocks + cell band)"),
+		serverAuth:         fs.String("server-auth", "none", "Authentication for 'goa server': none, basic or token"),
+		serverAuthUser:     fs.String("server-auth-user", "", "Username for --server-auth=basic"),
+		serverAuthPass:     fs.String("server-auth-password", "", "Password for --server-auth=basic (prefer the env var GOA_SERVER_AUTH_PASSWORD)"),
+		serverAuthToken:    fs.String("server-auth-token", "", "Bearer token for --server-auth=token (prefer the env var GOA_SERVER_AUTH_TOKEN)"),
+		insecureNoAuth:     fs.Bool("insecure-no-auth", false, "Serve 'goa server' on a non-loopback address with no authentication (unsafe: anyone who can reach it drives the agent)"),
+		serverProjectsRoot: fs.String("server-projects-root", "", "Run 'goa server' as a multi-project supervisor: one child session per project directory under this root, opened on demand"),
+		serverSessionIdle:  fs.Duration("server-session-idle", 30*time.Minute, "Reap a project session no client has touched for this long (0 = default, negative = keep until the server stops)"),
 	}
 }
 
@@ -471,6 +484,9 @@ func (r *runtimeFlagDefs) collectInto(fs *flag.FlagSet) RuntimeOptions {
 		ServerAuthPass:   serverAuthSecret(*r.serverAuthPass, "GOA_SERVER_AUTH_PASSWORD"),
 		ServerAuthToken:  serverAuthSecret(*r.serverAuthToken, "GOA_SERVER_AUTH_TOKEN"),
 		InsecureNoAuth:   *r.insecureNoAuth,
+
+		ServerProjectsRoot: *r.serverProjectsRoot,
+		ServerSessionIdle:  *r.serverSessionIdle,
 	}
 }
 

@@ -422,12 +422,32 @@ func (e *TermEmulator) eraseDisplay(params string) {
 	}
 }
 
+// eraseLine applies EL (erase in line). The three forms are distinct, as in
+// every real terminal: EL 0 (or no parameter) clears from the cursor to the
+// end of the line, EL 1 from the start of the line through the cursor, and
+// EL 2 the whole line. Treating EL 0 as a whole-line wipe made the emulator
+// unfaithful exactly where a client paints a row and then clears its tail —
+// the row arrived blank in the emulator and intact in a real terminal.
 func (e *TermEmulator) eraseLine(params string) {
-	if params != "" && params != "2" && params != "0" {
+	var from, to int
+	switch params {
+	case "", "0":
+		from, to = e.col, e.w
+	case "1":
+		from, to = 0, e.col+1
+	case "2":
+		from, to = 0, e.w
+	default:
 		return
 	}
+	if from < 0 {
+		from = 0
+	}
+	if to > e.w {
+		to = e.w
+	}
 	e.markDirty(e.row)
-	for c := range e.screen[e.row] {
+	for c := from; c < to; c++ {
 		e.screen[e.row][c] = ""
 		e.screenBg[e.row][c] = ""
 		e.screenFg[e.row][c] = ""

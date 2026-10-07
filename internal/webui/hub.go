@@ -49,17 +49,28 @@ func (m AttachMode) String() string {
 // ReadOnly reports whether the mode forbids input.
 func (m AttachMode) ReadOnly() bool { return m != AttachDriver }
 
+// hubSlot is the per-attachment record: what the client may do, and which
+// plane it asked to be served. The mode travels with the client so a detached
+// or dropped driver is never miscounted as a viewer (or the reverse) — the
+// reason a slot frees correctly. The plane travels with it because the two
+// planes ship different documents for the same screen: a cells frame sent to a
+// blocks client (or vice versa) would corrupt its view, so every frame is
+// fanned out per plane.
+type hubSlot struct {
+	mode  AttachMode
+	plane Plane
+}
+
 // Hub is the session-scoped fan-out between the VirtualTerminal and the
 // attached transports. It is deliberately dumb: no buffering policy of its own,
 // no per-client state beyond the attached set — those live in the transport,
 // which knows what "behind" means for its socket. The Hub's single job is to
-// hand every published frame to every attached client without ever blocking.
+// hand every published frame to every attached client of the frame's plane
+// without ever blocking.
 type Hub struct {
 	mu sync.Mutex
-	// clients maps every attachment to what it was granted. The mode travels
-	// with the client so a detached or dropped driver is never miscounted as a
-	// viewer (or the reverse) — the reason a slot frees correctly.
-	clients map[Client]AttachMode
+	// clients maps every attachment to its slot (mode + plane).
+	clients map[Client]hubSlot
 
 	maxClients int
 	maxTotal   int
@@ -73,20 +84,21 @@ func NewHub(maxClients int) *Hub {
 		maxClients = DefaultMaxClients
 	}
 	return &Hub{
-		clients:    make(map[Client]AttachMode),
+		clients:    make(map[Client]hubSlot),
 		maxClients: maxClients,
 		maxTotal:   maxClients * hubViewerFactor,
 		slowLimit:  DefaultSlowClientLimit,
 	}
 }
 
-// Attach registers a client and reports what it may do. The detach func is
-// idempotent; it also runs for a refused client, where its only job is to close
-// the socket the caller already opened.
+// Attach registers a client for the given plane and reports what it may do.
+// The detach func is idempotent; it also runs for a refused client, where its
+// only job is to close the socket the caller already opened.
 //
 // The first maxClients attachments drive; the next maxClients watch. Past that
-// the hub refuses rather than growing without bound.
-func (h *Hub) Attach(c Client) (detach func(), mode AttachMode) {
+// the hub refuses rather than growing without bound. The driver cap spans
+// planes: a driver is a driver whether it watches cells or blocks.
+func (h *Hub) Attach(c Client, plane Plane) (detach func(), mode AttachMode) {
 	h.mu.Lock()
 	if h.closed || len(h.clients) >= h.maxTotal {
 		h.mu.Unlock()
@@ -96,7 +108,7 @@ func (h *Hub) Attach(c Client) (detach func(), mode AttachMode) {
 	if h.driversLocked() < h.maxClients {
 		mode = AttachDriver
 	}
-	h.clients[c] = mode
+	h.clients[c] = hubSlot{mode: mode, plane: plane}
 	h.mu.Unlock()
 
 	var once sync.Once
@@ -115,27 +127,40 @@ func (h *Hub) Attach(c Client) (detach func(), mode AttachMode) {
 // maintaining an invariant that a drop path could break.
 func (h *Hub) driversLocked() int {
 	n := 0
-	for _, mode := range h.clients {
-		if mode == AttachDriver {
+	for _, slot := range h.clients {
+		if slot.mode == AttachDriver {
 			n++
 		}
 	}
 	return n
 }
 
-// Publish fans a frame out to every attached client, dropping the ones that
-// report themselves too far behind. Slow clients are closed, not waited on.
+// Publish fans a frame out to every attached client of the frame's plane,
+// dropping the ones that report themselves too far behind. Slow clients are
+// closed, not waited on. Clients on the OTHER plane never see this frame: the
+// two planes describe the same screen in different documents, and a document
+// of the wrong plane would desync its client.
 //
 // The frame is encoded ONCE here, before the fan-out: the hub is the only place
 // that knows how many clients a frame is for, so it is the only place that can
 // avoid paying the JSON encode (and the per-run allocation that goes with it)
-// once per attached browser. With nobody attached nothing is encoded at all.
-func (h *Hub) Publish(f *Frame) {
+// once per attached browser. With nobody on the plane nothing is encoded at all.
+func (h *Hub) Publish(plane Plane, f *Frame) {
 	if f == nil {
 		return
 	}
 	h.mu.Lock()
 	if h.closed || len(h.clients) == 0 {
+		h.mu.Unlock()
+		return
+	}
+	audience := make([]Client, 0, len(h.clients))
+	for c, slot := range h.clients {
+		if slot.plane == plane {
+			audience = append(audience, c)
+		}
+	}
+	if len(audience) == 0 {
 		h.mu.Unlock()
 		return
 	}
@@ -145,7 +170,7 @@ func (h *Hub) Publish(f *Frame) {
 		return
 	}
 	slow := make([]Client, 0, 1)
-	for c := range h.clients {
+	for _, c := range audience {
 		if !c.Send(payload) {
 			slow = append(slow, c)
 		}
@@ -162,7 +187,8 @@ func (h *Hub) Publish(f *Frame) {
 	}
 }
 
-// Broadcast delivers a control message to every attached client.
+// Broadcast delivers a control message to every attached client, regardless of
+// plane: controls are plane-agnostic (rotation, read-only notices, shutdown).
 func (h *Hub) Broadcast(ctrl Control) {
 	h.mu.Lock()
 	clients := make([]Client, 0, len(h.clients))
@@ -175,20 +201,36 @@ func (h *Hub) Broadcast(ctrl Control) {
 	}
 }
 
-// Clients reports how many clients are attached (drivers and viewers).
+// Clients reports how many clients are attached (drivers and viewers, all planes).
 func (h *Hub) Clients() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.clients)
 }
 
-// HasClients reports whether a published frame would reach anyone. The
-// VirtualTerminal consults it before building a frame, so a server with no
-// browser attached does not diff, collapse and encode a screen nobody receives.
+// HasClients reports whether any client is attached on any plane.
 func (h *Hub) HasClients() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return !h.closed && len(h.clients) > 0
+}
+
+// HasClientsFor reports whether a frame of the given plane would reach anyone.
+// The VirtualTerminal consults it per plane before building a frame, so a
+// screen nobody on that plane is watching does not pay for its diff, run
+// collapse and encode.
+func (h *Hub) HasClientsFor(plane Plane) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return false
+	}
+	for _, slot := range h.clients {
+		if slot.plane == plane {
+			return true
+		}
+	}
+	return false
 }
 
 // Drivers reports how many attached clients may type.
@@ -213,7 +255,7 @@ func (h *Hub) Close() {
 	for c := range h.clients {
 		clients = append(clients, c)
 	}
-	h.clients = make(map[Client]AttachMode)
+	h.clients = make(map[Client]hubSlot)
 	h.mu.Unlock()
 	bye := Control{Kind: CtrlBye, Text: "session ended"}
 	for _, c := range clients {

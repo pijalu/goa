@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -531,56 +530,6 @@ func (a *App) startAsyncPluginLoad(engine *tui.TUI) {
 	})
 }
 
-// Main is the top-level entry point used by cmd/goa. It parses CLI flags,
-// loads config, initializes subsystems, and runs the application loop.
-func Main() {
-	log.SetOutput(io.Discard)
-	// Capture runtime fatal errors (which bypass recover()) and log output to
-	// .goa/crash.log. Deferred BEFORE handleShutdown so the shutdown handler
-	// runs first during unwind and can still writeCrashLog to the open file.
-	wd, _ := os.Getwd()
-	crashCleanup := setupCrashLog(wd)
-	defer crashCleanup()
-	defer handleShutdown()
-
-	// Help is answered before any subsystem starts, so `goa --help`,
-	// `goa help [topic]` and `goa <verb> --help` print documentation and exit
-	// without loading config, running the first-run wizard or starting the TUI.
-	if runHelpCLI(os.Args[1:]) {
-		return
-	}
-
-	// `goa mcp ...` is handled before flag parsing: it is a plain CLI
-	// subcommand (no TUI, no headless agent) for managing MCP servers.
-	if runMCPCLI(os.Args[1:]) {
-		return
-	}
-
-	// `goa server` is likewise a subcommand: the verb is stripped from argv
-	// before flag parsing, then handed to runApp as a mode selector (spec §19
-	// decision 5).
-	serverMode := stripSubcommand(os.Args, "server")
-
-	for {
-		relaunch := runApp(serverMode)
-		if !relaunch {
-			break
-		}
-	}
-}
-
-// stripSubcommand removes a leading `name` verb from argv so the flag parser
-// never sees it, and reports whether the verb was present. Verb-scoped help
-// (`goa name --help`) never reaches this function: Main answers help before any
-// parsing.
-func stripSubcommand(argv []string, name string) bool {
-	if len(argv) < 2 || argv[1] != name {
-		return false
-	}
-	os.Args = append([]string{argv[0]}, argv[2:]...)
-	return true
-}
-
 func runApp(serverMode bool) bool {
 	projectDir := MustGetwd()
 	cliFlags, runtimeOpts := ParseCLIFlags()
@@ -601,6 +550,10 @@ func runApp(serverMode bool) bool {
 	}
 	defer prof.stopProfiling()
 
+	if maybeRunSupervisor(runtimeOpts) {
+		return false
+	}
+
 	loader := config.NewCascadeLoader(projectDir, cliFlags["config"], cliFlags)
 	cfg, cfgReport := LoadConfig(loader, projectDir)
 	// Bug6: when no config layer provides an active model, fall back to the
@@ -609,27 +562,32 @@ func runApp(serverMode bool) bool {
 	enableModelsDevCatalog()
 	subs := InitSubsystems(cfg, loader, projectDir, runtimeOpts)
 	subs.cfgReport = cfgReport
+	return runBuiltSession(subs, runtimeOpts)
+}
+
+// runBuiltSession dispatches the modes that need a full subsystem set. The
+// web UI is the interactive session, not a headless one: it wins over
+// --prompt-shaped flags so `goa server --prompt` still serves a
+// browser-driven session.
+func runBuiltSession(subs *subsystems, opts RuntimeOptions) bool {
 	switch {
-	case runtimeOpts.DreamMode():
-		runDream(subs, runtimeOpts)
+	case opts.DreamMode():
+		runDream(subs, opts)
 		return false
-	case runtimeOpts.ACP:
+	case opts.ACP:
 		runACP(subs)
 		return false
-	case runtimeOpts.CheckUpdate:
-		runUpdateCheck(subs, runtimeOpts)
+	case opts.CheckUpdate:
+		runUpdateCheck(subs, opts)
 		return false
-	case runtimeOpts.ExportOutput != "" || runtimeOpts.ExportSession != "" || runtimeOpts.IncludeGlobalLog:
-		runExport(subs, exportOptionsFromRuntime(runtimeOpts))
+	case opts.ExportOutput != "" || opts.ExportSession != "" || opts.IncludeGlobalLog:
+		runExport(subs, exportOptionsFromRuntime(opts))
 		return false
-	case runtimeOpts.Server:
-		// The web UI is the interactive session, not a headless one: it must
-		// win over --prompt-shaped flags so `goa server --prompt` still
-		// serves a browser-driven session.
-		runWebServer(subs, runtimeOpts)
+	case opts.Server:
+		runWebServer(subs, opts)
 		return false
-	case runtimeOpts.Headless():
-		runHeadless(subs, runtimeOpts)
+	case opts.Headless():
+		runHeadless(subs, opts)
 		return false
 	default:
 		return New(subs).Run()

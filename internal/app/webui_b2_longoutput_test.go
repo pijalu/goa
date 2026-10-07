@@ -84,8 +84,9 @@ type b2RecordingSink struct {
 	page *b2Page
 }
 
-func (s *b2RecordingSink) Publish(f *webui.Frame) { s.page.publish(f) }
-func (s *b2RecordingSink) HasClients() bool       { return true }
+func (s *b2RecordingSink) Publish(_ webui.Plane, f *webui.Frame) { s.page.publish(f) }
+func (s *b2RecordingSink) HasClients() bool                      { return true }
+func (s *b2RecordingSink) HasClientsFor(webui.Plane) bool        { return true }
 
 // b2PageOfSession wires a web session whose browser-side model records every
 // frame, the way an attached page does.

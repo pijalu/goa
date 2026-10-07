@@ -147,7 +147,77 @@ uploads are refused with an explicit notice rather than silently ignored.
 
 ---
 
-## 5. See also
+## 5. Attaching a terminal (`goa attach`)
+
+The browser is the terminal — so a real terminal can be the browser.
+`goa attach` connects to a running `goa server` over the same WebSocket,
+renders the session's cell frames locally (truecolor SGR, OSC-8 links, the
+server's cursor as the local caret), and forwards your keyboard verbatim:
+the bytes your terminal produces are exactly what a local session would
+read, so editing, chords and paste behave identically.
+
+```bash
+goa attach --server 127.0.0.1:8080                 # attach to the live session
+goa attach --server 127.0.0.1:8080 --session <id>  # a specific session
+goa attach --server 127.0.0.1:8080 --path ~/repos/foo   # multi-project servers
+goa attach --server host:7331 --server-auth-token $T
+```
+
+What to expect:
+
+* **Native scrollback** — rows the session scrolls off are pushed into the
+  terminal's own scrollback (transcript replacements wipe it first, exactly
+  like the page's transcript).
+* **Reconnect** — a dropped socket is re-attached with backoff; keystrokes
+  typed while offline are held (bounded) and replayed on reconnect.
+* **Detach, don't stop** — `Ctrl+]` detaches: the session keeps running on
+  the server (type `/quit` inside the session to end it, or stop the server
+  from its console). A server-side goodbye ("bye") is reported and attach
+  exits; a refused handshake (bad token, unknown session) is an error, not
+  a retry.
+* **Plane** — attach requests the `cells` plane (whole screen as cells).
+  Per-client planes are a session property: a browser on the blocks plane
+  and an attached terminal on the cells plane can share one session.
+
+## 6. Multi-project serving (`--server-projects-root`)
+
+One `goa server` can front many projects:
+
+```bash
+goa server --server-projects-root ~/repos --server-addr 127.0.0.1:8080
+```
+
+The supervisor process hosts no session of its own. Each project directory
+gets its own child `goa server` — an ordinary single-project session with
+that project's config, plugins and skills — bound to a private Unix socket
+inside a `0700` directory and speaking a per-child random bearer token.
+Requests map to children by session id (`/s/<id>`, `/ws?s=<id>`), so a
+browser page and an attached terminal share one child exactly as they
+would share a standalone server.
+
+Sessions are opened on demand:
+
+* **Browser** — `http://host:8080/` is a session index with an
+  "open project directory" form; opening `/some/path` redirects to its
+  session page.
+* **Terminal** — `goa attach --server host:8080 --path ~/repos/foo`
+  resolves the path through the same handshake before attaching.
+
+Boundaries and lifecycle:
+
+* **Path policy** — a session's directory must be absolute, exist, be a
+  directory, and resolve (symlinks included) under the projects root.
+  Everything else is refused before a child is spawned. The parent's
+  exposure rule is unchanged: no auth means loopback only.
+* **Caps and reaping** — `--server-max-sessions` bounds live children
+  (default 8); a session no client has touched for `--server-session-idle`
+  (default 30m, negative = keep until shutdown) is stopped, its transcript
+  remaining on disk in the project, resumable like any session.
+* **Rotation** — a `/new` inside a child rotates its session id; the
+  supervisor follows the rotation, and a client presenting the old id is
+  still routed to the child that owned it.
+
+## 7. See also
 
 * `specs/webui.md` — the full design specification (architecture, phase plan).
 * `docs/ARCHITECTURE.md` — the virtual terminal as a `tui.Terminal`.

@@ -238,12 +238,18 @@ func TestVirtualTerminal_ClearScreen(t *testing.T) {
 	}
 }
 
+// recordSink serves the cells plane only (the default): with per-client
+// planes one publish produces one frame per audience, and these tests assert
+// on the cells document the way every pre-blocks client saw it.
 type recordSink struct {
 	frames []*Frame
 	titles []string
 }
 
-func (r *recordSink) Publish(f *Frame) {
+func (r *recordSink) Publish(p Plane, f *Frame) {
+	if p != PlaneCells {
+		return
+	}
 	r.frames = append(r.frames, f)
 	if f.Title != "" {
 		r.titles = append(r.titles, f.Title)
@@ -252,7 +258,7 @@ func (r *recordSink) Publish(f *Frame) {
 
 // HasClients always reports true: a recorder stands in for an attached browser,
 // and a test that installs one wants every frame built.
-func (r *recordSink) HasClients() bool { return true }
+func (r *recordSink) HasClientsFor(p Plane) bool { return p == PlaneCells }
 
 func (r *recordSink) lastTitle() string {
 	if len(r.titles) == 0 {

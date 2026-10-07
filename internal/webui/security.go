@@ -39,7 +39,10 @@ const MaxRequestBytes = MaxUploadBytes
 // that requires an explicit --insecure-no-auth — the operator has to type the
 // word "insecure" to get the insecure thing.
 func CheckExposure(addr string, auth AuthConfig, insecureNoAuth bool) error {
-	if insecureNoAuth {
+	if insecureNoAuth || IsUnixAddr(addr) {
+		// A Unix domain socket is not a network endpoint: the file-system
+		// permissions on the socket (and its 0700 parent directory) are the
+		// boundary, so the loopback rule below has nothing to say about it.
 		return nil
 	}
 	mode, err := ParseAuthMode(string(auth.Mode))
@@ -100,11 +103,39 @@ func newNonce() string {
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
 
+// Guard is the request-hardening chain — the four middlewares every goa
+// HTTP surface composes in one fixed order. It is a type rather than four
+// Server methods so a second surface (the multi-project supervisor) can
+// serve through the identical implementation instead of a copy that drifts.
+type Guard struct {
+	auth Authenticator
+	// maxBody is the transport-level body ceiling (<= 0 = MaxRequestBytes).
+	maxBody int64
+}
+
+// NewGuard builds a guard from the auth configuration. The exposure check is
+// the caller's job (it owns the listen address); an all-zero AuthConfig
+// yields the no-auth guard, which the caller is expected to have checked
+// against its own bind address.
+func NewGuard(authCfg AuthConfig, maxBody int64) (*Guard, error) {
+	auth, err := NewAuthenticator(authCfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Guard{auth: auth, maxBody: maxBody}, nil
+}
+
+// Wrap composes the hardening chain around h, outermost first: security
+// headers, body limit, origin guard, auth gate.
+func (g *Guard) Wrap(h http.Handler) http.Handler {
+	return g.securityHeaders(g.bodyLimit(g.originGuard(g.authGate(h))))
+}
+
 // securityHeaders answers every response with the browser-side policy: a
 // nonce-based CSP (no 'unsafe-inline', so an injected <script> tag cannot run),
 // plus the sniffing, framing and referrer rules that keep the session screen
 // from leaking sideways.
-func (s *Server) securityHeaders(next http.Handler) http.Handler {
+func (g *Guard) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nonce := newNonce()
 		h := w.Header()
@@ -155,7 +186,7 @@ func stripCORS(h http.Header) {
 // test) and cannot be steered by another page, so it passes. A browser that
 // does send one is held to same-origin: this is the CSRF boundary, and with a
 // SameSite=Strict cookie it is the second of the two walls that matter.
-func (s *Server) originGuard(next http.Handler) http.Handler {
+func (g *Guard) originGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !safeMethod(r.Method) && !sameOrigin(r) {
 			http.Error(w, "cross-origin request refused", http.StatusForbidden)
@@ -180,7 +211,7 @@ func safeMethod(m string) bool {
 // each endpoint legitimately accepts. This one is the transport-level floor —
 // it also covers a handler that forgets its own, and it makes the ceiling a
 // server-wide property rather than a convention.
-func (s *Server) bodyLimit(next http.Handler) http.Handler {
+func (g *Guard) bodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body == nil {
 			next.ServeHTTP(w, r)
@@ -188,7 +219,7 @@ func (s *Server) bodyLimit(next http.Handler) http.Handler {
 		}
 		// Read the ceiling per request so it is a live server property rather
 		// than a value frozen when the chain was built.
-		limit := s.maxRequestBytes
+		limit := g.maxBody
 		if limit <= 0 {
 			limit = MaxRequestBytes
 		}
@@ -198,8 +229,8 @@ func (s *Server) bodyLimit(next http.Handler) http.Handler {
 }
 
 // authGate enforces the configured scheme, turning its verdict into 401/429.
-func (s *Server) authGate(next http.Handler) http.Handler {
-	auth := s.auth
+func (g *Guard) authGate(next http.Handler) http.Handler {
+	auth := g.auth
 	if auth == nil {
 		return next
 	}
@@ -260,8 +291,34 @@ const loginPage = `<!DOCTYPE html>
 </body>
 </html>`
 
+// LoginPath is the URL the auth challenge redirects to ("" for Basic, which
+// the browser itself negotiates).
+func (g *Guard) LoginPath() string {
+	if g.auth != nil {
+		return g.auth.LoginPath()
+	}
+	return ""
+}
+
+// LoginGet renders the sign-in form. Nil unless token auth is configured.
+func (g *Guard) LoginGet() http.Handler {
+	if g.LoginPath() == "" {
+		return nil
+	}
+	return http.HandlerFunc(g.handleLoginGet)
+}
+
+// LoginPost exchanges the access token for the session cookie. Nil unless
+// token auth is configured.
+func (g *Guard) LoginPost() http.Handler {
+	if g.LoginPath() == "" {
+		return nil
+	}
+	return http.HandlerFunc(g.handleLoginPost)
+}
+
 // handleLoginGet renders the sign-in form.
-func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
+func (g *Guard) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Write([]byte(strings.ReplaceAll(loginPage, "{{.Next}}", htmlAttr(safeNext(r.URL.Query().Get("next"))))))
@@ -273,28 +330,28 @@ func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 // was already TLS) and redirects back; the page never sees the secret again,
 // which is the whole reason the cookie exists. Failure counts against the
 // lockout, so guessing costs the guesser time.
-func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
+func (g *Guard) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "malformed form", http.StatusBadRequest)
 		return
 	}
 	got := r.PostFormValue("token")
-	if s.auth == nil || got == "" || !secretEqual(got, s.authToken()) {
-		if s.auth != nil {
-			if s.auth.LockedOut(r) {
-				writeLockedOut(w, s.auth)
+	if g.auth == nil || got == "" || !secretEqual(got, g.token()) {
+		if g.auth != nil {
+			if g.auth.LockedOut(r) {
+				writeLockedOut(w, g.auth)
 				return
 			}
-			s.auth.RecordFailure(r)
-			if s.auth.LockedOut(r) {
-				writeLockedOut(w, s.auth)
+			g.auth.RecordFailure(r)
+			if g.auth.LockedOut(r) {
+				writeLockedOut(w, g.auth)
 				return
 			}
 		}
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
-	s.auth.RecordSuccess(r)
+	g.auth.RecordSuccess(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     AuthCookieName,
 		Value:    got,
@@ -307,10 +364,10 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, safeNext(r.PostFormValue("next")), http.StatusSeeOther)
 }
 
-// authToken exposes the configured bearer token to the login handler. It is the
+// token exposes the configured bearer token to the login handler. It is the
 // one place the secret is readable at request time, and only ever to compare.
-func (s *Server) authToken() string {
-	if t, ok := s.auth.(*tokenAuth); ok {
+func (g *Guard) token() string {
+	if t, ok := g.auth.(*tokenAuth); ok {
 		return t.cfg.Token
 	}
 	return ""

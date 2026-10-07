@@ -292,7 +292,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	readOnly := s.opts.ReadOnly
 	client := newSSEClient(streamWriter{w: w, f: flusher}, readOnly)
-	detach, mode := s.hub.Attach(client)
+	// The SSE stream is the no-WebSocket browser fallback: it always serves
+	// the server's default plane, the same one the page that opened it
+	// rendered with.
+	plane := s.opts.Plane
+	detach, mode := s.hub.Attach(client, plane)
 	// Detach first (it stops new frames), then Close (it joins the writer) —
 	// LIFO order, which is what keeps the last write inside the handler.
 	defer client.Close()
@@ -325,7 +329,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// the page carries the revision it holds in ?since= and a resumed stream that
 	// is already current opens silently. A joining client (no since) or one that
 	// fell behind gets the authoritative screen.
-	if f, due := s.term.Resync(sinceQuery(r)); due {
+	if f, due := s.term.Resync(plane, sinceQuery(r)); due {
 		sendFrame(client, f)
 	}
 

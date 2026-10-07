@@ -193,13 +193,20 @@ func minRow(rows []int) int {
 	return m
 }
 
-// frameRecorder keeps every published frame in order.
+// frameRecorder keeps every blocks-plane frame in order. The sink serves the
+// blocks plane only: with per-client planes a single publish produces one
+// frame per audience, and these tests assert on the blocks document.
 type frameRecorder struct {
 	frames []*Frame
 }
 
-func (r *frameRecorder) Publish(f *Frame) { r.frames = append(r.frames, f) }
-func (r *frameRecorder) HasClients() bool { return true }
+func (r *frameRecorder) Publish(p Plane, f *Frame) {
+	if p == PlaneBlocks {
+		r.frames = append(r.frames, f)
+	}
+}
+
+func (r *frameRecorder) HasClientsFor(p Plane) bool { return p == PlaneBlocks }
 
 // TestVirtualTerminal_BlocksPlanePublish drives a blocks-plane terminal
 // through ObserveScene + publish: band-only shipping with the popup seated
@@ -325,7 +332,9 @@ func firstFrameWithPatches(frames []*Frame) *Frame {
 // the v1 behaviour: whole-grid frames with scrollback batches.
 func TestVirtualTerminal_CellsPlaneUnchanged(t *testing.T) {
 	vt := NewVirtualTerminal(20, 10)
-	rec := &frameRecorder{}
+	// recordSink is the cells-plane audience: this test asserts what a
+	// plane=cells client receives (whole-grid patches + scrollback batches).
+	rec := &recordSink{}
 	vt.SetSink(rec)
 	// Fill the screen twice so rows scroll into the scrollback.
 	for i := 0; i < 25; i++ {
@@ -346,7 +355,7 @@ func TestVirtualTerminal_CellsPlaneUnchanged(t *testing.T) {
 	if !scrolled {
 		t.Error("no cells frame carried a scrollback batch")
 	}
-	attach := vt.AttachFrame()
+	attach := vt.AttachFrame(PlaneCells)
 	if len(attach.Patches) != 10 {
 		t.Errorf("cells attach = %d patches, want the whole 10-row grid", len(attach.Patches))
 	}
@@ -365,7 +374,7 @@ func TestVirtualTerminal_BlocksAttachFrame(t *testing.T) {
 		Blocks:       []tui.SceneBlock{sceneBlock(7, tui.BlockSystem, "note")},
 	})
 	vt.WriteString("band row")
-	f := vt.AttachFrame()
+	f := vt.AttachFrame(PlaneBlocks)
 	if !f.Full || f.Chrome != 2 {
 		t.Fatalf("attach frame = full=%v chrome=%d, want full band of 2", f.Full, f.Chrome)
 	}

@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,11 +114,10 @@ type Server struct {
 	hub  *Hub
 	page *HTMLPage
 	mux  *http.ServeMux
-	auth Authenticator
-	// maxRequestBytes is the body cap the bodyLimit middleware enforces.
-	// It is a field (not a constant read) so a test can exercise the
-	// middleware's own refusal without allocating a 16 MiB request.
-	maxRequestBytes int64
+	// guard is the shared hardening chain (security headers, body limit,
+	// origin guard, auth gate) — the identical implementation every goa HTTP
+	// surface composes.
+	guard *Guard
 	// handler is the fully wrapped chain — compression, body limit, origin
 	// guard, auth, response hardening — the single entry point every caller
 	// (Serve, Listen, Handler) goes through.
@@ -159,7 +159,7 @@ func NewServer(term *VirtualTerminal, cols, rows int, opts ServerOptions) *Serve
 	if err := CheckExposure(opts.Addr, opts.Auth, opts.InsecureNoAuth); err != nil {
 		panic(fmt.Sprintf("webui: %v", err))
 	}
-	auth, err := NewAuthenticator(opts.Auth)
+	guard, err := NewGuard(opts.Auth, 0)
 	if err != nil {
 		panic(fmt.Sprintf("webui: %v", err))
 	}
@@ -172,7 +172,7 @@ func NewServer(term *VirtualTerminal, cols, rows int, opts ServerOptions) *Serve
 		term:        term,
 		hub:         NewHub(opts.MaxClients),
 		page:        NewHTMLPage(),
-		auth:        auth,
+		guard:       guard,
 		log:         logger,
 		keepalive:   opts.Keepalive,
 		retired:     map[string]struct{}{},
@@ -194,7 +194,6 @@ func NewServer(term *VirtualTerminal, cols, rows int, opts ServerOptions) *Serve
 		EnableCompression: true,
 	}
 	s.routes()
-	s.maxRequestBytes = MaxRequestBytes
 	// One wrapper chain for every entry point: Serve, Listen and Handler all
 	// go through it, so a request cannot behave differently depending on which
 	// door it came in. Order, outermost first:
@@ -204,7 +203,7 @@ func NewServer(term *VirtualTerminal, cols, rows int, opts ServerOptions) *Serve
 	//   originGuard     — no cross-origin state change reaches a handler
 	//   authGate        — no unauthenticated request reaches a handler
 	//   gzip            — transport only, once the answer is already decided
-	s.handler = s.securityHeaders(s.bodyLimit(s.originGuard(s.authGate(gzipMiddleware(s.readyGate(s.mux))))))
+	s.handler = s.guard.securityHeaders(s.guard.bodyLimit(s.guard.originGuard(s.guard.authGate(gzipMiddleware(s.readyGate(s.mux))))))
 	s.http = &http.Server{
 		Addr:              opts.Addr,
 		Handler:           s.handler,
@@ -257,16 +256,39 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	// The login form exists only when there is a token to exchange; Basic auth
 	// is negotiated by the browser itself, so it has no page.
-	if s.auth != nil && s.auth.LoginPath() != "" {
-		mux.HandleFunc("GET "+s.auth.LoginPath(), s.handleLoginGet)
-		mux.HandleFunc("POST "+s.auth.LoginPath(), s.handleLoginPost)
+	if s.guard.LoginPath() != "" {
+		mux.HandleFunc("GET "+s.guard.LoginPath(), s.guard.handleLoginGet)
+		mux.HandleFunc("POST "+s.guard.LoginPath(), s.guard.handleLoginPost)
 	}
 	s.mux = mux
 }
 
+// UnixSocketPrefix marks a listen address as a Unix domain socket
+// ("unix:///path/to/socket"). It is how a supervisor hands each child session
+// a private, permission-protected endpoint: the socket lives in a 0700
+// directory, so the file system is the boundary and no TCP port exists to
+// collide with or scan.
+const UnixSocketPrefix = "unix://"
+
+// IsUnixAddr reports whether addr names a Unix domain socket.
+func IsUnixAddr(addr string) bool { return strings.HasPrefix(addr, UnixSocketPrefix) }
+
 // Listen binds the configured address without serving yet, so the caller can
-// print the real URL (with the resolved port) before traffic starts.
+// print the real URL (with the resolved port) before traffic starts. A
+// "unix://" address binds a Unix domain socket instead of TCP; the socket
+// file is chmod 0600 so the creating user's file-system permissions are the
+// boundary.
 func (s *Server) Listen() (net.Listener, error) {
+	if IsUnixAddr(s.opts.Addr) {
+		path := strings.TrimPrefix(s.opts.Addr, UnixSocketPrefix)
+		ln, err := net.Listen("unix", path)
+		if err != nil {
+			return nil, fmt.Errorf("webui: listen %s: %w", path, err)
+		}
+		_ = os.Chmod(path, 0o600)
+		s.setBound(path)
+		return ln, nil
+	}
 	ln, err := net.Listen("tcp", s.opts.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("webui: listen %s: %w", s.opts.Addr, err)
@@ -289,8 +311,15 @@ func (s *Server) boundAddr() string {
 	return s.bound
 }
 
-// URL is the browsable entry point of the live session.
-func (s *Server) URL() string { return "http://" + s.boundAddr() + "/s/" + s.opts.SessionID() }
+// URL is the browsable entry point of the live session. A Unix-socket bind
+// has no browsable host; the address is the socket path and the scheme is a
+// placeholder, because only a local supervisor dials it.
+func (s *Server) URL() string {
+	if IsUnixAddr(s.opts.Addr) {
+		return "http://unix" + "/s/" + s.opts.SessionID()
+	}
+	return "http://" + s.boundAddr() + "/s/" + s.opts.SessionID()
+}
 
 // Serve serves until ctx is cancelled or the listener fails.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
@@ -438,12 +467,19 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 // handleWS upgrades the connection and attaches it as a viewer. The first
 // thing a client receives is a full frame (the grid is authoritative, so a
 // reconnect never needs a replay).
+//
+// The client picks its plane with the ?plane= query parameter ("cells" for a
+// native terminal client, "blocks" for the HTML page); no preference is
+// served the server's default plane. The hub fans every frame out per plane,
+// so a cells client and a blocks client can share one session without either
+// seeing the other's document.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("s")
 	if id != "" && !s.knownSession(id) {
 		http.Error(w, "unknown session", http.StatusNotFound)
 		return
 	}
+	plane := ParsePlane(r.URL.Query().Get("plane"), s.opts.Plane)
 	conn, err := s.upgr.Upgrade(w, r, nil)
 	if err != nil {
 		return // Upgrade already wrote the error
@@ -452,7 +488,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// it still receives every frame (the cap is on typing, not on watching) but
 	// its keystrokes never reach the engine, and it is told so.
 	client := NewWSClient(conn, s.opts.ReadOnly, s.keepalive)
-	detach, mode := s.hub.Attach(client)
+	detach, mode := s.hub.Attach(client, plane)
 	defer detach()
 	if mode == AttachRefused {
 		// No capacity at all: say so and close, rather than leave the browser
@@ -469,19 +505,19 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// told where it now lives, so it reconnects to the canonical URL instead of
 	// retrying a 404 forever.
 	s.announceRotation(client, id)
-	// A joining client gets the authoritative snapshot: in the cells plane
-	// that is the whole grid plus the transcript it missed; in the blocks
-	// plane it is the chrome band plus the conversation journal (the grid is
-	// the truth, so there is nothing to replay either way). The frame carries
-	// the grid's current revision, which is what lets the client's own hello
-	// be answered with "you are current" when nothing changed while it was
-	// away.
-	sendFrame(client, s.term.AttachFrame())
+	// A joining client gets the authoritative snapshot in its own plane: in
+	// the cells plane that is the whole grid plus the transcript it missed; in
+	// the blocks plane it is the chrome band plus the conversation journal (the
+	// grid is the truth, so there is nothing to replay either way). The frame
+	// carries the grid's current revision, which is what lets the client's own
+	// hello be answered with "you are current" when nothing changed while it
+	// was away.
+	sendFrame(client, s.term.AttachFrame(plane))
 	client.ReadLoop(ClientHandlers{
 		Input:  func(in string) { s.term.Input(in) },
 		Key:    func(ev KeyEvent) { s.term.Input(string(EncodeKey(ev))) },
 		Resize: func(cols, rows int) { s.term.Resize(cols, rows) },
-		Hello:  s.resyncer(client),
+		Hello:  s.resyncer(client, plane),
 	})
 }
 
@@ -495,13 +531,14 @@ func sendFrame(client Client, f *Frame) {
 }
 
 // resyncer answers a client's hello with the revision it announced: nothing when
-// the client's view already is the grid's, one authoritative full frame when it
-// is not. A client that missed frames — both transports drop the oldest queued
-// frame for a client that cannot keep up — uses this to stop drifting instead of
-// patching deltas onto a grid that no longer matches the server's.
-func (s *Server) resyncer(client Client) func(uint64) {
+// the client's view already is the grid's, one authoritative full frame — in the
+// plane the client watches — when it is not. A client that missed frames — both
+// transports drop the oldest queued frame for a client that cannot keep up —
+// uses this to stop drifting instead of patching deltas onto a grid that no
+// longer matches the server's.
+func (s *Server) resyncer(client Client, plane Plane) func(uint64) {
 	return func(since uint64) {
-		if f, due := s.term.Resync(since); due {
+		if f, due := s.term.Resync(plane, since); due {
 			sendFrame(client, f)
 		}
 	}

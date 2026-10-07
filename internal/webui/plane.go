@@ -26,3 +26,20 @@ func (p Plane) String() string {
 	}
 	return "cells"
 }
+
+// ParsePlane resolves a client's requested plane name against a default. The
+// empty name means "no preference" and yields def; an unknown name is treated
+// the same way rather than refused — the plane is a rendering hint, and a
+// client that cannot name one is served the server's default. This is what
+// lets a native client ("plane=cells") and a browser (no preference) share
+// one session.
+func ParsePlane(name string, def Plane) Plane {
+	switch name {
+	case "cells":
+		return PlaneCells
+	case "blocks":
+		return PlaneBlocks
+	default:
+		return def
+	}
+}

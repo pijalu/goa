@@ -82,16 +82,22 @@ type webUIFrame struct {
 }
 
 // recordingSink captures the frames a VirtualTerminal publishes, standing in
-// for the hub broadcast to every attached client.
+// for the hub broadcast to every attached client. It serves the cells plane
+// only: the assertions below are whole-grid parity checks, which is the
+// cells document — a blocks client receives band deltas instead.
 type recordingSink struct{ frames []webUIFrame }
 
-func (s *recordingSink) Publish(f *webui.Frame) {
+func (s *recordingSink) Publish(plane webui.Plane, f *webui.Frame) {
+	if plane != webui.PlaneCells {
+		return
+	}
 	s.frames = append(s.frames, webUIFrame{patches: f.Patches, full: f.Full, cur: f.Cursor})
 }
 
 // HasClients always reports true: the recorder stands in for an attached
-// browser, so the terminal must build every frame for it.
-func (s *recordingSink) HasClients() bool { return true }
+// client, so the terminal must build every frame for it.
+func (s *recordingSink) HasClients() bool                     { return true }
+func (s *recordingSink) HasClientsFor(plane webui.Plane) bool { return plane == webui.PlaneCells }
 
 // lastFrame returns the most recently published frame.
 func (s *recordingSink) lastFrame() webUIFrame {

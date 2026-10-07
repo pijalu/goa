@@ -167,13 +167,21 @@ func TestCellGrid_TakeScrollbackResetsOnClear(t *testing.T) {
 	}
 }
 
+// recordingSink serves the cells plane only: with per-client planes one
+// publish produces one frame per audience, and these tests assert on the
+// cells document (patches + scrollback) a terminal client receives.
 type recordingSink struct{ frames []*Frame }
 
-func (r *recordingSink) Publish(f *Frame) { r.frames = append(r.frames, f) }
+func (r *recordingSink) Publish(p Plane, f *Frame) {
+	if p == PlaneCells {
+		r.frames = append(r.frames, f)
+	}
+}
 
-// HasClients always reports true: a recorder is a test's stand-in for an
-// attached browser, and a test that installs one wants every frame built.
-func (r *recordingSink) HasClients() bool { return true }
+// HasClientsFor reports an attached cells client: a recorder is a test's
+// stand-in for an attached client, and a test that installs one wants every
+// frame of its plane built.
+func (r *recordingSink) HasClientsFor(p Plane) bool { return p == PlaneCells }
 
 // The virtual terminal must attach scrolled-off rows to the frame that caused
 // the scroll, so the transport can emit them as their own message.

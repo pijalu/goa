@@ -281,7 +281,9 @@ func TestBodyLimit_RejectsOversizeUpload(t *testing.T) {
 // middleware can refuse.
 func TestBodyLimit_IsWiredIntoTheChain(t *testing.T) {
 	srv, _ := newTestServer(t, 40, 10)
-	srv.maxRequestBytes = 64
+	// The ceiling is the guard's property now: shrink it to keep the test
+	// free of a 4 KiB-past-the-cap allocation dance.
+	srv.guard.maxBody = 64
 	req := httptest.NewRequest(http.MethodPost, "/input", strings.NewReader(`{"data":"`+strings.Repeat("a", 4096)+`"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -292,7 +294,11 @@ func TestBodyLimit_IsWiredIntoTheChain(t *testing.T) {
 }
 
 func TestBodyLimit_MiddlewareStopsAHandlerReadingPastTheCap(t *testing.T) {
-	s := &Server{maxRequestBytes: 64}
+	g, err := NewGuard(webuiAuthNoneForTest(), 64)
+	if err != nil {
+		t.Fatalf("guard: %v", err)
+	}
+	s := g
 	var read int64
 	var readErr error
 	h := s.bodyLimit(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -310,7 +316,11 @@ func TestBodyLimit_MiddlewareStopsAHandlerReadingPastTheCap(t *testing.T) {
 
 // A handler with no cap of its own is the case the middleware exists for.
 func TestBodyLimit_MiddlewareLeavesSmallBodiesAlone(t *testing.T) {
-	s := &Server{maxRequestBytes: 4096}
+	g, err := NewGuard(webuiAuthNoneForTest(), 4096)
+	if err != nil {
+		t.Fatalf("guard: %v", err)
+	}
+	s := g
 	var body string
 	h := s.bodyLimit(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, err := io.ReadAll(r.Body)
@@ -406,3 +416,6 @@ func TestNewNonce_IsUsableInAHeader(t *testing.T) {
 		t.Fatal("nonce must not be numeric")
 	}
 }
+
+// webuiAuthNoneForTest is the no-auth config for guard construction in tests.
+func webuiAuthNoneForTest() AuthConfig { return AuthConfig{} }

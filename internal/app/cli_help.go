@@ -57,6 +57,12 @@ var cliUnits = []cliUnit{
 		Body:    func() string { return webServerUsage },
 	},
 	{
+		Name:    "attach",
+		Title:   "Attach a terminal (goa attach)",
+		Summary: "Drive a goa server session from this terminal",
+		Body:    func() string { return attachUsage },
+	},
+	{
 		Name:    "mcp",
 		Title:   "MCP servers (goa mcp)",
 		Summary: "Install, list, toggle and remove MCP servers from the shell",
@@ -101,7 +107,8 @@ var flagGroups = []flagGroup{
 	{"Web UI (goa server)", []string{
 		"server-addr", "server-read-only", "server-max-clients", "server-cells",
 		"server-auth", "server-auth-user", "server-auth-password",
-		"server-auth-token", "insecure-no-auth",
+		"server-auth-token", "insecure-no-auth", "server-projects-root",
+		"server-session-idle",
 	}},
 	{"Other interfaces", []string{"acp"}},
 	{"Configuration & paths", []string{"config", "home"}},
@@ -125,6 +132,7 @@ const cliShortUsage = `Usage:
   goa [options]                        Interactive TUI (default mode)
   goa --prompt "<text>" [options]      Headless: run one prompt and exit
   goa server [options]                 Serve the TUI as a web page
+  goa attach --server HOST:PORT        Drive a goa server session from here
   goa mcp <subcommand>                 Manage MCP servers from the shell
   goa help [topic]                     Full manual, or one topic
 

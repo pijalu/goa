@@ -28,14 +28,14 @@ const pendingInputLimit = 4096
 // FrameSink receives the frames a VirtualTerminal produces. The Hub is the
 // production implementation; tests use a recorder.
 type FrameSink interface {
-	// Publish hands a frame to the sink. It must never block the caller for
-	// long: the render loop calls it synchronously.
-	Publish(f *Frame)
-	// HasClients reports whether the frame would reach anyone. A screen nobody
-	// is watching still has to be tracked, but it does not have to be diffed,
-	// run-collapsed and encoded 30 times a second — the sink is the only thing
-	// that knows, so it is the only thing that can say.
-	HasClients() bool
+	// Publish hands a frame of the given plane to the sink. It must never
+	// block the caller for long: the render loop calls it synchronously.
+	Publish(plane Plane, f *Frame)
+	// HasClientsFor reports whether a frame of the given plane would reach
+	// anyone. A screen nobody is watching still has to be tracked, but it does
+	// not have to be diffed, run-collapsed and encoded 30 times a second — the
+	// sink is the only thing that knows, so it is the only thing that can say.
+	HasClientsFor(plane Plane) bool
 }
 
 // VirtualTerminal implements tui.Terminal on top of a CellGrid. The whole TUI
@@ -62,8 +62,11 @@ type VirtualTerminal struct {
 	frameNo atomic.Uint64
 	codec   FrameCodec
 
-	// plane selects what publish ships (specs/webui.md §22). Set once via
-	// SetPlane before Start; read without a lock on the render goroutine.
+	// plane is the DEFAULT plane for clients that attach without naming one
+	// (browsers loaded from the page: the server-wide --server-cells choice).
+	// A client that negotiates its own plane (a native `goa attach` asking for
+	// cells) is served that plane instead. Set once via SetPlane before Start;
+	// read without a lock on the render goroutine.
 	plane Plane
 
 	// blocksMu guards the block-plane state: the last observed Scene view and
@@ -104,15 +107,21 @@ var _ tui.SceneObserver = (*VirtualTerminal)(nil)
 // ObserveScene implements tui.SceneObserver. It captures what the block
 // plane needs from the Scene before the compositor consumes it. Cheap: the
 // block slice is shared, the overlay math walks only the overlay layers.
+//
+// It runs unconditionally — whether any blocks client is attached right now
+// is a hub question the render goroutine must not answer mid-frame: the
+// observation must always describe the scene the compositor is about to
+// consume, or a blocks client attaching later would receive a journal whose
+// baseline does not match any shipped state.
 func (v *VirtualTerminal) ObserveScene(scene *tui.Scene) {
-	if v.plane != PlaneBlocks || scene == nil {
+	if scene == nil {
 		return
 	}
 	view := SceneView{
-		Blocks: scene.Blocks,
-		Chrome: scene.ChromeHeight,
+		Blocks:  scene.Blocks,
+		Chrome:  scene.ChromeHeight,
 		Overlay: scene.OverlayCapturesInput,
-		Width:  scene.BlockWidth,
+		Width:   scene.BlockWidth,
 	}
 	if !view.Overlay {
 		view.BandExtra = bandExtra(scene, view.Chrome)
@@ -144,14 +153,17 @@ func bandExtra(scene *tui.Scene, chrome int) int {
 	return extra
 }
 
-// SetPlane selects what publish ships. It must be called before the engine
-// starts rendering.
+// SetPlane selects the DEFAULT plane for clients that attach without naming
+// one. It must be called before the engine starts rendering.
 func (v *VirtualTerminal) SetPlane(p Plane) {
 	v.plane = p
 	if p == PlaneBlocks && v.tracker == nil {
 		v.tracker = NewBlockTracker()
 	}
 }
+
+// DefaultPlane reports the plane clients that do not negotiate are served.
+func (v *VirtualTerminal) DefaultPlane() Plane { return v.plane }
 
 var _ tui.Terminal = (*VirtualTerminal)(nil)
 
@@ -346,56 +358,80 @@ func (v *VirtualTerminal) dispatch(cb func(string), s string) {
 	cb(s)
 }
 
-// publish builds and ships a frame. full forces every row into the patch set
-// (used after a geometry change or a screen clear).
+// publish builds and ships a frame to every plane that has an audience. full
+// forces every row into the patch set (used after a geometry change or a
+// screen clear).
 //
-// With nobody attached the frame is not built at all: the dirty marks are
-// dropped and the grid keeps tracking its screen, so the next client to attach
-// gets an authoritative full snapshot (which is what an attach does anyway)
-// instead of the server spending a diff, a run collapse and a JSON encode per
-// engine frame on a screen no one can see.
+// With nobody attached on either plane the frame is not built at all: the
+// dirty marks are dropped and the grid keeps tracking its screen, so the next
+// client to attach gets an authoritative full snapshot (which is what an
+// attach does anyway) instead of the server spending a diff, a run collapse
+// and a JSON encode per engine frame on a screen no one can see.
 //
-// The blocks plane (§22) ships only the bottom chrome band as cells plus the
-// block deltas; the transcript cells and the scrollback never leave the
-// process. The tracker baseline still advances on every frame — shipped or
-// not — so a later attach's journal and the ops that follow it always agree.
+// Each plane is served its own document for the same screen: the cells plane
+// ships row patches plus the transcript batch; the blocks plane ships band
+// cells plus block deltas. The row patches are taken from the grid EXACTLY
+// once per publish (the dirty set is drained by whoever asks first) and
+// shared by both planes — the blocks plane filters them down to the chrome
+// band. Both documents carry the same seq: a client is current when its seq
+// matches the grid's, whichever plane it watches.
+//
+// The blocks-plane tracker baseline still advances on every publish — shipped
+// or not — so a later attach's journal and the ops that follow it always
+// agree.
 func (v *VirtualTerminal) publish(full bool) {
-	if v.plane == PlaneBlocks {
-		v.publishBlocks(full)
-		return
-	}
 	v.mu.RLock()
 	sink := v.sink
 	v.mu.RUnlock()
 	if sink == nil {
 		return
 	}
-	if !sink.HasClients() {
+	cells := sink.HasClientsFor(PlaneCells)
+	blocks := sink.HasClientsFor(PlaneBlocks)
+	if !cells && !blocks {
 		v.grid.DiscardChanges()
 		return
 	}
 	seq := v.frameNo.Add(1)
 	var patches []RowPatch
-	if full {
-		patches = v.grid.FullPatches()
-	} else {
-		patches = v.grid.Patches()
+	if cells {
+		if full {
+			patches = v.grid.FullPatches()
+		} else {
+			patches = v.grid.Patches()
+		}
+		frame := NewFrame(seq, v.grid, patches, v.grid.Title(), full)
+		// Rows that scrolled off since the last publish ride this frame: the
+		// transport emits them as a separate "scrollback" message so the client
+		// can keep a transcript without disturbing the live grid. A batch that
+		// REPLACES the transcript — the scrollback was wiped before the whole
+		// history was re-emitted at a new width — is marked as such, or the
+		// browser would append a second copy of what it already holds (bugs.md
+		// B2).
+		batch := v.grid.TakeScrollback()
+		frame.Scrollback = batch.Rows
+		frame.ScrollbackReplace = batch.Replace
+		sink.Publish(PlaneCells, frame)
 	}
-	frame := NewFrame(seq, v.grid, patches, v.grid.Title(), full)
-	// Rows that scrolled off since the last publish ride this frame: the
-	// transport emits them as a separate "scrollback" message so the client can
-	// keep a transcript without disturbing the live grid. A batch that REPLACES
-	// the transcript — the scrollback was wiped before the whole history was
-	// re-emitted at a new width — is marked as such, or the browser would append
-	// a second copy of what it already holds (bugs.md B2).
-	batch := v.grid.TakeScrollback()
-	frame.Scrollback = batch.Rows
-	frame.ScrollbackReplace = batch.Replace
-	sink.Publish(frame)
+	if blocks {
+		// The dirty set is drained by whoever asked first, so the blocks plane
+		// reuses the patches the cells plane took (or takes them itself when no
+		// cells client is attached).
+		if patches == nil {
+			if full {
+				patches = v.grid.FullPatches()
+			} else {
+				patches = v.grid.Patches()
+			}
+		}
+		v.publishBlocksFrame(seq, full, patches)
+	}
 }
 
-// publishBlocks is the blocks-plane publish: chrome band cells + block deltas.
-func (v *VirtualTerminal) publishBlocks(full bool) {
+// publishBlocksFrame ships one blocks-plane frame: chrome band cells + block
+// deltas. patches are this publish's row patches (already taken from the grid
+// exactly once — see publish).
+func (v *VirtualTerminal) publishBlocksFrame(seq uint64, full bool, patches []RowPatch) {
 	v.blocksMu.Lock()
 	view := v.observed
 	ops := v.syncTrackerLocked(view.Blocks)
@@ -412,34 +448,20 @@ func (v *VirtualTerminal) publishBlocks(full bool) {
 	v.bandShipped = band
 	v.blocksMu.Unlock()
 
-	v.mu.RLock()
-	sink := v.sink
-	v.mu.RUnlock()
-	if sink == nil {
-		return
-	}
-	if !sink.HasClients() {
-		v.grid.DiscardChanges()
-		return
-	}
 	full = full || entering || leaving || bandMoved
 	chrome := band
 	_, rows := v.grid.Size()
-	var patches []RowPatch
-	if full {
-		patches = v.grid.FullPatches()
-	} else {
-		patches = v.grid.Patches()
-	}
 	if !overlay {
 		patches = filterRows(patches, rows-chrome)
 	}
-	seq := v.frameNo.Add(1)
 	frame := NewFrame(seq, v.grid, patches, v.grid.Title(), full)
 	frame.Chrome = chrome
 	frame.Overlay = overlay
 	frame.Blocks = ops
-	sink.Publish(frame)
+	v.mu.RLock()
+	sink := v.sink
+	v.mu.RUnlock()
+	sink.Publish(PlaneBlocks, frame)
 }
 
 // filterRows keeps only the patches at or below top (the chrome band). The
@@ -489,12 +511,12 @@ func (v *VirtualTerminal) FullFrame() *Frame {
 	return f
 }
 
-// AttachFrame is the authoritative snapshot a NEW client receives: in the
-// cells plane that is FullFrame (whole grid + scrollback); in the blocks
-// plane it is the chrome band plus the full block journal, because the
-// conversation reaches the page as blocks, not as cells.
-func (v *VirtualTerminal) AttachFrame() *Frame {
-	if v.plane != PlaneBlocks {
+// AttachFrame is the authoritative snapshot a NEW client receives, in the
+// plane it attached with: in the cells plane that is FullFrame (whole grid +
+// scrollback); in the blocks plane it is the chrome band plus the full block
+// journal, because the conversation reaches the page as blocks, not as cells.
+func (v *VirtualTerminal) AttachFrame(plane Plane) *Frame {
+	if plane != PlaneBlocks {
 		return v.FullFrame()
 	}
 	v.blocksMu.Lock()
@@ -517,15 +539,16 @@ func (v *VirtualTerminal) AttachFrame() *Frame {
 }
 
 // Resync decides what a client that announced the revision it holds must be
-// sent. A client whose seq matches the grid is already showing the truth and is
-// sent nothing; anything else — behind, or ahead of a grid that was reset under
-// it — is sent the authoritative screen. The bool reports whether a frame is
-// due, so a transport can answer "you are current" by staying quiet.
-func (v *VirtualTerminal) Resync(since uint64) (*Frame, bool) {
+// sent, in the plane it watches. A client whose seq matches the grid is
+// already showing the truth and is sent nothing; anything else — behind, or
+// ahead of a grid that was reset under it — is sent the authoritative screen
+// for its plane. The bool reports whether a frame is due, so a transport can
+// answer "you are current" by staying quiet.
+func (v *VirtualTerminal) Resync(plane Plane, since uint64) (*Frame, bool) {
 	if since != 0 && since == v.Seq() {
 		return nil, false
 	}
-	return v.AttachFrame(), true
+	return v.AttachFrame(plane), true
 }
 
 // Seq reports the last frame number published.

@@ -242,15 +242,15 @@ func TestServer_RejectsCrossOriginSocket(t *testing.T) {
 func TestHub_CapsClientsAndMarksExcessReadOnly(t *testing.T) {
 	hub := NewHub(1)
 	first := &fakeClient{}
-	if _, mode := hub.Attach(first); mode != AttachDriver {
+	if _, mode := hub.Attach(first, PlaneCells); mode != AttachDriver {
 		t.Fatalf("first client mode = %v, want driver", mode)
 	}
 	second := &fakeClient{}
-	if _, mode := hub.Attach(second); mode != AttachViewer {
+	if _, mode := hub.Attach(second, PlaneCells); mode != AttachViewer {
 		t.Fatalf("second client mode = %v, want a read-only viewer", mode)
 	}
-	hub.Publish(&Frame{Seq: 1})
-	hub.Publish(&Frame{Seq: 2})
+	hub.Publish(PlaneCells, &Frame{Seq: 1})
+	hub.Publish(PlaneCells, &Frame{Seq: 2})
 	if len(first.frames) != 2 {
 		t.Errorf("driver got %d frames, want 2", len(first.frames))
 	}
@@ -271,14 +271,14 @@ func TestHub_CapsClientsAndMarksExcessReadOnly(t *testing.T) {
 func TestHub_DetachedDriverFreesTheSlot(t *testing.T) {
 	hub := NewHub(1)
 	driver := &fakeClient{}
-	detach, _ := hub.Attach(driver)
+	detach, _ := hub.Attach(driver, PlaneCells)
 	viewer := &fakeClient{}
-	if _, mode := hub.Attach(viewer); mode != AttachViewer {
+	if _, mode := hub.Attach(viewer, PlaneCells); mode != AttachViewer {
 		t.Fatalf("second client mode = %v, want viewer", mode)
 	}
 	detach()
 	replacement := &fakeClient{}
-	if _, mode := hub.Attach(replacement); mode != AttachDriver {
+	if _, mode := hub.Attach(replacement, PlaneCells); mode != AttachDriver {
 		t.Fatalf("replacement mode = %v, want driver after the slot was freed", mode)
 	}
 }
@@ -288,11 +288,11 @@ func TestHub_DetachedDriverFreesTheSlot(t *testing.T) {
 func TestHub_RefusesBeyondViewerCapacity(t *testing.T) {
 	hub := NewHub(1)
 	for i := 0; i < hub.maxTotal; i++ {
-		if _, mode := hub.Attach(&fakeClient{}); mode == AttachRefused {
+		if _, mode := hub.Attach(&fakeClient{}, PlaneCells); mode == AttachRefused {
 			t.Fatalf("attachment %d refused below the hard cap", i)
 		}
 	}
-	if _, mode := hub.Attach(&fakeClient{}); mode != AttachRefused {
+	if _, mode := hub.Attach(&fakeClient{}, PlaneCells); mode != AttachRefused {
 		t.Errorf("attachment past the hard cap = %v, want refused", mode)
 	}
 	if hub.Clients() != hub.maxTotal {
@@ -305,11 +305,11 @@ func TestHub_RefusesBeyondViewerCapacity(t *testing.T) {
 func TestHub_DropsSlowClient(t *testing.T) {
 	hub := NewHub(2)
 	slow := &fakeClient{alwaysSlow: true}
-	hub.Attach(slow)
+	hub.Attach(slow, PlaneCells)
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < DefaultSlowClientLimit+1; i++ {
-			hub.Publish(&Frame{Seq: uint64(i)})
+			hub.Publish(PlaneCells, &Frame{Seq: uint64(i)})
 		}
 		close(done)
 	}()
@@ -326,7 +326,7 @@ func TestHub_DropsSlowClient(t *testing.T) {
 func TestHub_DetachIsIdempotent(t *testing.T) {
 	hub := NewHub(2)
 	c := &fakeClient{}
-	detach, _ := hub.Attach(c)
+	detach, _ := hub.Attach(c, PlaneCells)
 	detach()
 	detach()
 	if hub.Clients() != 0 {
