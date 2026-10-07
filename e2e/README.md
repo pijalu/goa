@@ -123,6 +123,68 @@ no `keydown`, and `internal/webui/assets/app.js` deliberately sends *key
 descriptors* to the server (the server owns the byte table). The script
 therefore types character by character with `press`.
 
+## Attach & multi-project contract (`w3_attach_multiproject.sh`)
+
+`e2e/w3_attach_multiproject.sh` asserts the **documented contract** of the
+web UI's interop features against the real binary — every expected result is
+a claim made by README.md / docs/WEBUI.md / `--help` output, checked against
+actual process behavior. It exists because a docs review once found a flag
+(`--server-max-sessions`) that was documented but never implemented: no test
+was watching the docs↔code seam. This suite is that watcher. It needs **no
+LLM provider** (the attach flow types into the editor but never submits a
+prompt) — only `curl`, `expect` (PTY for raw-mode attach) and `python3`.
+
+```bash
+# defaults: GOA_BIN=/tmp/goa-e2e/goa, port 18811, artifacts /tmp/goa-w3/w3-<ts>
+e2e/w3_attach_multiproject.sh
+
+# explicit binary / port / artifact root (no LM Studio needed, ~3 min)
+GOA_BIN=./goa GOA_WEB_PORT=18811 E2E_ROOT=/tmp/my-run e2e/w3_attach_multiproject.sh
+```
+
+Prerequisite: a configured `~/.goa` (first run wizard done) — each project
+session is a real child `goa server` whose readiness gate only opens once the
+session is wired; an unconfigured home would hang the connect handshake until
+the ready timeout.
+
+Expected results (one `PASS`/`FAIL` line each in `results.tsv`; exit 0 iff
+all pass):
+
+| Assertion | Documented behavior under test |
+|---|---|
+| `help_flags` / `attach_help` | `goa server --help` and `goa attach --help` list every flag the docs describe |
+| `help_topics` | `goa help server` + `goa help attach` answer with their documented content |
+| `sup_health` | supervisor `/healthz` boots with `session:""`, `sessions:0` |
+| `connect_opens` / `connect_reuses` | `POST /connect {path}` spawns a session; the same path (trailing slash too) returns the same id |
+| `connect_badpath` / `connect_escape` | relative path, and a symlink escaping the root, are refused with the documented reasons |
+| `connect_symlink_inside` | a symlink to a directory *inside* the root resolves to that directory's session |
+| `sessions_list` | `GET /sessions` lists live sessions |
+| `max_sessions` | `--server-max-sessions 1` refuses the second distinct project with "session limit reached" |
+| `form_redirect` | urlencoded `/connect` (browser form) → 303 to `/s/<id>`; rejected path → HTML error |
+| `proxied_text` | `/s/<id>/text` serves the child's live grid through the proxy |
+| `attach_flow` / `attach_keys_reach_server` / `attach_detach_survives` | attach under a real PTY renders frames, typed keystrokes reach the server grid, `Ctrl+]` detaches, session alive with 0 clients |
+| `plain_fallback` | a plain server has no `/connect` (404); `/healthz` names the session |
+| `idle_reap` | `--server-session-idle 2s` reaps the untouched child at the reaper tick; transcript stays on disk |
+| `shutdown_clean` | no goa processes or listeners left on this run's ports |
+
+Suite hygiene — keep these properties when editing:
+
+* **Hermetic ports**: every `start_supervisor` first clears its port of stale
+  occupants and verifies readiness against *its own* pid — an orphaned
+  supervisor from a crashed run otherwise poisons the next run silently.
+* **Real pids**: children spawn with `exec` so the pidfile records the goa
+  process, not a wrapper shell — `stop_supervisor` must kill what is running.
+* **EXIT trap**: every started process is stopped on *any* exit path; the
+  shutdown check is scoped to this run's ports and Unix-socket children (an
+  unrelated goa process elsewhere on the machine is not this suite's leak).
+* **pipefail discipline**: `grep` exits 1 on no-match — guard counts with
+  `|| true`, or the suite dies exactly when the expected outcome (zero
+  leftover processes) happens.
+
+The attach PTY helper is a quoted heredoc (`<<'EXPECT'`) that reads
+`$env(GOA_BIN)` / `$env(W3_PORT)` / `$env(W3_PROJ)` — unquoted, bash would
+expand `$env(...)` itself and die under `set -u`.
+
 ## Clipboard scenario (B6 — `clipimg.sh`)
 
 `e2e/clipimg.sh` is the terminal twin of the web page's image paste: it puts a
