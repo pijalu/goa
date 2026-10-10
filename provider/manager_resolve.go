@@ -100,9 +100,7 @@ func applyModelConfigCapabilities(mdl *agenticprovider.Model, mCfg config.ModelC
 	if mCfg.ThinkingLevel != "" {
 		mdl.Reasoning = true
 	}
-	if native := nativeThinkingLevelMap(mCfg); len(native) > 0 {
-		mdl.ThinkingLevelMap = native
-	}
+	applyNativeThinkingLevelMap(mdl, mCfg)
 }
 
 // applyProviderExtra merges provider-level Extra metadata into the model.

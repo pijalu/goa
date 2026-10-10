@@ -313,12 +313,12 @@ type ModelConfig struct {
 	// per-model escape hatch for quick-fixing new or always-thinking models
 	// whose accepted levels differ from Goa's canonical set: set the canonical
 	// thinking_level you want in the UI, then map it to the native value here.
-	// Example:
+	// Each listed level overrides the corresponding entry of the built-in
+	// variant profile's map (and of the model-registry map); levels not listed
+	// keep the profile's mapping. Example:
 	//   thinking_level: xhigh
 	//   thinking_level_native_map:
 	//     xhigh: max
-	// It only applies when the resolved variant profile has no map of its own
-	// (dedicated profiles like kimi-code already map their levels).
 	ThinkingLevelNativeMap map[string]string `yaml:"thinking_level_native_map,omitempty"`
 
 	// InputTypes lists supported input content types (text, image).

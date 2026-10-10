@@ -142,10 +142,11 @@ func profileMatches(m ProfileMatch, model Model) bool {
 }
 
 // ResolveProfile resolves the variant profile for a model using embedded and
-// user-configured profiles. As a migration bridge, it also copies the model's
-// deprecated ThinkingLevelMap into the resolved profile when the profile does
-// not define its own map. Once every variant profile supplies its own
-// thinking_level_map, this fallback can be removed.
+// user-configured profiles. It then merges the model's ThinkingLevelMap into
+// the resolved profile per key: the model map (populated from the config's
+// thinking_level_native_map, or from the deprecated registry field during the
+// migration) overrides individual profile entries while profile keys the model
+// does not mention stay intact. See migrateThinkingLevelMap.
 func ResolveProfile(model Model) VariantProfile {
 	profiles, err := LoadAllProfiles()
 	if err != nil {
@@ -158,16 +159,21 @@ func ResolveProfile(model Model) VariantProfile {
 	return profile
 }
 
-// migrateThinkingLevelMap is a migration bridge: the old model registry
-// carries thinking-level mappings, while the new VariantProfile is supposed to
-// own them. Copy the model's map into the profile when the profile has none so
-// provider code can stop reading the deprecated Model.ThinkingLevelMap field.
+// migrateThinkingLevelMap merges the model's ThinkingLevelMap into the
+// resolved profile per key. Model.ThinkingLevelMap has two sources: the
+// config's thinking_level_native_map (a deliberate per-model user override)
+// and, during the migration, the deprecated model-registry field. Per-key
+// merge means a user remap wins over the profile's own map for the levels it
+// lists (e.g. high -> "high" on kimi-code, whose profile maps everything to
+// "max") instead of being silently ignored, while unlisted levels keep the
+// profile's mapping. Once every variant profile supplies its own
+// thinking_level_map, the registry half of this bridge can be removed.
 func migrateThinkingLevelMap(model Model, profile VariantProfile) VariantProfile {
-	if len(profile.Defaults.ThinkingLevelMap) > 0 || len(model.ThinkingLevelMap) == 0 {
+	if len(model.ThinkingLevelMap) == 0 {
 		return profile
 	}
 	if profile.Defaults.ThinkingLevelMap == nil {
-		profile.Defaults.ThinkingLevelMap = make(ThinkingLevelMap)
+		profile.Defaults.ThinkingLevelMap = make(ThinkingLevelMap, len(model.ThinkingLevelMap))
 	}
 	for k, v := range model.ThinkingLevelMap {
 		profile.Defaults.ThinkingLevelMap[k] = v

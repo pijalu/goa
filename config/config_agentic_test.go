@@ -874,3 +874,32 @@ func TestGetThinkingLevel_MainAgentPrefersModelLevel(t *testing.T) {
 		})
 	}
 }
+
+// TestConfigValidateThinkingLevelStrictCanonical pins the strict-canonical
+// contract for models.*.thinking_level: only the six canonical levels are
+// accepted. Provider-native values like "max" must NOT be added here — they
+// belong in thinking_level_native_map (the per-model remap), which translates
+// a canonical level to the native value on the wire.
+func TestConfigValidateThinkingLevelStrictCanonical(t *testing.T) {
+	for _, tt := range []struct {
+		level   string
+		wantErr bool
+	}{
+		{"", false}, // unset = provider default
+		{"off", false},
+		{"minimal", false},
+		{"low", false},
+		{"medium", false},
+		{"high", false},
+		{"xhigh", false},
+		{"max", true}, // native-only: use thinking_level_native_map xhigh->max
+		{"MAX", true},
+		{"ultra", true},
+	} {
+		cfg := &Config{Models: []ModelConfig{{ID: "m", Model: "m", ThinkingLevel: tt.level}}}
+		err := cfg.Validate()
+		if gotErr := err != nil; gotErr != tt.wantErr {
+			t.Errorf("Validate(thinking_level=%q) err=%v, wantErr=%v", tt.level, err, tt.wantErr)
+		}
+	}
+}

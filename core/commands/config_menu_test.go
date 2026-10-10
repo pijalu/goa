@@ -361,6 +361,57 @@ func TestConfigMenu_ModelsAddFlow(t *testing.T) {
 	}
 }
 
+// TestConfigMenu_ModelsAddFlowSeedsThinkingRemap verifies that adding a custom
+// (non-registry) model via the TUI auto-creates an editable
+// thinking_level_native_map entry in config (the effective mapping or the
+// canonical identity map), so always-thinking / level-restricted models can be
+// fixed by editing values instead of discovering the field.
+func TestConfigMenu_ModelsAddFlowSeedsThinkingRemap(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{
+			{ID: "opencode", Name: "OpenCode", Provider: "opencode", Endpoint: "https://opencode.ai/zen/v1"},
+		},
+	}
+	ctx, sr, ir, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("models", true)
+	sr.onSel("__add__", true)
+
+	if sr.title != "Select provider for new model:" {
+		t.Fatalf("expected provider selector, got %q", sr.title)
+	}
+	sr.onSel("opencode", true)
+
+	// No models configured: the page offers "— other model —".
+	sr.onSel("__other__", true)
+	// resolveModelFull lists the mock provider's models plus a custom entry.
+	if sr.title != "Select model:" {
+		t.Fatalf("expected model list selector, got %q", sr.title)
+	}
+	sr.onSel("__custom__", true)
+
+	// The custom path prompts for a free-form model string.
+	if ir.onSub == nil {
+		t.Fatal("expected an input prompt for the custom model name")
+	}
+	ir.onSub("brand-new-llm-9000", true)
+
+	if len(cfg.Models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(cfg.Models))
+	}
+	seed := cfg.Models[0].ThinkingLevelNativeMap
+	if seed == nil {
+		t.Fatal("ThinkingLevelNativeMap = nil, want an editable identity seed for a custom model on a map-less profile")
+	}
+	for _, l := range []string{"off", "minimal", "low", "medium", "high", "xhigh"} {
+		if seed[l] != l {
+			t.Errorf("seed[%q] = %q, want identity %q", l, seed[l], l)
+		}
+	}
+}
+
 func TestConfigMenu_ThinkingLevelPersists(t *testing.T) {
 	cfg := &config.Config{}
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
