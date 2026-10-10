@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/pijalu/goa/internal/ansi"
@@ -58,6 +59,11 @@ func applyViewMeta(b *SceneBlock, v Component) {
 			"status":   view.status.String(),
 			"duration": view.duration,
 			"expanded": boolMeta(view.effectiveExpanded()),
+			// preview is the collapsed card's line count (tui.tools.preview_lines).
+			// The page cannot guess it, and a card that previewed a different
+			// number of lines than the terminal would read differently in each
+			// (bugs.md B23).
+			"preview": strconv.Itoa(view.effectivePreviewLines()),
 		}
 		b.Text = view.output
 	case *thinkingBlock:

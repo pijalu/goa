@@ -28,76 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B22 — web blocks: a collapsible is always created CLOSED, so the server's expand state is ignored
-
-**Reported**: "thinking block should be expanded by default".
-
-**Observed (code path, client)**: `renderBlock` computes the previous open state as
-
-```js
-var wasOpen = b.body && b.body.open;   // app.js — null for a block's FIRST render
-```
-
-and `collapsible(wasOpen, metaOpen)` reads `if (wasOpen !== undefined) det.open = wasOpen;`
-(`internal/webui/assets/app.js:550`). For a brand-new block `b.body` is `null`, so
-`wasOpen` is `null` — which is **not** `undefined` — and the element is created with
-`det.open = null`, i.e. closed, whatever the server said. The `meta.expanded` the
-server ships (TUI truth: `newThinkingBlock` starts `expanded: true`, tools per the
-`tui.tools.view` policy) only ever applies to a block whose body already exists —
-never, in practice. So every thinking block and every tool card opens collapsed
-regardless of the TUI's state, and a reader has to click each one.
-
-**Expected**: the first render honours the server's `meta.expanded` (thinking
-expanded by default, exactly as the TUI and `tui.transparency.thinking_collapsed`
-say), and a later re-render keeps the reader's own toggle.
-
-**Also reported (same surface)**: "for the collapse: follow the rules: if a collapse
-is open (or closed) subsequent item should follow the same logic" — once the reader
-toggles a collapsible, later collapsibles of the same kind must adopt that choice
-instead of reverting to the server default.
-
-**Fix plan / test approach**
-
-1. `wasOpen` becomes `b.body ? b.body.open : undefined`, so `collapsible` falls back
-   to `meta.expanded` exactly once (the first render).
-2. A `toggle` listener on each collapsible records the reader's choice as the sticky
-   preference for that kind (`thinking`, `tool`); `collapsible` uses the sticky
-   preference for new blocks of that kind, the server meta otherwise.
-3. Goja tests (real `app.js`): a thinking op with `meta.expanded=1` renders an open
-   `<details>`, one with `"0"` renders closed, and after a synthetic toggle on a
-   first block a second block of the same kind follows it. RED before the fix.
-
-## B23 — web blocks: tool cards do not match the TUI widget
-
-**Reported**: "tool calls will show a lot of content *then* be collapsed — the tool
-call should follow the TUI: some details are visible (type, file, action, couple
-line preview)".
-
-**Observed**: the block plane ships the tool's identity (`tool`, `args`, `status`,
-`duration`) and its whole output, and the page builds a `<details>` whose collapsed
-state shows `headLines(b.text, 4)` — a hard-coded 4-line preview — while the TUI's
-widget shows the tool header plus the policy's preview count
-(`tui.tools.preview_lines`, default 10, `defaultToolPreviewLines`), and while the
-collapse state itself is broken by B22. The TUI also renders the *tail* semantics
-per renderer (read/write/bash previews differ), which the page cannot see at all:
-only the raw text is exported.
-
-**Expected**: a tool card reads like the TUI's — type + file/args + status, then the
-same number of preview lines the TUI uses — and never streams the whole output
-before collapsing. Since the preview count is view policy, the server has to ship
-it (the page cannot guess it).
-
-**Fix plan / test approach**
-
-1. Export the policy's preview line count in the block meta
-   (`tui/chat_viewport_blocks.go`, `applyViewMeta` for `*ToolExecutionComponent`) and
-   have the page use `meta.preview` (falling back to 4) for `headLines`.
-2. Keep the card collapsed-by-default (B22 fix) so no content is streamed before the
-   collapse; the preview updates live while the tool runs.
-3. Tests: block-export test asserting the meta carries the configured preview count;
-   goja test that a 20-line tool output renders at most `preview` lines in the
-   collapsed card and everything when open.
-
 ## B24 — web band: the status bar is cut
 
 **Reported**: "status bar is cut - current status show: `coding-posture - yolo`".
@@ -154,6 +84,21 @@ unshifted letter) stays a Meta chord.
    unchanged (CSI-u).
 
 ## Closed
+
+Closed 2026-10-10 — B22 / B23, the web block plane's collapsibles: every
+collapsible was created CLOSED (`wasOpen = b.body && b.body.open` yields `null` for a
+new block, which `collapsible` took as a state to restore), so the server's
+`meta.expanded` — the TUI's own state, a thinking block starts expanded — was never
+read; the reader's toggle could not reach later blocks; the ▸/▾ indicator selectors
+matched nothing (the `open` attribute lives on the `<details>`, not the wrapper); and
+a tool card previewed the hard-coded *first* 4 lines while the TUI previews the
+**tail** with `tui.tools.preview_lines` (now exported as `meta.preview`, default 10).
+Fixes: `wasOpen` falls back to `undefined` so the meta applies once, a per-kind
+`collapsePref` makes the reader's choice sticky, `tailLines`+`previewLinesFor` mirror
+the TUI, and `ToolExecutionComponent.effectivePreviewLines()` is the single source of
+the preview count. Pinned by four goja tests (RED before the fix with the reported
+symptoms) and the tui export test; the indicator was verified in a real browser. See
+[`docs/archive/b22-b23-webui-block-collapse-and-tool-card.2026-10-10.md`](docs/archive/b22-b23-webui-block-collapse-and-tool-card.2026-10-10.md).
 
 Closed 2026-10-10 — B21, the `goa/protocol` `max_tokens` note: it called a
 model's *maximum output* a "reasoning-ceiling default", named no reason a reader

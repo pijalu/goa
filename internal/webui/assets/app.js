@@ -432,7 +432,7 @@
     }
     b.el.className = "block " + kind;
     if (kind === "tool") b.el.setAttribute("data-status", (b.meta && b.meta.status) || "pending");
-    var wasOpen = b.body && b.body.open;
+    var wasOpen = b.body ? b.body.open : undefined;
     fill(b.el, function (root) {
       b.body = null;
       var meta = b.meta || {};
@@ -475,7 +475,7 @@
           break;
         }
         case "thinking": {
-          var det = collapsible(wasOpen, meta.expanded !== "0");
+          var det = collapsible("thinking", wasOpen, meta.expanded !== "0");
           var sum = document.createElement("summary");
           sum.textContent = "thinking" + (meta.agent ? " — " + meta.agent : "") + "…";
           det.appendChild(sum);
@@ -505,7 +505,7 @@
           break;
         }
         case "tool": {
-          var tdet = collapsible(wasOpen, meta.expanded !== "0");
+          var tdet = collapsible("tool", wasOpen, meta.expanded !== "0");
           var tsum = document.createElement("summary");
           var name = document.createElement("span");
           name.className = "t-name";
@@ -522,11 +522,14 @@
           st.textContent = " [" + (meta.status || "pending") + (meta.duration ? " · " + meta.duration : "") + "]";
           tsum.appendChild(st);
           tdet.appendChild(tsum);
-          // Collapsed cards preview the head of the output (the TUI widget's
-          // preview); the open body carries everything, scroll-capped.
+          // Collapsed cards preview the TAIL of the output, with the same line
+          // count the TUI's widget uses (the server ships it in meta.preview):
+          // the end of a tool's output is what the reader is looking for, and a
+          // card that previewed a different number of lines than the terminal
+          // would read differently in each (bugs.md B23).
           var prev = document.createElement("pre");
           prev.className = "t-preview";
-          prev.textContent = headLines(b.text, 4);
+          prev.textContent = tailLines(b.text, previewLinesFor(meta));
           tdet.appendChild(prev);
           var out = document.createElement("pre");
           out.className = "t-out";
@@ -545,12 +548,27 @@
     });
   }
 
-  // collapsible builds a <details> whose open state honours the block's
-  // metadata but never undoes an explicit user toggle (wasOpen wins).
-  function collapsible(wasOpen, metaOpen) {
+  // collapsePref is the reader's sticky collapse choice per block kind: once they
+  // open (or close) a thinking block or a tool card, later blocks of that kind
+  // follow the same choice instead of the server default ("if a collapse is open
+  // (or closed) subsequent item should follow the same logic").
+  var collapsePref = {};
+
+  // collapsible builds a <details> whose open state honours, in order: this
+  // element's previous state (a re-render must not fight the reader), the
+  // reader's sticky choice for this kind, and the server's meta.expanded — the
+  // TUI's own state (a thinking block starts expanded, a tool card follows
+  // tui.tools.view) which the page must not silently override (bugs.md B22).
+  function collapsible(kind, wasOpen, metaOpen) {
     var det = document.createElement("details");
     if (wasOpen !== undefined) det.open = wasOpen;
+    else if (collapsePref[kind] !== undefined) det.open = collapsePref[kind];
     else det.open = !!metaOpen;
+    // The listener goes on AFTER the state is set: assigning open fires `toggle`
+    // too, and a programmatic open is not a reader choice.
+    det.addEventListener("toggle", function () {
+      collapsePref[kind] = det.open;
+    });
     return det;
   }
 
@@ -595,17 +613,25 @@
     return indentedCommands || longLines >= 2;
   }
 
-  // headLines returns the first n non-empty-biased lines of text for a
-  // collapsed card's preview.
-  function headLines(text, n) {
+  // DEFAULT_TOOL_PREVIEW_LINES mirrors the TUI's defaultToolPreviewLines: the
+  // server ships the configured value (tui.tools.preview_lines) in meta.preview,
+  // and this is only the fallback for a frame that carries no meta.
+  var DEFAULT_TOOL_PREVIEW_LINES = 10;
+
+  // previewLinesFor returns how many output lines a collapsed tool card shows.
+  function previewLinesFor(meta) {
+    var n = parseInt((meta && meta.preview) || "", 10);
+    return n > 0 ? n : DEFAULT_TOOL_PREVIEW_LINES;
+  }
+
+  // tailLines returns the LAST n lines of text, prefixed with how many were left
+  // out — the TUI's collapsed body shows the tail with a "… N earlier lines"
+  // notice (tools/bash_renderer.go RenderResult), so both renderers read the
+  // same way.
+  function tailLines(text, n) {
     var lines = (text || "").split("\n");
-    var out = [];
-    for (var i = 0; i < lines.length && out.length < n; i++) {
-      out.push(lines[i]);
-    }
-    var joined = out.join("\n");
-    if (lines.length > n) joined += "\n… +" + (lines.length - n) + " lines";
-    return joined;
+    if (lines.length <= n) return lines.join("\n");
+    return "… " + (lines.length - n) + " earlier lines\n" + lines.slice(lines.length - n).join("\n");
   }
 
   // ─────────────────────────────────────────────── markdown (goa's subset)

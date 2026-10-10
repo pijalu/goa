@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -106,6 +107,12 @@ func TestExportBlocks_ToolMeta(t *testing.T) {
 	}
 	if blocks[0].Text != "file1\nfile2" {
 		t.Errorf("tool text = %q, want the output", blocks[0].Text)
+	}
+	// preview is the collapsed card's line count: the page cannot guess it, and a
+	// card that previewed a different number of lines than the terminal would
+	// read differently in each (bugs.md B23).
+	if meta["preview"] != strconv.Itoa(defaultToolPreviewLines) {
+		t.Errorf("meta.preview = %q, want the TUI default %d", meta["preview"], defaultToolPreviewLines)
 	}
 }
 

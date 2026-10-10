@@ -274,14 +274,17 @@ a {
 .block.info { color: var(--dim); }
 .block.result { color: var(--dim); }
 
-/* Thinking: a native collapsible, defaulting to the TUI's collapse state. */
+/* Thinking: a native collapsible, defaulting to the TUI's collapse state. The
+   `open` attribute lives on the <details>, never on the block wrapper, so the
+   indicator selector has to reach through it — as a direct child selector it
+   matched nothing and the glyph never flipped. */
 .block.thinking summary {
   cursor: pointer;
   color: var(--accent);
   list-style: none;
 }
 .block.thinking summary::before { content: "▸ "; }
-.block.thinking[open] summary::before { content: "▾ "; }
+.block.thinking details[open] summary::before { content: "▾ "; }
 .block.thinking .body { color: var(--dim); border-left: 2px solid var(--border); padding-left: 8px; }
 
 /* Tool cards: header line + collapsible output. Status colour follows the
@@ -293,7 +296,7 @@ a {
 .block.tool { border: 1px solid var(--border); padding: var(--pad); }
 .block.tool summary { cursor: pointer; list-style: none; }
 .block.tool summary::before { content: "▸ "; }
-.block.tool[open] summary::before { content: "▾ "; }
+.block.tool details[open] summary::before { content: "▾ "; }
 .block.tool .t-args { color: var(--dim); }
 .block.tool .t-meta { color: var(--dim); }
 .block.tool[data-status="running"] .t-status { color: var(--warning, #d29922); }

@@ -297,6 +297,10 @@ const domStub = `
     return e.defaultPrevented === true;
   };
   window.__listeners = function (t) { return (docListeners[t] || []).length; };
+  // __setBodyPlane picks the plane the page boots in — index.html renders
+  // body[data-plane] and app.js reads it once, at load, so a blocks-plane test
+  // has to set it before the script runs.
+  window.__setBodyPlane = function (p) { window.document.body.dataset.plane = p; };
     var winListeners = {};
     window.addEventListener = function (t, fn) {
       (winListeners[t] = winListeners[t] || []).push(fn);

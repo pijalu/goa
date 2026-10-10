@@ -5,6 +5,7 @@
 package webui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,6 +20,15 @@ type clientHarness struct {
 // newClientHarness loads app.js and fails the test if it throws at startup.
 func newClientHarness(t *testing.T) *clientHarness {
 	t.Helper()
+	return newClientHarnessIn(t, "")
+}
+
+// newClientHarnessIn boots the real app.js with the page in the given plane
+// (index.html's body[data-plane], which the script reads once at load). The
+// blocks-plane tests need it: the plane decides whether the page applies block
+// ops or cell rows.
+func newClientHarnessIn(t *testing.T, plane string) *clientHarness {
+	t.Helper()
 	src, err := assets.ReadFile("assets/app.js")
 	if err != nil {
 		t.Fatalf("read embedded app.js: %v", err)
@@ -26,6 +36,11 @@ func newClientHarness(t *testing.T) *clientHarness {
 	vm := goja.New()
 	if _, err := vm.RunString(domStub); err != nil {
 		t.Fatalf("dom stub: %v", err)
+	}
+	if plane != "" {
+		if _, err := vm.RunString(`window.__setBodyPlane(` + strconv.Quote(plane) + `)`); err != nil {
+			t.Fatalf("set plane: %v", err)
+		}
 	}
 	if _, err := vm.RunString(string(src)); err != nil {
 		t.Fatalf("app.js threw at load: %v", err)
@@ -187,6 +202,23 @@ func frameDocCursorOnly(t *testing.T, rows, row, col int) string {
 		Cols:   80,
 		Rows:   rows,
 		Cursor: Cursor{Row: row, Col: col, Visible: true},
+	})
+	if err != nil {
+		t.Fatalf("encode frame: %v", err)
+	}
+	return string(b)
+}
+
+// blocksFrameDoc builds a blocks-plane frame carrying the given block ops — the
+// document a blocks-plane client applies to its conversation DOM.
+func blocksFrameDoc(t *testing.T, ops ...BlockOp) string {
+	t.Helper()
+	b, err := NewFrameCodec().EncodeFrame(&Frame{
+		Cols:   80,
+		Rows:   24,
+		Cursor: Cursor{Row: 20, Col: 0, Visible: true},
+		Chrome: 6,
+		Blocks: ops,
 	})
 	if err != nil {
 		t.Fatalf("encode frame: %v", err)

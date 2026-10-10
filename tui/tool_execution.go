@@ -259,12 +259,7 @@ func (tc *ToolExecutionComponent) updateBox() {
 	}
 
 	expanded := tc.effectiveExpanded()
-	previewLines := defaultToolPreviewLines
-	if tc.viewPolicy != nil {
-		if n := tc.viewPolicy.EffectivePreviewLines(); n > 0 {
-			previewLines = n
-		}
-	}
+	previewLines := tc.effectivePreviewLines()
 
 	ctx := RenderContext{
 		Expanded:     expanded,
