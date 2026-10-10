@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,7 +35,10 @@ type fakeChild struct {
 
 	refresh func()
 	proxied *strings.Builder
-	stopped int
+	// stopped counts the Stop calls. It is atomic because the reaper goroutine
+	// calls Stop while the test goroutine reads the count: a plain int there is a
+	// data race under -race (TestReapLoopReapsAndStops).
+	stopped atomic.Int64
 }
 
 func (c *fakeChild) Session() string { return c.session }
@@ -63,7 +67,13 @@ func (c *fakeChild) Refresh(ctx context.Context) bool {
 	}
 	return true
 }
-func (c *fakeChild) Stop() error { c.stopped++; return nil }
+
+// Stop counts the child's stops; the reaper goroutine is the caller, so the
+// counter is atomic and read through stops().
+func (c *fakeChild) Stop() error { c.stopped.Add(1); return nil }
+
+// stops returns how many times the child was stopped.
+func (c *fakeChild) stops() int64 { return c.stopped.Load() }
 
 // Proxy records the proxied requests, standing in for the reverse proxy.
 func (c *fakeChild) Proxy() http.Handler {
@@ -378,13 +388,13 @@ func TestReaperStopsIdleChildren(t *testing.T) {
 
 	sup.reapOnce()
 
-	if idle.stopped == 0 {
+	if idle.stops() == 0 {
 		t.Error("idle child was not reaped")
 	}
-	if busy.stopped != 0 {
+	if busy.stops() != 0 {
 		t.Error("busy child was reaped")
 	}
-	if recent.stopped != 0 {
+	if recent.stops() != 0 {
 		t.Error("recently used child was reaped")
 	}
 	sup.mu.Lock()

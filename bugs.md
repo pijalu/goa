@@ -30,6 +30,39 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 ## Closed
 
+Closed 2026-10-10 — B19, a `-race` failure in `internal/webui/supervisor`
+(found while validating B18, and reproducible on the tree before it): the test
+scaffolding's `fakeChild.Stop()` incremented a plain `int` from the reaper
+goroutine while the test read the same field, and the `sup.mu` the read held
+guards the supervisor's child map, not the fake's counter. `stopped` is now an
+`atomic.Int64` read through `stops()`; no production code changed.
+`go test -race ./internal/webui/... -count=2` and the full `-race` suite are green.
+See
+[`docs/archive/b19-supervisor-test-race.2026-10-10.md`](docs/archive/b19-supervisor-test-race.2026-10-10.md).
+
+Closed 2026-10-10 — B19, a flaky `-race` failure in
+`internal/webui/supervisor` (test scaffolding, not production): `fakeChild.Stop()`
+incremented a plain `int` from the reaper goroutine while the test read it — the
+mutex the read held guards the supervisor's child map, not the fake's counter. The
+counter is now an `atomic.Int64` read through `stops()`. Also closed in the same
+session — B18, image paste with `Cmd+V`: see below. See
+[`docs/archive/b19-supervisor-test-race.2026-10-10.md`](docs/archive/b19-supervisor-test-race.2026-10-10.md).
+
+Closed 2026-10-10 — B18, image paste with `Cmd+V`: a terminal only pastes for
+you when its own chord can carry the clipboard's *text*, so with a screenshot on
+the clipboard macOS leaves the terminal's Paste menu item disabled and the chord
+falls through — where a Kitty-protocol terminal reports it as the key event
+`ESC [ 118 ; 9 u` (`v` + `super`). The modifier table named values 2..8 only, so
+`super` was dropped and the decoder emitted the *bare* `"v"`, which the editor
+typed into the input line; `KbPaste` was bound to `ctrl+v` only, so even a
+correctly decoded `Cmd+V` could not paste. The table now decodes the whole Kitty
+bitmask (locks ignored, unnameable modifiers dropped rather than leaked, shifted
+letters normalised so `ctrl+shift+v` is reachable again), `KbPaste` carries
+`super+v`, and a decoded *chord* name can no longer be inserted as text.
+Validated by `e2e/clipimg.sh`, which now drives both chords through a real PTY and
+asserts the image-store path is the whole input line. See
+[`docs/archive/b18-cmd-v-image-paste.2026-10-10.md`](docs/archive/b18-cmd-v-image-paste.2026-10-10.md).
+
 Closed 2026-10-05 — B17, the web UI's VT-simulation seam: the browser re-derived UI semantics
 (comparator wipes, caret, colours, band geometry) from compositor bytes — the root every fixed
 webui bug shared — and could never meet the v2 goals (browser-native resize/history). The reported

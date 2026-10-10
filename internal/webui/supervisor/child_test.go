@@ -654,7 +654,7 @@ func TestReapLoopReapsAndStops(t *testing.T) {
 	waitForCond(t, "reaper to reap the idle child", func() bool {
 		sup.mu.Lock()
 		defer sup.mu.Unlock()
-		if idle.stopped == 0 {
+		if idle.stops() == 0 {
 			return false
 		}
 		_, present := sup.children[keyOf(idle.Path())]
