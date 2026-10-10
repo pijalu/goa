@@ -55,35 +55,20 @@ width the browser actually has.
 3. Test: goja harness asserting the resize the page sends matches the measured band
    width; real-browser re-check at 700px.
 
-## B25 — web input: macOS composed characters (Option / Shift+Option) are not inserted
-
-**Reported**: "special mac char like pipe (shift+option+l) are not rendering".
-
-**Observed**: on macOS the browser reports the *composed* character — Shift+Option+L
-arrives as `key: "|"`, `code: "KeyL"`, `alt: true`, `shift: true` (there is no
-browser setting for "Option as Meta"; Terminal.app's default is off, which is why a
-real terminal inserts `|`). `EncodeKey` sends every Alt chord as `ESC` + character
-(`encodeAltPrintable`), so the engine receives `alt+|` — an unbound key — and the
-pipe never appears. Every Option-produced glyph (`|`, `∫`, `€`, `¡`, …) is
-unreachable in the web UI.
-
-**Expected**: an Alt chord whose character the physical key could not have produced
-was composed by the platform and must be inserted as text, exactly as the terminal
-does; a plain Alt chord (Alt+b on Linux/Windows, where the browser reports the
-unshifted letter) stays a Meta chord.
-
-**Fix plan / test approach**
-
-1. In `EncodeKey`, before the ESC-prefix path: if `alt` is held, the key is a single
-   printable rune, and that rune differs from what the US layout produces for
-   `code` + `shift`, the platform composed it → emit the rune itself.
-2. Unknown `code` (or punctuation codes) keeps today's Meta behaviour, so no existing
-   binding regresses.
-3. Table test: `KeyL`+shift+alt+`"|"` → `"|"`; `KeyB`+alt+`"b"` → `"\x1bb"`;
-   `KeyB`+alt+`"∫"` → `"∫"`; `Digit2`+shift+alt+`"€"` → `"€"`; alt+`ArrowLeft`
-   unchanged (CSI-u).
-
 ## Closed
+
+Closed 2026-10-10 — B25, macOS composed characters in the web UI: the browser
+reports the glyph the Option layer produced (`Shift+Option+L` → `key:"|"`, `code:"KeyL"`,
+alt+shift held), and `EncodeKey` sent every Alt chord as `ESC`+character, so the engine
+received the unbound `alt+|` and the pipe (like `∫`, `€`, `¡`, ``) never appeared.
+`composedAltKey` now tells the two cases apart from the event itself — a Meta chord
+reports the character the physical key makes, a composed one reports a glyph that key
+could not have produced (`usLayoutRune(code, shift)` is the yardstick; an unknown code
+keeps the Meta path) — and inserts the glyph as text. Pinned by table cases in
+`TestKeyEncoder_SpecTable` (RED before the fix: `= "\x1b|", want "|"`) and validated on
+the live page: the pipe lands in the input line with the caret advancing, while Alt+B
+still acts as the engine's chord. See
+[`docs/archive/b25-macos-composed-option-chars.2026-10-10.md`](docs/archive/b25-macos-composed-option-chars.2026-10-10.md).
 
 Closed 2026-10-10 — B22 / B23, the web block plane's collapsibles: every
 collapsible was created CLOSED (`wasOpen = b.body && b.body.open` yields `null` for a

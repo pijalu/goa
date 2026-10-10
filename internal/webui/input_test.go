@@ -61,6 +61,22 @@ func TestKeyEncoder_SpecTable(t *testing.T) {
 		{"alt+x", KeyEvent{Key: "x", Alt: true}, "\x1bx"},
 		{"alt+digit", KeyEvent{Key: "1", Alt: true}, "\x1b1"},
 
+		// macOS composes Option chords into glyphs — there is no browser setting
+		// for "Option as Meta" — so the reported key is the character the
+		// keyboard produced and it must be inserted as text, exactly as a
+		// terminal does (bugs.md B25). The giveaway is that the physical key
+		// could not have produced that character.
+		{"mac shift+option+l is a pipe", KeyEvent{Key: "|", Code: "KeyL", Alt: true, Shift: true}, "|"},
+		{"mac option+b is the integral sign", KeyEvent{Key: "∫", Code: "KeyB", Alt: true}, "∫"},
+		{"mac shift+option+2 is the euro sign", KeyEvent{Key: "€", Code: "Digit2", Alt: true, Shift: true}, "€"},
+		{"mac option+shift+k is the apple glyph", KeyEvent{Key: "\uf8ff", Code: "KeyK", Alt: true, Shift: true}, "\uf8ff"},
+		// …while a Meta chord keeps its ESC prefix: the character matches what the
+		// physical key makes, so the platform did not compose anything.
+		{"alt+b stays meta", KeyEvent{Key: "b", Code: "KeyB", Alt: true}, "\x1bb"},
+		{"alt+shift+2 stays meta", KeyEvent{Key: "@", Code: "Digit2", Alt: true, Shift: true}, "\x1b@"},
+		// An unknown code means "cannot tell": the Meta path is the safe answer.
+		{"unknown code keeps meta", KeyEvent{Key: "|", Code: "IntlBackslash", Alt: true, Shift: true}, "\x1b|"},
+
 		// Modifier parameter = 1 + shift + 2·alt + 4·ctrl.
 		{"shift+up", KeyEvent{Key: "ArrowUp", Shift: true}, "\x1b[1;2A"},
 		{"alt+left", KeyEvent{Key: "ArrowLeft", Alt: true}, "\x1b[1;3D"},

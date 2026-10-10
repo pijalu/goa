@@ -202,16 +202,65 @@ func codeRune(code string) (rune, bool) {
 }
 
 // encodePrintable applies the printable rules: Ctrl+letter is the control
-// byte, every other Ctrl chord is CSI-u, Alt prefixes ESC, and a bare
-// character is inserted as-is.
+// byte, every other Ctrl chord is CSI-u, a platform-composed Alt glyph is text,
+// any other Alt prefixes ESC, and a bare character is inserted as-is.
 func encodePrintable(ev KeyEvent, r rune) []byte {
 	if ev.Ctrl {
 		return encodeCtrlPrintable(ev, r)
 	}
 	if ev.Alt {
+		if composedAltKey(ev, r) {
+			return []byte(string(r))
+		}
 		return encodeAltPrintable(ev, r)
 	}
 	return []byte(string(r))
+}
+
+// composedAltKey reports whether an Alt chord's character was COMPOSED by the
+// platform instead of typed with Meta held.
+//
+// macOS has no browser setting for "Option as Meta": the Option layer produces
+// glyphs and the page receives the glyph, so Shift+Option+L arrives as key "|"
+// with alt+shift held — and a real terminal (Terminal.app's default, iTerm2,
+// every GUI terminal) inserts "|". Sending it as ESC+"|" made the pipe, the
+// integral sign, "€" and every other Option glyph unreachable in the web UI
+// (bugs.md B25).
+//
+// The two cases are distinguishable without asking the platform: a Meta chord
+// reports the character the physical key makes (Alt+b arrives as "b" on
+// Linux/Windows), while a composed one reports a glyph that key could not have
+// produced. Comparing against the US layout's character for code+shift is that
+// test. A code the map does not know means "cannot tell", and the caller keeps
+// the Meta chord, so no existing binding changes meaning.
+func composedAltKey(ev KeyEvent, r rune) bool {
+	base, ok := usLayoutRune(ev.Code, ev.Shift)
+	return ok && base != r
+}
+
+// usLayoutRune maps a KeyboardEvent.code to the character a US layout produces
+// with the given shift state — the yardstick for "could this key have produced
+// that character?". Punctuation codes are deliberately absent: an unknown code
+// leaves the caller on the Meta path.
+func usLayoutRune(code string, shift bool) (rune, bool) {
+	suffix := strings.TrimPrefix(strings.TrimPrefix(code, "Key"), "Digit")
+	if suffix == code || len(suffix) != 1 {
+		return 0, false
+	}
+	c := suffix[0]
+	switch {
+	case c >= 'A' && c <= 'Z':
+		if shift {
+			return rune(c), true
+		}
+		return rune(c - 'A' + 'a'), true
+	case c >= '0' && c <= '9':
+		if shift {
+			return []rune(")!@#$%^&*(")[c-'0'], true
+		}
+		return rune(c), true
+	}
+	return 0, false
 }
 
 // encodeCtrlPrintable maps a Ctrl chord on a printable key. Ctrl+letter is the
