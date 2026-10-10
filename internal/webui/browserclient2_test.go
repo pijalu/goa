@@ -127,6 +127,57 @@ func TestClientJS_SSEResizeGoesToResizeEndpoint(t *testing.T) {
 	}
 }
 
+// The scrollbar appearing narrows the content box WITHOUT a window resize, and
+// the server kept the wider grid: the band then rendered wider than the box that
+// shows it and its right edge was clipped — the reported "YOLO cut to YOL"
+// (bugs.md B24). The page watches the container itself and re-reports the
+// geometry, but only when it actually changed.
+func TestClientJS_ReReportsGeometryWhenTheBoxNarrows(t *testing.T) {
+	h := newClientHarness(t)
+	h.open(t) // the socket opens: the first geometry report goes out
+
+	if got := h.call(t, "__roWatches").String(); got != "screen" {
+		t.Fatalf("the page does not watch the scroll container: %q", got)
+	}
+
+	// The conversation grew past the viewport: the scrollbar takes width off the
+	// container, with no window resize at all.
+	screen := h.el(t, "screen")
+	if err := screen.Set("clientWidth", 700); err != nil {
+		t.Fatalf("narrow the container: %v", err)
+	}
+	h.call(t, "__fireResizeObserver")
+	if got := len(h.sent(t)); got != 0 {
+		t.Fatalf("geometry was reported before the debounce elapsed: %d message(s)", got)
+	}
+	// RESIZE_DEBOUNCE_MS (120ms) is a constant inside app.js; firing the first
+	// live timer is the delay-agnostic way to reach it.
+	if !h.call(t, "__fireTimer").ToBoolean() {
+		t.Fatal("no debounced geometry report was scheduled")
+	}
+	msgs := h.sent(t)
+	if len(msgs) != 1 || msgs[0]["t"] != "resize" {
+		t.Fatalf("messages after the box narrowed = %v, want one resize", msgs)
+	}
+	cols, ok := msgs[0]["cols"].(int64)
+	if !ok {
+		t.Fatalf("cols = %v (%T), want a number", msgs[0]["cols"], msgs[0]["cols"])
+	}
+	// A cell is 8px and the pad is 8px on both sides: 800px wide is 98 columns,
+	// 700px is 85. The point is that the server hears the SMALLER number.
+	if cols != 85 {
+		t.Errorf("cols = %d, want 85 for a 700px container", cols)
+	}
+
+	// A second observer callback with nothing changed must stay quiet: every
+	// geometry message costs a full server-side repaint.
+	h.call(t, "__fireResizeObserver")
+	h.call(t, "__fireTimer")
+	if got := len(h.sent(t)); got != 1 {
+		t.Errorf("an unchanged box produced another report: %d messages", got)
+	}
+}
+
 // TestClientJS_ScrollListenerIsOnTheScrollContainer pins WHICH element owns the
 // follow-tail listener: the scroll container, not the transcript list inside it.
 // Listening on a non-scrollable child is exactly how "scrolling does nothing"

@@ -888,7 +888,11 @@
           setStatus("live", "connected");
           // Tell the server the last frame we saw, then push our geometry.
           send({ t: "hello", since: lastSeq });
-          send({ t: "resize", cols: measureCols(), rows: measureRows() });
+          // A fresh connection may be a fresh server (a restart, a rotated
+          // session): it does not know this page's geometry, so the report is
+          // forced rather than skipped as unchanged.
+          lastGeometry = "";
+          sendGeometry();
           // Anything the user typed while the socket was connecting goes out now.
           flushSendQueue();
         };
@@ -1618,14 +1622,52 @@
   // resize.
   var resizeTimer = null;
 
-  window.addEventListener("resize", function () {
-    measure();
+  // lastGeometry is the cols×rows the server was last told about. It is what
+  // keeps a layout observer from turning every box change into a full server
+  // repaint — and, more importantly, what makes the report happen at all when
+  // the change is NOT a window resize (bugs.md B24).
+  var lastGeometry = "";
+
+  // sendGeometry reports the measured geometry, but only when it differs from
+  // the last report: each message costs a full server-side repaint.
+  function sendGeometry() {
+    var cols = measureCols(),
+      rows = measureRows(),
+      key = cols + "x" + rows;
+    if (key === lastGeometry) return;
+    lastGeometry = key;
+    send({ t: "resize", cols: cols, rows: rows });
+  }
+
+  // scheduleGeometry debounces a burst of layout changes into one report.
+  function scheduleGeometry() {
     if (resizeTimer) clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function () {
       resizeTimer = null;
-      send({ t: "resize", cols: measureCols(), rows: measureRows() });
+      sendGeometry();
     }, RESIZE_DEBOUNCE_MS);
+  }
+
+  window.addEventListener("resize", function () {
+    measure();
+    scheduleGeometry();
   });
+
+  // The window is not the only thing that moves the content box. The scrollbar
+  // appears the moment the conversation grows past the viewport, and it narrows
+  // #screen by its width with NO window resize: the server kept the wider grid,
+  // the band rendered wider than the box that shows it, and its right edge was
+  // clipped — the reported "YOLO cut to YOL". A zoom change and a late font swap
+  // move the same box, so the container itself is what gets watched. The
+  // observer cannot loop: measure() re-publishes the cell metrics (which the
+  // band's height uses), but a report only goes out when the measured geometry
+  // actually changed.
+  if (typeof ResizeObserver === "function" && screenEl) {
+    new ResizeObserver(function () {
+      measure();
+      scheduleGeometry();
+    }).observe(screenEl);
+  }
 
   // Follow-tail state follows the user's own scroll: scrolling up detaches,
   // returning to the bottom re-attaches. The listener is passive so it never

@@ -364,6 +364,20 @@ const domStub = `
       };
 
       window.GOA_SESSION = "sess-1";
+      // ResizeObserver stub: app.js watches the scroll container, because the
+      // scrollbar appearing narrows it with no window resize (bugs.md B24). A test
+      // drives the callback through __fireResizeObserver and reads what is watched
+      // through __roWatches.
+      window.ResizeObserver = function (cb) { this.cb = cb; window.__ro = this; };
+      window.ResizeObserver.prototype.observe = function (el) { window.__roEl = el; };
+      window.ResizeObserver.prototype.disconnect = function () { window.__roEl = null; };
+      window.__fireResizeObserver = function () {
+        if (!window.__ro) return 0;
+        window.__ro.cb([], window.__ro);
+        return 1;
+      };
+      window.__roWatches = function () { return window.__roEl ? (window.__roEl.id || "?") : ""; };
+
       // location records a navigation (session rotation follows one) instead of
       // pretending the page can reload itself under the test.
       window.location = {

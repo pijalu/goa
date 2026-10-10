@@ -28,34 +28,48 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B24 — web band: the status bar is cut
+## B26 — `tui.modeline` is dead configuration: nothing reads it
 
-**Reported**: "status bar is cut - current status show: `coding-posture - yolo`".
+**Reported** (while answering B24): "I would expect WEB to follow TUI" — for the
+status bar, whose segments come from `tui.modeline`.
 
-**Observed**: in the blocks plane the bottom chrome band is cell-rendered from the
-grid, and the grid's width is the geometry the *client* reported (`/resize`). Any
-row wider than the band is clipped by the page (`.grid { overflow: hidden }`), so a
-status row that no longer fits loses its right-hand segments (model, tokens,
-context, time) while the left segment survives — the reported
-`coding-posture - yolo`. **Not reproduced yet**: this is where the cut must come
-from given the geometry, but the exact mismatch (reported cols vs band width) still
-has to be measured in a real browser — the B20 validation page had a wide viewport,
-so it did not show the symptom.
+**Observed**: `config/config_tools.go:119` defines `ModeLine
+ModeLineSegmentConfig` with `left`/`right` segment lists (the user's config sets
+`left: [app-badge, mode-badge, current-file]`, `right: [token-bar, activity,
+help-hint]`), and **no production code references `ModeLine` at all** — a repo-wide
+search for the identifier finds only its declaration. The status bar both the TUI and
+the web band show is `tui.Footer`'s own fixed layout (cwd + mode / model + stats), so
+a user who configures the modeline sees nothing change, in either renderer.
 
-**Expected**: the status bar shows the same segments the TUI does, laid out for the
-width the browser actually has.
+**Expected**: either the configured segments drive the status bar in the TUI (and the
+web band follows it, since it renders the same cells), or the dead config is removed
+and the schema stops advertising it.
 
 **Fix plan / test approach**
 
-1. Reproduce in the real browser at a narrow viewport, and check what geometry the
-   page reports versus the width the band renders at (`measureCols()` vs the band's
-   own box) — a mismatch is the cut.
-2. Fix the geometry contract (report the band's width, or re-report on a chrome/band
-   height change), not the symptom.
-3. Test: goja harness asserting the resize the page sends matches the measured band
-   width; real-browser re-check at 700px.
+1. Decide with the user which way to close it: implement `modeline.left/right`
+   segments (app-badge, mode-badge, current-file, token-bar, activity, help-hint) in
+   `tui/footer_render.go`, or drop the field from the config schema plus its docs.
+2. If implemented: a footer render test per segment, the ladder (dropFooterTier) kept
+   for narrow widths, and a web check that the band shows the same row (it is the same
+   cells, so the cells-plane golden is the pin).
+3. If dropped: config migration note + `config_tail`/completion entries removed.
 
 ## Closed
+
+Closed 2026-10-10 — B24, the web band's clipped right edge ("YOLO" cut to
+"YOL"): the page reported the terminal geometry only when the socket opened and on
+`window.resize`, so a classic (width-taking) scrollbar appearing — the conversation
+grew past the viewport — narrowed `#screen` with no resize event at all. The server
+kept the wider grid, the band rows were wider than the box showing them, and
+`.grid { overflow: hidden }` cut the last cells. `sendGeometry()` now reports only
+when `cols×rows` changed, and a `ResizeObserver` on `#screen` re-reports on any box
+change (scrollbar, zoom, font swap). Real-browser A/B: pre-fix client, box narrowed
+to 844px → `statusCells=104` in a 100-cell box, `clipped=TRUE`; fixed client →
+`statusCells=100`, `clipped=false`, tail "│ YOLO" intact. Pinned by
+`TestClientJS_ReReportsGeometryWhenTheBoxNarrows` (RED before the fix: "the page does
+not watch the scroll container") plus the new `ResizeObserver` stub. See
+[`docs/archive/b24-webui-band-clipped-geometry.2026-10-10.md`](docs/archive/b24-webui-band-clipped-geometry.2026-10-10.md).
 
 Closed 2026-10-10 — B25, macOS composed characters in the web UI: the browser
 reports the glyph the Option layer produced (`Shift+Option+L` → `key:"|"`, `code:"KeyL"`,
