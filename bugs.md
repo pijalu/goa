@@ -45,6 +45,23 @@ a user who configures the modeline sees nothing change, in either renderer.
 web band follows it, since it renders the same cells), or the dead config is removed
 and the schema stops advertising it.
 
+**Note (2026-10-10, awaiting a decision — do not close silently)**: reported by the
+user while answering B24, with the explicit expectation "I would expect WEB to follow
+TUI". What the user sees today in the web band is the TUI's own footer —
+`<cwd> … <mode> │ <autonomy>` and `<provider> <model> • <thinking level> •
+<tokens|context|loop>` — because the band renders the same cells the engine paints;
+the configured segments (`app-badge`, `mode-badge`, `current-file` / `token-bar`,
+`activity`, `help-hint`) appear nowhere, in either renderer. Two ways to close it,
+and the choice is a product decision:
+
+1. **Implement** the segments in `tui/footer_render.go` (the ladder in
+   `dropFooterTier` already handles narrow widths) — the web band then follows for
+   free, being the same cells; or
+2. **Remove** `ModeLine` from `config/config_tools.go` and its docs, so the schema
+   stops offering a knob that does nothing.
+
+Until then the item stays open: it is the only entry in this file.
+
 **Fix plan / test approach**
 
 1. Decide with the user which way to close it: implement `modeline.left/right`
