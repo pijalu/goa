@@ -52,6 +52,15 @@ const (
 	KeyShiftDown  = "shift+down"
 	KeyShiftLeft  = "shift+left"
 	KeyShiftRight = "shift+right"
+
+	// KeySuperV is Cmd+V (macOS) or Super+V — the paste chord a terminal forwards
+	// instead of pasting itself. A terminal can only paste for you when the
+	// clipboard holds text: with an image-only clipboard (a screenshot) macOS
+	// disables the terminal's Paste menu item, the chord falls through to the
+	// surface, and a terminal speaking the Kitty keyboard protocol reports it as
+	// Cmd+V. Binding it is what makes Cmd+V paste an image (see
+	// tui/editor.go:pasteFromClipboard).
+	KeySuperV = "super+v"
 )
 
 // matchesKey checks if a decoded key string matches a named key.
@@ -271,26 +280,111 @@ var csiSeq = map[string]string{
 	"24~": "f12",
 }
 
-// csiMod maps CSI modifier values to modifier prefixes.
-func csiModPrefix(mod int) string {
-	switch mod {
-	case 2:
-		return "shift+"
-	case 3:
-		return "alt+"
-	case 4:
-		return "alt+shift+"
-	case 5:
-		return "ctrl+"
-	case 6:
-		return "ctrl+shift+"
-	case 7:
-		return "ctrl+alt+"
-	case 8:
-		return "ctrl+alt+shift+"
-	default:
-		return ""
+// Kitty modifier bits, as reported in the numeric parameter of a CSI sequence
+// (modifier = 1 + the bits below: "no modifier" is 1, ctrl is 5, ctrl+shift 6,
+// super 9).
+const (
+	modShift    = 1
+	modAlt      = 2
+	modCtrl     = 4
+	modSuper    = 8
+	modHyper    = 16
+	modMeta     = 32
+	modCapsLock = 64
+	modNumLock  = 128
+)
+
+// modifierNames lists the modifier bits that take part in a key name, in the
+// order they are written: the order the bindings use ("ctrl+shift+v",
+// "ctrl+alt+]").
+var modifierNames = []struct {
+	bit  int
+	name string
+}{
+	{modCtrl, "ctrl"},
+	{modAlt, "alt"},
+	{modShift, "shift"},
+	{modSuper, "super"},
+	{modHyper, "hyper"},
+	{modMeta, "meta"},
+}
+
+// csiModPrefix returns the modifier prefix for a CSI/Kitty modifier value
+// (5 → "ctrl+") and whether the value could be named at all.
+//
+// The lock bits are ignored: they report that a lock is *on*, not that the user
+// pressed a modifier, so a chord must keep its name while Caps Lock is held.
+//
+// ok=false means the value carries a bit this decoder has no name for, and the
+// caller must then drop the key rather than emit it bare. Emitting the bare key
+// is how Cmd+V became a literal "v": the protocol reports it as ESC [ 118 ; 9 u
+// (9 = 1 + super), and with no case for super the modifier was silently
+// discarded, leaving a printable character the editor typed into the input line.
+func csiModPrefix(mod int) (string, bool) {
+	bits := mod - 1 // Kitty encodes "no modifier" as 1
+	if bits < 0 {
+		return "", false
 	}
+	known := modShift | modAlt | modCtrl | modSuper | modHyper | modMeta |
+		modCapsLock | modNumLock
+	if bits&^known != 0 {
+		return "", false
+	}
+	bits &^= modCapsLock | modNumLock
+	if bits == 0 {
+		return "", true
+	}
+	var b strings.Builder
+	for _, m := range modifierNames {
+		if bits&m.bit != 0 {
+			b.WriteString(m.name)
+			b.WriteByte('+')
+		}
+	}
+	return b.String(), true
+}
+
+// withCSIModifier writes a chord's modifier into a decoded key name. ok=false
+// when the modifier value cannot be named: a modified key must then be dropped
+// (it is a chord we cannot identify), never reported as the bare key it was read
+// from — a bare key is text as far as the editor is concerned.
+func withCSIModifier(key string, mod int) (string, bool) {
+	if mod <= 1 {
+		return key, true
+	}
+	prefix, ok := csiModPrefix(mod)
+	if !ok {
+		return "", false
+	}
+	return prefix + key, true
+}
+
+// csiModifierIsShiftOnly reports whether a modifier value carries shift and no
+// other modifier (locks excluded).
+func csiModifierIsShiftOnly(mod int) bool {
+	bits := mod - 1
+	return bits&modShift != 0 && bits&^(modShift|modCapsLock|modNumLock) == 0
+}
+
+// isChordName reports whether name is a *chord* — a modifier followed by a key,
+// as the decoder spells the names it emits for a modified key ("super+v",
+// "ctrl+shift+m", "alt+up").
+//
+// Components that insert text need it: a decoded chord name reaches them through
+// the same HandleInput(string) a typed character does, and it is ordinary
+// printable ASCII, so without this check an unbound chord is *typed into the
+// buffer* — the reported "Cmd+V inserts a v". Unmodified names ("delete",
+// "insert", "pageUp", "f5") are deliberately *not* chords: those spellings are
+// ordinary words a user can paste, and this check must never swallow someone's
+// clipboard. What is lost is only the pre-existing cosmetic case of an unbound
+// bare name being typed as text.
+func isChordName(name string) bool {
+	for _, m := range modifierNames {
+		if strings.HasPrefix(name, m.name+"+") {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeCSI decodes a CSI escape sequence starting with ESC[.
@@ -379,11 +473,12 @@ func parseCSIModifier(params string) (string, int) {
 // decodeStandardCSI decodes a non-CSI-u sequence using the csiSeq lookup table.
 func decodeStandardCSI(params string, final byte, mod, consumed int) (string, int) {
 	seqKey := params + string(final)
-	if key, ok := csiSeq[seqKey]; ok {
-		if mod > 1 {
-			return csiModPrefix(mod) + key, consumed
+	if key, found := csiSeq[seqKey]; found {
+		named, ok := withCSIModifier(key, mod)
+		if !ok {
+			return "", consumed
 		}
-		return key, consumed
+		return named, consumed
 	}
 	if seqKey == "Z" {
 		return KeyShiftTab, consumed
@@ -423,11 +518,12 @@ func decodeCSIu(data []byte, start, j, consumed, mod int) (string, int) {
 	}
 
 	// 2) Tilde-based codes: \x1b[3~;1u (Delete), \x1b[5~;1u (PageUp), etc.
-	if key, ok := csiSeq[ident]; ok {
-		if mod > 1 {
-			return csiModPrefix(mod) + key, consumed
+	if key, found := csiSeq[ident]; found {
+		named, ok := withCSIModifier(key, mod)
+		if !ok {
+			return "", consumed
 		}
-		return key, consumed
+		return named, consumed
 	}
 
 	// 4) Numeric control codes
@@ -445,10 +541,7 @@ func decodeCSIuLetterIdent(ident string, mod int) (string, bool) {
 	// Single-letter cursor/editing key
 	if len(ident) == 1 {
 		if key, ok := csiSeq[ident]; ok {
-			if mod > 1 {
-				return csiModPrefix(mod) + key, true
-			}
-			return key, true
+			return withCSIModifier(key, mod)
 		}
 		return "", false
 	}
@@ -458,48 +551,45 @@ func decodeCSIuLetterIdent(ident string, mod int) (string, bool) {
 		fkey := map[byte]string{
 			'P': "f1", 'Q': "f2", 'R': "f3", 'S': "f4",
 		}[ident[1]]
-		if mod > 1 {
-			return csiModPrefix(mod) + fkey, true
-		}
-		return fkey, true
+		return withCSIModifier(fkey, mod)
 	}
 
 	return "", false
+}
+
+// printableKeyName names the character a CSI-u code stands for. A terminal
+// reports the code point *as shifted* for a shifted key, so Ctrl+Shift+V arrives
+// as 86 ("V") while the bindings spell chords on the base letter
+// ("ctrl+shift+v"): a shifted letter is normalised to its base letter whenever
+// another modifier is part of the chord, which is what makes the documented
+// ctrl+shift+v paste reachable in a Kitty-protocol terminal.
+func printableKeyName(r rune, mod int) string {
+	if mod > 1 && r >= 'A' && r <= 'Z' && !csiModifierIsShiftOnly(mod) {
+		return strings.ToLower(string(r))
+	}
+	return string(r)
 }
 
 // decodeCSIuNumeric maps numeric key codes to key strings for CSI-u format.
 func decodeCSIuNumeric(code, mod int) (string, bool) {
 	switch {
 	case code == 13:
-		if mod > 1 {
-			return csiModPrefix(mod) + KeyEnter, true
-		}
-		return KeyEnter, true
+		return withCSIModifier(KeyEnter, mod)
 	case code == 27:
 		// Kitty protocol may also report Escape as keycode 27 with various
 		// modifiers. Regardless of modifier, treat it as Escape so the
 		// wizard (and other components) can navigate back.
 		return KeyEscape, true
 	case code == 9:
-		if mod > 1 {
-			return csiModPrefix(mod) + KeyTab, true
-		}
-		return KeyTab, true
+		return withCSIModifier(KeyTab, mod)
 	case code == 8 || code == 127:
 		// The modifier is meaningful: terminals report Ctrl/Alt+Backspace as
 		// code 127 with a modifier (kitty: ESC [ 127 ; 5 u), and the editor
 		// binds "ctrl+backspace" / "alt+backspace" to word deletion. Dropping
 		// it here silently downgraded those chords to a single-char delete.
-		if mod > 1 {
-			return csiModPrefix(mod) + KeyBackspace, true
-		}
-		return KeyBackspace, true
+		return withCSIModifier(KeyBackspace, mod)
 	case code >= 32 && code <= 126:
-		ch := string(rune(code))
-		if mod > 1 {
-			return csiModPrefix(mod) + ch, true
-		}
-		return ch, true
+		return withCSIModifier(printableKeyName(rune(code), mod), mod)
 	}
 	return "", false
 }

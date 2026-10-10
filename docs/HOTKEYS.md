@@ -40,15 +40,19 @@ The table below shows the default keybindings. Customize them in your theme conf
 | `Ctrl+Y` | Paste most-recently deleted text (yank) |
 | `Alt+Y` | Cycle through deleted text after pasting |
 | `Ctrl+Z` | Undo |
-| `Ctrl+V` | Paste from the system clipboard: files copied in a file manager, then an image, then text |
+| `Ctrl+V` / `Cmd+V` / `Ctrl+Shift+V` | Paste from the system clipboard: files copied in a file manager, then an image, then text |
 
-`Ctrl+V` is the only way to bring an **image** in: a terminal's own paste
-chord (`Cmd+V`) can only deliver the clipboard's text flavours, so a screenshot
-never reaches goa and pasting it appears to do nothing. `Ctrl+V` reads the OS
-clipboard directly, stores the image in the durable image store
-(`~/.cache/goa/images`, `~/Library/Caches/goa/images` on macOS) and inserts the
-stored path into the input line, where the submit path turns it into an
-attachment — the same store the web UI's `/upload` uses.
+These chords read the OS clipboard directly, store whatever they find in the
+durable image store (`~/.cache/goa/images`, `~/Library/Caches/goa/images` on
+macOS) and insert the stored path into the input line, where the submit path
+turns it into an attachment — the same store the web UI's `/upload` uses.
+
+`Cmd+V` is bound (as `super+v`, next to `Ctrl+V`) because a terminal can only
+paste for you when the clipboard holds *text*: with an image-only clipboard — a
+screenshot — macOS disables the terminal's own Paste menu item, the chord falls
+through to goa, and a terminal speaking the Kitty keyboard protocol reports it
+as a key event. Binding that event is what makes `Cmd+V` paste a screenshot; a
+terminal that never forwards the chord still pastes images with `Ctrl+V`.
 
 ## Application
 
@@ -148,4 +152,3 @@ one chord for itself:
 `Ctrl+]` (byte `0x1d`) is deliberately not bound anywhere in the session's
 keymap, which is what makes it safe to reserve. Reconnect after a network
 drop is automatic; `/quit` inside the session is reported and attach exits.
-

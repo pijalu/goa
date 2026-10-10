@@ -912,8 +912,8 @@ Full reference: [WEBUI.md](WEBUI.md).
 
 ## 8. Images
 
-Press `Ctrl+V` to paste from the system clipboard. Goa resolves it in this
-order — the same precedence the reference agents use:
+Press `Ctrl+V` (or `Cmd+V`) to paste from the system clipboard. Goa resolves it
+in this order — the same precedence the reference agents use:
 
 1. **Files** copied in a file manager (Finder, Explorer, Nautilus) — their paths
    are inserted.
@@ -923,6 +923,12 @@ order — the same precedence the reference agents use:
 
 Pasting text normally (`Cmd+V` in most terminals) inserts text and nothing else:
 a clipboard image never hijacks a text paste.
+
+`Cmd+V` is bound to the same clipboard resolution as `Ctrl+V`, because a terminal
+can only paste for you when the clipboard holds text: with a screenshot on the
+clipboard macOS leaves the terminal's Paste menu item disabled, the chord falls
+through to Goa, and a terminal speaking the Kitty keyboard protocol (Ghostty,
+kitty, WezTerm) reports it as a key event — which Goa then resolves itself.
 
 ```
 Ctrl+V                        # screenshot → attach
@@ -949,7 +955,7 @@ than silently dropping it.
 | Image is huge | Downscaled (max 8000 px edge, ~4 MiB) before it goes on the wire |
 | Image is WebP | Passed through without downscaling (no built-in WebP decoder) |
 | macOS, Linux (Wayland/X11), Windows, WSL | All supported for both image and text clips |
-| Clipboard has both an image and text | The image wins, but only on `Ctrl+V` — a normal text paste is never affected |
+| Clipboard has both an image and text | The image wins, but only on `Ctrl+V`/`Cmd+V` — a normal text paste is never affected |
 | Resumed session | Attachments live in the durable image store (`<user cache>/goa/images`), pruned after 30 days |
 | Pasted a large text blob | Collapsed into a `[paste #N …]` marker; the full text is sent |
 | Web UI | Dropping or pasting an image into the page uploads it and follows the same path |

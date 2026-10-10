@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
-# clipimg.sh — B6 regression check: an image on the OS clipboard becomes a
-# stored attachment path in the input line when the paste key is pressed in the
+# clipimg.sh — B6/B18 regression check: an image on the OS clipboard becomes a
+# stored attachment path in the input line when a paste chord is pressed in the
 # real terminal TUI.
 #
 # Real clipboard, real PTY (ptydrive), no model traffic: the TUI resolves the
 # paste itself, so a provider is needed only for goa to boot (the mock LLM
-# supplies one). What is asserted:
+# supplies one). Two chords are driven, because a terminal only pastes for you
+# when its own chord can carry the clipboard's *text*:
+#
+#   Ctrl+V              0x16, the chord goa reads the OS clipboard for.
+#   Cmd+V               ESC [ 118 ; 9 u, what a Kitty-protocol terminal forwards
+#                       when its own Paste menu item is disabled because the
+#                       clipboard holds no text (a screenshot, i.e. the case this
+#                       whole path exists for). It used to decode to a bare "v"
+#                       and type that into the input line (bugs.md B18).
+#
+# What is asserted for each chord:
 #   1. the rendered input line shows a path inside the image store
 #      (…/goa/images/goa-image-<n>.png),
 #   2. that path names a real file whose pixels are the clipboard image
-#      (dimensions re-read from the stored PNG's IHDR).
+#      (dimensions re-read from the stored PNG's IHDR),
+#   3. nothing else landed in the input line — a chord must never be typed.
 #
 # This check OWNS the OS clipboard: it replaces whatever it held.
 #
@@ -113,49 +124,102 @@ else
   note "CLIP_KEEP: using the clipboard as it stands (no synthetic PNG written)"
 fi
 
-log "driving the TUI: Ctrl+V with a clipboard image"
-rc=0
-"$PTYDRIVE" --bin "$GOA_BIN" --dir "$WORK" --log "$DIR/raw.log" \
-  --send-raw $'\x16' --send-delay 6s \
-  --wait-output 'goa/images/goa-image-[0-9]+\.png' --timeout "$CLIP_WAIT" || rc=$?
-
-# The input line's path, read back from the rendered screen.
-PATH_IN_LINE="$(python3 - "$DIR/raw.log" <<'PY'
+# strip_ansi renders the raw PTY log as text (SGR/CSI/OSC removed), so the
+# assertions read the screen the user would see.
+strip_ansi() {
+  python3 - "$1" <<'PY'
 import re, sys
 data = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace')
-data = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07', '', data)
-m = re.search(r'/[^\s\x1b]*goa/images/goa-image-\d+\.png', data)
-print(m.group(0) if m else '')
+# CSI (params may carry <>?=! private markers), OSC, then any residual control
+# bytes (the shutdown writes e.g. ESC [ < u and ESC [ ! p).
+data = re.sub(r'\x1b\[[0-9;?<=>!]*[a-zA-Z]', '', data)
+data = re.sub(r'\x1b\][^\x07]*\x07', '', data)
+data = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', data)
+sys.stdout.write(data)
 PY
-)"
+}
+
+# input_line prints the tail of the rendered screen: the footer ends with the
+# "[∞]" indicator and the editable input line follows it, so what is printed is
+# the editor's buffer (and nothing else). Empty when the footer is not found —
+# the caller then skips the "nothing else was typed" assertion rather than
+# failing on a footer that changed shape.
+input_line() {
+  strip_ansi "$1" | python3 -c '
+import sys
+data = sys.stdin.read()
+marker = "[∞]"
+idx = data.rfind(marker)
+if idx < 0:
+    sys.exit(0)
+sys.stdout.write(data[idx + len(marker):].strip(" \t\r\n"))
+'
+}
 
 dims() { # PNG IHDR of $1 as "WxH"
   python3 -c 'import struct,sys; d=open(sys.argv[1],"rb").read(); print("%dx%d" % struct.unpack(">II", d[16:24]))' "$1" 2>/dev/null || echo "unreadable"
 }
 
-if [ "$rc" -ne 0 ]; then
-  fail "paste key produced no image path in the input line (ptydrive rc=$rc)"
-  record "$TEST_ID" FAIL "no image path in the input line"
-  exit 1
-fi
-if [ -z "$PATH_IN_LINE" ] || [ ! -s "$PATH_IN_LINE" ]; then
-  fail "input line showed $PATH_IN_LINE, which is not a stored image file"
-  record "$TEST_ID" FAIL "inserted path is not a file: $PATH_IN_LINE"
-  exit 1
-fi
+# drive_chord LABEL BYTES drives one paste chord through a real PTY and asserts
+# the whole chain. Returns non-zero on failure (already reported).
+drive_chord() {
+  local label="$1" bytes="$2"
+  local raw="$DIR/raw-$(printf '%s' "$label" | tr -c 'a-zA-Z0-9' '-').log"
+  local rc=0
 
-want_dims="$(dims "$SOURCE")"
-got_dims="$(dims "$PATH_IN_LINE")"
-if [ -n "$KEEP_CLIP" ]; then
-  pass "Ctrl+V pasted the clipboard image: input line = $PATH_IN_LINE ($got_dims, file on disk; source left to the caller)"
-  record "$TEST_ID" PASS "input line shows $PATH_IN_LINE ($got_dims), clipboard kept as-is"
-  exit 0
-fi
-if [ "$got_dims" != "$want_dims" ]; then
-  fail "stored image is $got_dims, clipboard image was $want_dims"
-  record "$TEST_ID" FAIL "stored pixels $got_dims != clipboard $want_dims"
+  log "driving the TUI: $label with a clipboard image"
+  "$PTYDRIVE" --bin "$GOA_BIN" --dir "$WORK" --log "$raw" \
+    --send-raw "$bytes" --send-delay 6s \
+    --wait-output 'goa/images/goa-image-[0-9]+\.png' --timeout "$CLIP_WAIT" || rc=$?
+
+  local path_in_line
+  path_in_line="$(strip_ansi "$raw" | grep -oE '/[^[:space:]]*goa/images/goa-image-[0-9]+\.png' | head -1 || true)"
+
+  if [ "$rc" -ne 0 ]; then
+    fail "$label produced no image path in the input line (ptydrive rc=$rc)"
+    strip_ansi "$raw" | tail -c 2000 >&2
+    record "$TEST_ID/$label" FAIL "no image path in the input line"
+    return 1
+  fi
+  if [ -z "$path_in_line" ] || [ ! -s "$path_in_line" ]; then
+    fail "$label: input line showed $path_in_line, which is not a stored image file"
+    record "$TEST_ID/$label" FAIL "inserted path is not a file: $path_in_line"
+    return 1
+  fi
+
+  # The chord must have pasted and nothing more: whatever the buffer holds must
+  # be the path itself (a decoded chord once left a stray "v" there).
+  local line
+  line="$(input_line "$raw")"
+  if [ -n "$line" ] && [ "$line" != "$path_in_line" ]; then
+    fail "$label: input line holds $(printf '%q' "$line"), want just the path"
+    record "$TEST_ID/$label" FAIL "input line = $(printf '%q' "$line")"
+    return 1
+  fi
+
+  if [ -n "$KEEP_CLIP" ]; then
+    pass "$label pasted the clipboard image: input line = $path_in_line ($(dims "$path_in_line") on disk; source left to the caller)"
+    record "$TEST_ID/$label" PASS "input line shows $path_in_line ($(dims "$path_in_line")), clipboard kept as-is"
+    return 0
+  fi
+  if [ "$(dims "$path_in_line")" != "$(dims "$SOURCE")" ]; then
+    fail "$label: stored image is $(dims "$path_in_line"), clipboard image was $(dims "$SOURCE")"
+    record "$TEST_ID/$label" FAIL "stored pixels $(dims "$path_in_line") != clipboard $(dims "$SOURCE")"
+    return 1
+  fi
+  pass "$label pasted the clipboard image: input line = $path_in_line ($(dims "$path_in_line"), file on disk)"
+  record "$TEST_ID/$label" PASS "input line shows $path_in_line ($(dims "$path_in_line"))"
+  return 0
+}
+
+# Ctrl+V first (the chord the docs lead with), then Cmd+V (the one a Kitty
+# terminal forwards). Both are run even if the first fails, so one report shows
+# the state of both.
+CTRL_V_RC=0
+CMD_V_RC=0
+drive_chord "ctrl-v" $'\x16' || CTRL_V_RC=$?
+drive_chord "cmd-v"  $'\x1b[118;9u' || CMD_V_RC=$?
+
+if [ "$CTRL_V_RC" -ne 0 ] || [ "$CMD_V_RC" -ne 0 ]; then
   exit 1
 fi
-
-pass "Ctrl+V pasted the clipboard image: input line = $PATH_IN_LINE ($got_dims, file on disk)"
-record "$TEST_ID" PASS "input line shows $PATH_IN_LINE ($got_dims)"

@@ -185,24 +185,32 @@ The attach PTY helper is a quoted heredoc (`<<'EXPECT'`) that reads
 `$env(GOA_BIN)` / `$env(W3_PORT)` / `$env(W3_PROJ)` — unquoted, bash would
 expand `$env(...)` itself and die under `set -u`.
 
-## Clipboard scenario (B6 — `clipimg.sh`)
+## Clipboard scenario (B6/B18 — `clipimg.sh`)
 
 `e2e/clipimg.sh` is the terminal twin of the web page's image paste: it puts a
 known 8×8 PNG on the OS clipboard, boots a real `goa` in a PTY (config pinned to
-the mock LLM — the paste never reaches a model) and presses `Ctrl+V`. It asserts
-the **rendered input line** shows a path inside the durable image store
-(`…/goa/images/goa-image-<n>.png`) *and* that the stored file is that image (its
+the mock LLM — the paste never reaches a model) and presses each paste chord. It
+asserts the **rendered input line** shows a path inside the durable image store
+(`…/goa/images/goa-image-<n>.png`), that the stored file is that image (its
 dimensions are re-read from the stored PNG's IHDR, so an empty or stale file
-fails).
+fails), and that nothing else landed in the input line.
+
+Two chords are driven, because a terminal only pastes for you when its own chord
+can carry the clipboard's *text*:
+
+| chord | bytes | why it is checked |
+|-------|-------|-------------------|
+| `Ctrl+V` | `0x16` | the chord goa reads the OS clipboard for |
+| `Cmd+V` | `ESC [ 118 ; 9 u` | what a Kitty-protocol terminal (Ghostty, kitty, WezTerm) forwards when its own Paste menu item is disabled because the clipboard holds no text — i.e. a screenshot, the case this path exists for. It used to decode to a bare `v` and type that (bugs.md B18) |
 
 ```bash
 E2E_ROOT=/tmp/my-run e2e/clipimg.sh
 ```
 
-It **owns the OS clipboard** (it replaces its contents) and records `SKIP` where
-no clipboard tool exists (needs `osascript` on macOS, `wl-copy` or `xclip` on
-Linux). It is not part of `run_all.sh`: it needs no LM Studio, but it does need a
-real desktop clipboard.
+It **owns the OS clipboard** (it replaces its contents), records `SKIP` where no
+clipboard tool exists (needs `osascript` on macOS, `wl-copy` or `xclip` on
+Linux), and exits non-zero if either chord fails. It is not part of
+`run_all.sh`: it needs no LM Studio, but it does need a real desktop clipboard.
 
 `CLIP_KEEP=1 e2e/clipimg.sh` validates whatever is **already** on the clipboard
 instead of writing the synthetic PNG — used to check a clipboard a real browser

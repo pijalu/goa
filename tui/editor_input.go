@@ -277,11 +277,23 @@ func (e *Editor) handlePrintable(data string) {
 	e.scheduleAutoComp()
 }
 
+// isPrintable reports whether data is text the user typed or pasted, as opposed
+// to a chord the TUI decoded. Components insert text on this predicate, so a
+// chord name must be excluded here: the TUI hands a component the *name* of a
+// chord it decoded ("super+v", "ctrl+shift+m") through the same HandleInput(string)
+// a typed character arrives on, and a chord name is ordinary printable ASCII.
+// Without the check an unbound chord is typed into the buffer — which is how
+// Cmd+V, reported as ESC [ 118 ; 9 u before the modifier table knew super,
+// inserted a literal "v". Only modifier-prefixed names are excluded: unmodified
+// ones ("delete", "insert", "left") are words a user can paste.
 func isPrintable(data string) bool {
 	if len(data) == 0 {
 		return false
 	}
 	if strings.HasPrefix(data, "\x1b") {
+		return false
+	}
+	if isChordName(data) {
 		return false
 	}
 	for _, r := range data {

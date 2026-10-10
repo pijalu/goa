@@ -40,7 +40,11 @@ const (
 	KbTab     = "input.tab"
 	// KbPaste resolves the OS clipboard with the paste precedence file paths →
 	// image → text. It is explicit because no terminal emulator forwards image
-	// bytes, so a shortcut is the only reliable image-paste trigger.
+	// bytes, so a shortcut is the only reliable image-paste trigger. It carries
+	// Cmd+V (KeySuperV) as well as Ctrl+V: a terminal only pastes for you when its
+	// own chord can carry the clipboard's text, so an image-only clipboard reaches
+	// the application as the chord itself — which is exactly the case a screenshot
+	// is in.
 	KbPaste = "input.pasteClipboard"
 	// Delete last message
 	KbDeleteLastMsg = "app.messages.deleteLast"
@@ -93,7 +97,7 @@ func DefaultKeybindings() map[string]KeybindingDef {
 		KbYankPop:              {[]string{"alt+y"}, "Yank pop"},
 		KbUndo:                 {[]string{"ctrl+-"}, "Undo"},
 		KbNewLine:              {[]string{"shift+enter", "ctrl+enter", "alt+enter"}, "Insert newline"},
-		KbPaste:                {[]string{KeyCtrlV, "ctrl+shift+v"}, "Paste files, image, or text from clipboard"},
+		KbPaste:                {[]string{KeyCtrlV, "ctrl+shift+v", KeySuperV}, "Paste files, image, or text from clipboard"},
 		KbSubmit:               {[]string{KeyEnter}, "Submit input"},
 		KbTab:                  {[]string{KeyTab}, "Tab / autocomplete"},
 		KbSelectUp:             {[]string{KeyUp}, "Move selection up"},

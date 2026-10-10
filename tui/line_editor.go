@@ -147,6 +147,13 @@ func (e *LineEditor) handleTabKey(key string) bool {
 }
 
 func (e *LineEditor) handleTextKey(key string) bool {
+	// A decoded chord name is a key, not text: the TUI hands this component the
+	// name of a chord it decoded ("super+v", "ctrl+c"), and chord names are
+	// printable ASCII, so without the check a chord the component does not bind is
+	// typed into the buffer (see isChordName).
+	if isChordName(key) {
+		return false
+	}
 	if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
 		e.insert(rune(key[0]))
 		e.onCharInserted(rune(key[0]))
