@@ -180,6 +180,62 @@ func TestVirtualTerminal_CursorVisibilityFollowsDECTCEM(t *testing.T) {
 	}
 }
 
+// twoPlaneSink records BOTH planes, so a test can see the cells document and the
+// blocks document one publish produced.
+type twoPlaneSink struct {
+	cells  []*Frame
+	blocks []*Frame
+}
+
+func (s *twoPlaneSink) Publish(p Plane, f *Frame) {
+	if p == PlaneCells {
+		s.cells = append(s.cells, f)
+		return
+	}
+	s.blocks = append(s.blocks, f)
+}
+
+// HasClientsFor reports every plane watched: the cases below assert on what each
+// audience receives.
+func (s *twoPlaneSink) HasClientsFor(Plane) bool { return true }
+
+// A keystroke that only moves the caret (typing a space over a blank cell) leaves
+// the compositor no byte but the absolute CUP, so the frame it produces carries
+// NO row patch. It must still be published — to every plane — or the browser's
+// caret never moves (bugs.md B20).
+func TestVirtualTerminal_CursorOnlyWritePublishesAFrame(t *testing.T) {
+	vt := NewVirtualTerminal(20, 3)
+	sink := &twoPlaneSink{}
+	vt.SetSink(sink)
+
+	vt.WriteString("\x1b[1;1Hab")
+	cellsBefore, blocksBefore := len(sink.cells), len(sink.blocks)
+
+	vt.WriteString("\x1b[1;4H")
+	if got := len(sink.cells) - cellsBefore; got != 1 {
+		t.Fatalf("a cursor-only write published %d cells frames, want exactly 1", got)
+	}
+	cells := sink.cells[len(sink.cells)-1]
+	if len(cells.Patches) != 0 {
+		t.Errorf("the cursor-only cells frame carried patches: %+v", cells.Patches)
+	}
+	if cells.Cursor.Row != 0 || cells.Cursor.Col != 3 {
+		t.Errorf("cells cursor = (%d,%d), want (0,3)", cells.Cursor.Row, cells.Cursor.Col)
+	}
+	// The blocks plane reuses the cells plane's empty patch set: a second drain
+	// of the grid would find nothing marked and compare the whole screen.
+	if got := len(sink.blocks) - blocksBefore; got != 1 {
+		t.Fatalf("a cursor-only write published %d blocks frames, want exactly 1", got)
+	}
+	blocks := sink.blocks[len(sink.blocks)-1]
+	if len(blocks.Patches) != 0 {
+		t.Errorf("the cursor-only blocks frame carried patches: %+v", blocks.Patches)
+	}
+	if blocks.Cursor.Row != 0 || blocks.Cursor.Col != 3 {
+		t.Errorf("blocks cursor = (%d,%d), want (0,3)", blocks.Cursor.Row, blocks.Cursor.Col)
+	}
+}
+
 func TestVirtualTerminal_ResizeFiresCallbackAndFullFrame(t *testing.T) {
 	vt := NewVirtualTerminal(20, 3)
 	rec := &recordSink{}

@@ -394,12 +394,20 @@ func (v *VirtualTerminal) publish(full bool) {
 	}
 	seq := v.frameNo.Add(1)
 	var patches []RowPatch
+	// taken records that the grid's dirty marks have been drained by a plane
+	// already. It cannot be inferred from patches == nil: a STATE-ONLY frame
+	// (nothing but the cursor moved) legitimately carries no row patches, and
+	// the blocks plane below must reuse that empty set rather than ask the grid
+	// again — a second Patches call finds nothing marked and falls back to
+	// comparing the whole screen (bugs.md B20).
+	taken := false
 	if cells {
 		if full {
 			patches = v.grid.FullPatches()
 		} else {
 			patches = v.grid.Patches()
 		}
+		taken = true
 		frame := NewFrame(seq, v.grid, patches, v.grid.Title(), full)
 		// Rows that scrolled off since the last publish ride this frame: the
 		// transport emits them as a separate "scrollback" message so the client
@@ -417,7 +425,7 @@ func (v *VirtualTerminal) publish(full bool) {
 		// The dirty set is drained by whoever asked first, so the blocks plane
 		// reuses the patches the cells plane took (or takes them itself when no
 		// cells client is attached).
-		if patches == nil {
+		if !taken {
 			if full {
 				patches = v.grid.FullPatches()
 			} else {

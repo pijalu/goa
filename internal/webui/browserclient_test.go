@@ -611,6 +611,32 @@ func TestClientJS_PaintsRowsAndCaret(t *testing.T) {
 	}
 }
 
+// TestClientJS_CaretFollowsAPatchlessFrame pins that the caret follows EVERY
+// frame, including one that carries no row at all: a keystroke that changes no
+// cell (a space typed over a blank cell) moves only the cursor, so the frame
+// reporting it has no patches — its Cursor is the whole payload. Before the
+// server shipped that frame at all the caret froze on such keystrokes
+// (bugs.md B20); this pins the client half of the contract.
+func TestClientJS_CaretFollowsAPatchlessFrame(t *testing.T) {
+	h := newClientHarness(t)
+	caret := h.el(t, "caret")
+	style := caret.Get("style").ToObject(h.vm)
+
+	// Cell metrics are 8x16 in the stub and the caret adds an 8px pad.
+	h.deliver(t, frameDocCursor(t, 24, 1, 1, "a"))
+	if left := style.Get("left").String(); left != "16px" {
+		t.Fatalf("caret left = %q, want 16px for a cursor at column 1", left)
+	}
+
+	h.deliver(t, frameDocCursorOnly(t, 24, 1, 3))
+	if left := style.Get("left").String(); left != "32px" {
+		t.Errorf("caret left = %q after a patchless frame, want 32px for a cursor at column 3", left)
+	}
+	if top := style.Get("top").String(); top != "24px" {
+		t.Errorf("caret top = %q, want 24px for a cursor at row 1", top)
+	}
+}
+
 // hiddenCursorFrame is a frame whose cursor is not visible.
 func hiddenCursorFrame(t *testing.T) string {
 	t.Helper()

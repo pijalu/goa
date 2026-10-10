@@ -83,6 +83,17 @@ type CellGrid struct {
 	// full re-emit is a replacement), or the program cleared the screen. The next
 	// batch then tells the client to drop what it has (TranscriptBatch.Replace).
 	replacePending bool
+
+	// stateDirty records that something outside the cell rows moved since the
+	// last frame: the cursor's POSITION, its visibility, or the title. A frame is
+	// then due even though no row differs — its Cursor field is the payload.
+	//
+	// The row marks cannot express this: a space typed over a blank cell leaves
+	// the row byte-identical while the caret moves one column, so the frame that
+	// carries the new cursor has not one patch in it. Without the flag the frame
+	// was never published at all, and the browser's caret froze until the next
+	// keystroke that happened to change a cell (bugs.md B20).
+	stateDirty bool
 }
 
 // NewCellGrid creates a blank cols×rows grid with change tracking on.
@@ -123,11 +134,12 @@ const (
 )
 
 // Process feeds compositor output into the screen. It reports whether the grid
-// has unshipped changes (true when at least one row was touched or the title /
-// cursor state moved).
+// has unshipped changes (true when at least one row was touched or when state
+// outside the rows — the cursor position, its visibility, the title — moved).
 func (g *CellGrid) Process(s string) bool {
 	g.mu.Lock()
-	before := g.emu.CursorVisible()
+	beforeVisible := g.emu.CursorVisible()
+	beforeRow, beforeCol := g.emu.Cursor()
 	gen := g.emu.ScrollbackGeneration()
 	g.emu.Process(s)
 	if g.emu.ScrollbackGeneration() != gen {
@@ -136,25 +148,36 @@ func (g *CellGrid) Process(s string) bool {
 		// screen — so the browser must rebuild rather than append (bugs.md B2).
 		g.replacePending = true
 	}
-	if g.emu.CursorVisible() != before {
+	row, col := g.emu.Cursor()
+	if row != beforeRow || col != beforeCol {
+		// The compositor positions the cursor with an absolute CUP on every diff
+		// frame (appendCursorSeq), and that can be the ONLY byte of the frame:
+		// typing a space over a blank cell changes no cell, only the caret. Mark
+		// it as state so the frame still ships.
+		g.stateDirty = true
+	}
+	if g.emu.CursorVisible() != beforeVisible {
 		// Hiding/showing the cursor is a DECTCEM transition the compositor
-		// emits as bytes, with no cell change of its own: mark the screen so
-		// the visibility reaches clients on a frame even when the text did not
-		// move.
-		g.emu.MarkDirty()
+		// emits as bytes, with no cell change of its own.
+		g.stateDirty = true
 	}
 	dirty := g.emu.DrainDirty()
 	g.markPendingLocked(dirty)
+	unchanged := len(dirty) == 0 && !g.stateDirty
 	g.mu.Unlock()
-	return len(dirty) > 0
+	return !unchanged
 }
 
-// MarkState forces the next Patches call to produce at least a state-only
-// frame (used after a title or cursor-visibility change).
+// MarkState forces the next Patches call to ship a state-only frame — no row
+// patches, the current cursor — used after a title or cursor-visibility change.
+//
+// It deliberately does NOT mark rows: marking them all would make the frame
+// compare every row of the screen (takeDirtyRowsLocked's fallback) for a caret
+// that moved one column, on every keystroke that moves it.
 func (g *CellGrid) MarkState() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.emu.MarkDirty()
+	g.stateDirty = true
 }
 
 // Size returns the grid geometry (cols, rows).
@@ -265,6 +288,7 @@ func (g *CellGrid) DiscardChanges() {
 	defer g.mu.Unlock()
 	g.emu.DrainDirty()
 	g.resetPendingLocked()
+	g.stateDirty = false
 }
 
 // Clear blanks the screen and scrollback, and re-baselines the diff. The
@@ -278,6 +302,7 @@ func (g *CellGrid) Clear() {
 	g.prev = blankSnapshot(g.cols, g.rows)
 	g.sentScrollback = 0
 	g.replacePending = true
+	g.stateDirty = false
 }
 
 // Cells returns a normalised copy of one screen row's cells (blank cells come
@@ -392,6 +417,9 @@ func (g *CellGrid) Text() string {
 func (g *CellGrid) FullPatches() []RowPatch {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// A full frame carries the whole screen AND the current cursor, so any
+	// pending state-only change has just been shipped.
+	g.stateDirty = false
 	out := make([]RowPatch, 0, g.rows)
 	for r := 0; r < g.rows; r++ {
 		cells := g.rowCellsLocked(r)
@@ -413,7 +441,13 @@ func (g *CellGrid) FullPatches() []RowPatch {
 func (g *CellGrid) Patches() []RowPatch {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	changed := g.takeDirtyRowsLocked()
+	changed, stateOnly := g.takeDirtyRowsLocked()
+	if stateOnly {
+		// Nothing but the caret (or the title) moved: the frame ships no rows at
+		// all — its Cursor is the payload. Diffing the screen here would cost a
+		// whole-grid comparison per keystroke.
+		return nil
+	}
 	var out []RowPatch
 	for _, r := range changed {
 		cells := g.rowCellsLocked(r)
@@ -453,17 +487,26 @@ func rowDiffers(prev, cur []tui.CellAttrs) bool {
 
 // takeDirtyRowsLocked merges the rows recorded by Process with anything the
 // emulator marked since (resize, MarkDirty), clears both, and normalises the
-// result.
-func (g *CellGrid) takeDirtyRowsLocked() []int {
+// result. stateOnly reports that the frame carries no rows at all — only state
+// outside the cells moved (a bare cursor move) — so the screen-wide fallback
+// below must not run for it.
+func (g *CellGrid) takeDirtyRowsLocked() (changed []int, stateOnly bool) {
 	g.markPendingLocked(g.emu.DrainDirty())
-	changed := g.takePendingLocked()
+	changed = g.takePendingLocked()
 	if len(changed) == 0 {
+		if g.stateDirty {
+			g.stateDirty = false
+			return nil, true
+		}
 		// Nothing claims to have changed (e.g. a diff of a grid whose baseline
 		// was never shipped): fall back to comparing every row rather than
 		// silently shipping nothing.
-		return allRows(g.rows)
+		return allRows(g.rows), false
 	}
-	return changed
+	// The rows ride the frame, and the frame carries the current cursor anyway,
+	// so the state-only mark is satisfied by it.
+	g.stateDirty = false
+	return changed, false
 }
 
 // takePendingLocked returns the rows marked dirty, ascending and free of

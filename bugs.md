@@ -28,7 +28,63 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
+## B21 — `goa/protocol` logs an unclear, per-request `max_tokens` note on stderr
+
+**Observed** (live session, written straight to stderr):
+
+```
+goa/protocol: 2026/10/10 11:51:06 field max_tokens came from reasoning-ceiling default: 384000 (model=deepseek-v4.1-flash provider=opencode-go)
+```
+
+**Why it is wrong**
+
+1. **The wording is wrong**: there is no such thing as a "reasoning-ceiling
+   default". `resolveRequestMaxTokens`
+   (`internal/agentic/provider/protocol/openai_completions_messages.go:139-150`)
+   returned source `reasoning-ceiling`, which means "the request carried no cap and
+   the provider catalog has no `default_max_tokens`, so the model's own *output*
+   ceiling was used". 384000 is the catalog's `limit.output` for
+   `deepseek-v4.1-flash` (`internal/agentic/provider/models/api.json`), i.e. the
+   model's maximum, not a default — a reader cannot tell a safe fallback from a
+   suspiciously large cap.
+2. **The level and frequency are wrong**: it is a `log.Printf` to stderr at
+   `LstdFlags` (`openai_completions.go:22`), so it repeats on **every** request
+   that omits `max_tokens`, and it writes into the terminal while the TUI owns the
+   screen (`protocolLog` is only redirected in tests).
+
+**Expected**: one clear line, naming the resolved cap and *why*, emitted once per
+(`model`, source) pair — e.g. `max_tokens=384000 taken from the model's output
+ceiling (no explicit value, no provider default) model=… provider=…` — and not
+repeated on every request.
+
+**Fix plan / test approach**
+
+1. Reword the message to state the field, the value, the reason and the
+   identifiers in one readable clause; keep the existing test's contract
+   (`openai_completions_test.go` asserts `max_tokens` and `provider` appear in the
+   log).
+2. Log once per distinct `(model, source)` (a small guarded set), so a streaming
+   session is not spammed frame after frame.
+3. Test: the source wording for each of the three sources (provider default,
+   reasoning ceiling, reasoning fallback) is asserted exactly once per model
+   across repeated calls.
+
 ## Closed
+
+Closed 2026-10-10 — B20, the web UI's caret on a keystroke that changes no cell:
+`CellGrid.Process` decided "did the screen move" from the emulator's dirty *rows*
+alone, so the frame the compositor emits for a space typed over a blank cell —
+whose only byte is the absolute cursor CUP — was never published, and the browser's
+caret froze until the next keystroke that changed a cell (`agent-browser` measured
+`16.44px → 16.44px → 33.31px` across `a`, space, `b`). The grid now carries state
+outside the rows (`stateDirty`: cursor position, cursor visibility, title), ships a
+patchless state-only frame when only that moved — cheaper than the whole-screen
+`emu.MarkDirty` it replaces — and `publish` no longer reads an empty patch set as
+"not drained yet". Pinned by three grid tests, a two-plane publish test (RED before
+the fix: "a cursor-only write published 0 cells frames") and a goja test that a
+patchless frame still repositions `#caret`; re-validated in a real browser
+(`a`, four spaces, `z` moved the caret one cell per space, row `a    z`). See
+[`docs/archive/b20-webui-caret-cursor-only-frame.2026-10-10.md`](docs/archive/b20-webui-caret-cursor-only-frame.2026-10-10.md).
 
 Closed 2026-10-10 — B19, a `-race` failure in `internal/webui/supervisor`
 (found while validating B18, and reproducible on the tree before it): the test

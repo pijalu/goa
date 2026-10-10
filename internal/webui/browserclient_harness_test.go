@@ -176,3 +176,20 @@ func frameDocCursor(t *testing.T, rows, row, col int, text string) string {
 	}
 	return string(b)
 }
+
+// frameDocCursorOnly builds a frame with NO row patches at all: what the server
+// ships when the only thing that moved is the caret (a space typed over a blank
+// cell leaves the row byte-identical — bugs.md B20). The cursor is the whole
+// payload.
+func frameDocCursorOnly(t *testing.T, rows, row, col int) string {
+	t.Helper()
+	b, err := NewFrameCodec().EncodeFrame(&Frame{
+		Cols:   80,
+		Rows:   rows,
+		Cursor: Cursor{Row: row, Col: col, Visible: true},
+	})
+	if err != nil {
+		t.Fatalf("encode frame: %v", err)
+	}
+	return string(b)
+}

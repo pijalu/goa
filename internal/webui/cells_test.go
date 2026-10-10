@@ -74,6 +74,74 @@ func TestCellGrid_CursorToggleIsDirty(t *testing.T) {
 	}
 }
 
+// A keystroke that changes no cell still moves the caret, and the compositor says
+// so with an absolute CUP and nothing else: typing a space over a blank cell
+// leaves the row byte-identical. That byte must still produce a frame — the
+// frame's Cursor is its whole payload — or the browser's caret freezes until the
+// next keystroke that happens to change a cell (bugs.md B20).
+func TestCellGrid_CursorOnlyMoveIsAFrame(t *testing.T) {
+	g := NewCellGrid(20, 3)
+	g.Process("ab")
+	g.Patches() // the client holds the row now
+
+	if !g.Process("\x1b[1;4H") {
+		t.Fatal("a bare cursor move reported no change: the frame carrying the caret would never be published")
+	}
+	if p := g.Patches(); len(p) != 0 {
+		t.Fatalf("a cursor-only frame carried row patches: %+v", p)
+	}
+	if got := g.Cursor(); got.Row != 0 || got.Col != 3 {
+		t.Errorf("cursor = (%d,%d), want (0,3)", got.Row, got.Col)
+	}
+	// The state mark belongs to the frame that carried it: the next frame with
+	// nothing new must not be produced (the whole-screen fallback would answer
+	// "changed" forever, and re-scan every row for a caret that moved one
+	// column).
+	if g.stateDirty {
+		t.Error("the state-only mark survived the frame that shipped it")
+	}
+	if g.Process("") {
+		t.Error("a cursor-only change was reported twice")
+	}
+}
+
+// The state mark must never swallow rows that DID change: a frame that moves the
+// caret and edits text ships the text (and carries the cursor with it).
+func TestCellGrid_StateMarkDoesNotSuppressRowPatches(t *testing.T) {
+	g := NewCellGrid(20, 3)
+	g.Process("ab")
+	g.Patches()
+	g.MarkState() // a title / cursor-visibility style change
+
+	if !g.Process("\x1b[1;3Hcd") {
+		t.Fatal("a cursor move with a cell change reported no change")
+	}
+	p := g.Patches()
+	if len(p) != 1 || p[0].Row != 0 {
+		t.Fatalf("patches = %+v, want row 0", p)
+	}
+	if got := RunsText(p[0].Runs); !strings.HasPrefix(got, "abcd") {
+		t.Errorf("row text = %q, want it to start with abcd", got)
+	}
+}
+
+// MarkState (title, cursor visibility) must ship a frame that carries state and
+// no rows at all — marking every row instead would make the frame compare the
+// whole screen, once per keystroke that moves the caret.
+func TestCellGrid_MarkStateShipsNoRows(t *testing.T) {
+	g := NewCellGrid(20, 3)
+	g.Process("ab")
+	g.Patches()
+
+	g.MarkState()
+	if p := g.Patches(); len(p) != 0 {
+		t.Fatalf("a state-only frame carried row patches: %+v", p)
+	}
+	if g.stateDirty {
+		t.Error("the state mark was not consumed by the frame it produced")
+	}
+}
+
 func TestCellGrid_SGRToHexRuns(t *testing.T) {
 	g := NewCellGrid(10, 1)
 	g.Process("\x1b[38;2;255;0;128mA\x1b[0mB\x1b[38;5;196mC")
