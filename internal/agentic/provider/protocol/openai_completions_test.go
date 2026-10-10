@@ -265,6 +265,11 @@ func TestDefaultMaxTokens_OmittedWithoutCatalogDefault(t *testing.T) {
 // TestDefaultMaxTokens_LogsDefaultedField is the P21 "log which fields came
 // from defaults" guard: materializing the catalog default emits a diagnostic
 // line naming the field and its source, while an explicit value stays silent.
+//
+// B21: the line has to say *why* the value applies (a reader could not tell a
+// safe fallback from a model's maximum output), and it must appear once per
+// (model, source) — it used to repeat on every request, straight onto the TUI's
+// screen.
 func TestDefaultMaxTokens_LogsDefaultedField(t *testing.T) {
 	model := schema.Model{
 		ID:       "deepseek-v4-flash",
@@ -274,9 +279,10 @@ func TestDefaultMaxTokens_LogsDefaultedField(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	old := protocolLog
+	oldLog, oldNotes := protocolLog, maxTokensNotes
 	protocolLog = log.New(&buf, "", 0)
-	defer func() { protocolLog = old }()
+	maxTokensNotes = &defaultNotes{}
+	defer func() { protocolLog, maxTokensNotes = oldLog, oldNotes }()
 
 	buildOpenAIRequest(t, model, schema.StreamOptions{})
 	logged := buf.String()
@@ -284,9 +290,57 @@ func TestDefaultMaxTokens_LogsDefaultedField(t *testing.T) {
 		"default materialization must log the field name")
 	assert.Contains(t, logged, "provider",
 		"default materialization must log the source")
+	assert.Contains(t, logged, "model=deepseek-v4-flash",
+		"default materialization must name the model")
+	assert.Contains(t, logged, "provider catalog default applies",
+		"the line must say why the value applies")
 
+	// The same resolution must not be reported again on the next request.
+	buf.Reset()
+	buildOpenAIRequest(t, model, schema.StreamOptions{})
+	assert.Empty(t, buf.String(),
+		"a repeated (model, source) resolution must not log again")
+
+	// An explicit value never logs.
 	buf.Reset()
 	buildOpenAIRequest(t, model, schema.StreamOptions{MaxTokens: 100})
 	assert.Empty(t, buf.String(),
 		"an explicit max_tokens must not log a default materialization")
+}
+
+// TestDefaultMaxTokens_ReasoningCeilingWording pins the line the report in B21
+// quoted: a model with no provider default and no explicit cap is capped at its
+// own maximum output, and the message must say exactly that instead of calling a
+// model's ceiling a "default".
+func TestDefaultMaxTokens_ReasoningCeilingWording(t *testing.T) {
+	model := schema.Model{
+		ID:        "deepseek-v4.1-flash",
+		Api:       schema.ApiOpenAICompletions,
+		Provider:  "opencode-go",
+		BaseURL:   "https://example.invalid/v1",
+		MaxTokens: 384000,
+		Reasoning: true,
+	}
+
+	var buf bytes.Buffer
+	oldLog, oldNotes := protocolLog, maxTokensNotes
+	protocolLog = log.New(&buf, "", 0)
+	maxTokensNotes = &defaultNotes{}
+	defer func() { protocolLog, maxTokensNotes = oldLog, oldNotes }()
+
+	req := buildOpenAIRequest(t, model, schema.StreamOptions{})
+	assert.Equal(t, float64(384000), req["max_tokens"],
+		"the model's output ceiling must cap the request")
+
+	logged := buf.String()
+	assert.Contains(t, logged, "max_tokens=384000",
+		"the line must state the resolved value")
+	assert.Contains(t, logged, "model's maximum output applies",
+		"the line must say the ceiling is what applies")
+	assert.Contains(t, logged, "model=deepseek-v4.1-flash",
+		"the line must name the model")
+	assert.Contains(t, logged, "provider=opencode-go",
+		"the line must name the provider")
+	assert.NotContains(t, logged, "came from",
+		"the old wording is what B21 reported as unclear")
 }

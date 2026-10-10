@@ -84,13 +84,12 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 	// no configured cap falls back to its own output ceiling (bugs.md #4):
 	// reasoning and the answer share one budget, so an uncapped request can
 	// spend the whole response on reasoning and emit no answer.
-	maxTokens, defaultSource := resolveRequestMaxTokens(opts, model, model.Reasoning)
+	maxTokens, source := resolveRequestMaxTokens(opts, model, model.Reasoning)
 	if maxTokens > 0 {
 		body[compat.MaxTokensField] = maxTokens
 	}
-	if defaultSource != "" {
-		protocolLog.Printf("field max_tokens came from %s default: %d (model=%s provider=%s)",
-			defaultSource, maxTokens, model.ID, model.Provider)
+	if source != "" {
+		noteMaxTokensDefault(source, maxTokens, model)
 	}
 	// Omit temperature when the provider does not support it (e.g. kimi-code
 	// rejects any value but its fixed default with HTTP 400 "invalid
@@ -126,6 +125,15 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 // output ceiling.
 const FallbackReasoningMaxTokens = 16384
 
+// maxTokensSource* name where a materialized output cap came from. The strings
+// are the diagnostic vocabulary: noteMaxTokensDefault turns each one into the
+// sentence a reader sees, so the reason and the wording cannot drift apart.
+const (
+	maxTokensSourceProvider = "provider"
+	maxTokensSourceCeiling  = "reasoning-ceiling"
+	maxTokensSourceFallback = "reasoning-fallback"
+)
+
 // resolveRequestMaxTokens returns the output-token cap to send on the wire
 // and the source it was resolved from. An explicit request value always wins
 // (dsh: "an explicit cap wins"); when absent, the per-provider catalog
@@ -139,15 +147,15 @@ func resolveRequestMaxTokens(opts schema.StreamOptions, model schema.Model, reas
 		return opts.MaxTokens, ""
 	}
 	if def := schema.LookupProviderDef(model.Provider); def != nil && def.DefaultMaxTokens > 0 {
-		return def.DefaultMaxTokens, "provider"
+		return def.DefaultMaxTokens, maxTokensSourceProvider
 	}
 	if !reasoningCapable {
 		return 0, ""
 	}
 	if model.MaxTokens > 0 {
-		return model.MaxTokens, "reasoning-ceiling"
+		return model.MaxTokens, maxTokensSourceCeiling
 	}
-	return FallbackReasoningMaxTokens, "reasoning-fallback"
+	return FallbackReasoningMaxTokens, maxTokensSourceFallback
 }
 
 func applyThinking(body map[string]any, model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile, compat openAICompletionsCompat) {

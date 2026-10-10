@@ -28,48 +28,143 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B21 — `goa/protocol` logs an unclear, per-request `max_tokens` note on stderr
+## B22 — web blocks: a collapsible is always created CLOSED, so the server's expand state is ignored
 
-**Observed** (live session, written straight to stderr):
+**Reported**: "thinking block should be expanded by default".
 
+**Observed (code path, client)**: `renderBlock` computes the previous open state as
+
+```js
+var wasOpen = b.body && b.body.open;   // app.js — null for a block's FIRST render
 ```
-goa/protocol: 2026/10/10 11:51:06 field max_tokens came from reasoning-ceiling default: 384000 (model=deepseek-v4.1-flash provider=opencode-go)
-```
 
-**Why it is wrong**
+and `collapsible(wasOpen, metaOpen)` reads `if (wasOpen !== undefined) det.open = wasOpen;`
+(`internal/webui/assets/app.js:550`). For a brand-new block `b.body` is `null`, so
+`wasOpen` is `null` — which is **not** `undefined` — and the element is created with
+`det.open = null`, i.e. closed, whatever the server said. The `meta.expanded` the
+server ships (TUI truth: `newThinkingBlock` starts `expanded: true`, tools per the
+`tui.tools.view` policy) only ever applies to a block whose body already exists —
+never, in practice. So every thinking block and every tool card opens collapsed
+regardless of the TUI's state, and a reader has to click each one.
 
-1. **The wording is wrong**: there is no such thing as a "reasoning-ceiling
-   default". `resolveRequestMaxTokens`
-   (`internal/agentic/provider/protocol/openai_completions_messages.go:139-150`)
-   returned source `reasoning-ceiling`, which means "the request carried no cap and
-   the provider catalog has no `default_max_tokens`, so the model's own *output*
-   ceiling was used". 384000 is the catalog's `limit.output` for
-   `deepseek-v4.1-flash` (`internal/agentic/provider/models/api.json`), i.e. the
-   model's maximum, not a default — a reader cannot tell a safe fallback from a
-   suspiciously large cap.
-2. **The level and frequency are wrong**: it is a `log.Printf` to stderr at
-   `LstdFlags` (`openai_completions.go:22`), so it repeats on **every** request
-   that omits `max_tokens`, and it writes into the terminal while the TUI owns the
-   screen (`protocolLog` is only redirected in tests).
+**Expected**: the first render honours the server's `meta.expanded` (thinking
+expanded by default, exactly as the TUI and `tui.transparency.thinking_collapsed`
+say), and a later re-render keeps the reader's own toggle.
 
-**Expected**: one clear line, naming the resolved cap and *why*, emitted once per
-(`model`, source) pair — e.g. `max_tokens=384000 taken from the model's output
-ceiling (no explicit value, no provider default) model=… provider=…` — and not
-repeated on every request.
+**Also reported (same surface)**: "for the collapse: follow the rules: if a collapse
+is open (or closed) subsequent item should follow the same logic" — once the reader
+toggles a collapsible, later collapsibles of the same kind must adopt that choice
+instead of reverting to the server default.
 
 **Fix plan / test approach**
 
-1. Reword the message to state the field, the value, the reason and the
-   identifiers in one readable clause; keep the existing test's contract
-   (`openai_completions_test.go` asserts `max_tokens` and `provider` appear in the
-   log).
-2. Log once per distinct `(model, source)` (a small guarded set), so a streaming
-   session is not spammed frame after frame.
-3. Test: the source wording for each of the three sources (provider default,
-   reasoning ceiling, reasoning fallback) is asserted exactly once per model
-   across repeated calls.
+1. `wasOpen` becomes `b.body ? b.body.open : undefined`, so `collapsible` falls back
+   to `meta.expanded` exactly once (the first render).
+2. A `toggle` listener on each collapsible records the reader's choice as the sticky
+   preference for that kind (`thinking`, `tool`); `collapsible` uses the sticky
+   preference for new blocks of that kind, the server meta otherwise.
+3. Goja tests (real `app.js`): a thinking op with `meta.expanded=1` renders an open
+   `<details>`, one with `"0"` renders closed, and after a synthetic toggle on a
+   first block a second block of the same kind follows it. RED before the fix.
+
+## B23 — web blocks: tool cards do not match the TUI widget
+
+**Reported**: "tool calls will show a lot of content *then* be collapsed — the tool
+call should follow the TUI: some details are visible (type, file, action, couple
+line preview)".
+
+**Observed**: the block plane ships the tool's identity (`tool`, `args`, `status`,
+`duration`) and its whole output, and the page builds a `<details>` whose collapsed
+state shows `headLines(b.text, 4)` — a hard-coded 4-line preview — while the TUI's
+widget shows the tool header plus the policy's preview count
+(`tui.tools.preview_lines`, default 10, `defaultToolPreviewLines`), and while the
+collapse state itself is broken by B22. The TUI also renders the *tail* semantics
+per renderer (read/write/bash previews differ), which the page cannot see at all:
+only the raw text is exported.
+
+**Expected**: a tool card reads like the TUI's — type + file/args + status, then the
+same number of preview lines the TUI uses — and never streams the whole output
+before collapsing. Since the preview count is view policy, the server has to ship
+it (the page cannot guess it).
+
+**Fix plan / test approach**
+
+1. Export the policy's preview line count in the block meta
+   (`tui/chat_viewport_blocks.go`, `applyViewMeta` for `*ToolExecutionComponent`) and
+   have the page use `meta.preview` (falling back to 4) for `headLines`.
+2. Keep the card collapsed-by-default (B22 fix) so no content is streamed before the
+   collapse; the preview updates live while the tool runs.
+3. Tests: block-export test asserting the meta carries the configured preview count;
+   goja test that a 20-line tool output renders at most `preview` lines in the
+   collapsed card and everything when open.
+
+## B24 — web band: the status bar is cut
+
+**Reported**: "status bar is cut - current status show: `coding-posture - yolo`".
+
+**Observed**: in the blocks plane the bottom chrome band is cell-rendered from the
+grid, and the grid's width is the geometry the *client* reported (`/resize`). Any
+row wider than the band is clipped by the page (`.grid { overflow: hidden }`), so a
+status row that no longer fits loses its right-hand segments (model, tokens,
+context, time) while the left segment survives — the reported
+`coding-posture - yolo`. **Not reproduced yet**: this is where the cut must come
+from given the geometry, but the exact mismatch (reported cols vs band width) still
+has to be measured in a real browser — the B20 validation page had a wide viewport,
+so it did not show the symptom.
+
+**Expected**: the status bar shows the same segments the TUI does, laid out for the
+width the browser actually has.
+
+**Fix plan / test approach**
+
+1. Reproduce in the real browser at a narrow viewport, and check what geometry the
+   page reports versus the width the band renders at (`measureCols()` vs the band's
+   own box) — a mismatch is the cut.
+2. Fix the geometry contract (report the band's width, or re-report on a chrome/band
+   height change), not the symptom.
+3. Test: goja harness asserting the resize the page sends matches the measured band
+   width; real-browser re-check at 700px.
+
+## B25 — web input: macOS composed characters (Option / Shift+Option) are not inserted
+
+**Reported**: "special mac char like pipe (shift+option+l) are not rendering".
+
+**Observed**: on macOS the browser reports the *composed* character — Shift+Option+L
+arrives as `key: "|"`, `code: "KeyL"`, `alt: true`, `shift: true` (there is no
+browser setting for "Option as Meta"; Terminal.app's default is off, which is why a
+real terminal inserts `|`). `EncodeKey` sends every Alt chord as `ESC` + character
+(`encodeAltPrintable`), so the engine receives `alt+|` — an unbound key — and the
+pipe never appears. Every Option-produced glyph (`|`, `∫`, `€`, `¡`, …) is
+unreachable in the web UI.
+
+**Expected**: an Alt chord whose character the physical key could not have produced
+was composed by the platform and must be inserted as text, exactly as the terminal
+does; a plain Alt chord (Alt+b on Linux/Windows, where the browser reports the
+unshifted letter) stays a Meta chord.
+
+**Fix plan / test approach**
+
+1. In `EncodeKey`, before the ESC-prefix path: if `alt` is held, the key is a single
+   printable rune, and that rune differs from what the US layout produces for
+   `code` + `shift`, the platform composed it → emit the rune itself.
+2. Unknown `code` (or punctuation codes) keeps today's Meta behaviour, so no existing
+   binding regresses.
+3. Table test: `KeyL`+shift+alt+`"|"` → `"|"`; `KeyB`+alt+`"b"` → `"\x1bb"`;
+   `KeyB`+alt+`"∫"` → `"∫"`; `Digit2`+shift+alt+`"€"` → `"€"`; alt+`ArrowLeft`
+   unchanged (CSI-u).
 
 ## Closed
+
+Closed 2026-10-10 — B21, the `goa/protocol` `max_tokens` note: it called a
+model's *maximum output* a "reasoning-ceiling default", named no reason a reader
+could act on, and printed on every request that omitted `max_tokens` — straight onto
+stderr while the TUI owned the screen. `noteMaxTokensDefault` now states the field,
+value, reason and identifiers in one sentence, the source strings are constants
+shared with the resolver, and a `defaultNotes` map reports each `(model, source)`
+once per process. Pinned by the reworked
+`TestDefaultMaxTokens_LogsDefaultedField` and a new
+`TestDefaultMaxTokens_ReasoningCeilingWording` (the reported line's exact case). See
+[`docs/archive/b21-max-tokens-log-clarity.2026-10-10.md`](docs/archive/b21-max-tokens-log-clarity.2026-10-10.md).
 
 Closed 2026-10-10 — B20, the web UI's caret on a keystroke that changes no cell:
 `CellGrid.Process` decided "did the screen move" from the emulator's dirty *rows*
