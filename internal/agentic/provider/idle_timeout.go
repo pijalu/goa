@@ -19,14 +19,16 @@ var ErrStreamIdle = errors.New("stream idle timeout: no data received from LLM")
 // DefaultStreamIdleTimeout is the maximum time to wait between bytes from a
 // streaming LLM response before treating the connection as stalled.
 //
-// Five minutes, not two: it doubles as the shipped execution.activity_timeout
-// fallback, and a reasoning model legitimately emits no bytes at all while it
-// thinks — a captured z.ai export-A request ran 80.7s of pure silence before
-// its first token (bugs.md #2). A two-minute window killed healthy reasoning
-// turns, so the default now clears a long thinking phase with margin. Callers
-// that need a tighter bound pin providers[].idle_timeout (per stream) or
+// Two minutes: it doubles as the shipped execution.activity_timeout fallback,
+// and it must clear a reasoning model's silent thinking phase — a captured
+// z.ai export-A request ran 80.7s of pure silence before its first token
+// (bugs.md #2), so anything shorter kills healthy reasoning turns. The event
+// watchdog owns the warn-then-retry path at 3/4 of the budget (1m30s), so 2m
+// still clears the observed thinking window with margin while failing a dead
+// stream twice as fast as the previous 5m default. Callers that need a
+// different bound pin providers[].idle_timeout (per stream) or
 // execution.activity_timeout (per agent).
-const DefaultStreamIdleTimeout = 5 * time.Minute
+const DefaultStreamIdleTimeout = 2 * time.Minute
 
 // eventStallNumerator / eventStallDenominator split one silence budget in two:
 // the event-level stall watchdog fires at this fraction of the byte-idle

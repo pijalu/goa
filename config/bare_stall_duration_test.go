@@ -183,8 +183,8 @@ func TestLoad_BareStallValuesHealed(t *testing.T) {
 			name:     "bare window pinned, warn supplied by the cascade default",
 			yaml:     "execution:\n  activity_timeout: 60\n",
 			wantTime: "60s",
-			wantWarn: "3m20s",
-			// The layer's bare window is healed; the warn default (3m20s) is
+			wantWarn: "1m20s",
+			// The layer's bare window is healed; the warn default (1m20s) is
 			// supplied by the cascade after the merge.
 			wantHealed: true,
 		},

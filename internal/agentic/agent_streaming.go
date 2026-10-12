@@ -238,7 +238,7 @@ func (a *Agent) effectiveEventStallTimeout(opts provider.StreamOptions) time.Dur
 // lead as a fraction of the EVENT stall window: two thirds, so an unset
 // execution.activity_warn_after still lands strictly inside the watchdog and
 // the warning always precedes the automatic retry. With the shipped pairing
-// (activity_timeout 5m → event stall 3m45s → derived lead 2m30s) the user is
+// (activity_timeout 2m → event stall 1m30s → derived lead 1m) the user is
 // warned a minute before the retry instead of on the same tick.
 const (
 	stallWarnNumerator   = 2
@@ -394,9 +394,9 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 	// tell the user the provider is quiet and when the watchdog will act —
 	// without this, a content→silence gap is just a dead spinner until the
 	// stall fires minutes later, which reads as "stuck". The lead is
-	// execution.activity_warn_after (3m20s by default) inside the
-	// execution.activity_timeout window (5m by default, of which the event
-	// watchdog uses the first 3m45s); see effectiveStallWarnAfter.
+	// execution.activity_warn_after (1m20s by default) inside the
+	// execution.activity_timeout window (2m by default, of which the event
+	// watchdog uses the first 1m30s); see effectiveStallWarnAfter.
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
 	quietAfter := a.effectiveStallWarnAfter(opts)

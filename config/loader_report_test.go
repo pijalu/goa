@@ -68,7 +68,7 @@ func TestLoadWithReport_FallsBackToDefaultsOnGarbageStallValue(t *testing.T) {
 	if rep.FallbackErr == nil || !strings.Contains(rep.FallbackErr.Error(), "activity_timeout") {
 		t.Errorf("FallbackErr must name activity_timeout, got: %v", rep.FallbackErr)
 	}
-	if got := cfg.Execution.ActivityTimeout; got != "5m" {
+	if got := cfg.Execution.ActivityTimeout; got != "2m" {
 		t.Errorf("fallback config must carry the default window, got %q", got)
 	}
 }
@@ -138,7 +138,7 @@ func TestLoadWithReport_DropsUnparseableYAMLLayer(t *testing.T) {
 	if !strings.HasSuffix(rep.Dropped[0].Source, "config.yaml") {
 		t.Errorf("Dropped[0].Source = %q, want the home config path", rep.Dropped[0].Source)
 	}
-	if cfg.Execution.ActivityTimeout != "5m" {
+	if cfg.Execution.ActivityTimeout != "2m" {
 		t.Errorf("defaults must apply for the dropped layer, got %q", cfg.Execution.ActivityTimeout)
 	}
 	if !strings.Contains(captured, "Warning: ignoring invalid config") {
@@ -240,7 +240,7 @@ func TestRepairLayerFile_RemovesGarbageStallKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repaired file must load: %v", err)
 	}
-	if cfg.Execution.ActivityTimeout != "5m" {
+	if cfg.Execution.ActivityTimeout != "2m" {
 		t.Errorf("default must apply after key removal, got %q", cfg.Execution.ActivityTimeout)
 	}
 }

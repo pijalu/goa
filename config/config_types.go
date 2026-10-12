@@ -96,7 +96,7 @@ type ExecutionConfig struct {
 	// (X = this value, Y = the effective event stall). It must be shorter than
 	// that window; empty/zero — or a value at or above it — falls back to two
 	// thirds of the window, so the warning always precedes the retry.
-	// Default: "3m20s" inside a "5m" activity_timeout (event stall 3m45s).
+	// Default: "1m20s" inside a "2m" activity_timeout (event stall 1m30s).
 	ActivityWarnAfter string                `yaml:"activity_warn_after"`
 	ErrorThreshold    float64               `yaml:"error_threshold"`
 	WorktreeMode      internal.WorktreeMode `yaml:"worktree_mode"`

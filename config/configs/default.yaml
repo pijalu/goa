@@ -27,14 +27,14 @@ execution:
   # ends in an automatic retry. It is deliberately LONG: a reasoning model
   # emits no bytes at all while it thinks (a captured z.ai request ran 80.7s
   # before its first token), so a short window kills healthy turns. The event
-  # watchdog fires at 3/4 of it (3m45s) and owns the warn-then-retry path; the
-  # byte-level reader keeps the full 5m as its backstop. activity_warn_after is
+  # watchdog fires at 3/4 of it (1m30s) and owns the warn-then-retry path; the
+  # byte-level reader keeps the full 2m as its backstop. activity_warn_after is
   # how long the provider must be quiet before the user is told "provider quiet
   # for Xs — still waiting; will auto-retry after Ys of silence". Keep it below
   # the event stall; a value at or above it falls back to two thirds of it. Both
   # are editable live via /config → Retry settings and /config:set.
-  activity_timeout: "5m"
-  activity_warn_after: "3m20s"
+  activity_timeout: "2m"
+  activity_warn_after: "1m20s"
   error_threshold: 0.5
   worktree_mode: "multi_agent"
   auto_save_model: true
