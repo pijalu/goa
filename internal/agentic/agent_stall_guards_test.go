@@ -32,11 +32,11 @@ func TestStallGuards_SingleOwnerOrdering(t *testing.T) {
 	}{
 		{
 			name:        "shipped defaults",
-			opts:        provider.StreamOptions{IdleTimeout: 5 * time.Minute, ActivityWarnAfter: 200 * time.Second},
-			wantByte:    5 * time.Minute,
-			wantStall:   225 * time.Second,
-			wantWarn:    200 * time.Second,
-			description: "activity_timeout 5m / activity_warn_after 3m20s",
+			opts:        provider.StreamOptions{IdleTimeout: 2 * time.Minute, ActivityWarnAfter: 80 * time.Second},
+			wantByte:    2 * time.Minute,
+			wantStall:   90 * time.Second,
+			wantWarn:    80 * time.Second,
+			description: "activity_timeout 2m / activity_warn_after 1m20s",
 		},
 		{
 			name:        "provider default budget (no configured window)",

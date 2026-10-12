@@ -15,7 +15,9 @@ type streamEventHandler func(*Agent, context.Context, *provider.AssistantMessage
 var streamEventHandlers = map[provider.EventType]streamEventHandler{
 	provider.EventStart:         (*Agent).handleStreamStart,
 	provider.EventTextDelta:     (*Agent).handleStreamTextDelta,
+	provider.EventThinkingStart: (*Agent).handleStreamThinkingBoundary,
 	provider.EventThinkingDelta: (*Agent).handleStreamThinkingDelta,
+	provider.EventThinkingEnd:   (*Agent).handleStreamThinkingBoundary,
 	provider.EventToolCallEnd:   (*Agent).handleStreamToolCallEnd,
 	provider.EventToolCallStart: (*Agent).handleStreamToolCallStart,
 	provider.EventToolCallDelta: (*Agent).handleStreamToolCallDelta,
@@ -37,6 +39,26 @@ var streamEventHandlers = map[provider.EventType]streamEventHandler{
 // a stream that opens and then carries nothing must still be routed to the retry
 // path. EventStart also carries nothing to render, so there is no state to touch.
 func (a *Agent) handleStreamStart(_ context.Context, _ *provider.AssistantMessageEventStream, _ provider.AssistantMessageEvent) (bool, bool, error) {
+	return false, false, nil
+}
+
+// handleStreamThinkingBoundary absorbs the thinking-block framing events
+// (thinking_start / thinking_end).
+//
+// Goa's own responses protocol pushes both around every reasoning summary
+// (protocol/openai_responses.go: reasoning_summary deltas open with
+// EventThinkingStart and close with EventThinkingEnd), so leaving them
+// unmapped produced a per-turn WARN blaming the provider for a goa-internal
+// event — the same self-blame class as EventStart (bugs.md #2) — and kept
+// them from re-arming the stall/quiet guards.
+//
+// There is nothing to render: the visible thinking text arrives via
+// EventThinkingDelta, and EventThinkingEnd's accumulated Content duplicates
+// what the deltas already streamed (the history thinking block is assembled
+// from the protocol's own buffer, not from this event). Like EventStart it
+// deliberately does NOT call markGenStart — framing alone must not turn an
+// otherwise empty response into a delivered one.
+func (a *Agent) handleStreamThinkingBoundary(_ context.Context, _ *provider.AssistantMessageEventStream, _ provider.AssistantMessageEvent) (bool, bool, error) {
 	return false, false, nil
 }
 

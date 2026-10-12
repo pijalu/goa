@@ -204,5 +204,5 @@ func activeProviderRetryDelay(cfg *config.Config) string {
 			return p.MaxRetryDelay
 		}
 	}
-	return "5m (default)"
+	return "2m (default)"
 }

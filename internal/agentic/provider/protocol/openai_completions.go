@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
@@ -20,6 +21,57 @@ import (
 
 // protocolLog emits diagnostics for materialized provider defaults.
 var protocolLog = log.New(os.Stderr, "goa/protocol: ", log.LstdFlags)
+
+// defaultNotes dedupes the "a default was materialized" diagnostics: one line per
+// (model, source) is enough to explain a session's wire requests, and repeating
+// it per request both spammed the log and wrote into the screen while the TUI
+// owned the terminal (bugs.md B21).
+type defaultNotes struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+// once reports whether key has not been seen yet, recording it when it is new.
+func (d *defaultNotes) once(key string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen[key] {
+		return false
+	}
+	if d.seen == nil {
+		d.seen = make(map[string]bool)
+	}
+	d.seen[key] = true
+	return true
+}
+
+// maxTokensNotes carries the once-per-(model, source) state for
+// noteMaxTokensDefault. A test replaces the whole value, which is why it is a
+// pointer rather than a bare struct.
+var maxTokensNotes = &defaultNotes{}
+
+// noteMaxTokensDefault explains, once per (model, source), where a materialized
+// max_tokens came from. The reader has to be able to tell a safe fallback from a
+// model's maximum output, so the line names the field, the value, the reason and
+// the identifiers — and says nothing when the request carried an explicit cap
+// (the caller does not call it then).
+func noteMaxTokensDefault(source string, value int, model schema.Model) {
+	reason := ""
+	switch source {
+	case maxTokensSourceProvider:
+		reason = "no explicit value in the request, so the provider catalog default applies"
+	case maxTokensSourceCeiling:
+		reason = "no explicit value and no provider default, so the model's maximum output applies"
+	case maxTokensSourceFallback:
+		reason = "no explicit value, no provider default and no known output ceiling, so the reasoning fallback cap applies"
+	default:
+		reason = "resolved from " + source
+	}
+	if !maxTokensNotes.once(model.ID + "\x00" + source) {
+		return
+	}
+	protocolLog.Printf("max_tokens=%d (%s), model=%s provider=%s", value, reason, model.ID, model.Provider)
+}
 
 func init() {
 	Register(&openAICompletions{})
@@ -81,6 +133,11 @@ type openAICompletionsCompat struct {
 	SupportsLongCacheRetention                  bool
 	SupportsPromptCache                         bool
 	ToolResultAsUser                            bool
+	// SupportsToolChoiceNone false suppresses the tool_choice change on the
+	// final-step text-only collapse: the round then repeats the previous
+	// round's tool_choice verbatim, keeping the body append-only in every
+	// field (schema.CompatFlags.SupportsToolChoiceNone).
+	SupportsToolChoiceNone bool
 	// SupportsTemperature false omits the temperature field (kimi-code
 	// rejects any value but its fixed default with HTTP 400).
 	SupportsTemperature bool
@@ -124,6 +181,10 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 	// provider/endpoint. Left unset, z.ai would never receive tool_stream:true
 	// and the flag in provider.OpenAICompletionsCompat would stay dead.
 	c.ZaiToolStream = profile.Compat.ToolStream || catalogToolStream(model)
+	// Tool_choice "none" is the collapse's text-only lever on every flavor
+	// whose upstream accepts it (default true). An explicit profile value wins;
+	// the Responses flavors resolve their own default (false).
+	c.SupportsToolChoiceNone = supportsToolChoiceNone(profile)
 	return c
 }
 

@@ -23,6 +23,9 @@ below, then explore the features that match your workflow.
 3. [Companion — Sub-Agent Code Review](#3-companion--sub-agent-code-review)
 4. [Feature Comparison](#4-feature-comparison)
 5. [Configuration Reference](#5-configuration-reference)
+6. [Provider Quota](#6-provider-quota--usage-tracking)
+7. [Web UI — Goa in the Browser](#7-web-ui--goa-in-the-browser)
+8. [Images](#8-images)
 
 ---
 
@@ -840,7 +843,132 @@ plugins:
 
 ---
 
+## 7. Web UI — Goa in the Browser
+
+`goa server` runs your normal Goa session and serves its screen to a browser.
+It is the *same* session, not a remote-control toy: the TUI engine renders into
+a virtual screen, the page draws those cells, and every key you type is encoded
+by the server into the bytes a terminal would have sent.
+
+```bash
+# Loopback only — nothing to configure, no credentials
+./goa server
+# → goa web UI ready: http://127.0.0.1:8080
+
+# Someone else on the network? Credentials are then mandatory.
+export GOA_SERVER_AUTH_TOKEN=$(openssl rand -hex 32)
+./goa server --server-addr 0.0.0.0:7331 --server-auth=token
+
+# Sharing your screen without handing over the wheel
+./goa server --server-read-only
+```
+
+Opening `http://127.0.0.1:8080/` redirects to the live session at `/s/<id>`.
+
+### What works
+
+Everything. The parity matrix in [specs/webui.md](../specs/webui.md) is the
+acceptance list, and it holds: streaming text, thinking blocks, tool widgets,
+diffs, markdown, syntax colours, multiline editing, `Ctrl+U`/`Ctrl+W`, the kill
+ring, `Ctrl+Z`, history (`↑`), `Tab` completion, `/` command popups, selectors
+(`/model`, `/mode`), confirm cards, clarify cards, review pagers, the goal list
+and orchestrator tabs all render and respond in the page. Keys behave as they
+do in a terminal — see [HOTKEYS.md](HOTKEYS.md) for the browser key map.
+
+### What to know
+
+| Situation | What happens |
+|-----------|--------------|
+| Behind a proxy that blocks WebSockets | The page falls back to SSE + POST automatically |
+| Scripting disabled | A server-rendered page polls the same session |
+| Want to watch without touching anything | `--server-read-only` |
+| Driving it from a script | Send `Authorization: Bearer $GOA_SERVER_AUTH_TOKEN`, or poll `/s/<id>/text` |
+| Remote box | Leave it on loopback and forward the port: `ssh -L 8080:127.0.0.1:8080 host` |
+| Tempted to bind `0.0.0.0` without a token | Refused at startup. `--insecure-no-auth` exists, is spelled out, and means "anyone who reaches this port drives your agent" |
+
+### Attach a terminal (`goa attach`)
+
+Your terminal can be one of the viewers: `goa attach --server 127.0.0.1:8080`
+renders the served session in a real terminal (truecolor, native scrollback)
+and forwards your keyboard verbatim. `Ctrl+]` detaches while the session keeps
+running — close the laptop, re-attach later, the conversation is still there.
+Add `--path` on a multi-project server (below) to pick the project.
+
+### One server, many projects (`--server-projects-root`)
+
+```bash
+./goa server --server-projects-root ~/repos --server-addr 0.0.0.0:7331 --server-auth=token
+```
+
+The server becomes a session index: each project directory you open (browser
+form or `goa attach --path ~/repos/goa`) gets its own full session with that
+project's config, plugins and skills. Sessions no client has touched for
+`--server-session-idle` (default 30m) are stopped with their transcripts kept,
+and re-open on the next connect.
+
+Full reference: [WEBUI.md](WEBUI.md).
+
+---
+
+## 8. Images
+
+Press `Ctrl+V` (or `Cmd+V`) to paste from the system clipboard. Goa resolves it
+in this order — the same precedence the reference agents use:
+
+1. **Files** copied in a file manager (Finder, Explorer, Nautilus) — their paths
+   are inserted.
+2. **An image** (a screenshot, or an image copied from anywhere) — saved into the
+   image store and attached to your next message.
+3. **Text** — inserted at the cursor.
+
+Pasting text normally (`Cmd+V` in most terminals) inserts text and nothing else:
+a clipboard image never hijacks a text paste.
+
+`Cmd+V` is bound to the same clipboard resolution as `Ctrl+V`, because a terminal
+can only paste for you when the clipboard holds text: with a screenshot on the
+clipboard macOS leaves the terminal's Paste menu item disabled, the chord falls
+through to Goa, and a terminal speaking the Kitty keyboard protocol (Ghostty,
+kitty, WezTerm) reports it as a key event — which Goa then resolves itself.
+
+```
+Ctrl+V                        # screenshot → attach
+What's wrong with this layout?  Enter
+```
+
+### Attaching by path
+
+Mentioning a path is enough, as long as the file exists and is really an image:
+
+```
+compare ./before.png and ./after.png   # both attached
+```
+
+A path that does not exist, a URL, or a non-image file is left in your message as
+ordinary text, and Goa says so (`[image not attached — could not read: …]`) rather
+than silently dropping it.
+
+### What to know
+
+| Situation | What happens |
+|-----------|--------------|
+| Active model is not a vision model | Goa warns you; the images are omitted from the request instead of being sent and rejected |
+| Image is huge | Downscaled (max 8000 px edge, ~4 MiB) before it goes on the wire |
+| Image is WebP | Passed through without downscaling (no built-in WebP decoder) |
+| macOS, Linux (Wayland/X11), Windows, WSL | All supported for both image and text clips |
+| Clipboard has both an image and text | The image wins, but only on `Ctrl+V`/`Cmd+V` — a normal text paste is never affected |
+| Resumed session | Attachments live in the durable image store (`<user cache>/goa/images`), pruned after 30 days |
+| Pasted a large text blob | Collapsed into a `[paste #N …]` marker; the full text is sent |
+| Web UI | Dropping or pasting an image into the page uploads it and follows the same path |
+
+Behind the scenes an attachment is Base64-encoded once per request by a single
+resolver shared by every provider adapter (OpenAI, Anthropic, Google, Bedrock),
+so all of them receive the same well-formed image payload.
+
+---
+
 ## See Also
+
+- [WEBUI.md](WEBUI.md) — Web UI & terminal interop reference: `goa server`, `goa attach`, multi-project
 
 - [WORKFLOWS.md](WORKFLOWS.md) — Workflow system reference
 - [ORCHESTRATOR.md](ORCHESTRATOR.md) — Orchestrator technical reference

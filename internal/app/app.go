@@ -8,19 +8,20 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/acp"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
+	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/usage"
 	"github.com/pijalu/goa/skills"
@@ -227,12 +228,30 @@ func (a *App) sessionUsageSnapshot() map[string]any {
 // Run starts the TUI, agent session, and event loop. It returns true if the
 // application should relaunch (e.g., after the setup wizard writes config).
 func (a *App) Run() bool {
+	return a.RunContext(context.Background())
+}
+
+// RunContext runs the interactive session and ends it when ctx is cancelled,
+// performing the same shutdown `/quit` performs. `goa server` passes a context
+// cancelled by the console's SIGINT/SIGTERM: the web UI session has no TTY to
+// read Ctrl+C from (the process terminal is replaced by a VirtualTerminal), so
+// without this the signal was consumed by the handler and the process could not
+// be stopped from its own console at all.
+//
+// Returns true if the application should relaunch (e.g., after the setup wizard
+// writes config).
+func (a *App) RunContext(ctx context.Context) bool {
 	subs := a.subs
 	cfg := subs.cfg
 	projectDir := subs.projectDir
 
 	initTheme(cfg)
 	initSpinner(cfg)
+
+	// Reap expired pasted/uploaded images in the background. The store is a
+	// cache of attachments referenced by path from conversation history, so
+	// pruning must never block startup or fail the run.
+	go internal.PruneImages()
 
 	// Before building the TUI (terminal is in normal mode), prompt the user
 	// about project-level skills if this is the first run.
@@ -273,6 +292,16 @@ func (a *App) Run() bool {
 	a.startAsyncPluginLoad(engine)
 
 	done := a.setupEventHandlers(engine, chat, inp)
+	// The session is wired now — the engine is started, the input editor is
+	// focused and its submit path is installed. Release the web server's readiness
+	// gate so held browser requests are answered by a session that can act on
+	// their input (bugs.md B7). No-op unless `goa server` is running.
+	a.markWebReady()
+	// External stop: `goa server` has no TTY for Ctrl+C, so the shutdown signal
+	// arrives as a cancelled context. Installed AFTER setupEventHandlers (the
+	// stop rides the control-event path, whose reader must exist) and before the
+	// blocking wait on done below.
+	a.watchStopContext(ctx, engine)
 	// P22/DS6: hot-reload config edits from disk for the interactive session.
 	// Started before the event loops so an edit made while the app runs
 	// applies on the next request; stopped on shutdown (no goroutine leaks).
@@ -328,6 +357,64 @@ func (a *App) Run() bool {
 		return true
 	}
 	return false
+}
+
+// watchStopContext ties an external context to the session's own shutdown: when
+// ctx is cancelled the session ends exactly as `/quit` ends it. Used by
+// `goa server`, whose session has no TTY to read Ctrl+C from.
+//
+// The watcher exits with the session (engine.Stopped) so a normally-ended
+// session leaves no goroutine behind; App.RunContext's blocking wait on `done`
+// is what the stop must reach.
+func (a *App) watchStopContext(ctx context.Context, engine *tui.TUI) {
+	if ctx == nil || ctx.Done() == nil || engine == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			a.requestStop()
+		case <-engine.Stopped():
+		}
+	}()
+}
+
+// stopRequestBudget bounds how long requestStop waits for the control-event
+// reader to accept the stop before falling back to stopping the engine
+// directly. The bus is drained continuously, so the send succeeds on the first
+// attempt in practice; the budget only covers a full buffer.
+const (
+	stopRequestBudget = 2 * time.Second
+	stopRequestRetry  = 5 * time.Millisecond
+)
+
+// requestStop ends the running session through the same path `/quit` uses: a
+// StopRequest control event, handled on the commandLoop, which calls TUI.Stop.
+// That keeps TUI.Stop's documented restore ordering (compositor reset →
+// Terminal.Stop → close(done)) on the single owning goroutine, so the process
+// cannot exit mid-restore.
+//
+// Stop is stopOnce-guarded and documented as safe from any goroutine, which is
+// what makes the direct fallback below safe: it can never double-restore.
+func (a *App) requestStop() {
+	bus := a.subs.events
+	if bus != nil && bus.Control != nil {
+		deadline := time.Now().Add(stopRequestBudget)
+		for {
+			select {
+			case bus.Control <- event.ControlEvent{StopRequest: true}:
+				return
+			default:
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(stopRequestRetry)
+		}
+	}
+	if engine := a.subs.tuiEngine; engine != nil {
+		engine.Stop()
+	}
 }
 
 // activatePluginUI connects loaded plugin UI contributions (status-bar
@@ -443,35 +530,10 @@ func (a *App) startAsyncPluginLoad(engine *tui.TUI) {
 	})
 }
 
-// Main is the top-level entry point used by cmd/goa. It parses CLI flags,
-// loads config, initializes subsystems, and runs the application loop.
-func Main() {
-	log.SetOutput(io.Discard)
-	// Capture runtime fatal errors (which bypass recover()) and log output to
-	// .goa/crash.log. Deferred BEFORE handleShutdown so the shutdown handler
-	// runs first during unwind and can still writeCrashLog to the open file.
-	wd, _ := os.Getwd()
-	crashCleanup := setupCrashLog(wd)
-	defer crashCleanup()
-	defer handleShutdown()
-
-	// `goa mcp ...` is handled before flag parsing: it is a plain CLI
-	// subcommand (no TUI, no headless agent) for managing MCP servers.
-	if runMCPCLI(os.Args[1:]) {
-		return
-	}
-
-	for {
-		relaunch := runApp()
-		if !relaunch {
-			break
-		}
-	}
-}
-
-func runApp() bool {
+func runApp(serverMode bool) bool {
 	projectDir := MustGetwd()
 	cliFlags, runtimeOpts := ParseCLIFlags()
+	runtimeOpts.Server = serverMode
 	// --home (or GOA_HOME) relocates every ~/.goa path (config, cache, logs,
 	// usage, first-run detection). It must be applied before the cascade
 	// loader and any subsystem resolves the home directory.
@@ -488,6 +550,10 @@ func runApp() bool {
 	}
 	defer prof.stopProfiling()
 
+	if maybeRunSupervisor(runtimeOpts) {
+		return false
+	}
+
 	loader := config.NewCascadeLoader(projectDir, cliFlags["config"], cliFlags)
 	cfg, cfgReport := LoadConfig(loader, projectDir)
 	// Bug6: when no config layer provides an active model, fall back to the
@@ -496,21 +562,32 @@ func runApp() bool {
 	enableModelsDevCatalog()
 	subs := InitSubsystems(cfg, loader, projectDir, runtimeOpts)
 	subs.cfgReport = cfgReport
+	return runBuiltSession(subs, runtimeOpts)
+}
+
+// runBuiltSession dispatches the modes that need a full subsystem set. The
+// web UI is the interactive session, not a headless one: it wins over
+// --prompt-shaped flags so `goa server --prompt` still serves a
+// browser-driven session.
+func runBuiltSession(subs *subsystems, opts RuntimeOptions) bool {
 	switch {
-	case runtimeOpts.DreamMode():
-		runDream(subs, runtimeOpts)
+	case opts.DreamMode():
+		runDream(subs, opts)
 		return false
-	case runtimeOpts.ACP:
+	case opts.ACP:
 		runACP(subs)
 		return false
-	case runtimeOpts.CheckUpdate:
-		runUpdateCheck(subs, runtimeOpts)
+	case opts.CheckUpdate:
+		runUpdateCheck(subs, opts)
 		return false
-	case runtimeOpts.ExportOutput != "" || runtimeOpts.ExportSession != "" || runtimeOpts.IncludeGlobalLog:
-		runExport(subs, exportOptionsFromRuntime(runtimeOpts))
+	case opts.ExportOutput != "" || opts.ExportSession != "" || opts.IncludeGlobalLog:
+		runExport(subs, exportOptionsFromRuntime(opts))
 		return false
-	case runtimeOpts.Headless():
-		runHeadless(subs, runtimeOpts)
+	case opts.Server:
+		runWebServer(subs, opts)
+		return false
+	case opts.Headless():
+		runHeadless(subs, opts)
 		return false
 	default:
 		return New(subs).Run()

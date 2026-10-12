@@ -87,6 +87,8 @@ models:
     reasoning: false                 # Enable thinking/reasoning
     thinking_level: off              # off | minimal | low | medium | high | xhigh
     thinking_budget: 0               # Per-request thinking token budget
+    thinking_level_native_map:       # Optional: per-key wire override (see below)
+      xhigh: max
     input_types:                     # text | image
       - text
     headers:                         # Per-model HTTP headers
@@ -106,8 +108,8 @@ execution:
   token_critical: 90                  # % of budget → critical
   loop_warning: 10                    # Consecutive same-tool calls before warning
   loop_interrupt: 15                 # Consecutive same-tool calls → interrupt
-  activity_timeout: 5m               # Byte-idle budget per stream (event watchdog retries at 3/4: 3m45s)
-  activity_warn_after: 3m20s         # Stall warning lead, must be inside the event stall
+  activity_timeout: 2m               # Byte-idle budget per stream (event watchdog retries at 3/4: 1m30s)
+  activity_warn_after: 1m20s         # Stall warning lead, must be inside the event stall
   error_threshold: 0.5               # Error rate % → mode auto-downgrade
   worktree_mode: multi_agent         # always | multi_agent
   auto_save_model: true              # Persist model changes to project .goa (home only as fallback); false = legacy home-only
@@ -387,6 +389,15 @@ orchestrator:
   defaults:
     topology: hub                    # hub | fanout | pipeline
 
+# ── Sessions ───────────────────────────────────────────────────────
+# Session logs (<project>/.goa/sessions/*.jsonl) are pruned after the retention
+# window, counted from each file's last write. The window defaults to 7 days and
+# is never applied to the session currently open.
+sessions:
+  retention:
+    enabled: true                    # false keeps every session log forever
+    days: 7                          # 0 = keep forever; N = keep N days
+
 # ── Plugins ────────────────────────────────────────────────────────
 plugins:
   enabled: ["*"]                     # Enable all plugins, or list specific IDs
@@ -426,6 +437,38 @@ features:
   multi_agent_scrollback_replay: false
 ```
 
+### Per-Model Thinking-Level Remap (`thinking_level_native_map`)
+
+`thinking_level` is strict-canonical: it accepts only Goa's six levels
+(`off | minimal | low | medium | high | xhigh`). Provider-native values such as
+`max` are rejected at validation. When a model expects a native value outside
+the canonical set — always-thinking or level-restricted models like opencode's
+`x-preview-f-free` (which accepts only `low | high | max` and HTTP-400s on
+anything else) — remap per model with `thinking_level_native_map`:
+
+```yaml
+models:
+- id: x-preview-f-free
+  provider: opencode
+  model: x-preview-f-free
+  thinking_level: xhigh            # canonical level you pick in the UI
+  thinking_level_native_map:       # what actually goes on the wire
+    xhigh: max                     # xhigh -> "max" (the value the model accepts)
+```
+
+Each entry maps one canonical level (key) to the provider-native string sent on
+the wire (value). The merge is **per key**: a listed level overrides the
+corresponding entry of the built-in variant profile's map (e.g. kimi-code maps
+every level to `max`; listing `high: high` sends `high` for that level), while
+levels you do not list keep the profile's mapping. Profiles without a map
+(e.g. opencode) get the listed entries verbatim. With no map, the canonical
+level is sent unchanged.
+
+When you add a custom model through the TUI (`/model add` or the `/config`
+model manager), Goa auto-creates this entry seeded with the model's current
+effective mapping (or the identity map when the profile defines none), so the
+knob is visible and you only edit the values the model actually accepts.
+
 ## Env Var Overrides
 
 Environment variables use the `GOA_` prefix with `_` as path separator:
@@ -461,15 +504,17 @@ of *complete* silence — not one single byte — after which goa stops waiting.
 is deliberately long, because a **reasoning model emits nothing at all while it
 thinks**. A captured z.ai request ran 80.7s of pure silence before its first
 token; the earlier shipped window of 45s (with a 2-minute fallback) cut healthy
-reasoning turns short. The shipped default is `5m`.
+reasoning turns short. The shipped default is `2m` — still clear of the
+observed 80.7s thinking window, with the event watchdog retrying dead streams
+at the 1m30s mark instead of waiting out a longer budget.
 
 That one budget is split between two guards, so they never race on it:
 
 | Guard | Reset by | Deadline | Role |
 |---|---|---|---|
-| Stall warning (`execution.activity_warn_after`) | any visible event | `3m20s` (derived `2/3` of the event stall when unset) | tells the user the provider is quiet, and when the retry runs |
-| **Event-stall watchdog** | mapped stream events only (text/thinking deltas, tool calls, done) | `3/4` of the byte budget = `3m45s` | **owns** the window: warns, then retries; a round that already delivered a complete answer is finalized instead of replayed |
-| Byte-idle reader | *any* byte, SSE keep-alive comments (`: ping`) included | the full `5m` | backstop for a socket that delivers nothing at all |
+| Stall warning (`execution.activity_warn_after`) | any visible event | `1m20s` (derived `2/3` of the event stall when unset) | tells the user the provider is quiet, and when the retry runs |
+| **Event-stall watchdog** | mapped stream events only (text/thinking deltas, tool calls, done) | `3/4` of the byte budget = `1m30s` | **owns** the window: warns, then retries; a round that already delivered a complete answer is finalized instead of replayed |
+| Byte-idle reader | *any* byte, SSE keep-alive comments (`: ping`) included | the full `2m` | backstop for a socket that delivers nothing at all |
 
 So a completely silent stream is terminated by the watchdog (with the
 warn-then-retry path, and a `stream stalled` error the retry logic understands),

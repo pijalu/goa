@@ -550,6 +550,10 @@ func TestHandleToolCall_EndsActiveThinkingStream(t *testing.T) {
 	}
 }
 
+// Alternating thinking/content deltas are a legitimate provider interleave, not
+// two reasoning segments: each delta must join the block it belongs to, so the
+// turn renders one reasoning block followed by one answer (bugs.md — "Live
+// stream splits when a provider interleaves reasoning and answer deltas").
 func TestHandleStreamContent_ThinkingAndContentAlternate(t *testing.T) {
 	app := New(testSubsystems())
 
@@ -559,9 +563,14 @@ func TestHandleStreamContent_ThinkingAndContentAlternate(t *testing.T) {
 	app.handleStreamContent(&agentic.OutputEvent{Type: agentic.EventContent, State: agentic.StateContent, Role: agentic.Assistant, Text: "answer2"})
 
 	rendered := strings.Join(app.subs.chat.Render(80), "\n")
-	thinkingCount := strings.Count(rendered, "thinking...")
-	if thinkingCount < 2 {
-		t.Errorf("expected two thinking blocks, got %d in:\n%s", thinkingCount, rendered)
+	if got := strings.Count(rendered, "thinking..."); got != 1 {
+		t.Errorf("expected one thinking block for one reasoning segment, got %d in:\n%s", got, rendered)
+	}
+	if !strings.Contains(rendered, "thought1 thought2") {
+		t.Errorf("the late reasoning delta did not join its block:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "answer1 answer2") {
+		t.Errorf("the answer was split by the interleaved delta:\n%s", rendered)
 	}
 }
 

@@ -87,3 +87,40 @@ func TestResolveActiveModel_NoNativeMapLeavesModelMapEmpty(t *testing.T) {
 		t.Errorf("ThinkingLevelMap = %v, want empty when no thinking_level_native_map configured", mdl.ThinkingLevelMap)
 	}
 }
+
+// The config native map must merge per key over a registry model's built-in
+// map instead of replacing it, so levels the user did not remap stay
+// resolvable for clamping (o1's registry map is off/low/medium/high).
+func TestResolveActiveModel_NativeMapMergesOverRegistryMapPerKey(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "openai",
+		ActiveModel:    "o1",
+		Providers: []config.ProviderConfig{
+			{ID: "openai", Provider: "openai", Endpoint: "https://api.openai.com/v1", APIKey: "k"},
+		},
+		Models: []config.ModelConfig{
+			{
+				ID:         "o1",
+				ProviderID: "openai",
+				Model:      "o1",
+				ThinkingLevelNativeMap: map[string]string{
+					"high": "high",
+				},
+			},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	mdl, err := pm.ResolveActiveModel()
+	if err != nil {
+		t.Fatalf("ResolveActiveModel: %v", err)
+	}
+	if got := mdl.ThinkingLevelMap[agenticprovider.ThinkingHigh]; got != "high" {
+		t.Errorf("ThinkingLevelMap[high] = %q, want the config remap value %q", got, "high")
+	}
+	if got := mdl.ThinkingLevelMap[agenticprovider.ThinkingLow]; got != "low" {
+		t.Errorf("ThinkingLevelMap[low] = %q, want the registry mapping %q kept", got, "low")
+	}
+	if got := mdl.ThinkingLevelMap[agenticprovider.ThinkingMedium]; got != "medium" {
+		t.Errorf("ThinkingLevelMap[medium] = %q, want the registry mapping %q kept", got, "medium")
+	}
+}

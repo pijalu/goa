@@ -38,60 +38,90 @@ func formatTokenCount(n int) string {
 }
 
 func formatFooterStats(s sessionStats) string {
-	parts := buildFooterStatParts(s)
-	return strings.Join(parts, " ")
+	return joinFooterSegments(buildFooterStatSegments(s))
 }
 
 // formatFooterStatsPlain returns the same textual stats as formatFooterStats
 // but with any ANSI escape sequences removed so the output is suitable for
 // --plain headless mode or other consumers that must not receive color codes.
 func formatFooterStatsPlain(s sessionStats) string {
-	parts := buildFooterStatParts(s)
-	for i, p := range parts {
-		parts[i] = ansi.Strip(p)
+	ansiFree := buildFooterStatSegments(s)
+	for i := range ansiFree {
+		ansiFree[i].Text = ansi.Strip(ansiFree[i].Text)
 	}
-	return strings.Join(parts, " ")
+	return joinFooterSegments(ansiFree)
 }
 
-func buildFooterStatParts(s sessionStats) []string {
-	var parts []string
-	if s.PromptN > 0 {
-		parts = append(parts, "\u2191"+formatTokenCount(s.PromptN))
+// joinFooterSegments renders segments in order, honoring glue.
+func joinFooterSegments(segments []tui.FooterSegment) string {
+	var b strings.Builder
+	for _, s := range segments {
+		if s.Text == "" {
+			continue
+		}
+		if b.Len() > 0 && !s.Glue {
+			b.WriteByte(' ')
+		}
+		b.WriteString(s.Text)
 	}
-	if s.PredictedN > 0 {
-		parts = append(parts, "\u2193"+formatTokenCount(s.PredictedN))
-	}
-	if s.SpeedTokPerSec > 0 {
-		parts = append(parts, fmt.Sprintf("%.1f tok/s", s.SpeedTokPerSec))
-	}
-	// Cache hit percentage: CH:<global>%▸<last>% where <global> is the
-	// token-weighted session-wide cache-hit level and <last> is the most
-	// recent per-completion rate. See CacheHitPct and
-	// foldCacheHitGlobalLocked for the two formulas; each element carries its
-	// own previous baseline for delta coloring.
-	if s.LastCacheHit.Seen {
-		parts = append(parts, formatLastCacheHitPart(s.LastCacheHit))
-	}
-	// Cache-miss counter, next to CH and only when at least one kind is
-	// non-zero (a miss means the established cache was bypassed —
-	// compression, TTL expiry, prefix churn).
-	if part := formatCacheMissPartIfAny(s); part != "" {
-		parts = append(parts, part)
-	}
+	return b.String()
+}
+
+// buildFooterStatSegments splits the stat set into the width-droppable fields
+// of the status-line priority ladder (bugs.md B11): the footer drops the
+// lowest tier first while the line does not fit, so the amount disappears
+// before the quota figure ever does. Tier assignment is the ONLY place that
+// ordering is expressed.
+func buildFooterStatSegments(s sessionStats) []tui.FooterSegment {
+	segments := buildTokenSegments(s)
+	segments = append(segments, buildCacheSegments(s)...)
 	if s.ToolCalls > 0 {
-		parts = append(parts, formatToolCallPart(s.ToolCalls, s.ToolCallLevel))
+		segments = append(segments, tui.FooterSegment{Tier: tui.FooterTierTools, Text: formatToolCallPart(s.ToolCalls, s.ToolCallLevel)})
 	}
 	if s.ShowCost && s.CostUSD > 0 {
-		parts = append(parts, fmt.Sprintf("$%.4f", s.CostUSD))
+		segments = append(segments, tui.FooterSegment{Tier: tui.FooterTierAmount, Text: fmt.Sprintf("$%.4f", s.CostUSD)})
 	}
 	if s.ContextMax > 0 {
-		parts = append(parts, formatContextUsage(footerContextTokens(s), s.ContextMax))
+		segments = append(segments, tui.FooterSegment{Tier: tui.FooterTierQuota, Text: formatContextUsage(footerContextTokens(s), s.ContextMax)})
 	}
-	// Show compression counters when non-zero.
 	if s.MicroCompacts > 0 || s.Compacts > 0 {
-		parts = append(parts, fmt.Sprintf("c:%dm-%d", s.MicroCompacts, s.Compacts))
+		segments = append(segments, tui.FooterSegment{Tier: tui.FooterTierAvgCH, Text: fmt.Sprintf("c:%dm-%d", s.MicroCompacts, s.Compacts)})
 	}
-	return parts
+	return segments
+}
+
+// buildTokenSegments renders the throughput fields (the drop tier for each is
+// its position on the ladder).
+func buildTokenSegments(s sessionStats) []tui.FooterSegment {
+	var segments []tui.FooterSegment
+	if s.PromptN > 0 {
+		segments = append(segments, tui.FooterSegment{Tier: tui.FooterTierTokens, Text: "\u2191" + formatTokenCount(s.PromptN)})
+	}
+	if s.PredictedN > 0 {
+		segments = append(segments, tui.FooterSegment{Tier: tui.FooterTierTokens, Text: "\u2193" + formatTokenCount(s.PredictedN)})
+	}
+	if s.SpeedTokPerSec > 0 {
+		segments = append(segments, tui.FooterSegment{Tier: tui.FooterTierSpeed, Text: fmt.Sprintf("%.1f tok/s", s.SpeedTokPerSec)})
+	}
+	return segments
+}
+
+// buildCacheSegments renders the cache fields: the session-wide hit rate
+// (CH:<global>%) outranks the last per-completion reading (\u25b8<last>%) on the
+// ladder — the average is what says whether the session is caching at all —
+// and the cache-miss counter rides with the reading it belongs to.
+func buildCacheSegments(s sessionStats) []tui.FooterSegment {
+	var segments []tui.FooterSegment
+	if s.LastCacheHit.Seen {
+		segments = append(segments,
+			tui.FooterSegment{Tier: tui.FooterTierAvgCH, Text: formatCacheHitAvgPart(s.LastCacheHit)},
+			tui.FooterSegment{Tier: tui.FooterTierLastCH, Text: formatCacheHitLastPart(s.LastCacheHit), Glue: true},
+		)
+	}
+	if miss := formatCacheMissPartIfAny(s); miss != "" {
+		segments = append(segments, tui.FooterSegment{Tier: tui.FooterTierLastCH, Text: miss})
+	}
+	return segments
 }
 
 // footerContextTokens resolves the token figure the footer's occupancy display
@@ -147,11 +177,22 @@ const (
 //
 // The first observation (no previous baseline) renders as stable green.
 func formatLastCacheHitPart(t CacheHitTrend) string {
+	return formatCacheHitAvgPart(t) + formatCacheHitLastPart(t)
+}
+
+// formatCacheHitAvgPart renders only the session-wide element of the pair
+// (CH:<global>%), so the footer's width ladder can drop the last-completion
+// reading while keeping the average (bugs.md B11 tiers 6 and 7).
+func formatCacheHitAvgPart(t CacheHitTrend) string {
 	gColor := cacheHitColorFor(t.GlobalPct, t.GlobalPrevPct, t.GlobalHasPrev)
+	return fmt.Sprintf("%sCH:%.1f%%%s", gColor, t.GlobalPct, ansi.Reset)
+}
+
+// formatCacheHitLastPart renders only the most recent per-completion reading
+// (▸<last>%) — the drop-first half of the cache-hit pair.
+func formatCacheHitLastPart(t CacheHitTrend) string {
 	lastColor := cacheHitColorFor(t.Pct, t.PrevPct, t.HasPrev)
-	return fmt.Sprintf("%sCH:%.1f%%%s%s▸%.1f%%%s",
-		gColor, t.GlobalPct, ansi.Reset,
-		lastColor, t.Pct, ansi.Reset)
+	return fmt.Sprintf("%s\u25b8%.1f%%%s", lastColor, t.Pct, ansi.Reset)
 }
 
 // cacheHitColorFor resolves the SGR prefix (color + optional bold) for a

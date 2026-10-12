@@ -30,15 +30,19 @@ import (
 // the complete series of widget states and diffs (status lifecycle, tool
 // widgets, chat content) as data, with no real terminal involved.
 type uiScenario struct {
-	tb       testing.TB
-	engine   *tui.TUI
-	chat     *tui.ChatViewport
-	status   *tui.StatusMsg
-	footer   *tui.Footer
-	editor   *tui.Editor
-	app      *App
-	film     *tui.Filmstrip
-	term     *testTerminal
+	tb     testing.TB
+	engine *tui.TUI
+	chat   *tui.ChatViewport
+	status *tui.StatusMsg
+	footer *tui.Footer
+	editor *tui.Editor
+	app    *App
+	film   *tui.Filmstrip
+	term   *testTerminal
+	// terminal is the terminal the engine actually renders to — the same
+	// object as term for the default scenarios, a webui.VirtualTerminal for
+	// the web-UI e2e.
+	terminal tui.Terminal
 	stepName func(agentic.EventType, agentic.OutputState) string
 }
 
@@ -52,6 +56,17 @@ func newUIScenario(tb testing.TB, w, h int) *uiScenario {
 // newUIScenarioCfg is newUIScenario with an explicit TUI config override
 // (nil = the default scenario config). The in-chat status line is assembled
 // with the same production rule as assembleEngine: spinnerLocation decides.
+// newUIScenarioTerm is newUIScenario with a caller-supplied tui.Terminal —
+// the web-UI e2e passes a webui.VirtualTerminal so the whole session renders
+// into a real cell grid. nil means the default fake terminal.
+func newUIScenarioTerm(tb testing.TB, term tui.Terminal, w, h int) *uiScenario {
+	tb.Helper()
+	if term == nil {
+		term = &testTerminal{w: w, h: h}
+	}
+	return newUIScenarioOn(tb, term, w, h, nil)
+}
+
 func newUIScenarioCfg(tb testing.TB, w, h int, tuiCfg *config.TUIConfig) *uiScenario {
 	tb.Helper()
 	// Deterministic animated spinner so frame/visibility assertions are stable.
@@ -59,7 +74,13 @@ func newUIScenarioCfg(tb testing.TB, w, h int, tuiCfg *config.TUIConfig) *uiScen
 	tui.SetSpinner(def)
 	tb.Cleanup(func() { tui.SetSpinner(spinner.Definition{}) })
 
-	term := &testTerminal{w: w, h: h}
+	return newUIScenarioOn(tb, &testTerminal{w: w, h: h}, w, h, tuiCfg)
+}
+
+// newUIScenarioOn is the shared body: the production component tree on the
+// caller's terminal.
+func newUIScenarioOn(tb testing.TB, term tui.Terminal, w, h int, tuiCfg *config.TUIConfig) *uiScenario {
+	tb.Helper()
 	engine := tui.NewTUI(term)
 	if err := engine.Start(); err != nil {
 		tb.Fatalf("engine Start: %v", err)
@@ -125,6 +146,7 @@ func newUIScenarioCfg(tb testing.TB, w, h int, tuiCfg *config.TUIConfig) *uiScen
 	subs.steeringChrome = steering
 
 	app := New(subs)
+	tt, _ := term.(*testTerminal)
 	return &uiScenario{
 		tb:     tb,
 		engine: engine,
@@ -134,7 +156,10 @@ func newUIScenarioCfg(tb testing.TB, w, h int, tuiCfg *config.TUIConfig) *uiScen
 		editor: inp,
 		app:    app,
 		film:   tui.NewFilmstrip(),
-		term:   term,
+		// term stays nil when the engine runs on a non-fake terminal (the
+		// web-UI e2e's VirtualTerminal); only byte-capture scenarios need it.
+		term:     tt,
+		terminal: term,
 	}
 }
 

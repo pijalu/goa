@@ -110,10 +110,12 @@ func TestOpenAIResponsesOmitsPreviousResponseID(t *testing.T) {
 }
 
 // TestCodexBodyNoToolsCollapse ensures the final-step text-only collapse
-// clears codex's tool_choice:auto and drops parallel_tool_calls. The collapse
-// must omit tool_choice entirely — a request carrying no tools cannot yield
-// tool calls, and strict Responses upstreams (opencode Zen, 2026-09-02)
-// hard-400 on tool_choice "none".
+// leaves codex's request shape untouched: tools, tool_choice:auto and
+// parallel_tool_calls all stay as a normal round sends them, so the round is
+// an append-only continuation of the cached prefix (and stays eligible for
+// Codex WebSocket incremental reuse, whose fingerprint compares all three).
+// tool_choice must never become "none": strict Responses upstreams
+// (opencode Zen, 2026-09-02) hard-400 on it.
 func TestCodexBodyNoToolsCollapse(t *testing.T) {
 	model := schema.Model{ID: "gpt-5.6-luna", Api: schema.ApiOpenAICodexResponses, Provider: schema.ProviderOpenAICodex}
 	ctx := schema.Context{SystemPrompt: "s", NoTools: true}
@@ -124,10 +126,10 @@ func TestCodexBodyNoToolsCollapse(t *testing.T) {
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(body, &m))
 
-	_, hasChoice := m["tool_choice"]
-	assert.False(t, hasChoice, "NoTools collapse must omit tool_choice (strict upstreams 400 on \"none\")")
-	_, hasParallel := m["parallel_tool_calls"]
-	assert.False(t, hasParallel, "NoTools collapse must drop parallel_tool_calls")
+	assert.Equal(t, "auto", m["tool_choice"],
+		"collapse must repeat the normal round's tool_choice (strict upstreams 400 on \"none\")")
+	assert.Equal(t, true, m["parallel_tool_calls"],
+		"collapse must keep parallel_tool_calls: it is part of the reuse fingerprint")
 }
 
 // --- Codex history serialization (responses output items) --------------------

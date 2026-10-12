@@ -76,11 +76,16 @@ func (p *anthropicMessages) BuildRequest(model schema.Model, ctx schema.Context,
 	if ctx.SystemPrompt != "" {
 		body["system"] = []map[string]any{{"type": "text", "text": ctx.SystemPrompt}}
 	}
-	if len(ctx.Tools) > 0 && !ctx.NoTools {
+	if len(ctx.Tools) > 0 {
+		// The tool surface is attached on every round that carries tools —
+		// including the final-step text-only collapse — because it is part of
+		// the prompt the provider caches (dropping it re-bills the whole
+		// prompt; Anthropic pins it behind the cache_control breakpoints).
 		body["tools"] = convertAnthropicTools(ctx.Tools)
 	}
-	if ctx.NoTools {
-		// Final-step collapse (P7): the model must answer text-only.
+	if ctx.NoTools && compat.SupportsToolChoiceNone {
+		// Text-only collapse (P7), expressed on the control field only so the
+		// request body stays append-only across the context.
 		body["tool_choice"] = map[string]any{"type": "none"}
 	}
 	if opts.Temperature != nil && compat.SupportsTemperature {
@@ -106,6 +111,10 @@ type anthropicCompat struct {
 	RequiresAdaptiveThinking        bool
 	SupportsThinkingOnTools         bool
 	ThinkingBudgetMultiplier        float64
+	// SupportsToolChoiceNone false suppresses the tool_choice change on the
+	// final-step text-only collapse, leaving the body append-only in every
+	// field (schema.CompatFlags.SupportsToolChoiceNone).
+	SupportsToolChoiceNone bool
 }
 
 func resolveAnthropicCompat(profile schema.VariantProfile) anthropicCompat {
@@ -116,6 +125,7 @@ func resolveAnthropicCompat(profile schema.VariantProfile) anthropicCompat {
 	if profile.Compat.ThinkingFormat != "" {
 		c.SupportsThinkingOnTools = true
 	}
+	c.SupportsToolChoiceNone = supportsToolChoiceNone(profile)
 	return c
 }
 
@@ -153,12 +163,19 @@ func convertAnthropicContentBlocks(blocks []schema.ContentBlock) []map[string]an
 		case schema.ContentBlockText:
 			result = append(result, map[string]any{"type": "text", "text": b.Text})
 		case schema.ContentBlockImage:
+			enc, ok := schema.EncodeImage(b.ImageData)
+			if !ok {
+				// An empty Base64 part is rejected by the API and hides the loss;
+				// a text placeholder keeps the request valid and visible.
+				result = append(result, map[string]any{"type": "text", "text": schema.ImageUnavailablePlaceholder})
+				break
+			}
 			result = append(result, map[string]any{
 				"type": "image",
 				"source": map[string]any{
 					"type":       "base64",
-					"media_type": b.ImageMimeType,
-					"data":       b.ImageData,
+					"media_type": enc.MimeType,
+					"data":       enc.Base64,
 				},
 			})
 		}

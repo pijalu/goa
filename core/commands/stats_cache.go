@@ -69,12 +69,17 @@ type cacheTurn struct {
 	// NOT set it — its busts count as unexpected.
 	Reset bool
 	// TextOnlyCollapse marks a call that ran with the P7 text-only
-	// collapse (no tools, tool_choice "none" — the turn's final summary
-	// round): the request-shape change busts the provider prefix BY
-	// DESIGN, so the miss scan classifies the call's loss as a "no-tools
-	// step", never unexpected (bugs.md 2026-08-30). Per-call provenance
+	// collapse (tool_choice pinned to "none", the turn's final summary
+	// round). Until 2026-10-05 that round also dropped the tools array,
+	// which busted the provider prefix BY DESIGN and landed here as a
+	// "no-tools step" (bugs.md 2026-08-30); the collapse now keeps the tool
+	// surface and moves only tool_choice, so this flag is provenance for
+	// pre-fix sessions rather than an excuse for a bust. Per-call provenance
 	// from the completion log; the legacy turn series (turn records
 	// flatten multi-call turns) carries no such flag and stays false.
+	//
+	// Miss provenance only: a collapse call whose cache_read held (the normal
+	// case since 2026-10-05) is never counted as a miss at all.
 	TextOnlyCollapse bool
 }
 
@@ -88,8 +93,10 @@ type cacheMissTurn struct {
 	// "unexpected"). No-tools collapse calls classify under noTools.
 	num, unexpected, partial int
 	// noTools counts a "no-tools step": the call ran with the P7
-	// text-only collapse and its request-shape change busted the prefix
-	// by design (bugs.md 2026-08-30).
+	// text-only collapse and its cache_read still fell. Before 2026-10-05
+	// that was every collapse round by construction (the request dropped
+	// the tools array); now it means the prefix was lost for some other
+	// reason on a collapse call (bugs.md 2026-08-30).
 	noTools int
 	missed  int
 	prev    int // cache-read of the previous turn (the prefix the miss is measured against)

@@ -40,6 +40,23 @@ function padLeft(s, width) {
 	return s;
 }
 
+// padZero left-pads a number with zeros to width.
+function padZero(n, width) {
+	var s = String(n);
+	while (s.length < width) {
+		s = "0" + s;
+	}
+	return s;
+}
+
+// clock renders an epoch-ms instant as the local wall-clock time "HH:MM" (24 h).
+// Built from the Date fields rather than toLocaleTimeString so the output is the
+// same shape in every locale (the /quota table is a fixed-width table).
+function clock(ms) {
+	var d = new Date(ms);
+	return padZero(d.getHours(), 2) + ":" + padZero(d.getMinutes(), 2);
+}
+
 // trunc shortens s to max chars, adding an ellipsis when cut.
 function trunc(s, max) {
 	s = String(s);
@@ -132,6 +149,7 @@ exports.pct = pct;
 exports.bar = bar;
 exports.pad = pad;
 exports.padLeft = padLeft;
+exports.clock = clock;
 exports.trunc = trunc;
 exports.tokens = tokens;
 exports.cost = cost;

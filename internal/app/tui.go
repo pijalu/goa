@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,9 +44,23 @@ func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	a.startBackgroundHistoryLoad(inp, engine)
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
 
+	// The submit path must exist BEFORE the engine starts. `engine.Start` flushes
+	// the input bytes a client sent while the listener was already accepting but
+	// the session was still wiring itself up (webui.VirtualTerminal replays them);
+	// if SetOnSubmit is wired afterwards, a replayed Enter is consumed with no
+	// handler attached and the typed text sits in the editor forever — the
+	// reported "keystrokes typed while the session is still starting are not acted
+	// on" (bugs.md B7). Wiring here makes every replayed key effective.
+	inp.SetOnSubmit(a.makeSubmitHandler(engine, chat))
+	inp.OnImagePaste = func(path string) {
+		a.handlePastedImage(engine, chat, path)
+	}
+
 	if err := engine.Start(); err != nil {
-		// TUI startup failure is fatal.
-		os.Exit(1)
+		// TUI startup failure is fatal — and must say so: exiting silently
+		// left the user staring at an unchanged terminal with no diagnosis.
+		fmt.Fprintf(os.Stderr, "goa: failed to start the terminal UI: %v\n", err)
+		exitAfterFlush(1)
 	}
 
 	a.finalizeTUI(engine, chat, agentContent, agentTabBar, statusFooter, statusBar, bgPanel, inp)
@@ -87,7 +102,10 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 }
 
 func (a *App) createTerminal() tui.Terminal {
-	terminal := tui.Terminal(tui.NewProcessTerminal())
+	terminal := a.subs.terminal
+	if terminal == nil {
+		terminal = tui.NewProcessTerminal()
+	}
 	logPath := a.subs.cfg.Logging.TerminalLog
 	if logPath == "" {
 		logPath = os.Getenv("GOA_DEBUG_TERMINAL")
@@ -196,6 +214,19 @@ func (a *App) attachInputHandlers(inp *tui.Editor, engine *tui.TUI) {
 	engine.OnEditSteering = func() { a.handleEditSteering(engine, subs.chat) }
 	a.wireOrchCommandCallbacks()
 	engine.OnCancelInputRequest = func() bool { return a.cancelPendingMainInput() }
+	// A server's life is owned by the console that started it, not by a
+	// keystroke: a browser Ctrl+C/Ctrl+D on an empty input flashes a hint
+	// instead of stopping the session — and with it the process every
+	// attached viewer is watching. webReady exists only in `goa server`
+	// wiring, which is what scopes the hook to server mode (the interactive
+	// TUI keeps quit-as-quit).
+	if a.subs.webReady != nil {
+		engine.OnStopRequest = func() {
+			if a.subs.chat != nil {
+				a.subs.chat.AddFlashMessage("⚡ served by `goa server` — stop it from the console it was started in (Ctrl+C there)")
+			}
+		}
+	}
 }
 
 func (a *App) handleEscape() {

@@ -635,7 +635,7 @@ func runHeadless(subs *subsystems, opts RuntimeOptions) {
 
 	exitCode := app.RunWithContext(ctx)
 	cancel()
-	os.Exit(exitCode)
+	exitAfterFlush(exitCode)
 }
 
 func setHeadlessYolo(subs *subsystems) {

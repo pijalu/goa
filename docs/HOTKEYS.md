@@ -40,6 +40,19 @@ The table below shows the default keybindings. Customize them in your theme conf
 | `Ctrl+Y` | Paste most-recently deleted text (yank) |
 | `Alt+Y` | Cycle through deleted text after pasting |
 | `Ctrl+Z` | Undo |
+| `Ctrl+V` / `Cmd+V` / `Ctrl+Shift+V` | Paste from the system clipboard: files copied in a file manager, then an image, then text |
+
+These chords read the OS clipboard directly, store whatever they find in the
+durable image store (`~/.cache/goa/images`, `~/Library/Caches/goa/images` on
+macOS) and insert the stored path into the input line, where the submit path
+turns it into an attachment — the same store the web UI's `/upload` uses.
+
+`Cmd+V` is bound (as `super+v`, next to `Ctrl+V`) because a terminal can only
+paste for you when the clipboard holds *text*: with an image-only clipboard — a
+screenshot — macOS disables the terminal's own Paste menu item, the chord falls
+through to goa, and a terminal speaking the Kitty keyboard protocol reports it
+as a key event. Binding that event is what makes `Cmd+V` paste a screenshot; a
+terminal that never forwards the chord still pastes images with `Ctrl+V`.
 
 ## Application
 
@@ -100,3 +113,42 @@ When the interactive review pager is open (`/review`):
 > **Note:** Keybindings may vary by terminal emulator. Some keys (like
 > `Ctrl+Enter`) require Kitty keyboard protocol support.
 > Use `/hotkeys` inside Goa to see your active keybindings.
+
+---
+
+## Browser keys (`goa server`)
+
+The tables above are the whole story: over the web UI **the same bindings
+apply**, because the page does not implement shortcuts of its own. A keypress
+is reported to the server (`key`, `ctrl`, `alt`, `shift`), and the server's
+encoder turns it into the byte sequence a terminal would have written — so
+`Ctrl+G`, `Alt+1`, `Ctrl+L`, `PgUp`, `F5` and friends mean in the page exactly
+what they mean in a terminal. Click the page first to give it focus.
+
+What does differ, and is worth knowing:
+
+| Difference | Why |
+|------------|-----|
+| `Cmd`/`Ctrl+Cmd` chords are left to the browser | Reload, devtools and tab switching stay available; the page never swallows them |
+| `Alt` alone may be claimed by the browser menu on some platforms | Use `Esc` to dismiss an overlay if the browser eats `Alt` |
+| Text inserted programmatically (`Input.insertText`, some IME/assistive paths) fires no `keydown` | Those keystrokes have no descriptor to encode; type or paste normally — paste goes through `/input` verbatim |
+| No Kitty keyboard protocol | Chords are encoded in the legacy xterm form plus Kitty CSI-u where legacy has no parameter, which covers every binding Goa has |
+
+Read-only servers (`--server-read-only`) accept every view and reject every
+keystroke, so viewers can navigate and scroll but cannot drive the session.
+
+See [WEBUI.md](WEBUI.md) for the full transport and security model.
+
+## Attach keys (`goa attach`)
+
+An attached terminal forwards every keystroke verbatim — the session's
+bindings are the terminal tables above, unchanged. The client keeps exactly
+one chord for itself:
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+]` | Detach: the terminal is restored and `goa attach` exits; the session keeps running on the server (`/quit` inside the session ends it, or stop the server from its console) |
+
+`Ctrl+]` (byte `0x1d`) is deliberately not bound anywhere in the session's
+keymap, which is what makes it safe to reserve. Reconnect after a network
+drop is automatic; `/quit` inside the session is reported and attach exits.

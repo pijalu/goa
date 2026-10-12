@@ -47,6 +47,9 @@ type Config struct {
 	Orchestrator       OrchestratorConfig       `yaml:"orchestrator,omitempty"`
 	Teams              TeamsConfig              `yaml:"teams,omitempty"`
 	Goals              GoalsConfig              `yaml:"goals,omitempty"`
+	// Sessions controls how long the durable session logs are kept
+	// (default: 7 days, counted from each file's last write).
+	Sessions SessionsConfig `yaml:"sessions,omitempty"`
 	// Features holds opt-in feature gates (e.g. features.remote_compaction).
 	// All gates default off; see FeaturesConfig.
 	Features        FeaturesConfig  `yaml:"features,omitempty"`
@@ -93,7 +96,7 @@ type ExecutionConfig struct {
 	// (X = this value, Y = the effective event stall). It must be shorter than
 	// that window; empty/zero — or a value at or above it — falls back to two
 	// thirds of the window, so the warning always precedes the retry.
-	// Default: "3m20s" inside a "5m" activity_timeout (event stall 3m45s).
+	// Default: "1m20s" inside a "2m" activity_timeout (event stall 1m30s).
 	ActivityWarnAfter string                `yaml:"activity_warn_after"`
 	ErrorThreshold    float64               `yaml:"error_threshold"`
 	WorktreeMode      internal.WorktreeMode `yaml:"worktree_mode"`
@@ -310,12 +313,12 @@ type ModelConfig struct {
 	// per-model escape hatch for quick-fixing new or always-thinking models
 	// whose accepted levels differ from Goa's canonical set: set the canonical
 	// thinking_level you want in the UI, then map it to the native value here.
-	// Example:
+	// Each listed level overrides the corresponding entry of the built-in
+	// variant profile's map (and of the model-registry map); levels not listed
+	// keep the profile's mapping. Example:
 	//   thinking_level: xhigh
 	//   thinking_level_native_map:
 	//     xhigh: max
-	// It only applies when the resolved variant profile has no map of its own
-	// (dedicated profiles like kimi-code already map their levels).
 	ThinkingLevelNativeMap map[string]string `yaml:"thinking_level_native_map,omitempty"`
 
 	// InputTypes lists supported input content types (text, image).

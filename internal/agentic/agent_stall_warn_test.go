@@ -100,23 +100,23 @@ func TestStallWarnAfter_IgnoredAtOrBeyondStallWindow(t *testing.T) {
 
 // TestQuietWarningMessage_ByDefaultReportsShippedTiming pins the exact
 // user-visible text for the shipped defaults: the lead comes from
-// execution.activity_warn_after (3m20s) and the reported deadline is the event
-// stall the watchdog actually retries on (3m45s = three quarters of the 5m
+// execution.activity_warn_after (1m20s) and the reported deadline is the event
+// stall the watchdog actually retries on (1m30s = three quarters of the 2m
 // byte budget):
 //
-//	provider quiet for 3m20s — still waiting; will auto-retry after 3m45s of silence
+//	provider quiet for 1m20s — still waiting; will auto-retry after 1m30s of silence
 //
 // It also asserts the message carries the values the agent actually uses (the
 // lead from effectiveStallWarnAfter and the window from
 // effectiveEventStallTimeout) rather than hard-coded numbers.
 func TestQuietWarningMessage_ByDefaultReportsShippedTiming(t *testing.T) {
-	shipped := provider.StreamOptions{IdleTimeout: 5 * time.Minute, ActivityWarnAfter: 200 * time.Second}
+	shipped := provider.StreamOptions{IdleTimeout: 2 * time.Minute, ActivityWarnAfter: 80 * time.Second}
 
-	agent, obs := quietTestAgent(t, provider.Api("test-stall-warn-message"), 5*time.Minute)
+	agent, obs := quietTestAgent(t, provider.Api("test-stall-warn-message"), 2*time.Minute)
 	warnAfter := agent.effectiveStallWarnAfter(shipped)
 	stall := agent.effectiveEventStallTimeout(shipped)
-	if warnAfter != 200*time.Second || stall != 225*time.Second {
-		t.Fatalf("shipped timing = warn %s / retry %s, want 3m20s / 3m45s", warnAfter, stall)
+	if warnAfter != 80*time.Second || stall != 90*time.Second {
+		t.Fatalf("shipped timing = warn %s / retry %s, want 1m20s / 1m30s", warnAfter, stall)
 	}
 
 	agent.emitQuietWarning(warnAfter, stall)
@@ -127,7 +127,7 @@ func TestQuietWarningMessage_ByDefaultReportsShippedTiming(t *testing.T) {
 			msgs = append(msgs, e.Text)
 		}
 	}
-	want := "provider quiet for 3m20s — still waiting; will auto-retry after 3m45s of silence"
+	want := "provider quiet for 1m20s — still waiting; will auto-retry after 1m30s of silence"
 	if len(msgs) != 1 || msgs[0] != want {
 		t.Fatalf("quiet warning = %q, want exactly %q", msgs, want)
 	}

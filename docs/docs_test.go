@@ -18,7 +18,7 @@ func TestList_KnownDocs(t *testing.T) {
 		t.Fatal("expected at least one embedded doc")
 	}
 
-	required := []string{"ARCHITECTURE", "COMMANDS", "CONFIGURATION", "SKILLS", "TOOLS"}
+	required := []string{"ARCHITECTURE", "COMMANDS", "CONFIGURATION", "SKILLS", "TOOLS", "WEBUI"}
 	found := make(map[string]bool)
 	for _, d := range list {
 		found[d.Name] = true
@@ -27,6 +27,31 @@ func TestList_KnownDocs(t *testing.T) {
 		if !found[name] {
 			t.Errorf("missing required doc %q in list: %v", name, list)
 		}
+	}
+}
+
+// TestGet_WebUI documents the web UI end to end through the model-facing path:
+// the doc must be readable by name and case-insensitively, and it must carry
+// the facts a user cannot guess — the subcommand, the loopback default and the
+// auth flag.
+func TestGet_WebUI(t *testing.T) {
+	content, err := Get("WEBUI")
+	if err != nil {
+		t.Fatalf("Get(WEBUI) failed: %v", err)
+	}
+	for _, want := range []string{
+		"goa server",
+		"127.0.0.1:8080",
+		"--server-auth",
+		"--insecure-no-auth",
+		"--server-read-only",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("WEBUI.md must document %q so the web UI can be used without guessing", want)
+		}
+	}
+	if _, err := Get("webui"); err != nil {
+		t.Errorf("Get(webui) must resolve case-insensitively: %v", err)
 	}
 }
 
@@ -73,7 +98,7 @@ func TestGet_KnownDoc(t *testing.T) {
 // goa:// URLs): embedded docs carry SPDX headers on disk, but comments must
 // never reach the LLM context.
 func TestGet_StripsComments(t *testing.T) {
-	for _, name := range []string{"SKILLS", "TOOLS", "TUI", "SETUP"} {
+	for _, name := range []string{"SKILLS", "TOOLS", "TUI", "SETUP", "CLI"} {
 		content, err := Get(name)
 		if err != nil {
 			t.Fatalf("Get(%s) failed: %v", name, err)
@@ -142,5 +167,40 @@ func TestParseGoaURL_Invalid(t *testing.T) {
 		if ok {
 			t.Errorf("ParseGoaURL(%q) expected !ok, got %q", c, got)
 		}
+	}
+}
+
+// TestGet_CLI pins the command-line manual's content. docs/CLI.md is the
+// narrative half of `goa --help` (the option reference and the document index
+// are generated from the live flag set and embedded docs), so a mode that is
+// missing here is a mode the user cannot discover from the CLI.
+func TestGet_CLI(t *testing.T) {
+	content, err := Get("CLI")
+	if err != nil {
+		t.Fatalf("Get(CLI) failed: %v", err)
+	}
+	for _, want := range []string{
+		// Every invocation surface.
+		"goa server", "goa mcp", "goa help",
+		// Modes and the flags that select them.
+		"--prompt", "--prompt-file", "--goal", "--orchestrate", "--acp",
+		"--dream", "--export-output", "--check-update", "--perf-load",
+		"--with-profiling", "--cpuprofile", "--memprofile", "--trace",
+		// Configuration cascade and environment.
+		"~/.goa/config.yaml", ".goa/config.yaml", ".goa/config.local.yaml",
+		"GOA_HOME", "GOA_SERVER_AUTH_TOKEN", "GOA_CRASH_LOG", "${VAR:-default}",
+		// Files a user needs to find again.
+		"~/.goa/usage.db", ".goa/crash.log", ".goa/exports/",
+		// Headless exit codes: scripts depend on the numbers.
+		"`0`", "`1`", "`2`", "`3`", "`4`", "`5`", "`6`",
+		// Help topics the generated sections answer.
+		"goa help options", "goa help docs",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("CLI.md must document %q", want)
+		}
+	}
+	if _, err := Get("cli"); err != nil {
+		t.Errorf("Get(cli) must resolve case-insensitively: %v", err)
 	}
 }

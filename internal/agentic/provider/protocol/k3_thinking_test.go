@@ -96,6 +96,40 @@ func TestKimiForCodingStillWorks(t *testing.T) {
 		"kimi-for-coding reasoning_effort must be a server-mappable value")
 }
 
+// A config thinking_level_native_map (bridged onto Model.ThinkingLevelMap by
+// the provider manager) must override the kimi-code profile's own map per key:
+// the listed level reaches the wire with the user-mapped value while unlisted
+// levels keep the profile's max-only mapping.
+func TestKimiCodeConfigRemapOverridesProfileMapPerKey(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICompletions)
+	require.NotNil(t, p)
+
+	model := schema.Model{
+		ID: "kimi-for-coding", Api: schema.ApiOpenAICompletions, Provider: schema.ProviderKimiCode,
+		Reasoning: true,
+		ThinkingLevelMap: schema.ThinkingLevelMap{
+			schema.ThinkingHigh: "high",
+		},
+	}
+	profile := schema.ResolveProfile(model)
+	ctx := schema.Context{Messages: []schema.Message{schema.NewUserMessage("hi")}}
+
+	// The remapped level must reach the wire as the user configured…
+	body, err := p.BuildRequest(model, ctx, schema.StreamOptions{Reasoning: schema.ThinkingHigh}, profile)
+	require.NoError(t, err)
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(body, &req))
+	assert.Equal(t, "high", req["reasoning_effort"],
+		"config remap must beat the profile's max-only mapping for the listed level")
+
+	// …while an unlisted level still follows the profile map.
+	body, err = p.BuildRequest(model, ctx, schema.StreamOptions{Reasoning: schema.ThinkingXHigh}, profile)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(body, &req))
+	assert.Equal(t, "max", req["reasoning_effort"],
+		"levels not in the config remap must keep the profile mapping")
+}
+
 // End-to-end for the plan's after-fix flow: a k3 stream carrying
 // reasoning_content must be parsed into EventThinkingDelta events (the
 // response half of the k3 thinking fix), kept separate from content.

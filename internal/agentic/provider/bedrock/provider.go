@@ -213,11 +213,16 @@ func convertBedrockContent(blocks []provider.ContentBlock) []map[string]interfac
 		case provider.ContentBlockText:
 			result = append(result, map[string]interface{}{"text": b.Text})
 		case provider.ContentBlockImage:
+			enc, ok := provider.EncodeImage(b.ImageData)
+			if !ok {
+				result = append(result, map[string]interface{}{"text": provider.ImageUnavailablePlaceholder})
+				break
+			}
 			result = append(result, map[string]interface{}{
 				"image": map[string]interface{}{
-					"format": b.ImageMimeType,
+					"format": provider.BedrockImageFormat(enc.MimeType),
 					"source": map[string]interface{}{
-						"bytes": b.ImageData,
+						"bytes": enc.Base64,
 					},
 				},
 			})

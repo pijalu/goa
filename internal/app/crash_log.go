@@ -86,8 +86,24 @@ func flushStderrTee() {
 // race that silently swallowed the config error.
 func fatalExitf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format, args...)
+	exitAfterFlush(1)
+}
+
+// exitAfterFlush exits with code after guaranteeing that everything already
+// written to stderr has reached the terminal and the crash log.
+//
+// The tee installed by setupCrashLog forwards through a pipe drained by a
+// goroutine, so ANY print-then-exit path races that goroutine. The flag
+// package's built-in help is the worst case: it writes its usage to stderr and
+// calls os.Exit(0) itself, so `goa --help` printed a non-deterministic prefix
+// of its own help — 6 of 63 options in one run, all of it in another, nothing
+// at all on a slow terminal. Every print-then-exit path goes through this
+// helper instead of calling os.Exit directly.
+//
+// stdout needs no flush: os.Stdout writes are synchronous syscalls.
+func exitAfterFlush(code int) {
 	flushStderrTee()
-	os.Exit(1)
+	os.Exit(code)
 }
 
 // writeCrashLog writes panic details directly to the crash log file. It is

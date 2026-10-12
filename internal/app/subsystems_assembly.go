@@ -168,6 +168,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	}
 
 	s.startOrchestratorCleanup()
+	s.startSessionCleanup()
 
 	return s
 }

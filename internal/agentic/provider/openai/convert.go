@@ -5,11 +5,7 @@
 package openai
 
 import (
-	"encoding/base64"
 	"fmt"
-	"net/http"
-	"os"
-	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
@@ -79,11 +75,15 @@ func buildUserContent(blocks []provider.ContentBlock) interface{} {
 				})
 			}
 		case provider.ContentBlockImage:
-			dataURL := imagePathToDataURL(b.ImageData)
-			if dataURL != "" {
+			if dataURL := provider.ImageToDataURL(b.ImageData); dataURL != "" {
 				parts = append(parts, map[string]interface{}{
 					"type":      "image_url",
 					"image_url": map[string]interface{}{"url": dataURL},
+				})
+			} else {
+				parts = append(parts, map[string]interface{}{
+					"type": "text",
+					"text": provider.ImageUnavailablePlaceholder,
 				})
 			}
 		}
@@ -98,18 +98,6 @@ func hasImageBlock(blocks []provider.ContentBlock) bool {
 		}
 	}
 	return false
-}
-
-func imagePathToDataURL(path string) string {
-	if strings.HasPrefix(path, "data:") {
-		return path
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	mime := http.DetectContentType(data)
-	return fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(data))
 }
 
 func convertAssistantMessage(msg provider.Message, compat provider.OpenAICompletionsCompat) map[string]interface{} {

@@ -165,6 +165,14 @@ type TUI struct {
 	// suppressed.
 	OnCancelInputRequest func() bool
 
+	// OnStopRequest, when set, owns what the interactive quit key (Ctrl+C on
+	// an empty editor) does. The interactive TUI leaves it nil and quit stays
+	// quit; a host whose lifetime is not the terminal's — `goa server`,
+	// stopped from its own console — installs a hook so the session's
+	// interrupt key can never take the process down. Ctrl+D is not hooked:
+	// EOF means "stop the session" everywhere, by the owner's request.
+	OnStopRequest func()
+
 	// pluginHotkeys holds JS-plugin-registered keyboard shortcuts, checked
 	// after built-in appShortcuts. Guarded by pluginHotkeysMu because plugins
 	// register from the plugin runner goroutine while the TUI reads on the
@@ -540,6 +548,15 @@ func (t *TUI) renderOneFrame() {
 	reply := make(chan *Scene, 1)
 	t.snapReq <- reply
 	scene := <-reply
+	// The block-plane consumer reads the Scene before the compositor mutates
+	// it (WidthChanged is compositor-written). A panic in an observer must not
+	// take the render loop down.
+	if obs, ok := t.terminal.(SceneObserver); ok {
+		func() {
+			defer recoverToLog("observe")
+			obs.ObserveScene(scene)
+		}()
+	}
 	func() {
 		defer recoverToLog("render")
 		t.compositor.Render(scene)
@@ -777,6 +794,17 @@ func (t *TUI) HandleKeys() bool { return !t.stopped.Load() }
 // Stopped returns a channel that is closed when the TUI engine stops
 // (via Stop). Goroutines should block on this instead of polling HandleKeys().
 func (t *TUI) Stopped() <-chan struct{} { return t.done }
+
+// stopRequested routes an input-driven stop: to the host's own handler when
+// it installed one (a server process is stopped from its console, not by a
+// keystroke), otherwise to the TUI's own shutdown.
+func (t *TUI) stopRequested() {
+	if t.OnStopRequest != nil {
+		t.OnStopRequest()
+		return
+	}
+	t.Stop()
+}
 
 // OnCommandLoop reports whether the CALLER is running on the commandLoop
 // goroutine. Hosts inject this into plugin bridges as the "must never block"

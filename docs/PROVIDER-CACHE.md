@@ -42,8 +42,21 @@ content") is only actionable for the **keyed-cache** providers.
 
 ## 2. The append-only contract (Hard Rule #7)
 
-Outside of compression, a conversation's message history is **strictly
-append-only**: never rewrite, drop, or reorder already-sent messages.
+Outside of compression, a conversation's request is **strictly append-only**:
+never rewrite, drop, or reorder already-sent messages — **and never mutate a
+prompt-bearing request field** (tool schemas, system prompt, tool-stream flags).
+The message history is only the visible half of the contract: the tool schemas
+(e.g. 9 tools ≈ 2.0k tokens) are serialized into the prompt too, so dropping them
+for one round moves the provider's prefix-cache divergence point from the tail
+of the conversation to right after the system prompt.
+
+Measured (kimi `k3-256k`, 2026-10-05): two requests differing ONLY in that the
+second removed `tools` — with a byte-exact message append — fell from
+`cached=41,728` to `cached=1,792` of a 41,086-token prompt, i.e. 39,294 tokens
+recomputed at full price (and 115,200 → 0 on the same shape earlier in the
+session). Keeping `tools` and pinning `tool_choice:"none"` instead: HTTP 200,
+prefix cache retained, no tool call emitted (verified live, and the state the
+code is in since B9).
 
 - Any new context — fresh-context goal, `/clear`, sub-agent, skill runner,
   planner, summarizer, fork — **MUST** get its own dedicated SessionID.
@@ -51,6 +64,15 @@ append-only**: never rewrite, drop, or reorder already-sent messages.
   of the other; anything else must rotate the ID.
 - A shared ID with a diverging context silently evicts the provider cache and
   surfaces as an unexplained miss.
+- **Text-only rounds (P7 collapse)** satisfy the contract by moving only
+  `tool_choice` — a prompt-neutral control field. `SupportsToolChoiceNone`
+  (`schema.CompatFlags`, resolved by `protocol/tool_choice.go`) turns even that
+  off per model: the round then repeats the previous round's `tool_choice`
+  verbatim and the body is append-only in every field. Responses flavors default
+  to off (strict upstreams 400 on `"none"`); everything else defaults to on.
+  The invariance is asserted per flavor by
+  `protocol/no_tools_test.go:TestCollapse_PreservesCachedPromptSurface` — add any
+  new request field there when a protocol builder gains one.
 
 Enforcement / detection lives in two mirrored detectors:
 

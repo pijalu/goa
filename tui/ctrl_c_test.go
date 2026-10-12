@@ -15,17 +15,17 @@ func TestEditor_CtrlC_FallsThroughToTUI(t *testing.T) {
 	e.SetText("hello world")
 	e.SetFocused(true)
 
-	// The Ctrl+C case was removed from Editor.HandleInput.
-	// The decoded key "ctrl+c" does not start with \x1b so isPrintable
-	// returns true and each char of "ctrl+c" is inserted as text.
-	// This is correct — the TUI-level handler (tui.go:handleKey)
-	// intercepts Ctrl+C BEFORE routing to the Editor in production.
+	// The Ctrl+C case was removed from Editor.HandleInput: Ctrl+C belongs to the
+	// TUI (clear the input line, or stop the session), which intercepts it before
+	// routing to the Editor in production. What the editor must not do is act on
+	// it at all — neither consume it nor type it. It used to insert the
+	// *characters* of the decoded name "ctrl+c", which only proved the early
+	// return was gone; a decoded name is a key, never text (tui.isKeyName), so the
+	// buffer must come out untouched.
 	e.HandleInput(KeyCtrlC)
 
-	// Verify Editor no longer has an early return for Ctrl+C
-	// (the key name chars get inserted, confirming the case was removed)
-	if e.Text() == "hello world" {
-		t.Error("Editor's Ctrl+C early return was NOT removed")
+	if got := e.Text(); got != "hello world" {
+		t.Errorf("Editor acted on Ctrl+C: text = %q, want it untouched", got)
 	}
 }
 
@@ -155,13 +155,14 @@ func TestInput_CtrlC_NoEarlyReturn(t *testing.T) {
 	inp.SetFocused(true)
 	inp.SetText("hello")
 
-	// Input never had a Ctrl+C case — verify no early return exists.
-	// The key name chars get inserted because there's no interception.
+	// Input never had a Ctrl+C case — nothing may be inserted for it either: the
+	// decoded name "ctrl+c" is a key of the TUI, not text (tui.isKeyName), and the
+	// old behaviour of typing its characters proved only that no early return
+	// existed.
 	inp.HandleInput(KeyCtrlC)
 
-	// Text changed from "hello" to "helloctrl+c" — confirms no early return
-	if inp.Text() == "hello" {
-		t.Error("Input has an unexpected Ctrl+C early return")
+	if got := inp.Text(); got != "hello" {
+		t.Errorf("Input acted on Ctrl+C: text = %q, want it untouched", got)
 	}
 }
 

@@ -361,3 +361,28 @@ func TestDecodeKeyForRouting_OptionKeyAlias(t *testing.T) {
 		t.Errorf("decodeKeyForRouting(\"µ\") = %q, want %q", key, "µ")
 	}
 }
+
+// Ctrl/Alt+Backspace arrives as code 127 with a modifier (kitty protocol), and
+// the editor binds those chords to word deletion. The modifier must survive the
+// decode or the binding can never fire.
+func TestDecodeKeys_KittyBackspaceKeepsModifier(t *testing.T) {
+	cases := []struct {
+		seq  string
+		want string
+	}{
+		{"\x1b[127;1u", KeyBackspace},
+		{"\x1b[127;3u", "alt+backspace"},
+		{"\x1b[127;5u", "ctrl+backspace"},
+		{"\x1b[127;6u", "ctrl+shift+backspace"},
+		{"\x1b[8;5u", "ctrl+backspace"},
+	}
+	for _, tc := range cases {
+		keys := decodeKeys([]byte(tc.seq))
+		if len(keys) != 1 {
+			t.Fatalf("%q: expected 1 key, got %d: %v", tc.seq, len(keys), keys)
+		}
+		if keys[0] != tc.want {
+			t.Errorf("%q decoded to %q, want %q", tc.seq, keys[0], tc.want)
+		}
+	}
+}

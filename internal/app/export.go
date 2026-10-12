@@ -27,8 +27,7 @@ type ExportOptions struct {
 // runExport executes the headless `goa export` command.
 func runExport(subs *subsystems, opts ExportOptions) {
 	if err := doExport(subs, opts); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fatalExitf("Error: %v\n", err)
 	}
 }
 

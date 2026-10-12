@@ -114,8 +114,7 @@ func (b *JSBridge) setupConfirm(uiObj *goja.Object, ui *UIBridge) {
 		if verr != "" {
 			return b.vm.ToValue(map[string]any{"error": verr})
 		}
-		var resp ConfirmResponse
-		resp = <-ui.RequestConfirm(req)
+		resp := <-ui.RequestConfirm(req)
 		if resp.Err != "" {
 			return b.vm.ToValue(map[string]any{"cancelled": resp.Cancelled, "error": resp.Err})
 		}

@@ -1,0 +1,567 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 Pierre Poissinger
+
+package webui
+
+import (
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/pijalu/goa/tui"
+)
+
+// MaxFrameBytes bounds a single inbound client message. Input and control
+// documents are tiny; anything larger is a bug or an attack, never a
+// legitimate client.
+const MaxFrameBytes = 1 << 20
+
+// pendingInputLimit bounds the keystrokes a VirtualTerminal holds before the
+// engine wires its input callback. A tty's own input buffer is finite too, and
+// this one is fed by a socket: an unbounded buffer would be a memory-growth
+// vector for a client that types into a session that never starts. Bytes past
+// the limit are dropped (the overflow is the least valuable part of a burst
+// nobody asked the session to interpret yet).
+const pendingInputLimit = 4096
+
+// FrameSink receives the frames a VirtualTerminal produces. The Hub is the
+// production implementation; tests use a recorder.
+type FrameSink interface {
+	// Publish hands a frame of the given plane to the sink. It must never
+	// block the caller for long: the render loop calls it synchronously.
+	Publish(plane Plane, f *Frame)
+	// HasClientsFor reports whether a frame of the given plane would reach
+	// anyone. A screen nobody is watching still has to be tracked, but it does
+	// not have to be diffed, run-collapsed and encoded 30 times a second — the
+	// sink is the only thing that knows, so it is the only thing that can say.
+	HasClientsFor(plane Plane) bool
+}
+
+// VirtualTerminal implements tui.Terminal on top of a CellGrid. The whole TUI
+// engine runs against it unchanged: the same Compositor computes the same
+// differential byte stream, the bytes land in a virtual screen instead of a
+// TTY, and the resulting cell rows are published as frames.
+//
+// It deliberately never touches the process terminal: no raw mode, no screen
+// ownership, no writes to stdout. A browser-reachable session must not fight
+// the terminal it was launched from.
+type VirtualTerminal struct {
+	grid *CellGrid
+	sink FrameSink
+
+	mu       sync.RWMutex
+	onInput  func(string)
+	onResize func()
+	started  bool
+	stopped  bool
+	// pendingInput holds keystrokes delivered before Start wired onInput.
+	// Guarded by mu.
+	pendingInput strings.Builder
+
+	frameNo atomic.Uint64
+	codec   FrameCodec
+
+	// plane is the DEFAULT plane for clients that attach without naming one
+	// (browsers loaded from the page: the server-wide --server-cells choice).
+	// A client that negotiates its own plane (a native `goa attach` asking for
+	// cells) is served that plane instead. Set once via SetPlane before Start;
+	// read without a lock on the render goroutine.
+	plane Plane
+
+	// blocksMu guards the block-plane state: the last observed Scene view and
+	// the tracker diffing Scene snapshots into wire ops. ObserveScene and
+	// publish run on the render goroutine, but AttachFrame (which needs the
+	// current journal) runs on transport goroutines.
+	blocksMu sync.Mutex
+	observed SceneView
+	tracker  *BlockTracker
+	// overlayShown is the overlay flag of the last shipped blocks-plane
+	// frame, and bandShipped the band height it carried: a scene whose band
+	// geometry moved without any cell changing (a resize the engine answered
+	// with an identical screen) must still ship a band frame, or the page
+	// renders its footer one row off.
+	overlayShown bool
+	bandShipped  int
+}
+
+// SceneView is the part of a Scene the block plane consumes, normalised for
+// shipping: the block snapshot, the pinned chrome height, and the band
+// extension the non-input-capturing overlays (the autocomplete popup) add.
+type SceneView struct {
+	Blocks []tui.SceneBlock
+	// Chrome is the pinned bottom-chrome row count.
+	Chrome int
+	// BandExtra is how many rows ABOVE the chrome band the page must render
+	// as part of the band (the autocomplete popup riding on top of it).
+	BandExtra int
+	// Overlay is true while an input-capturing overlay (selector, confirm)
+	// owns the screen: the page falls back to full-cell rendering.
+	Overlay bool
+	// Width is the width the header art was rendered at.
+	Width int
+}
+
+var _ tui.SceneObserver = (*VirtualTerminal)(nil)
+
+// ObserveScene implements tui.SceneObserver. It captures what the block
+// plane needs from the Scene before the compositor consumes it. Cheap: the
+// block slice is shared, the overlay math walks only the overlay layers.
+//
+// It runs unconditionally — whether any blocks client is attached right now
+// is a hub question the render goroutine must not answer mid-frame: the
+// observation must always describe the scene the compositor is about to
+// consume, or a blocks client attaching later would receive a journal whose
+// baseline does not match any shipped state.
+func (v *VirtualTerminal) ObserveScene(scene *tui.Scene) {
+	if scene == nil {
+		return
+	}
+	view := SceneView{
+		Blocks:  scene.Blocks,
+		Chrome:  scene.ChromeHeight,
+		Overlay: scene.OverlayCapturesInput,
+		Width:   scene.BlockWidth,
+	}
+	if !view.Overlay {
+		view.BandExtra = bandExtra(scene, view.Chrome)
+	}
+	v.blocksMu.Lock()
+	v.observed = view
+	v.blocksMu.Unlock()
+}
+
+// bandExtra reports how far non-capturing overlays reach above the chrome
+// band. Only overlays seated on the band (the autocomplete popup, whose
+// bottom touches the band's top) extend it; a floating passive overlay is
+// not part of the band.
+func bandExtra(scene *tui.Scene, chrome int) int {
+	bandTop := scene.TerminalH - chrome
+	extra := 0
+	for i := range scene.Layers {
+		l := &scene.Layers[i]
+		if l.Kind != tui.LayerOverlay || l.CapturesInput {
+			continue
+		}
+		if l.Rect.Y+l.Rect.H < bandTop {
+			continue
+		}
+		if reach := bandTop - l.Rect.Y; reach > extra {
+			extra = reach
+		}
+	}
+	return extra
+}
+
+// SetPlane selects the DEFAULT plane for clients that attach without naming
+// one. It must be called before the engine starts rendering.
+func (v *VirtualTerminal) SetPlane(p Plane) {
+	v.plane = p
+	if p == PlaneBlocks && v.tracker == nil {
+		v.tracker = NewBlockTracker()
+	}
+}
+
+// DefaultPlane reports the plane clients that do not negotiate are served.
+func (v *VirtualTerminal) DefaultPlane() Plane { return v.plane }
+
+var _ tui.Terminal = (*VirtualTerminal)(nil)
+
+// NewVirtualTerminal creates a virtual screen of cols×rows with no sink
+// attached (set one with SetSink before Start, or pass it to NewServer).
+func NewVirtualTerminal(cols, rows int) *VirtualTerminal {
+	if cols <= 0 {
+		cols = DefaultCols
+	}
+	if rows <= 0 {
+		rows = DefaultRows
+	}
+	vt := &VirtualTerminal{grid: NewCellGrid(cols, rows)}
+	// Revision 1 is the initial screen. Starting at 1 rather than 0 keeps "the
+	// client holds nothing" (since=0) distinguishable from "the client holds the
+	// first screen it was ever sent" (since=1), which is what makes a resume
+	// answerable.
+	vt.frameNo.Store(1)
+	return vt
+}
+
+// Grid exposes the authoritative cell grid (the /text mirror and tests read it
+// directly).
+func (v *VirtualTerminal) Grid() *CellGrid { return v.grid }
+
+// SetSink attaches (or detaches, with nil) the frame sink.
+func (v *VirtualTerminal) SetSink(s FrameSink) {
+	v.mu.Lock()
+	v.sink = s
+	v.mu.Unlock()
+}
+
+// Start stores the engine's input and resize callbacks. Unlike
+// ProcessTerminal it acquires no raw mode and claims no screen: there is no
+// TTY behind it.
+//
+// Keystrokes that arrived first are replayed through the callback now, in
+// order: a page can attach and type as soon as the listener is up, which is a
+// few milliseconds before the session's terminal exists, and those bytes must
+// not vanish (a tty holds typed bytes until a reader arrives; so does this).
+func (v *VirtualTerminal) Start(onInput func(string), onResize func()) {
+	v.mu.Lock()
+	v.onInput, v.onResize = onInput, onResize
+	v.started = true
+	v.stopped = false
+	pending := v.pendingInput.String()
+	v.pendingInput.Reset()
+	v.mu.Unlock()
+
+	if pending != "" {
+		v.dispatch(onInput, pending)
+	}
+}
+
+// Stop detaches from the sink. The grid is left intact so a late reader can
+// still inspect the final screen.
+func (v *VirtualTerminal) Stop() {
+	v.mu.Lock()
+	if v.stopped {
+		v.mu.Unlock()
+		return
+	}
+	v.stopped = true
+	v.onInput, v.onResize = nil, nil
+	// The session is over: keystrokes typed into it now have no engine to
+	// reach, and must not be replayed into a future session either.
+	v.pendingInput.Reset()
+	v.mu.Unlock()
+	v.SetSink(nil)
+}
+
+// Write feeds compositor output into the grid and publishes a frame when the
+// screen actually moved.
+func (v *VirtualTerminal) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	v.WriteString(string(p))
+	return len(p), nil
+}
+
+// WriteString is Write for a string.
+func (v *VirtualTerminal) WriteString(s string) {
+	if s == "" {
+		return
+	}
+	if !v.grid.Process(s) {
+		return
+	}
+	v.publish(false)
+}
+
+// Size reports the virtual screen geometry.
+func (v *VirtualTerminal) Size() (width, height int) { return v.grid.Size() }
+
+// SetRaw is a no-op: there is no terminal to put in raw mode. The returned
+// restore func is safe to call.
+func (v *VirtualTerminal) SetRaw() (func(), error) { return func() {}, nil }
+
+// HideCursor hides the caret carried by subsequent frames.
+func (v *VirtualTerminal) HideCursor() {
+	if v.grid.Cursor().Visible {
+		v.grid.SetCursorVisible(false)
+		v.publish(true)
+	}
+}
+
+// ShowCursor shows the caret carried by subsequent frames.
+func (v *VirtualTerminal) ShowCursor() {
+	if !v.grid.Cursor().Visible {
+		v.grid.SetCursorVisible(true)
+		v.publish(true)
+	}
+}
+
+// ClearScreen blanks the grid and publishes a full repaint.
+func (v *VirtualTerminal) ClearScreen() {
+	v.grid.Clear()
+	v.publish(true)
+}
+
+// SetTitle records the window title; it rides the next frame so the browser
+// can set document.title.
+func (v *VirtualTerminal) SetTitle(title string) {
+	if v.grid.Title() == title {
+		return
+	}
+	v.grid.SetTitle(title)
+	v.publish(false)
+}
+
+// Resize changes the virtual screen geometry and fires the engine's resize
+// callback — the same signal SIGWINCH delivers for a real terminal, so the
+// engine's geometry-reset full-repaint path is reused unchanged.
+func (v *VirtualTerminal) Resize(cols, rows int) {
+	if !v.resizeChanged(cols, rows) {
+		return
+	}
+	v.grid.Resize(cols, rows)
+	v.publish(true)
+	v.mu.RLock()
+	cb := v.onResize
+	v.mu.RUnlock()
+	if cb != nil {
+		cb()
+	}
+}
+
+// resizeChanged reports whether the requested geometry differs from the
+// current one. Out-of-range values are still "changed" — the grid clamps them
+// and the first frame already carries the clamped size.
+func (v *VirtualTerminal) resizeChanged(cols, rows int) bool {
+	cc, cr := v.grid.Size()
+	return cc != cols || cr != rows
+}
+
+// Input delivers raw terminal bytes from a transport to the engine, exactly as
+// a real keyboard read would. Panics from the engine's handler are contained:
+// one bad key must not kill the transport goroutine.
+//
+// Before the engine has started, the bytes are held (bounded) instead of
+// dropped and replayed by Start: the listener accepts clients the moment it
+// binds, a few milliseconds before the session wires its input callback, and a
+// page that connects in that window must not lose what the user typed.
+func (v *VirtualTerminal) Input(s string) {
+	if s == "" {
+		return
+	}
+
+	v.mu.Lock()
+	cb := v.onInput
+	if cb == nil {
+		// Not started yet: hold the bytes for Start. A stopped terminal holds
+		// nothing — there is no session left to type into.
+		if !v.stopped && v.pendingInput.Len() < pendingInputLimit {
+			room := pendingInputLimit - v.pendingInput.Len()
+			if len(s) > room {
+				s = s[:room]
+			}
+			v.pendingInput.WriteString(s)
+		}
+		v.mu.Unlock()
+		return
+	}
+	v.mu.Unlock()
+
+	v.dispatch(cb, s)
+}
+
+func (v *VirtualTerminal) dispatch(cb func(string), s string) {
+	defer func() { _ = recover() }()
+	cb(s)
+}
+
+// publish builds and ships a frame to every plane that has an audience. full
+// forces every row into the patch set (used after a geometry change or a
+// screen clear).
+//
+// With nobody attached on either plane the frame is not built at all: the
+// dirty marks are dropped and the grid keeps tracking its screen, so the next
+// client to attach gets an authoritative full snapshot (which is what an
+// attach does anyway) instead of the server spending a diff, a run collapse
+// and a JSON encode per engine frame on a screen no one can see.
+//
+// Each plane is served its own document for the same screen: the cells plane
+// ships row patches plus the transcript batch; the blocks plane ships band
+// cells plus block deltas. The row patches are taken from the grid EXACTLY
+// once per publish (the dirty set is drained by whoever asks first) and
+// shared by both planes — the blocks plane filters them down to the chrome
+// band. Both documents carry the same seq: a client is current when its seq
+// matches the grid's, whichever plane it watches.
+//
+// The blocks-plane tracker baseline still advances on every publish — shipped
+// or not — so a later attach's journal and the ops that follow it always
+// agree.
+func (v *VirtualTerminal) publish(full bool) {
+	v.mu.RLock()
+	sink := v.sink
+	v.mu.RUnlock()
+	if sink == nil {
+		return
+	}
+	cells := sink.HasClientsFor(PlaneCells)
+	blocks := sink.HasClientsFor(PlaneBlocks)
+	if !cells && !blocks {
+		v.grid.DiscardChanges()
+		return
+	}
+	seq := v.frameNo.Add(1)
+	var patches []RowPatch
+	// taken records that the grid's dirty marks have been drained by a plane
+	// already. It cannot be inferred from patches == nil: a STATE-ONLY frame
+	// (nothing but the cursor moved) legitimately carries no row patches, and
+	// the blocks plane below must reuse that empty set rather than ask the grid
+	// again — a second Patches call finds nothing marked and falls back to
+	// comparing the whole screen (bugs.md B20).
+	taken := false
+	if cells {
+		if full {
+			patches = v.grid.FullPatches()
+		} else {
+			patches = v.grid.Patches()
+		}
+		taken = true
+		frame := NewFrame(seq, v.grid, patches, v.grid.Title(), full)
+		// Rows that scrolled off since the last publish ride this frame: the
+		// transport emits them as a separate "scrollback" message so the client
+		// can keep a transcript without disturbing the live grid. A batch that
+		// REPLACES the transcript — the scrollback was wiped before the whole
+		// history was re-emitted at a new width — is marked as such, or the
+		// browser would append a second copy of what it already holds (bugs.md
+		// B2).
+		batch := v.grid.TakeScrollback()
+		frame.Scrollback = batch.Rows
+		frame.ScrollbackReplace = batch.Replace
+		sink.Publish(PlaneCells, frame)
+	}
+	if blocks {
+		// The dirty set is drained by whoever asked first, so the blocks plane
+		// reuses the patches the cells plane took (or takes them itself when no
+		// cells client is attached).
+		if !taken {
+			if full {
+				patches = v.grid.FullPatches()
+			} else {
+				patches = v.grid.Patches()
+			}
+		}
+		v.publishBlocksFrame(seq, full, patches)
+	}
+}
+
+// publishBlocksFrame ships one blocks-plane frame: chrome band cells + block
+// deltas. patches are this publish's row patches (already taken from the grid
+// exactly once — see publish).
+func (v *VirtualTerminal) publishBlocksFrame(seq uint64, full bool, patches []RowPatch) {
+	v.blocksMu.Lock()
+	view := v.observed
+	ops := v.syncTrackerLocked(view.Blocks)
+	overlay := view.Overlay
+	band := view.Chrome + view.BandExtra
+	entering, leaving := overlay && !v.overlayShown, !overlay && v.overlayShown
+	// A band-geometry change must ship even when no cell moved — otherwise a
+	// resize answered by an identical screen leaves the page's footer window
+	// one row off (the synchronous resize publish carries the PREVIOUS
+	// frame's scene view; the corrected one arrives on the next engine frame,
+	// which may be a no-op).
+	bandMoved := band != v.bandShipped
+	v.overlayShown = overlay
+	v.bandShipped = band
+	v.blocksMu.Unlock()
+
+	full = full || entering || leaving || bandMoved
+	chrome := band
+	_, rows := v.grid.Size()
+	if !overlay {
+		patches = filterRows(patches, rows-chrome)
+	}
+	frame := NewFrame(seq, v.grid, patches, v.grid.Title(), full)
+	frame.Chrome = chrome
+	frame.Overlay = overlay
+	frame.Blocks = ops
+	v.mu.RLock()
+	sink := v.sink
+	v.mu.RUnlock()
+	sink.Publish(PlaneBlocks, frame)
+}
+
+// filterRows keeps only the patches at or below top (the chrome band). The
+// transcript rows above it are represented by the block plane, never by cells.
+func filterRows(patches []RowPatch, top int) []RowPatch {
+	if top <= 0 {
+		return patches
+	}
+	out := make([]RowPatch, 0, len(patches))
+	for _, p := range patches {
+		if p.Row >= top {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// syncTrackerLocked advances the tracker to the snapshot and returns the ops
+// a client still needs. Callers hold blocksMu.
+func (v *VirtualTerminal) syncTrackerLocked(blocks []tui.SceneBlock) []BlockOp {
+	if v.tracker == nil {
+		v.tracker = NewBlockTracker()
+	}
+	return v.tracker.Sync(blocks)
+}
+
+// PublishFull ships a full-snapshot frame — what a newly attached client gets
+// as its first frame.
+func (v *VirtualTerminal) PublishFull() {
+	v.publish(true)
+}
+
+// FullFrame builds (without publishing) a frame carrying the whole current
+// screen — what a joining, reconnecting or resyncing cells-plane client
+// receives.
+//
+// It reports the grid's *current* revision rather than consuming a new one: a
+// snapshot describes the state a client already holding Seq() has, so bumping
+// the counter here would make "you are up to date" unanswerable and force every
+// attach to look like a catch-up. Only an actual publish advances the revision.
+func (v *VirtualTerminal) FullFrame() *Frame {
+	f := NewFrame(v.Seq(), v.grid, v.grid.FullPatches(), v.grid.Title(), true)
+	// A joining client gets the transcript it missed in the same message set.
+	batch := v.grid.TakeScrollback()
+	f.Scrollback = batch.Rows
+	f.ScrollbackReplace = batch.Replace
+	return f
+}
+
+// AttachFrame is the authoritative snapshot a NEW client receives, in the
+// plane it attached with: in the cells plane that is FullFrame (whole grid +
+// scrollback); in the blocks plane it is the chrome band plus the full block
+// journal, because the conversation reaches the page as blocks, not as cells.
+func (v *VirtualTerminal) AttachFrame(plane Plane) *Frame {
+	if plane != PlaneBlocks {
+		return v.FullFrame()
+	}
+	v.blocksMu.Lock()
+	view := v.observed
+	v.syncTrackerLocked(view.Blocks) // baseline current; the ops are superseded by the journal
+	ops := v.tracker.Journal()
+	v.blocksMu.Unlock()
+
+	chrome := view.Chrome + view.BandExtra
+	patches := v.grid.FullPatches()
+	if !view.Overlay {
+		_, rows := v.grid.Size()
+		patches = filterRows(patches, rows-chrome)
+	}
+	f := NewFrame(v.Seq(), v.grid, patches, v.grid.Title(), true)
+	f.Chrome = chrome
+	f.Overlay = view.Overlay
+	f.Blocks = ops
+	return f
+}
+
+// Resync decides what a client that announced the revision it holds must be
+// sent, in the plane it watches. A client whose seq matches the grid is
+// already showing the truth and is sent nothing; anything else — behind, or
+// ahead of a grid that was reset under it — is sent the authoritative screen
+// for its plane. The bool reports whether a frame is due, so a transport can
+// answer "you are current" by staying quiet.
+func (v *VirtualTerminal) Resync(plane Plane, since uint64) (*Frame, bool) {
+	if since != 0 && since == v.Seq() {
+		return nil, false
+	}
+	return v.AttachFrame(plane), true
+}
+
+// Seq reports the last frame number published.
+func (v *VirtualTerminal) Seq() uint64 { return v.frameNo.Load() }
+
+// EncodeFrame exposes the codec used for frames, so the transports share one
+// wire format.
+func (v *VirtualTerminal) EncodeFrame(f *Frame) ([]byte, error) { return v.codec.EncodeFrame(f) }

@@ -1,0 +1,69 @@
+cols=90 rows=6
+cursor=5,82
+scrollback=0
+row=0 runs=10
+  "bold" flags=bold fg= bg= link=
+  "dim" flags=dim fg= bg= link=
+  "italic" flags=italic fg= bg= link=
+  "underline" flags=underline fg= bg= link=
+  "inverse" flags=inverse fg= bg= link=
+  "strike" flags=strike fg= bg= link=
+  "truecolor" flags=default fg=38;2;12;34;56 bg= link=
+  "palette" flags=default fg=38;5;208 bg= link=
+  " bg " flags=default fg= bg=48;5;17 link=
+  "goa " flags=link fg= bg= link=https://goa.dev
+row=1 runs=10
+  "bold-1" flags=bold fg= bg= link=
+  "dim" flags=dim fg= bg= link=
+  "italic" flags=italic fg= bg= link=
+  "underline" flags=underline fg= bg= link=
+  "inverse" flags=inverse fg= bg= link=
+  "strike" flags=strike fg= bg= link=
+  "truecolor" flags=default fg=38;2;12;34;56 bg= link=
+  "palette" flags=default fg=38;5;208 bg= link=
+  " bg " flags=default fg= bg=48;5;17 link=
+  "goa " flags=link fg= bg= link=https://goa.dev
+row=2 runs=10
+  "bold-2" flags=bold fg= bg= link=
+  "dim" flags=dim fg= bg= link=
+  "italic" flags=italic fg= bg= link=
+  "underline" flags=underline fg= bg= link=
+  "inverse" flags=inverse fg= bg= link=
+  "strike" flags=strike fg= bg= link=
+  "truecolor" flags=default fg=38;2;12;34;56 bg= link=
+  "palette" flags=default fg=38;5;208 bg= link=
+  " bg " flags=default fg= bg=48;5;17 link=
+  "goa " flags=link fg= bg= link=https://goa.dev
+row=3 runs=10
+  "bold-3" flags=bold fg= bg= link=
+  "dim" flags=dim fg= bg= link=
+  "italic" flags=italic fg= bg= link=
+  "underline" flags=underline fg= bg= link=
+  "inverse" flags=inverse fg= bg= link=
+  "strike" flags=strike fg= bg= link=
+  "truecolor" flags=default fg=38;2;12;34;56 bg= link=
+  "palette" flags=default fg=38;5;208 bg= link=
+  " bg " flags=default fg= bg=48;5;17 link=
+  "goa " flags=link fg= bg= link=https://goa.dev
+row=4 runs=10
+  "bold-4" flags=bold fg= bg= link=
+  "dim" flags=dim fg= bg= link=
+  "italic" flags=italic fg= bg= link=
+  "underline" flags=underline fg= bg= link=
+  "inverse" flags=inverse fg= bg= link=
+  "strike" flags=strike fg= bg= link=
+  "truecolor" flags=default fg=38;2;12;34;56 bg= link=
+  "palette" flags=default fg=38;5;208 bg= link=
+  " bg " flags=default fg= bg=48;5;17 link=
+  "goa " flags=link fg= bg= link=https://goa.dev
+row=5 runs=10
+  "bold-5" flags=bold fg= bg= link=
+  "dim" flags=dim fg= bg= link=
+  "italic" flags=italic fg= bg= link=
+  "underline" flags=underline fg= bg= link=
+  "inverse" flags=inverse fg= bg= link=
+  "strike" flags=strike fg= bg= link=
+  "truecolor" flags=default fg=38;2;12;34;56 bg= link=
+  "palette" flags=default fg=38;5;208 bg= link=
+  " bg " flags=default fg= bg=48;5;17 link=
+  "goa " flags=link fg= bg= link=https://goa.dev

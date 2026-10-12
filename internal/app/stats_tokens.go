@@ -80,6 +80,7 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 		Profile:                string(subs.effectiveModeState().Major),
 		Mode:                   string(subs.effectiveModeState().Autonomy),
 		Stats:                  formatFooterStats(stats),
+		StatsSegments:          buildFooterStatSegments(stats),
 		CompanionModel:         companionModelDisplay(subs),
 		Provider:               sessionProviderID(subs),
 		ThinkingLevel:          mainThinkingLevel(subs),

@@ -48,8 +48,18 @@ func (p *googleGenerative) BuildRequest(model schema.Model, ctx schema.Context, 
 	if opts.Temperature != nil {
 		genConfig["temperature"] = *opts.Temperature
 	}
-	if len(ctx.Tools) > 0 && !ctx.NoTools {
+	if len(ctx.Tools) > 0 {
+		// The tool surface is attached on every round that carries tools —
+		// including the final-step text-only collapse — because it is part of
+		// the prompt the provider caches.
 		body["tools"] = convertGoogleTools(ctx.Tools)
+	}
+	if ctx.NoTools && supportsToolChoiceNone(profile) {
+		// Text-only collapse (P7) expressed on the function-calling control
+		// field only, so the cached tool surface stays untouched.
+		body["toolConfig"] = map[string]any{
+			"functionCallingConfig": map[string]any{"mode": "NONE"},
+		}
 	}
 	if model.Reasoning {
 		budget := resolveThinkingBudget(profile)
@@ -102,10 +112,15 @@ func convertGoogleParts(blocks []schema.ContentBlock, role schema.Role) []map[st
 		case schema.ContentBlockText:
 			parts = append(parts, map[string]any{"text": b.Text})
 		case schema.ContentBlockImage:
+			enc, ok := schema.EncodeImage(b.ImageData)
+			if !ok {
+				parts = append(parts, map[string]any{"text": schema.ImageUnavailablePlaceholder})
+				break
+			}
 			parts = append(parts, map[string]any{
 				"inlineData": map[string]any{
-					"mimeType": b.ImageMimeType,
-					"data":     b.ImageData,
+					"mimeType": enc.MimeType,
+					"data":     enc.Base64,
 				},
 			})
 		case schema.ContentBlockToolCall:

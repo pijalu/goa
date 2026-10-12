@@ -5,6 +5,10 @@
 package app
 
 import (
+	"image"
+	"image/png"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -156,84 +160,119 @@ func TestHandleSlashCommand_DoesNotRecordInternalCommandInSessionStore(t *testin
 	}
 }
 
-func TestExtractImagePaths(t *testing.T) {
-	tests := []struct {
-		name string
-		text string
-		want []string
-	}{
-		{
-			name: "text with image path",
-			text: "describe this file /tmp/screenshot.png please",
-			want: []string{"/tmp/screenshot.png"},
-		},
-		{
-			name: "multiple image paths",
-			text: "/tmp/a.png /tmp/b.jpg /tmp/c.webp",
-			want: []string{"/tmp/a.png", "/tmp/b.jpg", "/tmp/c.webp"},
-		},
-		{
-			name: "no images",
-			text: "just some regular text",
-			want: nil,
-		},
-		{
-			name: "case insensitive",
-			text: "/tmp/photo.JPEG",
-			want: []string{"/tmp/photo.JPEG"},
-		},
+// writePNG writes a real 1×1 PNG into dir and returns its path, so the
+// attachment tests exercise the real sniffing rule rather than a stub.
+func writePNG(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := extractImagePaths(tc.text)
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("extractImagePaths(%q) = %v, want %v", tc.text, got, tc.want)
-			}
-		})
+	defer f.Close()
+	if err := png.Encode(f, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
 	}
+	return path
 }
 
-func TestStripImagePaths(t *testing.T) {
-	text := "describe this file /tmp/screenshot.png please"
-	got := stripImagePaths(text)
-	want := "describe this file please"
-	if got != want {
-		t.Errorf("stripImagePaths(%q) = %q, want %q", text, got, want)
-	}
-}
+func TestSplitUserInput_AttachesExistingImages(t *testing.T) {
+	dir := t.TempDir()
+	a := writePNG(t, dir, "a.png")
+	b := writePNG(t, dir, "b.png")
 
-func TestStripImagePaths_PreservesNewlines(t *testing.T) {
-	text := "line one\nline two /tmp/img.png\nline three"
-	got := stripImagePaths(text)
-	want := "line one\nline two\nline three"
-	if got != want {
-		t.Errorf("stripImagePaths(%q) = %q, want %q", text, got, want)
-	}
-}
+	msg, images, unreadable := splitUserInput("compare " + a + " and " + b)
 
-func TestSplitUserInput(t *testing.T) {
-	text := "compare /tmp/a.png and /tmp/b.png"
-	msg, images := splitUserInput(text)
 	if msg != "compare and" {
 		t.Errorf("message = %q, want %q", msg, "compare and")
 	}
-	want := []string{"/tmp/a.png", "/tmp/b.png"}
-	if !reflect.DeepEqual(images, want) {
-		t.Errorf("images = %v, want %v", images, want)
+	if !reflect.DeepEqual(images, []string{a, b}) {
+		t.Errorf("images = %v, want %v", images, []string{a, b})
+	}
+	if len(unreadable) != 0 {
+		t.Errorf("unreadable = %v, want none", unreadable)
 	}
 }
 
 func TestSplitUserInput_PreservesNewlines(t *testing.T) {
-	text := "first line\nsecond line /tmp/a.png\nthird line"
-	msg, images := splitUserInput(text)
+	dir := t.TempDir()
+	a := writePNG(t, dir, "a.png")
+
+	msg, images, _ := splitUserInput("first line\nsecond line " + a + "\nthird line")
+
 	want := "first line\nsecond line\nthird line"
 	if msg != want {
 		t.Errorf("message = %q, want %q", msg, want)
 	}
-	wantImages := []string{"/tmp/a.png"}
-	if !reflect.DeepEqual(images, wantImages) {
-		t.Errorf("images = %v, want %v", images, wantImages)
+	if !reflect.DeepEqual(images, []string{a}) {
+		t.Errorf("images = %v, want [%s]", images, a)
+	}
+}
+
+// TestSplitUserInput_KeepsProseWithMissingImage is the regression test for the
+// prose-destroying heuristic: a file that does not exist is not an attachment,
+// so the words stay in the message and the token is reported instead of silently
+// dropped.
+func TestSplitUserInput_KeepsProseWithMissingImage(t *testing.T) {
+	msg, images, unreadable := splitUserInput("check the logo at /nope/missing.png please")
+
+	if msg != "check the logo at /nope/missing.png please" {
+		t.Errorf("message = %q, want the original prose", msg)
+	}
+	if len(images) != 0 {
+		t.Errorf("images = %v, want none", images)
+	}
+	if !reflect.DeepEqual(unreadable, []string{"/nope/missing.png"}) {
+		t.Errorf("unreadable = %v, want [/nope/missing.png]", unreadable)
+	}
+}
+
+// TestSplitUserInput_KeepsURLs keeps a URL that ends in an image suffix out of
+// the attachment set (it is not a local file).
+func TestSplitUserInput_KeepsURLs(t *testing.T) {
+	text := "see https://example.com/pic.jpg for context"
+	msg, images, unreadable := splitUserInput(text)
+
+	if msg != text {
+		t.Errorf("message = %q, want %q", msg, text)
+	}
+	if len(images) != 0 || len(unreadable) != 0 {
+		t.Errorf("images=%v unreadable=%v, want none", images, unreadable)
+	}
+}
+
+// TestSplitUserInput_NonImageFileIsNotAttached guards the sniffing rule: bytes
+// decide, not the extension.
+func TestSplitUserInput_NonImageFileIsNotAttached(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake.png")
+	if err := os.WriteFile(path, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, images, unreadable := splitUserInput("read " + path)
+
+	if msg != "read "+path {
+		t.Errorf("message = %q, want the path kept", msg)
+	}
+	if len(images) != 0 {
+		t.Errorf("images = %v, want none", images)
+	}
+	if !reflect.DeepEqual(unreadable, []string{path}) {
+		t.Errorf("unreadable = %v, want [%s]", unreadable, path)
+	}
+}
+
+// TestSplitUserInput_DedupesRepeatedImage keeps a double mention from attaching
+// (and paying for) the same image twice.
+func TestSplitUserInput_DedupesRepeatedImage(t *testing.T) {
+	dir := t.TempDir()
+	a := writePNG(t, dir, "a.png")
+
+	_, images, _ := splitUserInput(a + " " + a)
+
+	if !reflect.DeepEqual(images, []string{a}) {
+		t.Errorf("images = %v, want [%s]", images, a)
 	}
 }
 

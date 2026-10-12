@@ -3,11 +3,7 @@
 package protocol
 
 import (
-	"encoding/base64"
 	"fmt"
-	"net/http"
-	"os"
-	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
@@ -17,16 +13,29 @@ import (
 // ---------------------------------------------------------------------------
 
 // applyToolChoice attaches the tools array to the body and forces tool use
-// when ToolChoice is set (e.g., "required" for workflow agents). A NoTools
-// context (P7 final-step collapse) omits the tools array and forces
-// tool_choice "none" so the model must answer text-only.
-func applyToolChoice(body map[string]any, tools []map[string]any, toolChoice string, noTools bool) {
-	if noTools {
-		body["tool_choice"] = "none"
-		return
-	}
+// when ToolChoice is set (e.g., "required" for workflow agents).
+//
+// The tools array is attached for EVERY request that carries tools, including
+// the NoTools (P7 final-step collapse) round: the tool schemas are part of the
+// prompt the provider caches, so dropping them moves the prefix divergence
+// point to the front of the conversation and re-bills the whole prompt (kimi
+// k3-256k, 2026-10-05: 41,728 → 1,792 cached tokens against a byte-exact
+// message append). The text-only intent rides tool_choice instead — a
+// prompt-neutral control field (verified against api.kimi.com: tools kept +
+// tool_choice "none" → 200, prefix cache retained, no tool call emitted even
+// when the prompt demanded one).
+//
+// supportsNone false (schema.CompatFlags.SupportsToolChoiceNone) suppresses
+// even that: the round then repeats the caller's tool_choice verbatim so the
+// body stays append-only in every field, for upstreams that reject "none".
+func applyToolChoice(body map[string]any, tools []map[string]any, toolChoice string, noTools, supportsNone bool) {
 	body["tools"] = tools
-	if toolChoice != "" {
+	switch {
+	case noTools && supportsNone:
+		body["tool_choice"] = "none"
+	case noTools:
+		// Leave tool_choice exactly as a normal round would have it.
+	case toolChoice != "":
 		body["tool_choice"] = toolChoice
 	}
 }
@@ -34,17 +43,18 @@ func applyToolChoice(body map[string]any, tools []map[string]any, toolChoice str
 // applyTools attaches the tool-call surface to the body: the tools array with
 // its tool_choice, plus the z.ai-only "tool_stream": true that opens GLM's
 // dedicated tool-call SSE channel. tool_stream is only meaningful next to a
-// tools array, so it rides along with it and never appears on a NoTools
-// (final-step collapse) request.
+// tools array, so it rides along with it and is dropped on a NoTools
+// (final-step collapse) request — a control field outside the cached prompt.
 func applyTools(body map[string]any, tools []map[string]any, opts schema.StreamOptions, ctx schema.Context, compat openAICompletionsCompat) {
 	if len(tools) == 0 {
-		if ctx.NoTools {
-			// Final-step collapse (P7): the model must answer text-only.
+		if ctx.NoTools && compat.SupportsToolChoiceNone {
+			// Collapse with no tools available: nothing can be called, so the
+			// request shape is already tool-free — state it explicitly.
 			body["tool_choice"] = "none"
 		}
 		return
 	}
-	applyToolChoice(body, tools, opts.ToolChoice, ctx.NoTools)
+	applyToolChoice(body, tools, opts.ToolChoice, ctx.NoTools, compat.SupportsToolChoiceNone)
 	if compat.ZaiToolStream && !ctx.NoTools {
 		body["tool_stream"] = true
 	}
@@ -74,13 +84,12 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 	// no configured cap falls back to its own output ceiling (bugs.md #4):
 	// reasoning and the answer share one budget, so an uncapped request can
 	// spend the whole response on reasoning and emit no answer.
-	maxTokens, defaultSource := resolveRequestMaxTokens(opts, model, model.Reasoning)
+	maxTokens, source := resolveRequestMaxTokens(opts, model, model.Reasoning)
 	if maxTokens > 0 {
 		body[compat.MaxTokensField] = maxTokens
 	}
-	if defaultSource != "" {
-		protocolLog.Printf("field max_tokens came from %s default: %d (model=%s provider=%s)",
-			defaultSource, maxTokens, model.ID, model.Provider)
+	if source != "" {
+		noteMaxTokensDefault(source, maxTokens, model)
 	}
 	// Omit temperature when the provider does not support it (e.g. kimi-code
 	// rejects any value but its fixed default with HTTP 400 "invalid
@@ -116,6 +125,15 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 // output ceiling.
 const FallbackReasoningMaxTokens = 16384
 
+// maxTokensSource* name where a materialized output cap came from. The strings
+// are the diagnostic vocabulary: noteMaxTokensDefault turns each one into the
+// sentence a reader sees, so the reason and the wording cannot drift apart.
+const (
+	maxTokensSourceProvider = "provider"
+	maxTokensSourceCeiling  = "reasoning-ceiling"
+	maxTokensSourceFallback = "reasoning-fallback"
+)
+
 // resolveRequestMaxTokens returns the output-token cap to send on the wire
 // and the source it was resolved from. An explicit request value always wins
 // (dsh: "an explicit cap wins"); when absent, the per-provider catalog
@@ -129,15 +147,15 @@ func resolveRequestMaxTokens(opts schema.StreamOptions, model schema.Model, reas
 		return opts.MaxTokens, ""
 	}
 	if def := schema.LookupProviderDef(model.Provider); def != nil && def.DefaultMaxTokens > 0 {
-		return def.DefaultMaxTokens, "provider"
+		return def.DefaultMaxTokens, maxTokensSourceProvider
 	}
 	if !reasoningCapable {
 		return 0, ""
 	}
 	if model.MaxTokens > 0 {
-		return model.MaxTokens, "reasoning-ceiling"
+		return model.MaxTokens, maxTokensSourceCeiling
 	}
-	return FallbackReasoningMaxTokens, "reasoning-fallback"
+	return FallbackReasoningMaxTokens, maxTokensSourceFallback
 }
 
 func applyThinking(body map[string]any, model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile, compat openAICompletionsCompat) {
@@ -219,9 +237,10 @@ func buildUserContent(blocks []schema.ContentBlock) any {
 				parts = append(parts, map[string]any{"type": "text", "text": b.Text})
 			}
 		case schema.ContentBlockImage:
-			dataURL := imagePathToDataURL(b.ImageData)
-			if dataURL != "" {
+			if dataURL := schema.ImageToDataURL(b.ImageData); dataURL != "" {
 				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL}})
+			} else {
+				parts = append(parts, map[string]any{"type": "text", "text": schema.ImageUnavailablePlaceholder})
 			}
 		}
 	}
@@ -235,18 +254,6 @@ func hasImageBlock(blocks []schema.ContentBlock) bool {
 		}
 	}
 	return false
-}
-
-func imagePathToDataURL(path string) string {
-	if strings.HasPrefix(path, "data:") {
-		return path
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	mime := http.DetectContentType(data)
-	return fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(data))
 }
 
 func convertAssistantMessage(msg schema.Message, compat openAICompletionsCompat) map[string]any {

@@ -148,9 +148,10 @@ func (a *App) handlePendingMainInput(text string) bool {
 // or the agent.
 func (a *App) dispatchUserSubmit(engine *tui.TUI, chat *tui.ChatViewport, text string) {
 	isCmd := strings.HasPrefix(text, "/")
-	messageText, images := splitUserInput(text)
+	messageText, images, unreadable := splitUserInput(text)
 	if !isCmd {
 		a.displayUserMessage(chat, messageText, images)
+		a.displayUnattachedImages(chat, unreadable)
 	}
 	engine.RequestRender()
 	if isCmd {

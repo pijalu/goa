@@ -194,9 +194,12 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		a.injectTimeContextIfDue(time.Now())
 		pCtx := a.buildProviderContext(ctx)
 		// Final-step collapse (P7): a pending stop-turn signal marks this
-		// round text-only — no tools, tool_choice none — so the model
-		// produces its summary instead of calling more tools. The flag is
-		// consumed here; the next round (or turn) restores the full set.
+		// round text-only — the same tool surface plus tool_choice none — so
+		// the model produces its summary instead of calling more tools. The
+		// tool schemas are never dropped here: they are part of the cached
+		// prompt, and removing them re-bills the whole conversation (2026-10-05
+		// kimi export). The flag is consumed here; the next round (or turn)
+		// restores the full set.
 		// The stats latch follows the collapse so THIS round's token stats
 		// carry TextOnlyCollapse (bugs.md 2026-08-30); a non-collapsed round
 		// clears any stale latch instead of leaking it forward.
@@ -235,7 +238,7 @@ func (a *Agent) effectiveEventStallTimeout(opts provider.StreamOptions) time.Dur
 // lead as a fraction of the EVENT stall window: two thirds, so an unset
 // execution.activity_warn_after still lands strictly inside the watchdog and
 // the warning always precedes the automatic retry. With the shipped pairing
-// (activity_timeout 5m → event stall 3m45s → derived lead 2m30s) the user is
+// (activity_timeout 2m → event stall 1m30s → derived lead 1m) the user is
 // warned a minute before the retry instead of on the same tick.
 const (
 	stallWarnNumerator   = 2
@@ -320,10 +323,12 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 		a.injectTimeContextIfDue(time.Now())
 		pCtx := a.buildProviderContext(ctx)
 		// Final-step collapse (P7): recovery rounds are the turn's last
-		// step — the model must answer with what it has gathered, so the
-		// request carries no tools and tool_choice none. The stats latch
-		// marks the recovery round's token stats as a no-tools step
-		// (bugs.md 2026-08-30).
+		// step — the model must answer with what it has gathered. The tool
+		// surface stays as every other round sends it (dropping it would bust
+		// the provider prefix cache for the whole prompt) and the text-only
+		// intent is expressed on tool_choice where the upstream accepts it.
+		// The stats latch marks the recovery round's token stats as a
+		// text-only step (bugs.md 2026-08-30).
 		pCtx.NoTools = true
 		a.collapseStatsPending = true
 		a.logProviderContext(pCtx, round)
@@ -389,9 +394,9 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 	// tell the user the provider is quiet and when the watchdog will act —
 	// without this, a content→silence gap is just a dead spinner until the
 	// stall fires minutes later, which reads as "stuck". The lead is
-	// execution.activity_warn_after (3m20s by default) inside the
-	// execution.activity_timeout window (5m by default, of which the event
-	// watchdog uses the first 3m45s); see effectiveStallWarnAfter.
+	// execution.activity_warn_after (1m20s by default) inside the
+	// execution.activity_timeout window (2m by default, of which the event
+	// watchdog uses the first 1m30s); see effectiveStallWarnAfter.
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
 	quietAfter := a.effectiveStallWarnAfter(opts)

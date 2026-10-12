@@ -12,6 +12,21 @@ import (
 	"github.com/rivo/uniseg"
 )
 
+// Scrollback retention. The transcript is a bounded buffer, not an archive: it
+// only has to hold the rows a consumer has not read yet, because every consumer
+// ships each row exactly once. Two thousand rows is far more than any consumer
+// can fall behind by, and it caps the per-session cost at ~19 MB for a 120-column
+// screen (a scrolled row is stored per-cell, ~79 bytes/cell) instead of letting
+// it grow with the session — which is what a long-running server cannot afford.
+const (
+	MaxScrollbackRows = 2000
+	// scrollbackTrimBatch is how many rows are evicted at once once the cap is
+	// passed. Trimming row by row would copy the whole retained buffer per
+	// scrolled row (O(cap) per row); trimming a batch makes it O(cap) per batch,
+	// which is a few copies per row.
+	scrollbackTrimBatch = 256
+)
+
 // TermEmulator is a faithful, per-cell terminal emulator for verifying the
 // Compositor's output. Unlike the coarse screenEmulator, it tracks the cursor
 // column per character (grapheme-width-aware), models DEC-style DEFERRED
@@ -22,36 +37,81 @@ import (
 // agent's "what is actually on the screen" reader.
 type TermEmulator struct {
 	w, h        int
-	screen      [][]string // [row][col] cell text (ANSI-stripped for assertion)
-	screenBg    [][]string // [row][col] cell background SGR ("" = default)
-	screenFg    [][]string // [row][col] cell foreground SGR ("" = default)
+	screen      [][]string    // [row][col] cell text (ANSI-stripped for assertion)
+	screenBg    [][]string    // [row][col] cell background SGR ("" = default)
+	screenFg    [][]string    // [row][col] cell foreground SGR ("" = default)
+	screenFlags [][]AttrFlags // [row][col] per-cell text attributes (term_cells.go)
+	screenLink  [][]string    // [row][col] OSC-8 hyperlink target ("" = none)
 	scrollback  []string
-	row, col    int
-	curBg       string // current SGR background params (e.g. "48;2;42;50;41")
-	curFg       string // current SGR foreground params (e.g. "38;2;139;148;158")
-	pendingWrap bool   // DEC deferred wrap: last cell filled, next char wraps
+	// scrollbackAttrs mirrors scrollback with per-cell attributes so a scrolled
+	// row keeps its styling (phase 0 of the web UI cell pipeline).
+	scrollbackAttrs [][]CellAttrs
+	// scrollbackBase is the ABSOLUTE index of scrollback[0]: how many rows have
+	// been dropped off the front of the bounded transcript. Consumers that ship
+	// each row exactly once (the web UI) count in absolute indices, so they can
+	// tell "rows I have not sent yet" from "rows that are gone" after eviction.
+	scrollbackBase int
+	// scrollbackGen counts the times the transcript was DROPPED (CSI 3J, or a
+	// programmatic EraseScrollback). A consumer that mirrors the transcript
+	// elsewhere (the web UI keeps one in the browser) compares it to notice that
+	// the rows after the drop are a REPLACEMENT of what it holds, not an append:
+	// the compositor wipes the scrollback and re-emits the whole transcript at a
+	// new width, and a terminal that kept the old rows would show them twice.
+	scrollbackGen int
+	curFlags       AttrFlags // current SGR text attributes
+	curLink        string    // current OSC-8 hyperlink target ("" = none)
+	row, col       int
+	curBg          string // current SGR background params (e.g. "48;2;42;50;41")
+	curFg          string // current SGR foreground params (e.g. "38;2;139;148;158")
+	pendingWrap    bool   // DEC deferred wrap: last cell filled, next char wraps
+	// oscBuf holds the tail of an OSC sequence whose terminator has not arrived
+	// yet. Without it a hyperlink split across two writes (title, chunked
+	// stream, a diffed repaint) would leak "8;;https://…" onto the screen as
+	// printable text.
+	oscBuf string
+	// cursorVisible models DECTCEM (\x1b[?25h / \x1b[?25l): the terminal's
+	// cursor-show mode. The compositor conveys the hardware cursor's visibility
+	// ONLY as those bytes, so a renderer that places its own caret (the web UI)
+	// reads the mode here. Defaults to true, like a real terminal after reset.
+	cursorVisible bool
 	// scrollTop/scrollBot model the DECSTBM scroll region (0-indexed,
 	// inclusive). \n scrolls only within [scrollTop, scrollBot]; rows outside
 	// the region never move, which is how pinned chrome is emulated. Defaults
 	// to the full screen.
 	scrollTop, scrollBot int
+	// dirty marks the rows touched since the last DrainDirty. It is only
+	// maintained while TrackDirty(true) is set (the web UI grid uses it to ship
+	// just the changed rows); tests and one-shot replays leave it off and pay
+	// no bookkeeping.
+	dirty    []bool
+	tracking bool
 }
 
 func NewTermEmulator(h, w int) *TermEmulator {
-	e := &TermEmulator{w: w, h: h, scrollTop: 0, scrollBot: h - 1}
+	e := &TermEmulator{w: w, h: h, scrollTop: 0, scrollBot: h - 1, cursorVisible: true}
 	e.screen = make([][]string, h)
 	e.screenBg = make([][]string, h)
 	e.screenFg = make([][]string, h)
+	e.screenFlags = make([][]AttrFlags, h)
+	e.screenLink = make([][]string, h)
+	e.dirty = make([]bool, h)
 	for i := range e.screen {
 		e.screen[i] = make([]string, w)
 		e.screenBg[i] = make([]string, w)
 		e.screenFg[i] = make([]string, w)
+		e.screenFlags[i] = make([]AttrFlags, w)
+		e.screenLink[i] = make([]string, w)
 	}
 	return e
 }
 
 // Process replays a byte stream of compositor output.
 func (e *TermEmulator) Process(s string) {
+	// Resume an OSC left unterminated by a previous write before parsing.
+	if e.oscBuf != "" {
+		s = "\x1b]" + e.oscBuf + s
+		e.oscBuf = ""
+	}
 	i := 0
 	for i < len(s) {
 		c := s[i]
@@ -65,10 +125,16 @@ func (e *TermEmulator) Process(s string) {
 			i++
 		case c == '\x1b':
 			n := e.parseEscape(s[i:])
-			if n == 0 {
-				i++
-			} else {
+			switch {
+			case n > 0:
 				i += n
+			case strings.HasPrefix(s[i:], "\x1b]") && len(s)-i <= maxOSCBuffer:
+				// Unterminated OSC: hold the payload until the terminator
+				// arrives instead of printing it as text.
+				e.oscBuf = s[i+2:]
+				return
+			default:
+				i++
 			}
 		default:
 			if c >= 0x20 {
@@ -112,7 +178,10 @@ func (e *TermEmulator) writePrintable(s string, i int) int {
 			e.screen[e.row][e.col] = ch
 			e.screenBg[e.row][e.col] = e.curBg
 			e.screenFg[e.row][e.col] = e.curFg
+			e.screenFlags[e.row][e.col] = e.cellFlags()
+			e.screenLink[e.row][e.col] = e.curLink
 		}
+		e.markDirty(e.row)
 		e.col++
 	}
 	if e.col >= e.w {
@@ -136,10 +205,23 @@ func (e *TermEmulator) lineFeed() {
 			top.WriteString(cell)
 		}
 		e.scrollback = append(e.scrollback, top.String())
+		e.scrollbackAttrs = append(e.scrollbackAttrs, e.Cells(e.scrollTop))
+		e.trimScrollback()
 		copy(e.screen[e.scrollTop:e.scrollBot], e.screen[e.scrollTop+1:e.scrollBot+1])
 		copy(e.screenBg[e.scrollTop:e.scrollBot], e.screenBg[e.scrollTop+1:e.scrollBot+1])
+		// The foreground (and flags) must move with the row: leaving them
+		// behind made a scrolled row lose its text colour.
+		copy(e.screenFg[e.scrollTop:e.scrollBot], e.screenFg[e.scrollTop+1:e.scrollBot+1])
+		copy(e.screenFlags[e.scrollTop:e.scrollBot], e.screenFlags[e.scrollTop+1:e.scrollBot+1])
+		copy(e.screenLink[e.scrollTop:e.scrollBot], e.screenLink[e.scrollTop+1:e.scrollBot+1])
 		e.screen[e.scrollBot] = make([]string, e.w)
 		e.screenBg[e.scrollBot] = make([]string, e.w)
+		e.screenFg[e.scrollBot] = make([]string, e.w)
+		e.screenFlags[e.scrollBot] = make([]AttrFlags, e.w)
+		e.screenLink[e.scrollBot] = make([]string, e.w)
+		for r := e.scrollTop; r <= e.scrollBot; r++ {
+			e.markDirty(r)
+		}
 		return
 	}
 	// Cursor below the region (pinned chrome): plain advance, clamped.
@@ -150,11 +232,15 @@ func (e *TermEmulator) lineFeed() {
 
 func (e *TermEmulator) parseEscape(s string) int {
 	if strings.HasPrefix(s, "\x1b]") {
-		// OSC (e.g. hyperlink \x1b]8;;...\x07): consume until BEL.
-		if idx := strings.Index(s, "\x07"); idx >= 0 {
-			return idx + 1
+		// OSC: \x1b]<code>;<params/text> BEL-or-ST. The payload may contain
+		// semicolons (OSC 8 hyperlinks: id;URI), so it is handled as one
+		// string and terminated by BEL (\a) or ST (\x1b\\).
+		body, n, ok := oscPayload(s)
+		if !ok {
+			return 0 // unterminated: wait for more bytes
 		}
-		return 0
+		e.applyOSC(body)
+		return n
 	}
 	if !strings.HasPrefix(s, "\x1b[") {
 		return 0
@@ -193,6 +279,21 @@ func (e *TermEmulator) applyCSI(params string, final byte) {
 		e.applySGR(params)
 	case 'r':
 		e.applyScrollRegion(params)
+	case 'h', 'l':
+		e.applyPrivateMode(params, final == 'h')
+	}
+}
+
+// applyPrivateMode applies a DEC private mode set ('h') or reset ('l'). Only
+// DECTCEM (?25, cursor show/hide) is modelled: it is the one mode the
+// compositor uses to signal hardware-cursor visibility, and a client that
+// draws its own caret needs it. Every other private mode (?2026 synchronized
+// output, ?1049 alt screen, …) is deliberately ignored — what a real terminal
+// does with a mode it does not implement, and what keeps an unknown sequence
+// from silently changing behaviour here.
+func (e *TermEmulator) applyPrivateMode(params string, set bool) {
+	if params == "?25" {
+		e.cursorVisible = set
 	}
 }
 
@@ -231,6 +332,7 @@ func (e *TermEmulator) applyScrollRegion(params string) {
 func (e *TermEmulator) applySGR(params string) {
 	codes := strings.Split(params, ";")
 	for i := 0; i < len(codes); i++ {
+		e.trackSGRFlag(codes, i)
 		switch codes[i] {
 		case "", "0", "49":
 			e.curBg = ""
@@ -282,6 +384,7 @@ func extendedColorLen(codes []string, i int) int {
 }
 
 func (e *TermEmulator) eraseDisplay(params string) {
+	e.markAllDirty()
 	switch params {
 	case "2", "3":
 		for r := range e.screen {
@@ -289,35 +392,67 @@ func (e *TermEmulator) eraseDisplay(params string) {
 				e.screen[r][c] = ""
 				e.screenBg[r][c] = ""
 				e.screenFg[r][c] = ""
+				e.screenFlags[r][c] = 0
+				e.screenLink[r][c] = ""
 			}
 		}
 		if params == "3" {
 			e.scrollback = nil
+			e.scrollbackAttrs = nil
+			e.scrollbackBase = 0
+			e.scrollbackGen++
 		}
 	case "0", "":
 		for c := e.col; c < e.w; c++ {
 			e.screen[e.row][c] = ""
 			e.screenBg[e.row][c] = ""
 			e.screenFg[e.row][c] = ""
+			e.screenFlags[e.row][c] = 0
+			e.screenLink[e.row][c] = ""
 		}
 		for r := e.row + 1; r < e.h; r++ {
 			for c := range e.screen[r] {
 				e.screen[r][c] = ""
 				e.screenBg[r][c] = ""
 				e.screenFg[r][c] = ""
+				e.screenFlags[r][c] = 0
+				e.screenLink[r][c] = ""
 			}
 		}
 	}
 }
 
+// eraseLine applies EL (erase in line). The three forms are distinct, as in
+// every real terminal: EL 0 (or no parameter) clears from the cursor to the
+// end of the line, EL 1 from the start of the line through the cursor, and
+// EL 2 the whole line. Treating EL 0 as a whole-line wipe made the emulator
+// unfaithful exactly where a client paints a row and then clears its tail —
+// the row arrived blank in the emulator and intact in a real terminal.
 func (e *TermEmulator) eraseLine(params string) {
-	if params != "" && params != "2" && params != "0" {
+	var from, to int
+	switch params {
+	case "", "0":
+		from, to = e.col, e.w
+	case "1":
+		from, to = 0, e.col+1
+	case "2":
+		from, to = 0, e.w
+	default:
 		return
 	}
-	for c := range e.screen[e.row] {
+	if from < 0 {
+		from = 0
+	}
+	if to > e.w {
+		to = e.w
+	}
+	e.markDirty(e.row)
+	for c := from; c < to; c++ {
 		e.screen[e.row][c] = ""
 		e.screenBg[e.row][c] = ""
 		e.screenFg[e.row][c] = ""
+		e.screenFlags[e.row][c] = 0
+		e.screenLink[e.row][c] = ""
 	}
 	e.pendingWrap = false
 }
@@ -370,6 +505,84 @@ func (e *TermEmulator) RowFg(row int) string {
 }
 
 func (e *TermEmulator) Scrollback() []string { return e.scrollback }
+
+// ScrollbackGeneration counts how many times the retained transcript has been
+// dropped (the CSI 3J wipe, or EraseScrollback). A mirror of the transcript that
+// lives outside the emulator (the browser's history) uses it to distinguish the
+// rows a wipe was followed by — a replacement, because a terminal's scrollback
+// is wiped before the whole transcript is re-emitted at a new width — from the
+// rows of an ordinary append.
+func (e *TermEmulator) ScrollbackGeneration() int { return e.scrollbackGen }
+
+// EraseScrollback drops the retained transcript rows (the CSI 3J wipe) without
+// touching the screen. A geometry change uses it: history recorded at the old
+// geometry no longer corresponds to the new screen, and the rows a re-anchoring
+// repaint pushes off are rows of the screen being replaced, not history of the
+// new one.
+func (e *TermEmulator) EraseScrollback() {
+	e.scrollback = nil
+	e.scrollbackAttrs = nil
+	e.scrollbackBase = 0
+	e.scrollbackGen++
+}
+
+// ScrollbackBase is the absolute index of the oldest retained transcript row:
+// the number of rows evicted off the front of the bounded buffer. A consumer
+// that counts the rows it has shipped in absolute indices compares them against
+// this to notice that history it never read is gone.
+func (e *TermEmulator) ScrollbackBase() int { return e.scrollbackBase }
+
+// ScrollbackLen is the number of transcript rows currently retained.
+func (e *TermEmulator) ScrollbackLen() int { return len(e.scrollbackAttrs) }
+
+// ScrollbackRow returns one retained transcript row by ABSOLUTE index, without
+// copying it. It returns nil when the index is no longer retained (evicted, or
+// never written). The caller must not modify the result and must not retain it
+// past the lock that made the call safe — it aliases the emulator's own storage.
+// Use ScrollbackCells when a private copy is needed.
+func (e *TermEmulator) ScrollbackRow(abs int) []CellAttrs {
+	i := abs - e.scrollbackBase
+	if i < 0 || i >= len(e.scrollbackAttrs) {
+		return nil
+	}
+	return e.scrollbackAttrs[i]
+}
+
+// trimScrollback enforces MaxScrollbackRows by dropping a batch off the front
+// once the cap is passed. Both stores are trimmed together — they are two views
+// of the same rows, and letting them diverge would make Scrollback() and
+// ScrollbackCells() disagree about what history exists.
+func (e *TermEmulator) trimScrollback() {
+	if len(e.scrollback) <= MaxScrollbackRows {
+		return
+	}
+	keep := MaxScrollbackRows - scrollbackTrimBatch
+	if keep < 0 {
+		keep = 0
+	}
+	drop := len(e.scrollback) - keep
+	e.scrollback = dropFront(e.scrollback, drop)
+	e.scrollbackAttrs = dropFront(e.scrollbackAttrs, drop)
+	e.scrollbackBase += drop
+}
+
+// dropFront removes the first n elements of s in place, clearing the vacated
+// slots so the dropped rows (and their cell strings) become collectable. The
+// backing array is reused, so the buffer's memory stays bounded.
+func dropFront[T any](s []T, n int) []T {
+	if n <= 0 {
+		return s
+	}
+	if n >= len(s) {
+		return s[:0]
+	}
+	copy(s, s[n:])
+	var zero T
+	for i := len(s) - n; i < len(s); i++ {
+		s[i] = zero
+	}
+	return s[:len(s)-n]
+}
 
 func clampInt(v, lo, hi int) int {
 	if v < lo {

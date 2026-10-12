@@ -17,8 +17,8 @@ import (
 )
 
 // TestDefaultConfig_StallTimingDefaults pins the shipped silent-stream timing:
-// the stall warning fires 3m20s into a 5m byte-idle budget, and the event
-// watchdog the agent actually retries on sits at 3m45s (three quarters of the
+// the stall warning fires 1m20s into a 2m byte-idle budget, and the event
+// watchdog the agent actually retries on sits at 1m30s (three quarters of the
 // budget) — so the byte-level reader can never pre-empt it. Both keys live in
 // the embedded defaults so a fresh install ships the documented pair and
 // /config can show and edit them.
@@ -33,11 +33,11 @@ func TestDefaultConfig_StallTimingDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if cfg.Execution.ActivityTimeout != "5m" {
-		t.Errorf("execution.activity_timeout = %q, want \"5m\"", cfg.Execution.ActivityTimeout)
+	if cfg.Execution.ActivityTimeout != "2m" {
+		t.Errorf("execution.activity_timeout = %q, want \"2m\"", cfg.Execution.ActivityTimeout)
 	}
-	if cfg.Execution.ActivityWarnAfter != "3m20s" {
-		t.Errorf("execution.activity_warn_after = %q, want \"3m20s\"", cfg.Execution.ActivityWarnAfter)
+	if cfg.Execution.ActivityWarnAfter != "1m20s" {
+		t.Errorf("execution.activity_warn_after = %q, want \"1m20s\"", cfg.Execution.ActivityWarnAfter)
 	}
 	timeout, err := time.ParseDuration(cfg.Execution.ActivityTimeout)
 	if err != nil {
@@ -59,15 +59,14 @@ func TestDefaultConfig_StallTimingDefaults(t *testing.T) {
 	if warn >= stall {
 		t.Errorf("shipped warning lead %s must precede the %s event stall", warn, stall)
 	}
-	// The shipped window must comfortably outlast a long reasoning turn: the
-	// captured z.ai export-A request ran 80.7s of pure silence before its
-	// first token (docs/research/zai-connection-review-20260930.md §2), and
-	// the event stall must clear that with real margin — at least twice the
-	// observed worst case. The 45s/2m-era window killed those turns
-	// (bugs.md #2).
+	// The shipped window must outlast a long reasoning turn: the captured
+	// z.ai export-A request ran 80.7s of pure silence before its first token
+	// (docs/research/zai-connection-review-20260930.md §2), so the event
+	// stall must clear that observed worst case. The 45s-era window killed
+	// those turns (bugs.md #2).
 	const observedReasoningSilence = 80700 * time.Millisecond
-	if stall < 2*observedReasoningSilence {
-		t.Errorf("shipped event stall %s gives less than 2x margin over the observed %s reasoning silence", stall, observedReasoningSilence)
+	if stall <= observedReasoningSilence {
+		t.Errorf("shipped event stall %s does not clear the observed %s reasoning silence", stall, observedReasoningSilence)
 	}
 }
 

@@ -4,10 +4,47 @@
 
 package provider
 
-import "github.com/pijalu/goa/internal/agentic/provider/schema"
+import (
+	"strings"
+
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
+)
 
 // ImageContent holds image data for content blocks.
 type ImageContent = schema.ImageContent
+
+// EncodedImage is a resolved image attachment (Base64 payload + MIME type).
+type EncodedImage = schema.EncodedImage
+
+// EncodeImage resolves an image content source (filesystem path or data: URL)
+// into Base64 payload + MIME type. ok=false when the source cannot be read or
+// is not a recognisable image.
+func EncodeImage(src string) (EncodedImage, bool) { return schema.EncodeImage(src) }
+
+// ImageToDataURL returns a data: URL for an image source, or "" when it cannot
+// be resolved.
+func ImageToDataURL(src string) string { return schema.ImageToDataURL(src) }
+
+// ImageUnavailablePlaceholder is emitted in place of an image block whose
+// source could not be read.
+const ImageUnavailablePlaceholder = schema.ImageUnavailablePlaceholder
+
+// BedrockImageFormat maps a MIME type to the Bedrock Converse image format
+// token. Bedrock's `format` field is a bare token ("png", "jpeg", …), not a
+// MIME type, so the media type must be narrowed before it goes on the wire.
+func BedrockImageFormat(mimeType string) string {
+	switch mimeType {
+	case "image/png":
+		return "png"
+	case "image/jpeg":
+		return "jpeg"
+	case "image/gif":
+		return "gif"
+	case "image/webp":
+		return "webp"
+	}
+	return strings.TrimPrefix(mimeType, "image/")
+}
 
 // IsVisionModel returns true if the model supports image inputs.
 func IsVisionModel(m Model) bool {

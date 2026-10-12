@@ -61,6 +61,20 @@ const (
 	ToolError
 )
 
+// String names the status for protocol-free consumers (the web block plane);
+// the values are part of the wire contract (specs/webui.md §22).
+func (s ToolStatus) String() string {
+	switch s {
+	case ToolRunning:
+		return "running"
+	case ToolSuccess:
+		return "success"
+	case ToolError:
+		return "error"
+	}
+	return "pending"
+}
+
 //── ToolExecutionComponent (Container: Box) ──
 //
 // Architecture: Box(1,1,bg) → renders [topPad, header, body..., bottomPad] with bg
@@ -245,12 +259,7 @@ func (tc *ToolExecutionComponent) updateBox() {
 	}
 
 	expanded := tc.effectiveExpanded()
-	previewLines := defaultToolPreviewLines
-	if tc.viewPolicy != nil {
-		if n := tc.viewPolicy.EffectivePreviewLines(); n > 0 {
-			previewLines = n
-		}
-	}
+	previewLines := tc.effectivePreviewLines()
 
 	ctx := RenderContext{
 		Expanded:     expanded,

@@ -353,3 +353,61 @@ func TestRemoteCompactionJSON(t *testing.T) {
 	// default: detection is explicit opt-in only, keeping behavior unchanged.
 	assert.Equal(t, RemoteCompactionNone, p.Compat.RemoteCompaction)
 }
+
+// TestResolveProfile_ConfigMapOverridesProfileMapPerKey is the core remap
+// guarantee: a config thinking_level_native_map (carried on the model's
+// ThinkingLevelMap) must override the variant profile's own map per key, not
+// be silently dropped when the profile already defines one. kimi-code maps
+// every level to "max"; a user remap of high -> "high" must win while the
+// unlisted levels keep the profile mapping.
+func TestResolveProfile_ConfigMapOverridesProfileMapPerKey(t *testing.T) {
+	model := Model{
+		ID:       "kimi-for-coding",
+		Api:      ApiOpenAICompletions,
+		Provider: ProviderKimiCode,
+		ThinkingLevelMap: ThinkingLevelMap{
+			ThinkingHigh: "high",
+		},
+	}
+	profile := ResolveProfile(model)
+	require.NotEmpty(t, profile.Defaults.ThinkingLevelMap, "kimi-code profile must define its own map")
+	assert.Equal(t, "high", profile.Defaults.ThinkingLevelMap[ThinkingHigh],
+		"config remap must override the profile entry for the listed level")
+	assert.Equal(t, "max", profile.Defaults.ThinkingLevelMap[ThinkingXHigh],
+		"unlisted levels must keep the profile mapping")
+	assert.Equal(t, "max", profile.Defaults.ThinkingLevelMap[ThinkingMinimal],
+		"unlisted levels must keep the profile mapping")
+}
+
+// TestResolveProfile_ConfigMapFillsProfileWithoutMap covers the profile that
+// has no map of its own (opencode): the config remap must still reach the
+// resolved profile verbatim.
+func TestResolveProfile_ConfigMapFillsProfileWithoutMap(t *testing.T) {
+	model := Model{
+		ID:       "x-preview-f-free",
+		Api:      ApiOpenAICompletions,
+		Provider: ProviderOpenCode,
+		ThinkingLevelMap: ThinkingLevelMap{
+			ThinkingXHigh: "max",
+			ThinkingHigh:  "high",
+			ThinkingLow:   "low",
+		},
+	}
+	profile := ResolveProfile(model)
+	assert.Equal(t, "max", profile.Defaults.ThinkingLevelMap[ThinkingXHigh])
+	assert.Equal(t, "high", profile.Defaults.ThinkingLevelMap[ThinkingHigh])
+	assert.Equal(t, "low", profile.Defaults.ThinkingLevelMap[ThinkingLow])
+}
+
+// TestResolveProfile_NoModelMapLeavesProfileMapUntouched pins the default:
+// without a config remap the profile's own map is authoritative.
+func TestResolveProfile_NoModelMapLeavesProfileMapUntouched(t *testing.T) {
+	profile := ResolveProfile(Model{
+		ID:       "kimi-for-coding",
+		Api:      ApiOpenAICompletions,
+		Provider: ProviderKimiCode,
+	})
+	require.NotEmpty(t, profile.Defaults.ThinkingLevelMap)
+	assert.Equal(t, "max", profile.Defaults.ThinkingLevelMap[ThinkingHigh],
+		"without a config remap the profile map applies as-is")
+}

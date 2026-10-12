@@ -1,0 +1,324 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 Pierre Poissinger
+
+package webui
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/pijalu/goa/tui"
+)
+
+// The VirtualTerminal must satisfy the same interface the TUI engine renders
+// to — that is the whole premise of the web UI.
+func TestVirtualTerminal_ImplementsTerminal(t *testing.T) {
+	var _ tui.Terminal = NewVirtualTerminal(80, 24)
+}
+
+// A browser-reachable session must never claim the process terminal: no raw
+// mode, no screen ownership, no writes to stdout.
+func TestVirtualTerminal_NoRawModeClaim(t *testing.T) {
+	if tui.OwnsScreen() {
+		t.Fatal("precondition: something already owns the screen")
+	}
+	vt := NewVirtualTerminal(80, 24)
+	restore, err := vt.SetRaw()
+	if err != nil {
+		t.Fatalf("SetRaw: %v", err)
+	}
+	if restore == nil {
+		t.Fatal("SetRaw returned a nil restore func")
+	}
+	restore()
+	if tui.OwnsScreen() {
+		t.Error("virtual terminal claimed screen ownership")
+	}
+}
+
+// Input delivered by a transport must reach the engine's input callback, and
+// a panicking handler must not take the transport down.
+func TestVirtualTerminal_InputReachesEngine(t *testing.T) {
+	vt := NewVirtualTerminal(80, 24)
+	var got []string
+	vt.Start(func(s string) { got = append(got, s) }, func() {})
+
+	vt.Input("ls -la\r")
+	vt.Input("")
+	vt.Input("\x03")
+
+	if len(got) != 2 || got[0] != "ls -la\r" || got[1] != "\x03" {
+		t.Fatalf("input not delivered verbatim: %q", got)
+	}
+}
+
+func TestVirtualTerminal_InputSurvivesPanickingHandler(t *testing.T) {
+	vt := NewVirtualTerminal(80, 24)
+	vt.Start(func(string) { panic("handler exploded") }, nil)
+	vt.Input("x") // must not propagate
+}
+
+// The listener accepts clients the moment it binds, which is a few
+// milliseconds before the session has wired its terminal — so keystrokes
+// arriving in that window must be held and replayed by Start, not dropped.
+// Dropped input here means a browser that connected during startup loses what
+// the user typed (measured: an immediate /quit was ignored).
+func TestVirtualTerminal_InputBeforeStartIsReplayedOnStart(t *testing.T) {
+	vt := NewVirtualTerminal(80, 24)
+
+	vt.Input("/qui")
+	vt.Input("t\r")
+	vt.Input("") // still a no-op
+
+	var got []string
+	vt.Start(func(s string) { got = append(got, s) }, func() {})
+
+	const want = "/quit\r"
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("buffered input replayed as %q, want one %q", got, want)
+	}
+
+	// Once started, delivery is immediate again (not buffered a second time).
+	vt.Input("x")
+	if len(got) != 2 || got[1] != "x" {
+		t.Fatalf("post-start input = %q, want immediate delivery", got)
+	}
+}
+
+// Nothing may be replayed into a session that already ended: a stopped
+// terminal has no engine to type into, and stale keystrokes must not surface
+// in a future one.
+func TestVirtualTerminal_InputAfterStopIsDropped(t *testing.T) {
+	vt := NewVirtualTerminal(80, 24)
+	vt.Start(func(string) {}, func() {})
+	vt.Stop()
+
+	vt.Input("late")
+
+	var got []string
+	vt.Start(func(s string) { got = append(got, s) }, func() {})
+	if len(got) != 0 {
+		t.Fatalf("input typed after Stop was replayed: %q", got)
+	}
+}
+
+// The pre-start buffer is bounded: a client that floods a session which never
+// starts must not be able to grow it without limit.
+func TestVirtualTerminal_PendingInputIsBounded(t *testing.T) {
+	vt := NewVirtualTerminal(80, 24)
+
+	burst := strings.Repeat("a", pendingInputLimit*2)
+	vt.Input(burst)
+
+	got := vt.pendingInput.Len()
+	if got > pendingInputLimit {
+		t.Fatalf("pending input grew to %d bytes, want at most %d", got, pendingInputLimit)
+	}
+
+	var delivered []string
+	vt.Start(func(s string) { delivered = append(delivered, s) }, func() {})
+	if len(delivered) != 1 {
+		t.Fatalf("replayed %d chunks, want exactly 1", len(delivered))
+	}
+	if len(delivered[0]) != pendingInputLimit {
+		t.Fatalf("replayed %d bytes, want the bounded %d", len(delivered[0]), pendingInputLimit)
+	}
+}
+
+// The screen the engine writes must come back out as cells, and a second,
+// unchanged write must not publish a frame.
+func TestVirtualTerminal_WriteUpdatesGrid(t *testing.T) {
+	vt := NewVirtualTerminal(20, 3)
+	rec := &recordSink{}
+	vt.SetSink(rec)
+
+	vt.WriteString("\x1b[1;1Hgoa\x1b[0m")
+	if len(rec.frames) != 1 {
+		t.Fatalf("want 1 frame, got %d", len(rec.frames))
+	}
+	f := rec.frames[0]
+	if len(f.Patches) != 1 {
+		t.Fatalf("want 1 patched row, got %d", len(f.Patches))
+	}
+	if got := RunsText(f.Patches[0].Runs); !strings.HasPrefix(got, "goa") {
+		t.Errorf("row text = %q", got)
+	}
+
+	vt.WriteString("\x1b[0m") // no cell change
+	if len(rec.frames) != 1 {
+		t.Errorf("unchanged write published a frame: %d total", len(rec.frames))
+	}
+}
+
+// The compositor signals the hardware cursor ONLY through DECTCEM bytes, so the
+// cursor the frames carry must follow them. Before this was modelled the caret
+// was permanently hidden — the "missing cursor in the input" symptom.
+func TestVirtualTerminal_CursorVisibilityFollowsDECTCEM(t *testing.T) {
+	vt := NewVirtualTerminal(20, 3)
+	rec := &recordSink{}
+	vt.SetSink(rec)
+
+	// A real terminal starts with the cursor shown; the engine then hides it at
+	// startup (tui.Start) before rendering.
+	vt.HideCursor()
+	vt.WriteString("input>")
+	if got := rec.frames[len(rec.frames)-1].Cursor.Visible; got {
+		t.Fatalf("cursor visible after HideCursor: %v", got)
+	}
+
+	// A render that wants the cursor emits \x1b[?25h in the same buffer.
+	vt.WriteString("\x1b[?25h")
+	if got := rec.frames[len(rec.frames)-1].Cursor.Visible; !got {
+		t.Error("cursor still hidden after \\x1b[?25h")
+	}
+
+	// Hiding it again takes effect even when no cell moved.
+	vt.WriteString("\x1b[?25l")
+	if got := rec.frames[len(rec.frames)-1].Cursor.Visible; got {
+		t.Error("cursor still visible after \\x1b[?25l")
+	}
+}
+
+// twoPlaneSink records BOTH planes, so a test can see the cells document and the
+// blocks document one publish produced.
+type twoPlaneSink struct {
+	cells  []*Frame
+	blocks []*Frame
+}
+
+func (s *twoPlaneSink) Publish(p Plane, f *Frame) {
+	if p == PlaneCells {
+		s.cells = append(s.cells, f)
+		return
+	}
+	s.blocks = append(s.blocks, f)
+}
+
+// HasClientsFor reports every plane watched: the cases below assert on what each
+// audience receives.
+func (s *twoPlaneSink) HasClientsFor(Plane) bool { return true }
+
+// A keystroke that only moves the caret (typing a space over a blank cell) leaves
+// the compositor no byte but the absolute CUP, so the frame it produces carries
+// NO row patch. It must still be published — to every plane — or the browser's
+// caret never moves (bugs.md B20).
+func TestVirtualTerminal_CursorOnlyWritePublishesAFrame(t *testing.T) {
+	vt := NewVirtualTerminal(20, 3)
+	sink := &twoPlaneSink{}
+	vt.SetSink(sink)
+
+	vt.WriteString("\x1b[1;1Hab")
+	cellsBefore, blocksBefore := len(sink.cells), len(sink.blocks)
+
+	vt.WriteString("\x1b[1;4H")
+	if got := len(sink.cells) - cellsBefore; got != 1 {
+		t.Fatalf("a cursor-only write published %d cells frames, want exactly 1", got)
+	}
+	cells := sink.cells[len(sink.cells)-1]
+	if len(cells.Patches) != 0 {
+		t.Errorf("the cursor-only cells frame carried patches: %+v", cells.Patches)
+	}
+	if cells.Cursor.Row != 0 || cells.Cursor.Col != 3 {
+		t.Errorf("cells cursor = (%d,%d), want (0,3)", cells.Cursor.Row, cells.Cursor.Col)
+	}
+	// The blocks plane reuses the cells plane's empty patch set: a second drain
+	// of the grid would find nothing marked and compare the whole screen.
+	if got := len(sink.blocks) - blocksBefore; got != 1 {
+		t.Fatalf("a cursor-only write published %d blocks frames, want exactly 1", got)
+	}
+	blocks := sink.blocks[len(sink.blocks)-1]
+	if len(blocks.Patches) != 0 {
+		t.Errorf("the cursor-only blocks frame carried patches: %+v", blocks.Patches)
+	}
+	if blocks.Cursor.Row != 0 || blocks.Cursor.Col != 3 {
+		t.Errorf("blocks cursor = (%d,%d), want (0,3)", blocks.Cursor.Row, blocks.Cursor.Col)
+	}
+}
+
+func TestVirtualTerminal_ResizeFiresCallbackAndFullFrame(t *testing.T) {
+	vt := NewVirtualTerminal(20, 3)
+	rec := &recordSink{}
+	vt.SetSink(rec)
+	resized := 0
+	vt.Start(nil, func() { resized++ })
+
+	vt.Resize(40, 10)
+	if resized != 1 {
+		t.Fatalf("resize callback fired %d times, want 1", resized)
+	}
+	w, h := vt.Size()
+	if w != 40 || h != 10 {
+		t.Errorf("size = %dx%d, want 40x10", w, h)
+	}
+	if len(rec.frames) != 1 || !rec.frames[0].Full {
+		t.Errorf("resize did not publish a full frame: %+v", rec.frames)
+	}
+
+	vt.Resize(40, 10) // no change → no repaint, no callback
+	if resized != 1 || len(rec.frames) != 1 {
+		t.Errorf("idempotent resize published work: cb=%d frames=%d", resized, len(rec.frames))
+	}
+}
+
+func TestVirtualTerminal_CursorVisibilityAndTitle(t *testing.T) {
+	vt := NewVirtualTerminal(20, 3)
+	rec := &recordSink{}
+	vt.SetSink(rec)
+
+	if !vt.Grid().Cursor().Visible {
+		t.Error("caret should start visible")
+	}
+	vt.HideCursor()
+	if vt.Grid().Cursor().Visible {
+		t.Error("HideCursor did not hide the caret")
+	}
+	vt.ShowCursor()
+	if !vt.Grid().Cursor().Visible {
+		t.Error("ShowCursor did not show the caret")
+	}
+	vt.SetTitle("goa — work")
+	if got := rec.lastTitle(); got != "goa — work" {
+		t.Errorf("title = %q", got)
+	}
+}
+
+func TestVirtualTerminal_ClearScreen(t *testing.T) {
+	vt := NewVirtualTerminal(10, 2)
+	rec := &recordSink{}
+	vt.SetSink(rec)
+	vt.WriteString("\x1b[1;1Hhello")
+	vt.ClearScreen()
+	if got := strings.TrimSpace(vt.Grid().Text()); got != "\n" && strings.TrimSpace(got) != "" {
+		t.Errorf("screen not blank after ClearScreen: %q", got)
+	}
+}
+
+// recordSink serves the cells plane only (the default): with per-client
+// planes one publish produces one frame per audience, and these tests assert
+// on the cells document the way every pre-blocks client saw it.
+type recordSink struct {
+	frames []*Frame
+	titles []string
+}
+
+func (r *recordSink) Publish(p Plane, f *Frame) {
+	if p != PlaneCells {
+		return
+	}
+	r.frames = append(r.frames, f)
+	if f.Title != "" {
+		r.titles = append(r.titles, f.Title)
+	}
+}
+
+// HasClients always reports true: a recorder stands in for an attached browser,
+// and a test that installs one wants every frame built.
+func (r *recordSink) HasClientsFor(p Plane) bool { return p == PlaneCells }
+
+func (r *recordSink) lastTitle() string {
+	if len(r.titles) == 0 {
+		return ""
+	}
+	return r.titles[len(r.titles)-1]
+}

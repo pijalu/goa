@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -236,6 +237,10 @@ func (m *configMenu) addModel(providerID, modelID, modelName string) {
 		Name:       modelName,
 		ProviderID: providerID,
 		Model:      modelName,
+		// Seed an editable thinking-level remap for custom (non-registry)
+		// models; see addAndShowModel for rationale. Behavior-neutral until
+		// edited; nil for registry-known models.
+		ThinkingLevelNativeMap: provider.CustomModelThinkingSeed(cfg, providerID, modelName),
 	})
 	m.saveProvidersAndModels()
 	m.flash(fmt.Sprintf("Model %q added.", modelID))

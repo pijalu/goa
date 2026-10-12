@@ -315,6 +315,52 @@ func TestModelCommand_AddNoProvider(t *testing.T) {
 	}
 }
 
+// TestModelCommand_AddCustomSeedsThinkingRemap drives the interactive add
+// flow's custom-model path (/model add → provider → "── custom model ──" →
+// free-typed name) and verifies the persisted model carries an editable
+// thinking_level_native_map seed.
+func TestModelCommand_AddCustomSeedsThinkingRemap(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.ConfigSaver = &fakeConfigSaver{}
+	ctx.Config.Providers = []config.ProviderConfig{
+		{ID: "opencode", Provider: "opencode", Endpoint: "https://opencode.ai/zen/v1", APIKey: "k"},
+	}
+
+	// Drive the two selectors (provider, then model list) and the input prompt.
+	var step int
+	ctx.SelectOptionFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+		step++
+		switch step {
+		case 1: // "Select provider:"
+			onSelected("opencode", true)
+		case 2: // "Select model to add:" — pick the custom sentinel
+			onSelected("__custom__", true)
+		default: // trailing "Select model:" re-shown by addAndShowModel — cancel
+			onSelected("", false)
+		}
+	}
+	ctx.ShowInputFunc = func(prompt, current string, onSubmit func(string, bool)) {
+		onSubmit("brand-new-llm-9000", true)
+	}
+
+	if err := runModelCommand(ctx, nil, ctx.Config, ctx.ConfigSaver, []string{"add"}); err != nil {
+		t.Fatalf("runModelCommand add: %v", err)
+	}
+
+	if len(ctx.Config.Models) != 1 {
+		t.Fatalf("expected 1 model, got %d: %+v", len(ctx.Config.Models), ctx.Config.Models)
+	}
+	seed := ctx.Config.Models[0].ThinkingLevelNativeMap
+	if seed == nil {
+		t.Fatal("ThinkingLevelNativeMap = nil, want an editable identity seed for a custom model")
+	}
+	for _, l := range []string{"off", "minimal", "low", "medium", "high", "xhigh"} {
+		if seed[l] != l {
+			t.Errorf("seed[%q] = %q, want identity %q", l, seed[l], l)
+		}
+	}
+}
+
 // TestModelCommand_AddAlwaysPromptsProvider verifies the interactive add-model
 // flow ALWAYS asks for the provider first (Issue 11), even when an
 // active provider is set — and pre-selects that active provider as the default.

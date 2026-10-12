@@ -187,10 +187,15 @@ func convertParts(blocks []provider.ContentBlock, role provider.Role) []map[stri
 		case provider.ContentBlockText:
 			parts = append(parts, map[string]interface{}{"text": b.Text})
 		case provider.ContentBlockImage:
+			enc, ok := provider.EncodeImage(b.ImageData)
+			if !ok {
+				parts = append(parts, map[string]interface{}{"text": provider.ImageUnavailablePlaceholder})
+				break
+			}
 			parts = append(parts, map[string]interface{}{
 				"inlineData": map[string]interface{}{
-					"mimeType": b.ImageMimeType,
-					"data":     b.ImageData,
+					"mimeType": enc.MimeType,
+					"data":     enc.Base64,
 				},
 			})
 		case provider.ContentBlockToolCall:

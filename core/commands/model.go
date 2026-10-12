@@ -325,6 +325,13 @@ func addAndShowModel(host core.UIHost, cfg *config.Config, saver config.ConfigSa
 		Name:       modelName,
 		ProviderID: providerID,
 		Model:      modelName,
+		// Seed an editable thinking-level remap for custom (non-registry)
+		// models so always-thinking providers (e.g. opencode's
+		// x-preview-f-free, which accepts only low/high/max) can be fixed by
+		// editing values instead of discovering the field. The seed mirrors
+		// the current effective mapping, so it is behavior-neutral until
+		// edited. nil for registry-known models (already curated).
+		ThinkingLevelNativeMap: provider.CustomModelThinkingSeed(cfg, providerID, modelName),
 	})
 	if err := persistModelCatalogChange(host, cfg, saver); err != nil {
 		host.Flash("Failed to save: " + err.Error())

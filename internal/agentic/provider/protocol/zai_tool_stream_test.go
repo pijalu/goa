@@ -60,8 +60,10 @@ func TestZaiOmitsToolStreamWithoutTools(t *testing.T) {
 }
 
 // TestZaiOmitsToolStreamOnNoToolsCollapse verifies the final-step collapse
-// (P7: tools omitted, tool_choice "none") also drops tool_stream — the field
-// must never appear without a tools array.
+// (P7) drops tool_stream while KEEPING the tools array: tool_stream is a
+// channel control field outside the cached prompt, while the tool schemas are
+// part of it and must never move (a prompt-body change re-bills the whole
+// prompt — 2026-10-05 kimi export).
 func TestZaiOmitsToolStreamOnNoToolsCollapse(t *testing.T) {
 	req := buildReq(t, zaiToolStreamModel(), schema.Context{
 		Messages: []schema.Message{schema.NewUserMessage("hi")},
@@ -69,9 +71,10 @@ func TestZaiOmitsToolStreamOnNoToolsCollapse(t *testing.T) {
 		NoTools:  true,
 	})
 	_, hasTools := req["tools"]
-	require.False(t, hasTools, "collapse must omit tools")
+	require.True(t, hasTools, "collapse must keep the cached tool surface")
+	assert.Equal(t, "none", req["tool_choice"])
 	_, ok := req["tool_stream"]
-	assert.False(t, ok, "tool_stream must not ride along without a tools array")
+	assert.False(t, ok, "tool_stream must not ride along on a no-tools round")
 }
 
 // TestZaiApiSendsToolStream covers the general (non-coding) z.ai endpoint,

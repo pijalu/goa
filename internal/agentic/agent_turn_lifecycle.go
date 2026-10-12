@@ -49,6 +49,8 @@ func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 		// result) does not end the turn outright: it stops the current tool
 		// batch and marks the next round text-only, so the model's summary
 		// response comes immediately without further tool calls (P7, TC6).
+		// That round keeps the same tool surface — the schemas are part of the
+		// cached prompt — and pins tool_choice only.
 		// EventEnd is emitted exclusively on the finishing path so mid-turn UI
 		// consumers never observe a premature turn end (which previously dropped
 		// the status spinner after the first tool call).

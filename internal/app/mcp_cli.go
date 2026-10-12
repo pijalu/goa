@@ -5,9 +5,6 @@
 package app
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands"
@@ -30,8 +27,8 @@ func runMCPCLI(args []string) bool {
 		rest = []string{"list"}
 	}
 	if rest[0] == "help" || rest[0] == "--help" || rest[0] == "-h" {
-		fmt.Print(mcpCLIUsage)
-		os.Exit(0)
+		// One source for the mcp help text: the same unit the manual prints.
+		exitWithHelp("mcp")
 	}
 
 	projectDir := MustGetwd()

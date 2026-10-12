@@ -339,17 +339,23 @@ type Agent struct {
 	stopBatchAfterThis bool
 
 	// toolCollapseNextRound marks the NEXT stream round as the turn's final
-	// step (P7): the request carries no tools and tool_choice "none", so the
-	// model must produce its summary response text-only. Set by completeStreamTurn
+	// step (P7): the request carries the SAME tool surface as every other
+	// round of this context and only pins tool_choice "none", so the model
+	// must produce its summary response text-only. The tool schemas are part
+	// of the provider's cached prompt: removing them for this one round moved
+	// the prefix-cache divergence point to the front of the conversation and
+	// re-billed the entire prompt (kimi k3-256k, 2026-10-05 export: cached
+	// 41,728 → 1,792 on a byte-exact message append). Set by completeStreamTurn
 	// when a stop-turn signal is pending; consumed by startStreamRound when it
 	// builds the round's provider context.
 	toolCollapseNextRound bool
 
 	// collapseStatsPending latches that the CURRENT stream round runs with
 	// the P7 text-only collapse: the round's token-stats event carries
-	// TextOnlyCollapse so /stats:cache can classify the round's by-design
-	// provider-prefix bust as an intentional request-shape change, not an
-	// unexpected miss (bugs.md 2026-08-30). Set by startStreamRound /
+	// TextOnlyCollapse so /stats:cache can label the round as an intentional
+	// control-field change rather than an unexpected miss (bugs.md 2026-08-30;
+	// since 2026-10-05 the collapse no longer busts the prefix at all, so the
+	// label is provenance, not an excuse). Set by startStreamRound /
 	// runRecoveryStream when the collapse is applied, cleared at each
 	// non-collapsed round start, and consumed by the round's EventTokenStats
 	// emission (single-goroutine stream path, same discipline as

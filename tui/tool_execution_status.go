@@ -186,6 +186,20 @@ func (tc *ToolExecutionComponent) statusIcon() (icon string, color string) {
 	}
 }
 
+// effectivePreviewLines returns the Summary preview line count: the view
+// policy's value when it has one, the TUI default otherwise. It is the number
+// the renderers show for a collapsed body, and the block plane exports it so the
+// web page's tool card previews exactly as many lines as the terminal does
+// (bugs.md B23).
+func (tc *ToolExecutionComponent) effectivePreviewLines() int {
+	if tc.viewPolicy != nil {
+		if n := tc.viewPolicy.EffectivePreviewLines(); n > 0 {
+			return n
+		}
+	}
+	return defaultToolPreviewLines
+}
+
 // effectiveExpanded returns the effective expanded state for the widget,
 // considering both the per-widget toggle (tc.expanded) and the global view
 // policy. For read tools, the showRead policy prevents global expansion when

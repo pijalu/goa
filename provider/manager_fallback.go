@@ -179,9 +179,7 @@ func applyModelConfigToFallback(mdl *agenticprovider.Model, mCfg config.ModelCon
 	if mCfg.ThinkingLevel != "" {
 		mdl.Reasoning = true
 	}
-	if native := nativeThinkingLevelMap(mCfg); len(native) > 0 {
-		mdl.ThinkingLevelMap = native
-	}
+	applyNativeThinkingLevelMap(mdl, mCfg)
 	inferProviderModelTraits(mdl)
 	if budgets := effectiveThinkingBudgets(mCfg); len(budgets) > 0 {
 		mdl.ThinkingBudgets = budgets
@@ -262,22 +260,24 @@ func uniformThinkingBudgets(budget int) agenticprovider.ThinkingBudgets {
 	}
 }
 
-// nativeThinkingLevelMap converts the config's ThinkingLevelNativeMap
+// applyNativeThinkingLevelMap merges the config's ThinkingLevelNativeMap
 // (canonical level → provider-native string) into the model's ThinkingLevelMap
-// so resolveThinkingLevel translates the level before it hits the wire. This is
-// the direct per-model escape hatch for quick-fixing new or always-thinking
-// models whose accepted levels differ from Goa's canonical set. It applies only
-// when the resolved variant profile carries no map of its own (the migration
-// bridge in schema.ResolveProfile skips the copy when the profile has one).
-func nativeThinkingLevelMap(mCfg config.ModelConfig) agenticprovider.ThinkingLevelMap {
+// per key so resolveThinkingLevel translates the level before it hits the
+// wire. This is the direct per-model escape hatch for quick-fixing new or
+// always-thinking models whose accepted levels differ from Goa's canonical
+// set. Per-key merge (not replacement) keeps the registry map's other levels
+// available for clamping, and schema.ResolveProfile re-applies the same
+// per-key override on top of the variant profile's own map.
+func applyNativeThinkingLevelMap(mdl *agenticprovider.Model, mCfg config.ModelConfig) {
 	if len(mCfg.ThinkingLevelNativeMap) == 0 {
-		return nil
+		return
 	}
-	m := make(agenticprovider.ThinkingLevelMap, len(mCfg.ThinkingLevelNativeMap))
+	if mdl.ThinkingLevelMap == nil {
+		mdl.ThinkingLevelMap = make(agenticprovider.ThinkingLevelMap, len(mCfg.ThinkingLevelNativeMap))
+	}
 	for k, v := range mCfg.ThinkingLevelNativeMap {
-		m[agenticprovider.ThinkingLevel(k)] = v
+		mdl.ThinkingLevelMap[agenticprovider.ThinkingLevel(k)] = v
 	}
-	return m
 }
 
 // parseCompatJSON unmarshals a provider compat JSON blob into the concrete

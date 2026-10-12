@@ -4,22 +4,34 @@
 
 package tui
 
+import (
+	"strings"
+
+	"github.com/pijalu/goa/internal/ansi"
+)
+
 // FooterData holds status bar information.
 type FooterData struct {
-	Workdir                string
-	Mode                   string // autonomy level: "yolo", "review", "plan"
-	MinorMode              string // minor mode: "companion", "pair", "" (empty when inactive)
-	Profile                string
-	Model                  string // main model display: "(provider) model"
-	Provider               string // provider ID for formatting companion model
-	CompanionModel         string // companion model raw ID, empty when none
-	Activity               string
-	Tokens                 string
-	ThinkingLevel          string // "off", "low", "medium", "high"
-	GitBranch              string // current git branch (empty if not a git repo)
-	GitDirty               bool   // true if working tree has changes
-	GitConflicts           bool   // true if merge conflicts exist
-	Stats                  string // conversation stats like "↑169k ↓209k  35.8%/1.0M (auto)"
+	Workdir        string
+	Mode           string // autonomy level: "yolo", "review", "plan"
+	MinorMode      string // minor mode: "companion", "pair", "" (empty when inactive)
+	Profile        string
+	Model          string // main model display: "(provider) model"
+	Provider       string // provider ID for formatting companion model
+	CompanionModel string // companion model raw ID, empty when none
+	Activity       string
+	Tokens         string
+	ThinkingLevel  string // "off", "low", "medium", "high"
+	GitBranch      string // current git branch (empty if not a git repo)
+	GitDirty       bool   // true if working tree has changes
+	GitConflicts   bool   // true if merge conflicts exist
+	Stats          string // conversation stats like "↑169k ↓209k  35.8%/1.0M (auto)"
+	// StatsSegments is the same stat set as Stats, split into the width-
+	// droppable fields of the B11 priority ladder (lowest Tier drops first).
+	// Stats stays authoritative for consumers that need one string (headless
+	// rendering, orchestration lines); when StatsSegments is empty the footer
+	// treats Stats as a single never-dropped segment.
+	StatsSegments          []FooterSegment
 	CompanionThinkingLevel string // companion thinking level badge
 	CompanionCycleCount    int    // current framework-driven companion cycle
 	CompanionCycleMax      int    // maximum framework-driven companion cycles
@@ -67,6 +79,54 @@ type PluginSegment struct {
 	ID       string
 	Priority int
 	Text     string // already-rendered, ANSI-safe content
+}
+
+// FooterSegment is one width-droppable piece of the line-2 status bar. Tier
+// is its position on the B11 priority ladder: while the line does not fit, the
+// LOWEST tier still present is dropped first, so a value that matters more must
+// carry a HIGHER tier. Text is an already-styled fragment. Glue renders the
+// segment directly against its predecessor with no separating space (used by
+// fields that were one visual unit before the ladder split them, e.g.
+// "CH:99.0%▸99.4%"), so dropping one leaves no stray separator behind.
+type FooterSegment struct {
+	Tier int
+	Text string
+	Glue bool
+}
+
+// The status-line priority ladder (bugs.md B11), lowest value → dropped first:
+// the amount is the first casualty and the context/quota figure is never
+// dropped. The model identity (tier 8) is preserved by ellipsizing the model
+// name before anything at tier 8 is removed.
+const (
+	FooterTierAmount   = 1 // $0.6259
+	FooterTierProvider = 2 // (opencode-go)
+	FooterTierTokens   = 3 // ↑291.6K ↓130.4K
+	FooterTierTools    = 4 // TC:190
+	FooterTierSpeed    = 5 // 72.5 tok/s
+	FooterTierLastCH   = 6 // ▸99.4%
+	FooterTierAvgCH    = 7 // CH:99.0%
+	// FooterTierIdentity covers the model name and its thinking badge; the
+	// badge drops here, the name is ellipsized instead of removed.
+	FooterTierIdentity = 8
+	// FooterTierQuota is the context/quota figure — the last survivor.
+	FooterTierQuota = 9
+)
+
+// joinFooterSegments renders the surviving segments in their original order,
+// honoring each segment's glue flag.
+func joinFooterSegments(segments []FooterSegment) string {
+	var b strings.Builder
+	for _, s := range segments {
+		if strings.TrimSpace(ansi.Strip(s.Text)) == "" {
+			continue
+		}
+		if b.Len() > 0 && !s.Glue {
+			b.WriteByte(' ')
+		}
+		b.WriteString(s.Text)
+	}
+	return b.String()
 }
 
 // preserveFooterData merges new data with previously preserved fields so the

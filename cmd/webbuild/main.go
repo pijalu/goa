@@ -302,6 +302,12 @@ var curatedBlurbs = map[string]string{
 	"development":          "Building, testing and contributing to Goa.",
 	"profiling":            "Profiling and performance tooling for Goa.",
 	"goals":                "Project goals, roadmap and direction.",
+	"webui":                "The web UI and terminal interop: goa server, goa attach, multi-project serving.",
+	"user-guide":           "Task-driven guide: workflows, orchestrator, companion, the web UI and images.",
+	"hotkeys":              "Every keyboard shortcut, in the terminal, in the browser and over attach.",
+	"loop-detection":       "The five stuck-agent heuristics and their safeguards.",
+	"plan":                 "Plan mode: structured, event-sourced work planning.",
+	"provider-connectivity": "HTTP connectivity details for every provider adapter.",
 }
 
 // excludeDoc lists filename stems that should not be published as pages.

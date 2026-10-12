@@ -91,8 +91,5 @@ func (b *JSBridge) enterFrame() func() { return b.frames.enter() }
 // tryEnterFrame acquires this runtime's frame without waiting.
 func (b *JSBridge) tryEnterFrame() (func(), bool) { return b.frames.tryEnter() }
 
-// busy reports whether a JS frame is live on this runtime.
-func (b *JSBridge) busy() bool { return b.frames.busy() }
-
 // TryEnter implements FrameGate.
 func (b *JSBridge) TryEnter() (func(), bool) { return b.frames.tryEnter() }

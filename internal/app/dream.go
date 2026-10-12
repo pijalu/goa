@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands"
@@ -21,8 +20,7 @@ import (
 // without os.Exit killing the test binary.
 func runDream(subs *subsystems, opts RuntimeOptions) {
 	if err := executeDream(subs, opts); err != nil {
-		fmt.Fprintf(os.Stderr, "Dream failed: %v\n", err)
-		os.Exit(1)
+		fatalExitf("Dream failed: %v\n", err)
 	}
 }
 
