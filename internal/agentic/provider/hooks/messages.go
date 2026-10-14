@@ -108,17 +108,33 @@ func convertThinkingToTextWhenRequired(messages []schema.Message, model schema.M
 	if sourceFormat == "" && len(profile.Defaults.ThinkingLevelMap) > 0 {
 		sourceFormat = schema.ThinkingFormatThinkingContent
 	}
-	targetFormat := schema.ThinkingFormat(profile.Compat.ThinkingFormat)
-	if !requiresThinkingAsText(sourceFormat, targetFormat) {
+	if !requiresThinkingAsText(sourceFormat, profile) {
 		return messages
 	}
 	return transformThinkingToText(messages)
 }
 
-func requiresThinkingAsText(sourceFormat, targetFormat schema.ThinkingFormat) bool {
+// requiresThinkingAsText reports whether the resolved endpoint cannot take a
+// native thinking block back in the assistant history, so the thinking has to
+// be folded into visible text.
+//
+// The endpoint's own capability declaration outranks the format vocabulary: a
+// profile that requires reasoning_content on assistant messages is asking for
+// that native field, so converting the thinking away both loses the reasoning
+// and removes the very field the endpoint demands (review finding F7 — the
+// opencode gateways set that flag, and their CatJam upstream answers 400
+// missing_required_parameter messages[1].reasoning_content without the echo).
+// The vocabulary test stays for every other endpoint: a target speaking a
+// thinking-native format takes the block as-is, anything else (openai:
+// reasoning_effort only) gets text, which is the safe shape there.
+func requiresThinkingAsText(sourceFormat schema.ThinkingFormat, profile schema.VariantProfile) bool {
 	if sourceFormat == "" || sourceFormat == schema.ThinkingFormatNone {
 		return false
 	}
+	if profile.Compat.RequiresReasoningContentOnAssistantMessages {
+		return false
+	}
+	targetFormat := schema.ThinkingFormat(profile.Compat.ThinkingFormat)
 	if targetFormat == "" || targetFormat == schema.ThinkingFormatNone {
 		return true
 	}
