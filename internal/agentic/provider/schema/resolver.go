@@ -14,18 +14,31 @@ import (
 
 // Resolver matches models to variant profiles.
 type Resolver struct {
-	profiles []VariantProfile
+	layers []ProfileLayer
 }
 
-// NewResolver creates a resolver from the given profiles.
+// NewResolver creates a resolver from a single set of profiles. The profiles
+// are treated as one layer: the most specific match wins.
 func NewResolver(profiles []VariantProfile) *Resolver {
-	cp := make([]VariantProfile, len(profiles))
-	copy(cp, profiles)
-	// Higher specificity first: variant_id/model_id > provider > api.
-	sort.SliceStable(cp, func(i, j int) bool {
-		return scoreMatch(cp[i].Match) > scoreMatch(cp[j].Match)
-	})
-	return &Resolver{profiles: cp}
+	return NewLayeredResolver([]ProfileLayer{{Name: layerEmbedded, Profiles: profiles}})
+}
+
+// NewLayeredResolver creates a resolver over the config cascade. Layers are in
+// increasing precedence order: every layer that matches a model contributes,
+// and later layers override earlier ones (docs/PROVIDERS.md "Config cascade").
+// Within one layer the most specific match wins.
+func NewLayeredResolver(layers []ProfileLayer) *Resolver {
+	cp := make([]ProfileLayer, len(layers))
+	for i, l := range layers {
+		profiles := make([]VariantProfile, len(l.Profiles))
+		copy(profiles, l.Profiles)
+		// Higher specificity first: variant_id/model_id > provider > api.
+		sort.SliceStable(profiles, func(a, b int) bool {
+			return scoreMatch(profiles[a].Match) > scoreMatch(profiles[b].Match)
+		})
+		cp[i] = ProfileLayer{Name: l.Name, Profiles: profiles}
+	}
+	return &Resolver{layers: cp}
 }
 
 func scoreMatch(m ProfileMatch) int {
@@ -48,28 +61,65 @@ func scoreMatch(m ProfileMatch) int {
 	return score
 }
 
-// Resolve returns the best matching variant profile for a model. When no
-// profile matches, it returns DefaultProfile() so that unmatched or custom
-// providers still get a sane baseline — most importantly standard Bearer
-// authentication — instead of an empty profile that silently drops the API key
-// (Issue 9: poolside/groq/fireworks/perplexity/zai-api/azure/custom).
+// Resolve returns the effective variant profile for a model: the cascade
+// documented in docs/PROVIDERS.md. Every layer that matches contributes, later
+// layers overriding earlier ones, so a user profile that pins one field for a
+// model (e.g. compat.thinking_format for one gateway model) refines the
+// provider profile instead of replacing it — replacing silently dropped the
+// fields it did not restate (max_tokens_field, the reasoning_content echo
+// requirement), which is how review finding F5 turned a targeted override into
+// a multi-turn failure.
+//
+// When no layer matches, DefaultProfile() is returned so that unmatched or
+// custom providers still get a sane baseline — most importantly standard
+// Bearer authentication — instead of an empty profile that silently drops the
+// API key (Issue 9: poolside/groq/fireworks/perplexity/zai-api/azure/custom).
 func (r *Resolver) Resolve(model Model) VariantProfile {
+	var merged VariantProfile
+	ids := make([]string, 0, len(r.layers))
+	matched := false
+	for _, layer := range r.layers {
+		best, ok := bestMatch(layer.Profiles, model)
+		if !ok {
+			continue
+		}
+		if !matched {
+			// First match is taken verbatim: a single-source resolution must
+			// be byte-identical to the profile the source declares, not a
+			// merge of it onto a zero value (which would silently drop every
+			// field the merge helpers do not copy).
+			merged = best
+			matched = true
+		} else {
+			merged = MergeProfiles(merged, best)
+		}
+		if best.ID != "" {
+			ids = append(ids, best.ID)
+		}
+	}
+	if !matched {
+		return DefaultProfile(model)
+	}
+	// Name the effective profile after the layers that built it so
+	// GOA_DEBUG_PROVIDER=1 shows what was layered, not just the last writer.
+	merged.ID = strings.Join(ids, "+")
+	return merged
+}
+
+// bestMatch returns the most specific profile in one layer that matches the
+// model.
+func bestMatch(profiles []VariantProfile, model Model) (VariantProfile, bool) {
 	var best VariantProfile
 	bestScore := -1
-	for _, p := range r.profiles {
+	for _, p := range profiles {
 		if !profileMatches(p.Match, model) {
 			continue
 		}
-		s := scoreMatch(p.Match)
-		if s > bestScore {
-			best = p
-			bestScore = s
+		if s := scoreMatch(p.Match); s > bestScore {
+			best, bestScore = p, s
 		}
 	}
-	if bestScore < 0 {
-		return DefaultProfile(model)
-	}
-	return best
+	return best, bestScore >= 0
 }
 
 // DefaultProfile returns a sane baseline variant profile for providers that
@@ -142,18 +192,21 @@ func profileMatches(m ProfileMatch, model Model) bool {
 }
 
 // ResolveProfile resolves the variant profile for a model using embedded and
-// user-configured profiles. It then merges the model's ThinkingLevelMap into
-// the resolved profile per key: the model map (populated from the config's
-// thinking_level_native_map, or from the deprecated registry field during the
-// migration) overrides individual profile entries while profile keys the model
-// does not mention stay intact. See migrateThinkingLevelMap.
+// user-configured profiles, layered as the config cascade
+// (docs/PROVIDERS.md): embedded defaults, then the user, project and local
+// config directories, later sources overriding earlier ones. It then merges the
+// model's ThinkingLevelMap into the resolved profile per key: the model map
+// (populated from the config's thinking_level_native_map, or from the
+// deprecated registry field during the migration) overrides individual profile
+// entries while profile keys the model does not mention stay intact. See
+// migrateThinkingLevelMap.
 func ResolveProfile(model Model) VariantProfile {
-	profiles, err := LoadAllProfiles()
+	layers, err := LoadProfileLayers()
 	if err != nil {
 		// Fallback to an empty profile if loading fails.
 		return VariantProfile{}
 	}
-	r := NewResolver(profiles)
+	r := NewLayeredResolver(layers)
 	profile := r.Resolve(model)
 	profile = migrateThinkingLevelMap(model, profile)
 	return profile
@@ -259,16 +312,29 @@ func mergeThinkingBudgets(d *Defaults, o Defaults) {
 func mergeCompat(c *CompatFlags, o CompatFlags) {
 	setIfNotNil(&c.SupportsStore, o.SupportsStore)
 	setIfNotNil(&c.SupportsEncryptedContent, o.SupportsEncryptedContent)
+	setIfNotNil(&c.SupportsTemperature, o.SupportsTemperature)
+	setIfNotNil(&c.SupportsToolChoiceNone, o.SupportsToolChoiceNone)
 	setIfNonEmpty(&c.MaxTokensField, o.MaxTokensField)
 	setIfNonEmpty(&c.ThinkingFormat, o.ThinkingFormat)
 	setIfNonEmpty(&c.ReasoningKey, o.ReasoningKey)
 	setIfNonEmpty(&c.ImageURLScheme, o.ImageURLScheme)
 	mergeMapAny(c.ThinkingExtraBody, o.ThinkingExtraBody)
-	// Plain bool with no tri-state: an override can only turn the
-	// requirement ON (OR semantics), never explicitly clear it
-	// thinking-mode 400: user variant overrides for DeepSeek-class models).
-	c.RequiresReasoningContentOnAssistantMessages = c.RequiresReasoningContentOnAssistantMessages || o.RequiresReasoningContentOnAssistantMessages
-	c.ToolStream = c.ToolStream || o.ToolStream
+	// Plain bools carry with OR semantics: they cannot express "explicitly
+	// off" in JSON (false == absent), and an override may raise a capability
+	// the lower layer did not advertise but must never silently drop one it
+	// did — dropping requires_reasoning_content_on_assistant_messages is what
+	// turned a targeted user profile into a multi-turn 400 (review finding
+	// F5). Fields that genuinely need "explicit off" are tri-state *bool
+	// above (supports_store / supports_temperature / supports_tool_choice_none
+	// / supports_encrypted_content).
+	orBool(&c.RequiresReasoningContentOnAssistantMessages, o.RequiresReasoningContentOnAssistantMessages)
+	orBool(&c.ToolStream, o.ToolStream)
+	orBool(&c.SystemAsInstructions, o.SystemAsInstructions)
+	orBool(&c.SupportsPromptCache, o.SupportsPromptCache)
+	orBool(&c.StreamIncludesUsage, o.StreamIncludesUsage)
+	orBool(&c.RequiresEmptyToolArguments, o.RequiresEmptyToolArguments)
+	orBool(&c.DropNullContent, o.DropNullContent)
+	orBool(&c.ImageDetailSupported, o.ImageDetailSupported)
 	// RemoteCompaction follows set-if-non-empty semantics: a base/override may
 	// raise the capability, but an empty (unspecified) override never clears a
 	// capability already advertised by a lower-precedence profile.
@@ -283,6 +349,10 @@ func mergeAuth(a *AuthConfig, o AuthConfig) {
 	setIfNonEmpty(&a.Prefix, o.Prefix)
 	setIfNonEmpty(&a.TokenPrefix, o.TokenPrefix)
 	setIfNonEmpty(&a.BearerPrefix, o.BearerPrefix)
+	// Required is a plain bool: JSON cannot distinguish false from absent, so
+	// an override can only turn the requirement ON it (or the base's own
+	// declaration off — never: see orBool).
+	orBool(&a.Required, o.Required)
 	if len(o.EnvVars) > 0 {
 		a.EnvVars = o.EnvVars
 	}
@@ -318,9 +388,26 @@ func mergeToolCompat(t *ToolCompat, o ToolCompat) {
 	setIfNonEmpty((*string)(&t.SchemaSanitizer), string(o.SchemaSanitizer))
 	setIfNonEmpty(&t.BuiltinFunctionPrefix, o.BuiltinFunctionPrefix)
 	setIfNotNil(&t.ToolStreaming, o.ToolStreaming)
-	if o.ToolCallIDRules.MaxLength != 0 {
-		t.ToolCallIDRules = o.ToolCallIDRules
+	mergeToolCallIDRules(&t.ToolCallIDRules, o.ToolCallIDRules)
+	// Plain bools: OR semantics, same reasoning as mergeCompat.
+	orBool(&t.ToolResultAsUser, o.ToolResultAsUser)
+	orBool(&t.RequiresToolResultName, o.RequiresToolResultName)
+	orBool(&t.RequiresAssistantAfterToolResult, o.RequiresAssistantAfterToolResult)
+	orBool(&t.NormalizeNullDescriptions, o.NormalizeNullDescriptions)
+	orBool(&t.SupportsParallelToolCalls, o.SupportsParallelToolCalls)
+}
+
+// mergeToolCallIDRules merges the ID-normalization rules field by field so an
+// override that names one part (say the alphabet) keeps the base's other parts.
+func mergeToolCallIDRules(t *ToolCallIDRules, o ToolCallIDRules) {
+	if o.MaxLength != 0 {
+		t.MaxLength = o.MaxLength
 	}
+	setIfNonEmpty(&t.Alphabet, o.Alphabet)
+	setIfNonEmpty(&t.Prefix, o.Prefix)
+	setIfNonEmpty(&t.Separator, o.Separator)
+	setIfNonEmpty(&t.ForeignPrefix, o.ForeignPrefix)
+	orBool(&t.HashBased, o.HashBased)
 }
 
 func mergeSdkKey(s *SdkKeyConfig, o SdkKeyConfig) {
@@ -351,6 +438,14 @@ func setIfNonEmpty(dst *string, value string) {
 	if value != "" {
 		*dst = value
 	}
+}
+
+// orBool raises dst when the override sets the plain bool. A plain bool cannot
+// distinguish "explicitly false" from "absent" in JSON, so a merge can only
+// ever switch a capability on — never off. That is why fields with a real
+// need for "explicitly off" are tri-state *bool in the schema.
+func orBool(dst *bool, value bool) {
+	*dst = *dst || value
 }
 
 func setIfNotNil[T any](dst **T, value *T) {

@@ -65,34 +65,63 @@ func LoadProfileFromFile(path string) (VariantProfile, error) {
 	return p, nil
 }
 
+// ProfileLayer is one source of variant profiles in the config cascade, in
+// increasing precedence order: embedded defaults, then the user, project and
+// local config directories. Later layers override earlier ones (docs/PROVIDERS.md
+// "Config cascade"), and within one layer the most specific match wins.
+type ProfileLayer struct {
+	// Name identifies the source for diagnostics ("embedded", "user",
+	// "project", "local").
+	Name string
+	// Profiles are the profiles that source supplies.
+	Profiles []VariantProfile
+}
+
 // LoadUserProfiles loads user, project, and local profile overrides.
 func LoadUserProfiles() ([]VariantProfile, error) {
-	return loadFromDirs(profileSearchDirs())
+	layers, err := LoadProfileLayers()
+	if err != nil {
+		return nil, err
+	}
+	var out []VariantProfile
+	for _, l := range layers {
+		if l.Name == layerEmbedded {
+			continue
+		}
+		out = append(out, l.Profiles...)
+	}
+	return out, nil
 }
 
-func profileSearchDirs() []string {
-	var dirs []string
+// profileSource names one user-configurable profile directory.
+type profileSource struct {
+	name string
+	dir  string
+}
+
+// profileSearchSources lists the user-configurable profile directories in
+// cascade order.
+func profileSearchSources() []profileSource {
+	var srcs []profileSource
 	if home, ok := internal.GoaHome(); ok {
-		dirs = append(dirs, filepath.Join(home, userConfigDir, providersSubdir))
+		srcs = append(srcs, profileSource{layerUser, filepath.Join(home, userConfigDir, providersSubdir)})
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		dirs = append(dirs, filepath.Join(cwd, projectConfigDir, providersSubdir))
-		dirs = append(dirs, filepath.Join(cwd, localConfigDir, providersSubdir+".local"))
+		srcs = append(srcs,
+			profileSource{layerProject, filepath.Join(cwd, projectConfigDir, providersSubdir)},
+			profileSource{layerLocal, filepath.Join(cwd, localConfigDir, providersSubdir+".local")},
+		)
 	}
-	return dirs
+	return srcs
 }
 
-func loadFromDirs(dirs []string) ([]VariantProfile, error) {
-	var profiles []VariantProfile
-	for _, dir := range dirs {
-		loaded, err := loadProfilesInDir(dir)
-		if err != nil {
-			return nil, err
-		}
-		profiles = append(profiles, loaded...)
-	}
-	return profiles, nil
-}
+// Layer names, used as ProfileLayer.Name and in profileSource.
+const (
+	layerEmbedded = "embedded"
+	layerUser     = "user"
+	layerProject  = "project"
+	layerLocal    = "local"
+)
 
 func loadProfilesInDir(dir string) ([]VariantProfile, error) {
 	entries, err := os.ReadDir(dir)
@@ -116,15 +145,38 @@ func loadProfilesInDir(dir string) ([]VariantProfile, error) {
 	return profiles, nil
 }
 
-// LoadAllProfiles loads embedded defaults and user overrides.
+// LoadAllProfiles loads embedded defaults and user overrides as one flat
+// slice. Callers that need the cascade structure use LoadProfileLayers.
 func LoadAllProfiles() ([]VariantProfile, error) {
+	layers, err := LoadProfileLayers()
+	if err != nil {
+		return nil, err
+	}
+	var out []VariantProfile
+	for _, l := range layers {
+		out = append(out, l.Profiles...)
+	}
+	return out, nil
+}
+
+// LoadProfileLayers returns every variant profile source in cascade order:
+// embedded defaults first, then the user, project and local config
+// directories. Later layers override earlier ones.
+func LoadProfileLayers() ([]ProfileLayer, error) {
 	embedded, err := LoadEmbeddedProfiles()
 	if err != nil {
 		return nil, err
 	}
-	user, err := LoadUserProfiles()
-	if err != nil {
-		return nil, err
+	layers := []ProfileLayer{{Name: layerEmbedded, Profiles: embedded}}
+	for _, src := range profileSearchSources() {
+		profiles, err := loadProfilesInDir(src.dir)
+		if err != nil {
+			return nil, err
+		}
+		if len(profiles) == 0 {
+			continue
+		}
+		layers = append(layers, ProfileLayer{Name: src.name, Profiles: profiles})
 	}
-	return append(embedded, user...), nil
+	return layers, nil
 }
