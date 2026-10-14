@@ -67,6 +67,45 @@ A minimal profile looks like this:
 }
 ```
 
+## Request-side thinking body (`compat.thinking_format`)
+
+`compat.thinking_format` selects the field(s) a request uses to control
+reasoning. It is a *request* vocabulary, not the response-side
+`Model.ThinkingFormat` (which names the field the reasoning text streams back
+in):
+
+| value | request fields | used by |
+|---|---|---|
+| `openai` (default for OpenAI-compatible surfaces) | `reasoning_effort` | opencode / opencode-go (zen), kimi-code, vercel, generic OpenAI-compatible endpoints |
+| `deepseek` | `thinking: {type: enabled}` + `reasoning_effort` | DeepSeek's own API, string-thinking endpoints |
+| `zai` | `thinking: {type: enabled, clear_thinking: false}` | z.ai GLM |
+| `together` | `reasoning: {enabled: true}` + `reasoning_effort` | Together |
+| `openrouter` | `reasoning: {effort: …}` | OpenRouter |
+| `qwen*` | `thinking: true` | Qwen chat-template endpoints |
+| `none` / unset | nothing is sent | endpoints that reject every reasoning parameter |
+
+Rules worth knowing before editing a profile:
+
+- **Never send a field an upstream does not know.** Proxying gateways forward
+  unknown arguments to the upstream instead of dropping them, and strict
+  upstreams reject them: the OpenCode Zen *Go* gateway answered
+  `thinking: {type: …}` with `HTTP 400 [unsupported_parameter] Unrecognized
+  request argument supplied: thinking.` (exports 20261013-220109,
+  20261013-222008) even though the model reasoned fine without it.
+- **Match the reference client.** The zen surfaces are declared on models.dev
+  with npm `@ai-sdk/openai-compatible`, which the OpenCode client maps to its
+  `openaiChat` protocol — `reasoning_effort` only (see `packages/core/src/`
+  `variant.ts` upstream). That is why `opencode` / `opencode-go` use `openai`
+  here.
+- **Level values are per model.** models.dev publishes the accepted
+  `reasoning_options` values per model; where a model accepts a restricted set,
+  pin it with a `thinking_level_map` in `model_overrides.yaml` (see MiMo) or
+  per model with `thinking_level_native_map` in `config.yaml`.
+- **The object form cannot be half-sent.** A `thinking` object is either
+  accepted by an upstream or fatal; there is no "disabled" spelling that a
+  strict upstream tolerates (`thinking: {type: "disabled"}` 400s exactly like
+  the enabled one on the same upstreams).
+
 ## Provider credentials: API keys, env vars and `/login`
 
 Every provider Goa can select can also be given a credential. The credential

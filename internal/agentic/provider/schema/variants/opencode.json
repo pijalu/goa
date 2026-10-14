@@ -5,7 +5,7 @@
   "compat": {
     "supports_store": false,
     "max_tokens_field": "max_tokens",
-    "thinking_format": "deepseek",
+    "thinking_format": "openai",
     "requires_reasoning_content_on_assistant_messages": true,
     "supports_prompt_cache": false,
     "stream_includes_usage": false

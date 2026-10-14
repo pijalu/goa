@@ -40,6 +40,41 @@ func TestBuildStreamOptions_PlumbsThinkingLevel(t *testing.T) {
 	}
 }
 
+// TestResolveActiveModel_CatJamFreeOnGoGateway pins the fix for exports
+// goa-export-20261013-220109 / -222008: cat-jam-free on opencode-go failed
+// every turn with HTTP 400 "[unsupported_parameter] Unrecognized request
+// argument supplied: thinking." The zen gateways are OpenAI-compatible
+// surfaces (models.dev npm "@ai-sdk/openai-compatible" → the reference
+// client's openaiChat protocol), so the resolved profile must describe an
+// effort-only reasoning body while keeping the reasoning_content echo the
+// upstream requires.
+func TestResolveActiveModel_CatJamFreeOnGoGateway(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "opencode-go",
+		ActiveModel:    "cat-jam-free",
+		Providers: []config.ProviderConfig{
+			{ID: "opencode-go", Provider: "opencode-go", Endpoint: "https://opencode.ai/zen/go/v1", APIKey: "k"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "cat-jam-free", ProviderID: "opencode-go", Model: "cat-jam-free"},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	mdl, err := pm.ResolveActiveModel()
+	if err != nil {
+		t.Fatalf("ResolveActiveModel: %v", err)
+	}
+
+	profile := agenticprovider.ResolveProfile(mdl)
+	if got := profile.Compat.ThinkingFormat; got != "openai" {
+		t.Errorf("profile thinking format = %q, want %q: zen upstreams reject the thinking object", got, "openai")
+	}
+	if !profile.Compat.RequiresReasoningContentOnAssistantMessages {
+		t.Error("reasoning_content echo requirement lost: cat-jam-free 400s with " +
+			"missing_required_parameter messages[1].reasoning_content")
+	}
+}
+
 // When no thinking level is configured, Reasoning stays empty (the protocol
 // layer applies the profile/fallback default).
 func TestBuildStreamOptions_NoThinkingLevelLeavesReasoningEmpty(t *testing.T) {

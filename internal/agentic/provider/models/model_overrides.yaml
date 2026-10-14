@@ -767,8 +767,9 @@ models:
   # xhigh passed straight through and failed the first request. The
   # restricted map clamps xhigh/max -> high and minimal -> off. Prefix ID
   # covers the whole family (mimo-v2.6-flash, mimo-v2-pro, mimo-v2.5-pro).
-  # thinking_format is provider-driven (opencode-go profile = deepseek), so
-  # only reasoning + the level map are pinned here.
+  # thinking_format is provider-driven (opencode-go profile = openai: the zen
+  # gateways are OpenAI-compatible surfaces, so reasoning is controlled by
+  # reasoning_effort alone), so only reasoning + the level map are pinned here.
   - id: "mimo-"
     provider: opencode
     reasoning: true
