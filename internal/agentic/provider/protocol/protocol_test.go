@@ -244,6 +244,11 @@ func TestLMStudioQwenRequest(t *testing.T) {
 		Api:      schema.ApiOpenAICompletions,
 		Provider: schema.ProviderLMStudio,
 		BaseURL:  "http://localhost:1234/v1/chat/completions",
+		// A locally served model is not in the catalog, so the manager's
+		// fallback mints it reasoning-capable (provider/manager_fallback.go).
+		// The reasoning gate needs that flag: without it no reasoning field is
+		// sent at all (review finding F2).
+		Reasoning: true,
 	}
 	ctx := schema.Context{Messages: []schema.Message{schema.NewUserMessage("hello")}}
 	body, err := p.BuildRequest(model, ctx, schema.StreamOptions{MaxTokens: 512}, profile)

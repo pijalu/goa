@@ -163,7 +163,19 @@ func applyThinking(body map[string]any, model schema.Model, opts schema.StreamOp
 	if format == "" {
 		format = string(profileForModel(model).Compat.ThinkingFormat)
 	}
-	if !model.Reasoning && format == "" {
+	// A model the catalog does not mark reasoning-capable takes no reasoning
+	// request field at all. Sending one is exactly what a strict endpoint
+	// rejects with 400 unsupported_parameter (the opencode gateway's CatJam
+	// upstream), and a non-reasoning model has nothing to turn on. The old
+	// guard only fired when the profile declared no thinking format either, so
+	// any provider-wide format made it dead code — every non-reasoning model
+	// on that provider kept a reasoning body it could not use (review finding
+	// F2). Two escapes keep the gate honest: an explicit caller level
+	// (StreamOptions.Reasoning, populated from the model config's
+	// thinking_level — a catalog entry can lag a model's real capabilities)
+	// and a profile that declares always-on thinking (defaults.thinking, e.g.
+	// kimi-code/moonshot) still get their body.
+	if !model.Reasoning && opts.Reasoning == "" && profile.Defaults.Thinking == "" {
 		return
 	}
 	// P13 (CA2/CA3): purpose=session-title forces thinking off — mirrors the
