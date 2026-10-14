@@ -7,6 +7,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -72,6 +73,7 @@ func streamWithInterceptors(model schema.Model, ctx schema.Context, opts schema.
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	body = suppressBodyParams(body, reqCtx.Options.SuppressParams)
 
 	for k, v := range p.RequestHeaders(model, profile) {
 		reqCtx.Headers[k] = v
@@ -105,6 +107,38 @@ func applyEnvOverrides(profile schema.VariantProfile, model schema.Model) schema
 		profile.Match.BaseURL = model.BaseURL
 	}
 	return profile
+}
+
+// suppressBodyParams removes the named top-level fields from a built request
+// body. It is the whole of the adaptive-parameter mechanism on the wire side:
+// protocols build the body they know is right for their profile, and the
+// runtime — which sees the endpoint's complaint — decides what to leave out
+// (review finding F6). A body that cannot be understood as a JSON object is
+// returned untouched rather than damaged.
+func suppressBodyParams(body []byte, params []string) []byte {
+	if len(params) == 0 || len(body) == 0 {
+		return body
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return body
+	}
+	changed := false
+	for _, name := range params {
+		if _, ok := decoded[name]; !ok {
+			continue
+		}
+		delete(decoded, name)
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	out, err := json.Marshal(decoded)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func cloneStringMap(src map[string]string) map[string]string {

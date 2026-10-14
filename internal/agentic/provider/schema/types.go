@@ -323,6 +323,14 @@ type StreamOptions struct {
 	// Reasoning carries the high-level reasoning level selected by the caller.
 	// It is populated by StreamSimple and consumed by protocol builders.
 	Reasoning ThinkingLevel `json:"reasoning,omitempty"`
+
+	// SuppressParams lists top-level request fields to omit from the wire body.
+	// The agent's adaptive 400 handler fills it when an endpoint rejects a
+	// profile-level field as an unsupported parameter (a gateway whose upstreams
+	// validate strictly), so one rejected field degrades the request instead of
+	// failing the turn for good. Protocol-agnostic by design: the protocol
+	// builders stay unaware and the runtime deletes the fields after building.
+	SuppressParams []string `json:"-"`
 }
 
 // Purpose classifies the intent of a streaming request for transport-level

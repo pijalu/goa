@@ -50,6 +50,21 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	// exactly once (stream error events arrive via handleStreamError →
 	// resolveStreamError), so the notification cannot double-fire.
 	a.notifyLLMError(streamErr, model, opts, retryable)
+	// Adaptive parameter suppression (review finding F6): an endpoint that
+	// rejects a profile-level request field as an unsupported parameter is not
+	// a permanent failure — the field is ours to remove, and retrying without
+	// it is exactly what a hand-written profile override would have done. The
+	// rejection names the field, so drop that one name and retry; the budget in
+	// suppressUnsupportedParam keeps the narrowing finite.
+	if narrowed, param, ok := suppressUnsupportedParam(streamErr, opts); ok {
+		opts = narrowed
+		retryable = true
+		a.cfg.Logger.Log(Warn, "provider rejected request parameter %q; retrying without it", param)
+		a.emitEvent(OutputEvent{
+			Type: EventProgress,
+			Text: fmt.Sprintf("Provider rejected request parameter %q — retrying without it.", param),
+		})
+	}
 	if !retryable {
 		// Terminal episode (plan §6): classified, non-retryable — no retry
 		// will be scheduled.

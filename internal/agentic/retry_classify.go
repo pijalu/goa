@@ -66,6 +66,158 @@ func retryCodeOf(err error) string {
 	return ""
 }
 
+// maxSuppressedParams bounds the adaptive parameter suppression: each rejected
+// field buys one retry, and a request that keeps getting narrower is no longer
+// the request the profile describes, so the budget is deliberately tiny.
+const maxSuppressedParams = 3
+
+// unsupportedParamOf returns the request parameter an endpoint rejected as an
+// unknown argument, or "" when the error is not that shape. Endpoints disagree
+// on the wording — the opencode gateway's upstreams answer
+//
+//	400 {"error":{"param":"thinking","type":"invalid_request_error",
+//	     "message":"Upstream request failed: [unsupported_parameter]
+//	                Unrecognized request argument supplied: thinking."}}
+//
+// (export goa-export-20261013-220109) — so the structured "param" field wins,
+// and a message in any of the common phrasings is the fallback.
+func unsupportedParamOf(err error) string {
+	if err == nil {
+		return ""
+	}
+	// provider.HTTPResponseError is the canonical shape for an error carrying
+	// the raw HTTP status and body (hooks.ProviderError implements it), so the
+	// detection works for whatever the transport surfaced.
+	var httpErr provider.HTTPResponseError
+	if !errors.As(err, &httpErr) {
+		return ""
+	}
+	switch httpErr.StatusCode() {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+	default:
+		return ""
+	}
+	body := httpErr.ResponseBody()
+	if body == "" {
+		return ""
+	}
+	if param := paramFieldInJSON(body); param != "" {
+		return param
+	}
+	return paramNameInMessage(body)
+}
+
+// paramFieldInJSON reads the structured parameter name an error body declares
+// (OpenAI-compatible: error.param) when the body also marks the failure as an
+// unsupported-parameter rejection.
+func paramFieldInJSON(body string) string {
+	var decoded struct {
+		Error struct {
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Param   string `json:"param"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		return ""
+	}
+	if decoded.Error.Param == "" {
+		return ""
+	}
+	if unsupportedParamMarker(decoded.Error.Code) ||
+		unsupportedParamMarker(decoded.Error.Type) ||
+		unsupportedParamMarker(decoded.Error.Message) {
+		return decoded.Error.Param
+	}
+	return ""
+}
+
+// paramNameInMessage extracts a parameter name from the free-text phrasings
+// providers use when they carry no structured "param" field.
+func paramNameInMessage(body string) string {
+	text := strings.ToLower(body)
+	for _, marker := range []string{
+		"unrecognized request argument supplied:",
+		"unknown parameter:",
+		"unsupported parameter:",
+		"unrecognized parameter:",
+	} {
+		idx := strings.Index(text, marker)
+		if idx < 0 {
+			continue
+		}
+		return firstParamToken(body[idx+len(marker):])
+	}
+	return ""
+}
+
+// unsupportedParamMarker reports whether text phrases the failure as a rejected
+// (unknown) request parameter.
+func unsupportedParamMarker(text string) bool {
+	t := strings.ToLower(text)
+	for _, marker := range []string{
+		"unsupported_parameter",
+		"unsupported parameter",
+		"unrecognized request argument",
+		"unknown_parameter",
+		"unknown parameter",
+		"unrecognized parameter",
+	} {
+		if strings.Contains(t, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstParamToken reads the first identifier-looking token of s so "thinking."
+// yields "thinking" and "`reasoning_effort` is not supported" yields
+// "reasoning_effort". Dots and dashes stay inside the token (parameter names
+// like "messages.1.content" exist) but cannot end it.
+func firstParamToken(s string) string {
+	token := strings.TrimLeftFunc(s, func(r rune) bool {
+		return !paramTokenRune(r)
+	})
+	token = strings.TrimRightFunc(token, func(r rune) bool {
+		if r == '.' || r == '-' {
+			return true
+		}
+		return !paramTokenRune(r)
+	})
+	return token
+}
+
+// paramTokenRune reports whether r can appear in a request parameter name.
+func paramTokenRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '_', r == '.', r == '-':
+		return true
+	default:
+		return false
+	}
+}
+
+// suppressUnsupportedParam narrows opts by the parameter an endpoint just
+// rejected, or reports false when there is nothing (more) to drop: no such
+// error, an already-suppressed name, or the budget spent. Each call adds
+// exactly one name, so the caller's retry is itself bounded.
+func suppressUnsupportedParam(streamErr error, opts provider.StreamOptions) (provider.StreamOptions, string, bool) {
+	param := unsupportedParamOf(streamErr)
+	if param == "" || len(opts.SuppressParams) >= maxSuppressedParams {
+		return opts, "", false
+	}
+	for _, suppressed := range opts.SuppressParams {
+		if suppressed == param {
+			return opts, "", false
+		}
+	}
+	opts.SuppressParams = append(append([]string(nil), opts.SuppressParams...), param)
+	return opts, param, true
+}
+
 // isTimeoutText recognizes timeout-shaped failure text.
 func isTimeoutText(text string) bool {
 	return strings.Contains(text, "timeout") ||

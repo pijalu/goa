@@ -105,3 +105,52 @@ func TestGenericStream_NonReasoningModelSendsNoReasoningFields(t *testing.T) {
 	assert.NotContains(t, body, "thinking")
 	assert.NotContains(t, body, "reasoning_effort")
 }
+
+// The adaptive-parameter mechanism on the wire (review finding F6): when the
+// agent's 400 handler decides an endpoint rejected a request field, the field
+// must be gone from the built body — the protocol builders stay unaware, so
+// this is the only place that can prove the deletion reaches the wire.
+func TestGenericStream_SuppressedParamsLeaveTheWireBody(t *testing.T) {
+	old := transport.Default()
+	defer transport.SetDefault(old)
+	capt := &zenGoCaptureTransport{}
+	transport.SetDefault(capt)
+
+	model := schema.Model{
+		ID: "cat-jam-free", Api: schema.ApiOpenAICompletions,
+		Provider:  schema.ProviderOpenCodeGo,
+		BaseURL:   "https://opencode.ai/zen/go/v1/chat/completions",
+		Reasoning: true,
+	}
+	ctx := schema.Context{Messages: []schema.Message{schema.NewUserMessage("teqst")}}
+	stream, err := GenericStream(model, ctx, schema.StreamOptions{
+		APIKey:         "test-key",
+		SuppressParams: []string{"thinking", "reasoning_effort"},
+	})
+	require.NoError(t, err)
+	_ = stream.Result()
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(capt.body), &body))
+	assert.NotContains(t, body, "thinking")
+	assert.NotContains(t, body, "reasoning_effort")
+	// Everything else the request needs is untouched.
+	assert.Equal(t, "cat-jam-free", body["model"])
+	assert.Contains(t, body, "messages")
+}
+
+// A suppression name the request does not carry must not damage the body, and
+// a body that is not a JSON object must be passed through untouched.
+func TestSuppressBodyParams_LeavesUnrelatedBodiesAlone(t *testing.T) {
+	body := []byte(`{"model":"m","thinking":{"type":"enabled"}}`)
+
+	assert.Equal(t, string(body), string(suppressBodyParams(body, nil)))
+	assert.Equal(t, string(body), string(suppressBodyParams(body, []string{"absent"})))
+
+	notAnObject := []byte(`[1,2,3]`)
+	assert.Equal(t, string(notAnObject), string(suppressBodyParams(notAnObject, []string{"thinking"})))
+
+	without := suppressBodyParams(body, []string{"thinking"})
+	assert.NotContains(t, string(without), "thinking")
+	assert.Contains(t, string(without), `"model":"m"`)
+}
