@@ -75,6 +75,14 @@ func initGoalSystem(cfg *config.Config, projectDir string, eventBus *event.Bus, 
 	driver := &core.GoalDriver{
 		Mode:  manager.Mode,
 		Agent: &agentManagerRunner{agentMgr: agentMgr},
+		OnCancel: func(source, reason string) {
+			if eventBus != nil {
+				message := cancellationHistoryMessage(map[string]string{
+					"cancel_source": source, "cancel_reason": reason,
+				})
+				publisher.PublishDurableSystemMessage(message)
+			}
+		},
 	}
 	// Stall watchdog (goals.stall_turns): challenge unmanaged goals whose
 	// progress fingerprint stops changing. -1/0 = disabled.
@@ -195,6 +203,15 @@ func (p *goalEventPublisher) PublishSystemMessage(text string) {
 	case p.bus.Chat <- event.ChatEvent{Flash: &event.Flash{Text: text}}:
 	default:
 	}
+}
+
+// PublishDurableSystemMessage queues a persistent cancellation record rather
+// than a transient flash, preserving it across turns in conversation history.
+func (p *goalEventPublisher) PublishDurableSystemMessage(text string) {
+	if p.bus == nil {
+		return
+	}
+	p.bus.Chat <- event.ChatEvent{SystemMessage: &event.SystemMessage{Text: text}}
 }
 
 // agentManagerRunner adapts AgentManager to the core.AgentRunner interface
