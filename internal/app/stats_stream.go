@@ -346,14 +346,9 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 	subs := a.subs
 	subs.toolTracker = nil // fresh tracker for the next turn
 
-	// Check if the event carries an error (agentmanager.go emits EventEnd with
-	// non-empty Text on stream/connection errors). Surface it to the user with
-	// a clear explanation and actionable hint. User-initiated cancellation is
-	// marked with Metadata["cancelled"] and is treated as a graceful stop.
-	if ev != nil && ev.Text != "" {
-		hint := friendlyConnectionHint(ev.Text)
-		subs.chat.AddSystemMessage(hint)
-	} else if ev != nil && ev.Metadata["cancelled"] == "true" {
+	// Cancellation events retain structured provenance in chat history; other
+	// EventEnd errors are rendered with a connection/error hint.
+	if ev != nil && ev.Metadata["cancelled"] == "true" {
 		// Retract the segment's half-streamed blocks. RemoveLast only inspects
 		// the tail, so this pops while the tail is still an in-flight kind: a
 		// segment may hold a half-streamed reasoning block AND a half-streamed
@@ -366,9 +361,11 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 			for subs.chat.RemoveLastMessageOfType(inflight...) {
 			}
 		}
-		subs.chat.AddSystemMessage("Generation stopped by user.")
+		message := cancellationHistoryMessage(ev.Metadata)
+		subs.chat.AddSystemMessage(message)
+	} else if ev != nil && ev.Text != "" {
+		subs.chat.AddSystemMessage(friendlyConnectionHint(ev.Text))
 	}
-
 	subs.footer.SetData(tui.FooterData{
 		Workdir:                subs.projectDir,
 		Model:                  activeModelDisplay(subs),

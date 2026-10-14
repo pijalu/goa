@@ -403,13 +403,13 @@ func TestHeadlessApp_HandleEndEvent_Cancelled(t *testing.T) {
 
 	found := false
 	for _, c := range rr.calls {
-		if strings.HasPrefix(c, "Error:Generation stopped by user.") {
+		if strings.HasPrefix(c, "Error:Generation cancelled [source: unknown]: no cancellation reason recorded") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected 'Generation stopped by user.' error, calls: %v", rr.calls)
+		t.Errorf("expected visible cancellation provenance, calls: %v", rr.calls)
 	}
 }
 

@@ -79,5 +79,5 @@ func (d *acpAgentDriver) Events() <-chan agentic.OutputEvent {
 
 // Interrupt cancels any in-progress generation.
 func (d *acpAgentDriver) Interrupt() {
-	d.subs.agentMgr.Interrupt()
+	d.subs.agentMgr.CancelTurn("acp_interrupt", "ACP client interrupted turn")
 }

@@ -175,7 +175,7 @@ func TestStream_CancelRetractsBothInFlightBubbles(t *testing.T) {
 	if got := countKind(sc, tui.ConsoleAssistantMessage); got != 0 {
 		t.Errorf("assistant messages after cancel = %d, want 0", got)
 	}
-	if screen := visibleText(sc); !strings.Contains(screen, "Generation stopped by user.") {
+	if screen := visibleText(sc); !strings.Contains(screen, "Generation cancelled [source: unknown]: no cancellation reason recorded") {
 		t.Errorf("cancel notice missing from screen:\n%s", screen)
 	}
 }

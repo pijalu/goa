@@ -314,7 +314,11 @@ func (h *HeadlessApp) startWork(ctx context.Context, dc *doneCloser, prompt stri
 // interrupts the agent and returns the appropriate exit code.
 func (h *HeadlessApp) handleContextCancelled(ctx context.Context) int {
 	if h.subs.agentMgr != nil {
-		h.subs.agentMgr.Interrupt()
+		if h.opts.Timeout > 0 && ctx.Err() == context.DeadlineExceeded {
+			h.subs.agentMgr.CancelTurn("headless_timeout", "configured session timeout exceeded")
+		} else {
+			h.subs.agentMgr.CancelTurn("external_context", "headless run context canceled")
+		}
 	}
 	if h.opts.Timeout > 0 && ctx.Err() == context.DeadlineExceeded {
 		h.renderer.Error("session timeout exceeded")
@@ -626,7 +630,7 @@ func runHeadless(subs *subsystems, opts RuntimeOptions) {
 			renderer.Error("interrupted by user (Ctrl+C)")
 			renderer.Flush()
 			if subs.agentMgr != nil {
-				subs.agentMgr.Interrupt()
+				subs.agentMgr.CancelTurn("user_interrupt", "Ctrl+C pressed")
 			}
 			cancel()
 		case <-ctx.Done():

@@ -108,9 +108,12 @@ type AgentManager struct {
 	// per turn. Not persisted — resets on restart.
 	disableToolBudget bool
 
-	// loopStopReason is set when the loop detector cancels the turn so that
-	// executeRunner can emit a clear EventEnd instead of the generic
-	// "Generation stopped by user." cancellation message.
+	// cancelSource and cancelReason identify why the manager-owned turn was
+	// canceled. Protected by mu; executeRunner snapshots them when Run returns.
+	cancelSource string
+	cancelReason string
+
+	// loopStopReason remains as the user-facing detail for loop guardrails.
 	loopStopReason string
 
 	// pendingLoopResume holds the auto-resume message to dispatch after a
@@ -307,6 +310,9 @@ func (am *AgentManager) SendUserInputWithImages(input string, images []string) e
 	gen := am.cancelGen
 	am.running = true
 	am.cancel = cancel
+	am.cancelSource = ""
+	am.cancelReason = ""
+	am.loopStopReason = ""
 	am.mu.Unlock()
 
 	go am.runAgentTurn(ctx, cancel, gen, agent, input, images)
@@ -323,6 +329,8 @@ func (am *AgentManager) StopSession() error {
 	}
 
 	if am.cancel != nil {
+		am.cancelSource = "session_shutdown"
+		am.cancelReason = "active session stopped"
 		am.cancel()
 		am.cancel = nil
 	}
@@ -376,17 +384,23 @@ func (am *AgentManager) fireSessionEnd() {
 	})
 }
 
-// Interrupt cancels the current agent turn.
-// Logs the caller's identity so that unexpected cancellations (e.g. from
-// transport-level aborts misrouted through the cancel path) can be traced.
+// Interrupt cancels the current agent turn as a user-requested stop.
 func (am *AgentManager) Interrupt() error {
+	return am.CancelTurn("user_interrupt", "turn interrupted by user")
+}
+
+// CancelTurn cancels active manager-owned turn and records provenance for the
+// EventEnd history record. Source should name initiating subsystem/action.
+func (am *AgentManager) CancelTurn(source, reason string) error {
 	_, file, line, _ := runtime.Caller(1)
-	if am.logger != nil {
-		am.logger.Log(agentic.Info, "Interrupt() called from %s:%d", file, line)
-	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	if am.cancel != nil {
+		am.cancelSource = source
+		am.cancelReason = reason
+		if am.logger != nil {
+			am.logger.Log(agentic.Info, "CancelTurn source=%q reason=%q caller=%s:%d", source, reason, file, line)
+		}
 		am.cancel()
 		am.cancel = nil
 	}

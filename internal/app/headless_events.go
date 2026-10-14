@@ -260,11 +260,11 @@ func (h *HeadlessApp) handleEndEvent(ev *agentic.OutputEvent) {
 	if ev != nil && ev.Text != "" {
 		h.renderer.Error(friendlyConnectionHint(ev.Text))
 	} else if ev != nil && ev.Metadata["cancelled"] == "true" {
-		h.renderer.Error("Generation stopped by user.")
+		h.renderer.Error(cancellationHistoryMessage(ev.Metadata))
 	}
 
 	if exceeded && h.subs.agentMgr != nil {
-		h.subs.agentMgr.Interrupt()
+		h.subs.agentMgr.CancelTurn("headless_max_turns", "configured maximum turn count reached")
 	}
 }
 
