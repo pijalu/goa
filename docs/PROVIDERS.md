@@ -23,6 +23,26 @@ overriding earlier ones:
 5. Environment variables referenced by URL templates (`{ENV_VAR}`).
 6. The `Model.VariantID` field.
 
+The merge is literal: every source that matches a model contributes its fields,
+and a later source overrides only the fields it sets. A user profile that pins
+one field for one model (say `compat.thinking_format` for a single gateway
+model) therefore *refines* the provider profile instead of replacing it —
+which is what `max_tokens_field`, the auth block, and things like
+`requires_reasoning_content_on_assistant_messages` depend on. Two caveats:
+
+- **Within one source, only the most specific match applies.** `model_id`
+  (score 8) beats `base_url` (4) beats `provider` (2) beats `api` (1), so a
+  broad profile in the same directory is not layered under a narrow one.
+- **Plain booleans carry with OR semantics.** JSON cannot distinguish
+  `false` from absent, so a merge can only switch a capability on, never off.
+  Fields that genuinely need "explicitly off" are tri-state (`*bool`) in the
+  schema: `supports_store`, `supports_temperature`, `supports_tool_choice_none`,
+  `supports_encrypted_content`, `tool_streaming`.
+
+The resolved profile is named after the sources that built it
+(`opencode-go+catjam-effort-only`), which is what `GOA_DEBUG_PROVIDER=1`
+prints.
+
 ## Profile schema
 
 A minimal profile looks like this:
@@ -105,6 +125,43 @@ Rules worth knowing before editing a profile:
   accepted by an upstream or fatal; there is no "disabled" spelling that a
   strict upstream tolerates (`thinking: {type: "disabled"}` 400s exactly like
   the enabled one on the same upstreams).
+- **A model that cannot reason gets no reasoning field at all.** The request
+  carries a reasoning field only when the model is reasoning-capable, the
+  caller set an explicit level (`thinking_level`, which covers a catalog entry
+  that lags the model), or the profile declares an always-on mode
+  (`defaults.thinking`, e.g. kimi-code/moonshot).
+
+### Per-model reasoning metadata from the catalog
+
+models.dev states more than the reasoning flag, and Goa imports it whenever the
+registry entry has no curated override:
+
+- `reasoning_options: [{type: effort, values: [...]}]` becomes a thinking-level
+  map with identity entries, one per canonical level the model declares. The
+  effect is clamping rather than translation: a configured level the model does
+  not list resolves to the nearest one it does, instead of reaching an endpoint
+  that answers `400 reasoning_effort must be low, high, xhigh, max`. `toggle`
+  (on/off, no levels) and `budget_tokens` (the separate `thinking_budgets`
+  domain) are deliberately ignored.
+- `interleaved: {field: reasoning_content}` becomes `Model.ThinkingFormat`, the
+  field reasoning is replayed in on assistant messages. Only names Goa has
+  semantics for are mapped: `reasoning_details` (OpenRouter-style) has no
+  replay path here and is deliberately left unset rather than guessed.
+- Curated `model_overrides.yaml` entries are applied on top and replace both,
+  so hand-verified provider semantics always win over catalog data.
+
+### Rejected parameters are dropped and retried once
+
+When an endpoint answers `400`/`422` naming a request field as an unsupported
+parameter (`{"error":{"param":"thinking","message":"…[unsupported_parameter]
+Unrecognized request argument supplied: thinking."}}`, or the same complaint in
+free text), the agent drops that one field from the request and retries instead
+of failing the turn — the field is Goa's to remove, and a strict upstream is not
+a permanent outage. The behavior is bounded: one field per attempt, never the
+same field twice, at most three fields, and a suppressed field is not carried
+into later requests of the session. The user sees it as a progress line
+(`Provider rejected request parameter "thinking" — retrying without it.`) and a
+warning in the agent log.
 
 ## Provider credentials: API keys, env vars and `/login`
 
