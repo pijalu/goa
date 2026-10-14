@@ -282,3 +282,52 @@ func TestRunCheck(t *testing.T) {
 		t.Error("check on stale file: expected error, got nil")
 	}
 }
+
+// TestSlimCatalogKeepsReasoningMetadata pins review finding F4 on the
+// generator side: the snapshot is the no-internet fallback, so a field the
+// slimmer drops is invisible offline even after the registry learns to parse
+// it. Both "interleaved" spellings must survive verbatim (models.dev publishes
+// the bare true for 111 models).
+func TestSlimCatalogKeepsReasoningMetadata(t *testing.T) {
+	const raw = `{
+	  "zetaprovider": {
+	    "id": "zetaprovider",
+	    "models": {
+	      "zeta-effort": {
+	        "name": "Zeta Effort",
+	        "tool_call": true,
+	        "reasoning": true,
+	        "reasoning_options": [{"type": "effort", "values": ["low", "high"]}],
+	        "interleaved": {"field": "reasoning_content"}
+	      },
+	      "zeta-toggle": {
+	        "name": "Zeta Toggle",
+	        "tool_call": true,
+	        "reasoning": true,
+	        "reasoning_options": [{"type": "toggle"}],
+	        "interleaved": true
+	      }
+	    }
+	  }
+	}`
+
+	slim, err := slimCatalog([]byte(raw))
+	if err != nil {
+		t.Fatalf("slimCatalog: %v", err)
+	}
+	prov := decodeSlimCatalog(t, slim)["zetaprovider"]
+
+	effort := gotModel(t, prov, "zeta-effort")
+	if _, ok := effort["reasoning_options"]; !ok {
+		t.Error("reasoning_options dropped by the slimmer")
+	}
+	interleaved, ok := effort["interleaved"].(map[string]any)
+	if !ok || interleaved["field"] != "reasoning_content" {
+		t.Errorf("interleaved = %v, want the field descriptor verbatim", effort["interleaved"])
+	}
+
+	toggle := gotModel(t, prov, "zeta-toggle")
+	if got, ok := toggle["interleaved"].(bool); !ok || !got {
+		t.Errorf("interleaved = %v, want the bare boolean true carried through", toggle["interleaved"])
+	}
+}

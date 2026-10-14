@@ -21,9 +21,12 @@ func seedTestConfig(providerID, prov, endpoint string) *config.Config {
 
 // A custom (non-registry) model on a provider whose profile has no thinking
 // map (opencode) seeds the canonical identity map — editable, behavior-neutral.
+// The ID must stay absent from the catalog: a catalogued model already carries
+// the catalog's own mapping, which is why the seed is skipped for it (see
+// TestCustomModelThinkingSeed_NilForRegistryModel).
 func TestCustomModelThinkingSeed_IdentityForProfileWithoutMap(t *testing.T) {
 	cfg := seedTestConfig("opencode", "opencode", "https://opencode.ai/zen/v1")
-	seed := CustomModelThinkingSeed(cfg, "opencode", "x-preview-f-free")
+	seed := CustomModelThinkingSeed(cfg, "opencode", "my-local-model")
 	if seed == nil {
 		t.Fatal("seed = nil, want identity map for a custom model on a map-less profile")
 	}
@@ -34,12 +37,23 @@ func TestCustomModelThinkingSeed_IdentityForProfileWithoutMap(t *testing.T) {
 	}
 }
 
+// A model the catalog knows already carries the catalog's thinking metadata
+// (models.dev effort values, then curated overrides), so seeding a config map
+// for it would replace verified data with a guess.
+func TestCustomModelThinkingSeed_NilForCataloguedModel(t *testing.T) {
+	cfg := seedTestConfig("opencode", "opencode", "https://opencode.ai/zen/v1")
+	if seed := CustomModelThinkingSeed(cfg, "opencode", "x-preview-f-free"); seed != nil {
+		t.Errorf("seed = %v, want nil for a catalogued model", seed)
+	}
+}
+
 // A custom model on a provider whose profile HAS a map (kimi-code, all→max)
 // seeds a copy of that effective map so the user edits real values, and the
-// copy must not alias the profile's internal map.
+// copy must not alias the profile's internal map. As above, the ID stays out of
+// the catalog so the seed path is the one under test.
 func TestCustomModelThinkingSeed_CopiesProfileMap(t *testing.T) {
 	cfg := seedTestConfig("kimi-code", "kimi-code", "https://api.kimi.com/coding/v1")
-	seed := CustomModelThinkingSeed(cfg, "kimi-code", "k3.5-turbo")
+	seed := CustomModelThinkingSeed(cfg, "kimi-code", "my-local-model")
 	if seed == nil {
 		t.Fatal("seed = nil, want a copy of the kimi-code profile map")
 	}

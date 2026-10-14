@@ -96,6 +96,15 @@ type modelsDevModel struct {
 	Cost        mdCost   `json:"cost,omitempty"`
 	Modalities  mdModals `json:"modalities,omitempty"`
 	InputTypes_ []string `json:"-"`
+
+	// ReasoningOptions carries the shapes in which the catalog states a
+	// model's reasoning controls ("effort" with the values it accepts,
+	// "toggle", "budget_tokens"); see modelsdev_reasoning.go.
+	ReasoningOptions []mdReasoningOption `json:"reasoning_options,omitempty"`
+	// Interleaved names the field the model expects reasoning in on assistant
+	// messages — models.dev publishes either {"field": "reasoning_content"}
+	// or the bare true (interleaves, field unspecified).
+	Interleaved *mdInterleaved `json:"interleaved,omitempty"`
 }
 
 type mdLimit struct {
@@ -489,6 +498,10 @@ func convertModelsDevModel(id string, mm modelsDevModel, mapping modelsDevProvid
 	if mm.Reasoning != nil {
 		m.Reasoning = *mm.Reasoning
 	}
+	// Catalog metadata the flag alone cannot express: the effort values the
+	// model accepts, and the field it wants reasoning replayed in.
+	m.ThinkingFormat = thinkingFormatFromInterleaved(mm.Interleaved)
+	m.ThinkingLevelMap = reasoningOptionLevelMap(mm.ReasoningOptions, m.Reasoning)
 	if mm.Limit.Context > 0 {
 		m.ContextWindow = mm.Limit.Context
 	}

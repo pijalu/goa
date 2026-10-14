@@ -9,6 +9,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/models"
 )
 
 // opencodeTestConfig builds a config whose active model is the manually-added
@@ -110,16 +111,31 @@ func TestResolveActiveModel_NativeThinkingLevelMap(t *testing.T) {
 	}
 }
 
-// Without a native map, the resolved model carries none (the variant profile's
-// own map, if any, applies instead via ResolveProfile's migration bridge).
-func TestResolveActiveModel_NoNativeMapLeavesModelMapEmpty(t *testing.T) {
+// The config contributes no level map when it omits thinking_level_native_map:
+// whatever map the resolved model carries is the catalog's own (models.dev
+// effort values, then curated overrides), not an injected identity map.
+func TestResolveActiveModel_NoNativeMapKeepsCatalogMapOnly(t *testing.T) {
 	pm := NewProviderManager(opencodeTestConfig(config.ModelConfig{ThinkingLevel: "high"}))
 	mdl, err := pm.ResolveActiveModel()
 	if err != nil {
 		t.Fatalf("ResolveActiveModel: %v", err)
 	}
-	if len(mdl.ThinkingLevelMap) != 0 {
-		t.Errorf("ThinkingLevelMap = %v, want empty when no thinking_level_native_map configured", mdl.ThinkingLevelMap)
+
+	catalog := models.GetModelForProvider(mdl.Provider, mdl.ID)
+	if catalog == nil {
+		t.Fatalf("catalog has no entry for %s/%s", mdl.Provider, mdl.ID)
+	}
+	if len(catalog.ThinkingLevelMap) == 0 {
+		t.Fatal("precondition: the catalog entry carries a thinking level map")
+	}
+	if len(mdl.ThinkingLevelMap) != len(catalog.ThinkingLevelMap) {
+		t.Errorf("ThinkingLevelMap = %v, want the catalog's %v with nothing added",
+			mdl.ThinkingLevelMap, catalog.ThinkingLevelMap)
+	}
+	for level, want := range catalog.ThinkingLevelMap {
+		if got := mdl.ThinkingLevelMap[level]; got != want {
+			t.Errorf("ThinkingLevelMap[%q] = %q, want the catalog's %q", level, got, want)
+		}
 	}
 }
 

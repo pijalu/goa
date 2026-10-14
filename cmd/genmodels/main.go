@@ -61,14 +61,19 @@ type slimProvider struct {
 // slimModel keeps the fields the registry parses (see modelsDevModel):
 // capabilities, limits, costs, and input modalities. Pointer fields preserve
 // explicit zero values from upstream (e.g. cache_write: 0) while dropping
-// absent keys.
+// absent keys. reasoning_options and interleaved ride through verbatim:
+// upstream publishes "interleaved" either as {"field": "..."} or as the bare
+// true, and budget_tokens options carry min/max, so re-encoding them here
+// would only risk losing shapes the registry handles leniently.
 type slimModel struct {
-	Name       string          `json:"name"`
-	ToolCall   *bool           `json:"tool_call,omitempty"`
-	Reasoning  *bool           `json:"reasoning,omitempty"`
-	Limit      *slimLimit      `json:"limit,omitempty"`
-	Cost       *slimCost       `json:"cost,omitempty"`
-	Modalities *slimModalities `json:"modalities,omitempty"`
+	Name             string          `json:"name"`
+	ToolCall         *bool           `json:"tool_call,omitempty"`
+	Reasoning        *bool           `json:"reasoning,omitempty"`
+	ReasoningOptions json.RawMessage `json:"reasoning_options,omitempty"`
+	Interleaved      json.RawMessage `json:"interleaved,omitempty"`
+	Limit            *slimLimit      `json:"limit,omitempty"`
+	Cost             *slimCost       `json:"cost,omitempty"`
+	Modalities       *slimModalities `json:"modalities,omitempty"`
 }
 
 type slimLimit struct {
