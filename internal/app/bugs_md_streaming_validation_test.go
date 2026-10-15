@@ -177,10 +177,10 @@ func TestBugs_DisconnectSurfacesNotification(t *testing.T) {
 		sc.apply(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateContent, Text: "partial", IsDelta: true})
 		sc.apply(&agentic.OutputEvent{
 			Type:     agentic.EventEnd,
-			Metadata: map[string]string{"cancelled": "true"},
+			Metadata: map[string]string{"cancelled": "true", "cancel_source": "user_interrupt", "cancel_reason": "Escape pressed"},
 		})
-		if got := visibleText(sc); !strings.Contains(got, "stopped by user") {
-			t.Errorf("expected visible 'stopped by user' notification after cancel, got:\n%s", got)
+		if got := visibleText(sc); !strings.Contains(got, "Generation cancelled [source: user_interrupt]: Escape pressed") {
+			t.Errorf("expected visible cancellation provenance, got:\n%s", got)
 		}
 	})
 

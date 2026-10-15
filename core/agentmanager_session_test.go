@@ -94,6 +94,39 @@ func TestAgentManager_SteeringFlushedAtTurnEnd(t *testing.T) {
 	// itself is the behavior under test.
 }
 
+func TestAgentManager_CancellationRecordPrecedesSteeringContinuation(t *testing.T) {
+	bus := event.MakeBus(16, 16, 16, 16)
+	am := NewAgentManager(&config.Config{}, nil, nil, nil, bus, "")
+	am.activeAgent = agentic.NewAgent(agentic.Config{})
+	ctx, cancel := context.WithCancel(context.Background())
+	am.cancel = cancel
+	am.running = true
+	am.cancelSource = "user_interrupt"
+	am.cancelReason = "Escape pressed"
+	am.steering.Append("continue task")
+	cancel()
+
+	am.runAgentTurn(ctx, cancel, 0, &canceledRunner{}, "initial", nil)
+
+	select {
+	case got := <-bus.Agent:
+		if got.Event.Type != agentic.EventEnd || got.Event.Metadata["cancel_source"] != "user_interrupt" {
+			t.Fatalf("first agent event = %+v, want cancellation EventEnd with source", got.Event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing cancellation event")
+	}
+	select {
+	case got := <-bus.Chat:
+		if got.SteeringInjected == nil || got.SteeringInjected.Text != "continue task" {
+			t.Fatalf("first chat event = %+v, want queued continuation after cancellation record", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued continuation was not dispatched")
+	}
+	cancel()
+}
+
 type recordingRunner struct {
 	started chan struct{}
 }

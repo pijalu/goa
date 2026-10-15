@@ -601,7 +601,7 @@ func (c Context) InterruptAgent() {
 	if c.AgentManager == nil {
 		return
 	}
-	_ = c.AgentManager.Interrupt()
+	_ = c.AgentManager.CancelTurn("session_restore", "stopped in-flight turn before replaying session history")
 }
 
 // ReplayAgentEvent replays a stored agent output event into the UI agent

@@ -722,14 +722,14 @@ func TestHandleSessionEnd_Cancelled_RemovesPartialAssistant(t *testing.T) {
 
 	app.handleSessionEnd(&agentic.OutputEvent{
 		Type:     agentic.EventEnd,
-		Metadata: map[string]string{"cancelled": "true"},
+		Metadata: map[string]string{"cancelled": "true", "cancel_source": "user_interrupt", "cancel_reason": "Escape pressed"},
 	})
 
 	if containsRendered(app.subs.chat, "partial answer") {
 		t.Errorf("expected partial assistant message to be removed after cancellation")
 	}
-	if !containsRendered(app.subs.chat, "Generation stopped by user.") {
-		t.Errorf("expected 'Generation stopped by user.' system message")
+	if !containsRendered(app.subs.chat, "Generation cancelled [source: user_interrupt]: Escape pressed") {
+		t.Errorf("expected cancellation provenance in history")
 	}
 	children := app.subs.chat.Children()
 	if len(children) != 2 {
@@ -749,8 +749,8 @@ func TestHandleSessionEnd_Cancelled_WithoutActiveStream_KeepsUserMessage(t *test
 	if !containsRendered(app.subs.chat, "user question") {
 		t.Errorf("expected user message to remain after cancellation")
 	}
-	if !containsRendered(app.subs.chat, "Generation stopped by user.") {
-		t.Errorf("expected 'Generation stopped by user.' system message")
+	if !containsRendered(app.subs.chat, "Generation cancelled [source: unknown]: no cancellation reason recorded") {
+		t.Errorf("missing provenance must not be attributed to user")
 	}
 }
 

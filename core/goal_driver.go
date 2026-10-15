@@ -58,7 +58,7 @@ const (
 	PauseModelConfig  = "Paused after model configuration error"
 	PauseRuntimeError = "Paused after runtime error"
 	PauseRunawayLoop  = "Paused after detecting a runaway response loop"
-	PauseSilentStop   = "Paused after model stopped mid-reasoning (send continue to resume)"
+	PauseSilentStop   = "Paused after model stopped without producing a reply (send continue to resume)"
 )
 
 // RunawayRecoveryPrompt replaces the byte-identical ContinuationPrompt for
@@ -125,10 +125,13 @@ type FreshAgentRunner interface {
 
 // GoalDriver runs continuation turns while a goal is active.
 type GoalDriver struct {
-	Agent   AgentRunner
-	Mode    *goal.GoalMode
-	mu      sync.Mutex
-	driving bool
+	Agent AgentRunner
+	Mode  *goal.GoalMode
+	// OnCancel reports a drive-context cancellation to its owning UI/history.
+	// Called once when Drive exits due to cancellation.
+	OnCancel func(source, reason string)
+	mu       sync.Mutex
+	driving  bool
 	// freshBegun tracks whether the current fresh-context goal has already
 	// completed its begin (context-reset) turn, so only the first continuation
 	// passes begin=true. It is set ONLY after a RunFresh call succeeds: an
@@ -139,7 +142,8 @@ type GoalDriver struct {
 	// stop cancels the current drive loop's context. Set by Drive while a
 	// loop is active; called by Stop (ESC hard stop — "ESC: hard
 	// stop for ALL ongoing activities"). Nil when no loop is running.
-	stop context.CancelFunc
+	stop       context.CancelFunc
+	stopSource string
 
 	// Stall watchdog (goals.stall_turns): after each turn of an unmanaged
 	// goal, Probe fingerprints progress; when the fingerprint stops changing
@@ -215,14 +219,24 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 	// and the loop immediately launched the next continuation.
 	ctx, stop := context.WithCancel(ctx)
 	d.stop = stop
+	d.stopSource = ""
 	d.mu.Unlock()
 
 	defer func() {
 		d.mu.Lock()
+		source := d.stopSource
 		d.driving = false
 		d.stop = nil
+		d.stopSource = ""
+		notify := d.OnCancel
 		d.mu.Unlock()
 		stop()
+		if ctx.Err() != nil && notify != nil {
+			if source == "" {
+				source = "external_context"
+			}
+			notify(source, "goal continuation drive canceled")
+		}
 	}()
 
 	for {
@@ -452,6 +466,7 @@ func (d *GoalDriver) Stop() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stop != nil {
+		d.stopSource = "user_interrupt"
 		d.stop()
 	}
 }

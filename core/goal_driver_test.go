@@ -129,8 +129,8 @@ func TestGoalDriver_SilentStopPausesGoal(t *testing.T) {
 	if g.Goal.Status != goal.GoalPaused {
 		t.Fatalf("status = %q, want %q", g.Goal.Status, goal.GoalPaused)
 	}
-	if g.Goal.TerminalReason == nil || !strings.Contains(*g.Goal.TerminalReason, "mid-reasoning") {
-		t.Fatalf("terminal reason = %v, want it to contain 'mid-reasoning'", g.Goal.TerminalReason)
+	if g.Goal.TerminalReason == nil || !strings.Contains(*g.Goal.TerminalReason, "without producing a reply") {
+		t.Fatalf("terminal reason = %v, want it to contain 'without producing a reply'", g.Goal.TerminalReason)
 	}
 }
 
@@ -244,7 +244,8 @@ func TestGoalDriver_StopEndsDrive(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	mode.CreateGoal(goal.CreateGoalInput{Objective: "run forever"}, goal.GoalActorUser)
 	agent := &blockingAgent{started: make(chan struct{}, 8)}
-	driver := &GoalDriver{Agent: agent, Mode: mode}
+	cancelSource := make(chan string, 1)
+	driver := &GoalDriver{Agent: agent, Mode: mode, OnCancel: func(source, _ string) { cancelSource <- source }}
 
 	done := make(chan error, 1)
 	go func() { done <- driver.Drive(context.Background()) }()
@@ -262,6 +263,14 @@ func TestGoalDriver_StopEndsDrive(t *testing.T) {
 	}
 	if n := agent.runs.Load(); n != 1 {
 		t.Fatalf("runs = %d after Stop, want exactly 1 (no further continuations)", n)
+	}
+	select {
+	case source := <-cancelSource:
+		if source != "user_interrupt" {
+			t.Fatalf("cancel source = %q, want user_interrupt", source)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing cancellation callback before continuation loop exit")
 	}
 	// Stop with no active loop must be a safe no-op (handleEscape fires it
 	// on every ESC, goal or not).

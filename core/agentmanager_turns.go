@@ -222,20 +222,26 @@ func (am *AgentManager) executeRunner(ctx context.Context, runner agentRunner, i
 		ev := agentic.OutputEvent{Type: agentic.EventEnd}
 		if errors.Is(err, context.Canceled) {
 			am.mu.Lock()
-			reason := am.loopStopReason
+			source, cancelReason := am.cancelSource, am.cancelReason
+			loopReason := am.loopStopReason
 			am.mu.Unlock()
-			if reason != "" {
-				// Loop detector cancelled the turn; surface the real reason
-				// so the UI does not show the generic "user stopped" message.
-				ev.Text = reason
-			} else {
-				// Distinguish user-initiated cancellation from transport aborts.
-				// When the agent's retry logic has already filtered out transport
-				// drops (ctx.Err() == nil), a context.Canceled here means the user
-				// pressed Escape/Ctrl+C. The metadata "cancelled: user" tells the
-				// UI to show "Generation stopped by user." instead of a generic
-				// cancellation message.
-				ev.Metadata = map[string]string{"cancelled": "true", "cancel_source": "user"}
+			if source == "" {
+				source = "external_context"
+				cancelReason = "run context canceled without manager cancellation record"
+			}
+			if loopReason != "" {
+				ev.Text = loopReason
+			}
+			ev.Metadata = map[string]string{
+				"cancelled": "true", "cancel_source": source, "cancel_reason": cancelReason,
+			}
+			if source == "user_interrupt" {
+				ev.Metadata["cancelled_by_user"] = "true"
+			}
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			ev.Metadata = map[string]string{
+				"cancelled": "true", "cancel_source": "deadline",
+				"cancel_reason": "run context deadline exceeded",
 			}
 		} else {
 			ev.Text = err.Error()

@@ -139,6 +139,21 @@ func (a *Agent) scanProgressLoop() (warnSample string, err error) {
 		return "", nil
 	}
 
+	// An empty response has no content to repeat: "(empty response)" is the
+	// provider returning nothing at all — the "empty stop right after tool
+	// results" quirk the premature-stop auto-continue exists for — not the
+	// model restating itself. When the turn that ended that way did real tool
+	// work, judge it on the TURN, not on the message (the empty message carries
+	// no calls for turnHadSuccessfulToolResult to inspect above); the turn's own
+	// empty-reply notice reports the stall. A turn that produced nothing at all
+	// — no tool work either — still accumulates strikes and latches (plan
+	// rule 3).
+	if isEmptyAssistantMessage(msg) && a.turnWindowHadSuccessfulToolResultLocked(idx) {
+		a.cfg.Logger.Log(Info, "Loop guardrail: repeated empty response but the turn executed successful tool calls; counting as progress")
+		a.assistantRepeatCount = 0
+		return "", nil
+	}
+
 	a.assistantRepeatCount++
 	// Repeats below the configured limit are soft: the model is nudged with
 	// an in-history recovery hint and the caller surfaces a visible warning.
@@ -157,6 +172,36 @@ func (a *Agent) scanProgressLoop() (warnSample string, err error) {
 	a.loopStoppedAt = time.Now()
 	a.loopStoppedSample = elideLoopSample(sample)
 	return "", fmt.Errorf("runaway loop detected: the assistant repeated the same response %d consecutive times without progress%s; session stopped", a.assistantRepeatCount+1, loopEvidenceSuffix(sample))
+}
+
+// isEmptyAssistantMessage reports whether msg carries nothing at all: no text
+// content, no thinking and no tool calls. Only such a message can ever be
+// sampled as "(empty response)" — there is no assistant output to repeat.
+func isEmptyAssistantMessage(msg Message) bool {
+	return msg.Role == Assistant &&
+		strings.TrimSpace(msg.Content) == "" &&
+		strings.TrimSpace(msg.Thinking) == "" &&
+		len(msg.ToolCalls) == 0
+}
+
+// turnWindowHadSuccessfulToolResultLocked reports whether any assistant message
+// in the current turn's window (turnStartHistoryLen..idx) issued a tool call
+// whose result landed in history without an execution error.
+// turnHadSuccessfulToolResult answers that question for a single message; a
+// turn ending with an empty reply has to be judged against the whole turn,
+// because the empty message itself carries no calls to check. Caller must hold
+// a.mu.
+func (a *Agent) turnWindowHadSuccessfulToolResultLocked(idx int) bool {
+	start := a.turnStartHistoryLen
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i <= idx && i < len(a.history); i++ {
+		if a.turnHadSuccessfulToolResult(i, a.history[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 // lastAssistantMessageLocked returns the index and value of the most recent

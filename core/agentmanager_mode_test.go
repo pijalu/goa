@@ -168,8 +168,7 @@ func TestAgentManager_HandleLoopWarningCriticalInterrupts(t *testing.T) {
 
 // TestAgentManager_LoopStopReason_EmitsClearEventEnd verifies that when the
 // loop detector interrupts a turn, the EventEnd produced by executeRunner
-// contains a clear loop-stop message and is not marked as a user-initiated
-// cancellation (which would produce "Generation stopped by user.").
+// contains structured loop-stop provenance and is not marked as user-initiated.
 func TestAgentManager_LoopStopReason_EmitsClearEventEnd(t *testing.T) {
 	cfg := &config.Config{}
 	bus := event.MakeBus(10, 10, 10, 10)
@@ -196,13 +195,57 @@ func TestAgentManager_LoopStopReason_EmitsClearEventEnd(t *testing.T) {
 	if got.Event.Type != agentic.EventEnd {
 		t.Fatalf("expected EventEnd, got %v", got.Event.Type)
 	}
-	if got.Event.Metadata != nil && got.Event.Metadata["cancelled"] == "true" {
-		t.Errorf("EventEnd should not be marked as user-cancelled when the loop detector stopped the turn; metadata=%v", got.Event.Metadata)
+	if got.Event.Metadata["cancelled"] != "true" || got.Event.Metadata["cancel_source"] != "loop_detector" {
+		t.Errorf("EventEnd cancellation provenance = %v, want loop_detector", got.Event.Metadata)
+	}
+	if got.Event.Metadata["cancelled_by_user"] == "true" {
+		t.Errorf("loop cancellation misattributed to user: %v", got.Event.Metadata)
 	}
 	if !strings.Contains(got.Event.Text, "loop") {
 		t.Errorf("EventEnd text should contain a clear loop-stop reason, got %q", got.Event.Text)
 	}
 
+	am.Close()
+}
+
+func TestAgentManager_UserInterruptHasExplicitProvenance(t *testing.T) {
+	bus := event.MakeBus(10, 10, 10, 10)
+	am := NewAgentManager(&config.Config{}, nil, nil, NewSessionState(internal.ModeState{}), bus, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	am.mu.Lock()
+	am.cancel = cancel
+	am.running = true
+	am.mu.Unlock()
+
+	if err := am.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	am.executeRunner(ctx, &canceledRunner{}, "hello", nil)
+	got := <-bus.Agent
+	if got.Event.Metadata["cancel_source"] != "user_interrupt" || got.Event.Metadata["cancelled_by_user"] != "true" {
+		t.Fatalf("user interrupt provenance = %v", got.Event.Metadata)
+	}
+	am.Close()
+}
+
+func TestAgentManager_ExternalContextCancellationHasUnknownSource(t *testing.T) {
+	bus := event.MakeBus(10, 10, 10, 10)
+	am := NewAgentManager(&config.Config{}, nil, nil, NewSessionState(internal.ModeState{}), bus, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	am.executeRunner(ctx, &canceledRunner{}, "hello", nil)
+	select {
+	case got := <-bus.Agent:
+		if got.Event.Metadata["cancel_source"] != "external_context" {
+			t.Fatalf("source = %q, want external_context", got.Event.Metadata["cancel_source"])
+		}
+		if got.Event.Metadata["cancelled_by_user"] == "true" {
+			t.Fatalf("external cancellation falsely attributed to user: %v", got.Event.Metadata)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for cancellation EventEnd")
+	}
 	am.Close()
 }
 

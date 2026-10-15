@@ -34,7 +34,7 @@ func (c *StopCommand) LongHelp() string {
 
 func (c *StopCommand) Run(ctx core.Context, args []string) error {
 	if ctx.AgentManager != nil {
-		return ctx.AgentManager.Interrupt()
+		return ctx.AgentManager.CancelTurn("stop_command", "/stop command")
 	}
 	return nil
 }

@@ -65,6 +65,16 @@ The interactive path is `/config` → **Loop detection** → **Loop auto-resume*
 
 If you typed steering input while the looped turn was still running, that steering is delivered instead of the automated resume — your message takes precedence.
 
+## Cross-turn repeated-response guardrail
+
+This detector watches the assistant's last message of each turn and stops the session when the same response repeats across consecutive turns. Goal continuation turns deliberately keep its counters, so a driver loop latches; a genuine user turn resets it.
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `runaway_loop_max_repeats` | 2 | Repeats after the first occurrence before the session stops. |
+
+Progress overrides repetition: a turn whose tool calls produced non-error results never accumulates a strike, whatever its text. A truly empty response (`(empty response)`: no text, no reasoning, no tool calls) is judged against the whole turn — if that turn executed successful tool calls, the emptiness is a provider stall (an empty stop right after tool results), not the model repeating itself, and the turn reports a silent stop instead (see the goal pause reason “stopped without producing a reply”). Only turns that produced nothing at all still latch.
+
 ## Configuration examples
 
 ```yaml

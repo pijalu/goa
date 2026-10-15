@@ -61,7 +61,7 @@ func (am *AgentManager) handleThinkingLoopWarning(lvl LoopWarningLevel) {
 		am.emitFlash("[goa-system: interrupt] Thinking loop detected — cancelling turn.")
 		am.setLoopStopReason("[goa-system] Agent stopped: the model kept repeating the same line of reasoning (thinking loop). Rephrase the request, provide more context, or disable thinking-loop detection (/config → Loop detection).")
 		am.loopDetector.ResetThinking()
-		am.Interrupt()
+		am.CancelTurn("loop_detector", "thinking loop detected")
 	}
 }
 func (am *AgentManager) handleLoopWarning(lvl LoopWarningLevel) {
@@ -76,12 +76,12 @@ func (am *AgentManager) handleLoopWarning(lvl LoopWarningLevel) {
 		am.logEventF("loop detector: critical — cancelling turn")
 		am.emitFlash("[goa-system: critical] Agent looping — cancelling turn.")
 		am.setLoopStopReason("[goa-system] Agent stopped: the same tool call was repeated too many times without progress. Change approach or provide the final answer.")
-		am.Interrupt()
+		am.CancelTurn("loop_detector", "repeated tool call loop")
 	case LoopInterrupt:
 		am.logEventF("loop detector: interrupt — cancelling turn")
 		am.emitFlash("[goa-system: interrupt] Tool call loop detected — cancelling turn.")
 		am.setLoopStopReason("[goa-system] Agent stopped: a tool-call loop was detected (the same call repeated too many times). Change approach or provide the final answer.")
-		am.Interrupt()
+		am.CancelTurn("loop_detector", "tool-call loop detected")
 	}
 }
 
