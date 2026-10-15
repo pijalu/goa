@@ -54,15 +54,30 @@ func GetModel(id string) *provider.Model {
 	return nil
 }
 
-// GetModelForProvider looks up a model by ID for a specific provider,
-// falling back to the ID-global entry. Use this when the caller knows the
-// provider and needs provider-exact metadata (e.g. cost differences between
-// a quota plan and a pay-per-token API for the same model ID).
+// GetModelForProvider looks up a model by ID for a specific provider, falling
+// back to the ID-global entry. Use this when the caller knows the provider and
+// needs provider-exact metadata (e.g. cost differences between a quota plan and
+// a pay-per-token API for the same model ID).
+//
+// Three tiers, in order:
+//  1. the provider's own entry — a catalog row, with any hand-curated override
+//     applied to it at init;
+//  2. a hand-curated override for this provider when the catalog does not list
+//     the model on it (see synthesizeOverrideEntry): models.dev rotates its
+//     per-tier model lists, and a family pin declared for a provider must keep
+//     deciding the wire format and endpoint for that provider's models
+//     regardless of catalog membership;
+//  3. the ID-global entry, for providers the registry does not model (custom or
+//     local endpoints) and for IDs nothing pins yet.
 func GetModelForProvider(providerName provider.Provider, id string) *provider.Model {
 	if byID, ok := providerModels[providerName]; ok {
 		if m, ok := byID[id]; ok {
 			return &m
 		}
+	}
+	if ov := overrideIdx.lookup(providerName, id); ov != nil {
+		m := synthesizeOverrideEntry(providerName, id, *ov)
+		return &m
 	}
 	return GetModel(id)
 }

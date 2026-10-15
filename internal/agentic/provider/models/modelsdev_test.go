@@ -147,6 +147,100 @@ func findInCatalog(cat *runtimeCatalog, p provider.Provider, id string) *provide
 	return nil
 }
 
+// TestParseModelsDev_DeterministicProviderOrder pins the two catalog invariants
+// the registry's first-wins indexes depend on.
+//
+// Determinism: Go map iteration is randomised, so a parser that walks providers
+// in map order resolves an ID served by several providers (qwen3.6-plus:
+// opencode plus a dozen aggregators) to a different provider on every run — a
+// different endpoint and wire API wherever a lookup falls back to the ID-global
+// entry, and a different registry entry on two machines.
+//
+// Mapped-provider preference: a provider with a hand-curated ProviderDef claims
+// the global entry over the aggregators listing the same model, which is what
+// makes its identity the canonical one.
+func TestParseModelsDev_DeterministicProviderOrder(t *testing.T) {
+	first, err := parseModelsDev(embeddedAPIJSON)
+	if err != nil {
+		t.Fatalf("parseModelsDev: %v", err)
+	}
+	second, err := parseModelsDev(embeddedAPIJSON)
+	if err != nil {
+		t.Fatalf("parseModelsDev (second run): %v", err)
+	}
+
+	if !slices.Equal(first.order, second.order) {
+		t.Errorf("provider order differs between parses:\n%v\n%v", first.order, second.order)
+	}
+	for id, m := range first.models {
+		other, ok := second.models[id]
+		if !ok {
+			t.Errorf("%s: in one parse only", id)
+			continue
+		}
+		if other.Provider != m.Provider {
+			t.Errorf("%s: global provider %q then %q across parses", id, m.Provider, other.Provider)
+		}
+	}
+
+	mapped := map[provider.Provider]bool{}
+	for _, mapping := range modelsDevProviderMappings {
+		mapped[mapping.Provider] = true
+	}
+	for id, servers := range mappedServers(first, mapped) {
+		global, ok := first.models[id]
+		if !ok {
+			t.Errorf("%s: served by a mapped provider but missing from the global index", id)
+			continue
+		}
+		if !slices.Contains(servers, global.Provider) {
+			t.Errorf("%s: global entry from %q, want a hand-mapped provider %v", id, global.Provider, servers)
+		}
+	}
+}
+
+// mappedServers lists, per model ID, the hand-mapped providers serving it.
+func mappedServers(cat *runtimeCatalog, mapped map[provider.Provider]bool) map[string][]provider.Provider {
+	out := map[string][]provider.Provider{}
+	for prov, models := range cat.byProv {
+		if !mapped[prov] {
+			continue
+		}
+		for _, m := range models {
+			out[m.ID] = append(out[m.ID], prov)
+		}
+	}
+	return out
+}
+
+// TestParseModelsDev_MappedProviderBeatsAggregator uses a fixture whose
+// aggregator sorts before the mapped provider, so the mapped entry has to win the
+// global ID on identity rather than on walk order (models.dev key "zai" maps to
+// the zai-api paid identity).
+func TestParseModelsDev_MappedProviderBeatsAggregator(t *testing.T) {
+	const fixture = `{
+  "aaa-agg": {
+    "api": "https://aaa.example/v1",
+    "npm": "@ai-sdk/openai-compatible",
+    "models": {
+      "glm-5.2": {"name": "GLM-5.2", "tool_call": true}
+    }
+  },
+  "zai": {
+    "models": {
+      "glm-5.2": {"name": "GLM-5.2", "tool_call": true}
+    }
+  }
+}`
+	cat, err := parseModelsDev([]byte(fixture))
+	if err != nil {
+		t.Fatalf("parseModelsDev: %v", err)
+	}
+	if got := cat.models["glm-5.2"].Provider; got != provider.ProviderZaiApi {
+		t.Errorf("global glm-5.2 from %q, want the hand-mapped zai-api identity", got)
+	}
+}
+
 // TestRuntimeCatalog_CacheRoundTripAndProviderLookup verifies a cache file
 // is loaded and served per-provider, with provider-exact precedence.
 func TestRuntimeCatalog_CacheRoundTripAndProviderLookup(t *testing.T) {

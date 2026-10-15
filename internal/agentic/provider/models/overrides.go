@@ -69,7 +69,11 @@ type overrideFile struct {
 
 // loadEmbeddedCatalog parses the embedded api.json into model entries using the
 // same two-pass logic as the runtime catalog (parseModelsDev): mapped providers
-// first, then unmapped providers via the fallback. Returns the parsed models.
+// first, then unmapped providers via the fallback. Returns the parsed models in
+// catalog order (see runtimeCatalog.order) so the registry's first-wins indexes
+// are built identically on every run: a map walk would make the ID-global entry
+// for a model listed by several providers — and with it the metadata the
+// provider-less fallback reports — depend on map iteration order.
 func loadEmbeddedCatalog() []provider.Model {
 	cat, err := parseModelsDev(embeddedAPIJSON)
 	if err != nil {
@@ -77,8 +81,8 @@ func loadEmbeddedCatalog() []provider.Model {
 		return nil
 	}
 	var out []provider.Model
-	for _, models := range cat.byProv {
-		out = append(out, models...)
+	for _, prov := range cat.order {
+		out = append(out, cat.byProv[prov]...)
 	}
 	return out
 }
@@ -208,6 +212,66 @@ func isPrefixID(id string) bool {
 	return strings.HasSuffix(id, "-") && len(id) > 1
 }
 
+// overrideIndex indexes the embedded YAML overrides by provider identity, split
+// into the two lookup shapes the registry needs: exact-ID entries (including the
+// last-write-wins carve-outs like qwen3.6-plus-free) and prefix entries (family
+// pins like qwen3.6- / grok-).
+//
+// Built once: the YAML is immutable and every lookup happens on the
+// model-resolution hot path.
+type overrideIndex struct {
+	exact  map[provider.Provider]map[string]overrideModel // provider → lower(ID) → entry
+	prefix map[provider.Provider][]overrideModel          // provider → prefix entries, YAML order
+}
+
+var overrideIdx = buildOverrideIndex()
+
+func buildOverrideIndex() *overrideIndex {
+	idx := &overrideIndex{
+		exact:  map[provider.Provider]map[string]overrideModel{},
+		prefix: map[provider.Provider][]overrideModel{},
+	}
+	for _, ov := range loadOverrides() {
+		prov := provider.Provider(ov.Provider)
+		if isPrefixID(ov.ID) {
+			idx.prefix[prov] = append(idx.prefix[prov], ov)
+			continue
+		}
+		if idx.exact[prov] == nil {
+			idx.exact[prov] = map[string]overrideModel{}
+		}
+		idx.exact[prov][strings.ToLower(ov.ID)] = ov
+	}
+	return idx
+}
+
+// lookup returns the hand-curated override that decides (prov, id), or nil when
+// the YAML says nothing about that pair.
+//
+// An exact-ID entry always wins over a prefix entry, mirroring the init-time
+// order in which exact overrides run after prefix overrides (last write wins).
+// Among prefix entries the longest match wins, so a narrower family entry added
+// later takes precedence over the broader prefix it extends.
+func (idx *overrideIndex) lookup(prov provider.Provider, id string) *overrideModel {
+	lower := strings.ToLower(id)
+	if byID := idx.exact[prov]; byID != nil {
+		if ov, ok := byID[lower]; ok {
+			return &ov
+		}
+	}
+	var best *overrideModel
+	bestLen := 0
+	for _, ov := range idx.prefix[prov] {
+		prefix := strings.ToLower(ov.ID)
+		if strings.HasPrefix(lower, prefix) && len(prefix) > bestLen {
+			cp := ov
+			best = &cp
+			bestLen = len(prefix)
+		}
+	}
+	return best
+}
+
 // IsCuratedOverride reports whether the given (provider, model ID) pair is
 // covered by a hand-curated YAML override — an exact-ID entry, or a prefix
 // entry whose declared API/behaviour the model inherits. Catalog (models.dev)
@@ -215,21 +279,29 @@ func isPrefixID(id string) bool {
 // for whole families on multi-surface gateways (the zen 500 class), so the
 // wire-format probe may still reroute them. Used to mark Model.ApiSource.
 func IsCuratedOverride(prov provider.Provider, id string) bool {
-	p := string(prov)
-	lower := strings.ToLower(id)
-	ovs := loadOverrides()
-	// Exact-ID entries run AFTER prefix entries in the registry init
-	// (last-write-wins carve-outs like qwen3.6-plus-free), so an exact match
-	// decides the result before any prefix is consulted.
-	for _, ov := range ovs {
-		if ov.Provider == p && !isPrefixID(ov.ID) && strings.EqualFold(ov.ID, id) {
-			return true
-		}
+	return overrideIdx.lookup(prov, id) != nil
+}
+
+// synthesizeOverrideEntry builds the registry entry for a (provider, model) pair
+// the provider's catalog does not list: a model the catalog never carried
+// (union-alpha), or one whose membership rotated away upstream — models.dev
+// dropped qwen3.6-plus, qwen3.7-max and grok-4.6 from opencode-go while
+// opencode kept serving them.
+//
+// The override decides the entry. The ID-global catalog entry for the same model
+// — the copy some *other* provider serves — contributes only model-intrinsic
+// metadata (context window, token limits, pricing, reasoning, modalities), never
+// its routing: Api and BaseURL are taken from the override alone, because a
+// borrowed endpoint points at a different vendor and would silently send the
+// request there. Providers whose catalog entry survives are untouched; init
+// patches those in place (applyPrefixOverride).
+func synthesizeOverrideEntry(prov provider.Provider, id string, ov overrideModel) provider.Model {
+	m := provider.Model{ID: id, Provider: prov}
+	if borrowed := GetModel(id); borrowed != nil && borrowed.Provider != prov {
+		m = *borrowed
+		m.Api, m.BaseURL = "", ""
 	}
-	for _, ov := range ovs {
-		if ov.Provider == p && isPrefixID(ov.ID) && strings.HasPrefix(lower, strings.ToLower(ov.ID)) {
-			return true
-		}
-	}
-	return false
+	m = applyOverride(m, ov)
+	m.ID, m.Provider = id, prov // the override's ID is the prefix, not the model
+	return m
 }

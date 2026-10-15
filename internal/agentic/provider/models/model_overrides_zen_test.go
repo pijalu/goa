@@ -47,13 +47,20 @@ func TestRegistry_ZenAnthropicFamilies(t *testing.T) {
 	}
 }
 
-// Anthropic-format families on zen Go tier (no claude there). union-alpha is
-// an exact-ID entry (no catalog membership): live probe 2026-09-17 — 500 on
-// chat/completions + responses, 200 on /messages. Its sibling omen-alpha is
-// oa-compat (opposite probe result) and must stay off this list.
+// Anthropic-format families on zen Go tier. union-alpha is an exact-ID entry (no
+// catalog membership): live probe 2026-09-17 — 500 on chat/completions +
+// responses, 200 on /messages. Its sibling omen-alpha is oa-compat (opposite
+// probe result) and must stay off this list. claude-haiku-5-5 joined the Go tier
+// with the 2026-10-15 models.dev rotation and is pinned anthropic like every
+// claude-* on the gateway; qwen3.6-plus and qwen3.7-max left that tier in the
+// same rotation and must keep resolving through the family pin rather than a
+// catalog row borrowed from an aggregator.
 func TestRegistry_ZenGoAnthropicFamilies(t *testing.T) {
 	base := "https://opencode.ai/zen/go/v1/messages"
-	for _, id := range []string{"qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max", "qwen3.8-flash", "union-alpha"} {
+	for _, id := range []string{
+		"qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max", "qwen3.8-flash",
+		"claude-haiku-5-5", "union-alpha",
+	} {
 		requireZenAPI(t, provider.ProviderOpenCodeGo, id, "anthropic-messages", base)
 	}
 }
@@ -96,6 +103,31 @@ func TestRegistry_ZenOACompatUnchanged(t *testing.T) {
 		}
 		if m.Api != provider.ApiOpenAICompletions {
 			t.Errorf("%s @ %s: Api = %q, want openai-completions (oa-compat, unchanged)", tc.id, tc.prov, m.Api)
+		}
+	}
+}
+
+// Family sweep on the Go tier, mirroring the full-tier sweep: every member the
+// catalog serves on zen Go must carry its family's wire format, so a models.dev
+// rotation — which adds and drops members of these families wholesale — cannot
+// silently leave one on the wrong surface. The qwen *-free members are the
+// explicit exception (oa-compat, chat/completions).
+func TestRegistry_ZenGoPrefixSweep(t *testing.T) {
+	for _, m := range GetModels(provider.ProviderOpenCodeGo) {
+		id := m.ID
+		switch {
+		case strings.HasPrefix(id, "claude-"):
+			if m.Api != provider.ApiAnthropicMessages {
+				t.Errorf("%s @ opencode-go: Api = %q, want anthropic-messages", id, m.Api)
+			}
+		case strings.HasPrefix(id, "qwen3.") && !strings.HasSuffix(id, "-free"):
+			if m.Api != provider.ApiAnthropicMessages {
+				t.Errorf("%s @ opencode-go: Api = %q, want anthropic-messages", id, m.Api)
+			}
+		case strings.HasPrefix(id, "gpt-"), strings.HasPrefix(id, "grok-"), strings.HasPrefix(id, "muse-spark-"):
+			if m.Api != provider.ApiOpenAIResponses {
+				t.Errorf("%s @ opencode-go: Api = %q, want openai-responses", id, m.Api)
+			}
 		}
 	}
 }

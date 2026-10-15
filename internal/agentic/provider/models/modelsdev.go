@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -128,6 +129,12 @@ type runtimeCatalog struct {
 	loaded bool
 	models map[string]provider.Model              // ID → model (first-wins per provider applied at load)
 	byProv map[provider.Provider][]provider.Model // provider → models
+	// order lists the providers in the order byProv was filled: pass 1
+	// (hand-mapped providers, sorted by models.dev key) before pass 2
+	// (synthesized aggregators, also sorted). Consumers that build a first-wins
+	// index — the registry's global ID index — walk this slice, never the byProv
+	// map (see loadEmbeddedCatalog).
+	order []provider.Provider
 }
 
 var runtime struct {
@@ -416,8 +423,9 @@ func parseModelsDev(raw []byte) (*runtimeCatalog, error) {
 		models: map[string]provider.Model{},
 		byProv: map[provider.Provider][]provider.Model{},
 	}
-	// Pass 1: mapped providers (hand-curated, detailed compat).
-	for key, mapping := range modelsDevProviderMappings {
+	// Pass 1: mapped providers (hand-curated, detailed compat), walked in
+	// models.dev key order — never in Go's randomised map order.
+	for _, key := range sortedKeys(modelsDevProviderMappings) {
 		rawProv, ok := top[key]
 		if !ok {
 			continue
@@ -428,30 +436,49 @@ func parseModelsDev(raw []byte) (*runtimeCatalog, error) {
 		if err := json.Unmarshal(rawProv, &prov); err != nil {
 			continue
 		}
-		addProviderModels(cat, mapping, prov.Models)
+		cat.addProviderModels(modelsDevProviderMappings[key], prov.Models)
 	}
 	// Pass 2: unmapped providers (fallback — synthesize mapping from metadata).
-	for key, rawProv := range top {
+	for _, key := range sortedKeys(top) {
 		if _, mapped := modelsDevProviderMappings[key]; mapped {
 			continue
 		}
 		var prov modelsDevProviderEntry
-		if err := json.Unmarshal(rawProv, &prov); err != nil {
+		if err := json.Unmarshal(top[key], &prov); err != nil {
 			continue
 		}
 		if len(prov.Models) == 0 {
 			continue
 		}
-		mapping := synthesizeMapping(key, prov.modelsDevProviderInfo)
-		addProviderModels(cat, mapping, prov.Models)
+		cat.addProviderModels(synthesizeMapping(key, prov.modelsDevProviderInfo), prov.Models)
 	}
 	return cat, nil
 }
 
+// sortedKeys returns m's keys in ascending order. Catalog construction must not
+// depend on Go's randomised map iteration: the indexes derived from the catalog
+// are first-wins, so an unsorted walk resolves a model ID served by several
+// providers (qwen3.6-plus: opencode plus a dozen aggregators) to whichever
+// provider the runtime visited first — a different provider, endpoint and wire
+// API on every run.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // addProviderModels converts and appends all models from a models.dev provider
 // entry into the runtime catalog. Shared by both the mapped and fallback
-// passes. First-wins for the global ID index; per-provider slice is append-only.
-func addProviderModels(cat *runtimeCatalog, mapping modelsDevProviderMapping, models map[string]modelsDevModel) {
+// passes. First-wins for the global ID index; the per-provider slice is
+// append-only. Each provider is recorded in cat.order the first time it is seen,
+// so consumers can replay the catalog deterministically.
+func (cat *runtimeCatalog) addProviderModels(mapping modelsDevProviderMapping, models map[string]modelsDevModel) {
+	if !slices.Contains(cat.order, mapping.Provider) {
+		cat.order = append(cat.order, mapping.Provider)
+	}
 	for id, mm := range models {
 		m, ok := convertModelsDevModel(id, mm, mapping)
 		if !ok {
