@@ -58,7 +58,7 @@ const (
 	PauseModelConfig  = "Paused after model configuration error"
 	PauseRuntimeError = "Paused after runtime error"
 	PauseRunawayLoop  = "Paused after detecting a runaway response loop"
-	PauseSilentStop   = "Paused after model stopped mid-reasoning (send continue to resume)"
+	PauseSilentStop   = "Paused after model stopped without producing a reply (send continue to resume)"
 )
 
 // RunawayRecoveryPrompt replaces the byte-identical ContinuationPrompt for

@@ -187,20 +187,26 @@ func (a *Agent) finalizeStreamTurn(ctx context.Context) {
 	// message so the stop is never silent. The thinking is still preserved in
 	// history (synthesizeAssistantBuffer promotes it to content), so a
 	// follow-up "continue" resumes with full context.
-	if a.contentBuf.Len() == 0 && a.thinkingBuf.Len() > 0 {
+	//
+	// A reply that is empty in EVERY dimension (no content, no thinking, no
+	// tool calls) is the same class of stall one step further: the provider
+	// returned nothing at all (truncated/failed response, or the empty stop
+	// right after tool results the premature-stop path auto-continues out of
+	// until its budget is spent). It must be reported too — a silently
+	// finalized empty message left no trace anywhere (goa-export-20261015-
+	// 170840: three such turn endings were later read by the progress-loop
+	// guardrail as "the assistant repeated the same response").
+	if !a.cfg.AllowEmptyResponse && isEmptyAssistantMessage(msg) {
+		a.cfg.Logger.Log(Warn, "turn ended with an empty reply (no content, no thinking, no tool calls)")
+		a.markSilentStop("The model returned an empty reply: no answer text, no reasoning and no " +
+			"tool calls (usually a provider-side stall — a truncated or failed response). " +
+			"Send \"continue\" to resume, or rephrase your request.")
+	} else if a.contentBuf.Len() == 0 && a.thinkingBuf.Len() > 0 {
 		a.cfg.Logger.Log(Warn, "turn ended with thinking but no answer content (model stopped mid-reasoning)")
-		a.mu.Lock()
-		a.lastTurnSilentStop = true
-		a.mu.Unlock()
-		a.emitEvent(OutputEvent{
-			Type: EventContent,
-			Role: System,
-			Text: "The model stopped after its reasoning step without producing a reply " +
-				"(no answer text or tool calls were returned). This is usually a " +
-				"reasoning-token or output limit on the provider side. Send \"continue\" " +
-				"to resume, or rephrase your request.",
-			Metadata: map[string]string{"category": "system-notification"},
-		})
+		a.markSilentStop("The model stopped after its reasoning step without producing a reply " +
+			"(no answer text or tool calls were returned). This is usually a " +
+			"reasoning-token or output limit on the provider side. Send \"continue\" " +
+			"to resume, or rephrase your request.")
 	}
 
 	// Emit token/context stats before EventEnd so consumers can log/use them
@@ -208,6 +214,23 @@ func (a *Agent) finalizeStreamTurn(ctx context.Context) {
 	a.emitTurnStats()
 	a.checkSilentOverflow()
 	a.emitEvent(OutputEvent{Type: EventEnd})
+}
+
+// markSilentStop records the silent-stop state for the turn and surfaces the
+// non-transient system notice that explains it. The goal driver reads the flag
+// (SilentStopReporter) and pauses the goal with the matching reason instead of
+// auto-continuing into the same provider limit; the notice is what the user
+// sees, so a turn never ends silently.
+func (a *Agent) markSilentStop(notice string) {
+	a.mu.Lock()
+	a.lastTurnSilentStop = true
+	a.mu.Unlock()
+	a.emitEvent(OutputEvent{
+		Type:     EventContent,
+		Role:     System,
+		Text:     notice,
+		Metadata: map[string]string{"category": "system-notification"},
+	})
 }
 
 func (a *Agent) resetStreamRoundState() {

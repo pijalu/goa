@@ -129,8 +129,8 @@ func TestGoalDriver_SilentStopPausesGoal(t *testing.T) {
 	if g.Goal.Status != goal.GoalPaused {
 		t.Fatalf("status = %q, want %q", g.Goal.Status, goal.GoalPaused)
 	}
-	if g.Goal.TerminalReason == nil || !strings.Contains(*g.Goal.TerminalReason, "mid-reasoning") {
-		t.Fatalf("terminal reason = %v, want it to contain 'mid-reasoning'", g.Goal.TerminalReason)
+	if g.Goal.TerminalReason == nil || !strings.Contains(*g.Goal.TerminalReason, "without producing a reply") {
+		t.Fatalf("terminal reason = %v, want it to contain 'without producing a reply'", g.Goal.TerminalReason)
 	}
 }
 
