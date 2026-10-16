@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pijalu/goa/core"
@@ -167,11 +168,13 @@ func TestLoginCommandFakeOAuthFlow(t *testing.T) {
 type fakeOAuthFlow struct {
 	tokens *oauth.Tokens
 	err    error
-	ran    bool
+	// ran is atomic: with the picker dispatching its flow off the command loop
+	// (bugs.md B27) the flow can complete on another goroutine.
+	ran atomic.Bool
 }
 
 func (f *fakeOAuthFlow) Run(_ context.Context, _ uiWriter, _ prompter) (*oauth.Tokens, error) {
-	f.ran = true
+	f.ran.Store(true)
 	return f.tokens, f.err
 }
 
@@ -528,12 +531,14 @@ func TestLoginKindPicker_SelectsOAuthDevice(t *testing.T) {
 			t.Errorf("picker items missing %q in %v", want, vals)
 		}
 	}
-	// device flow ran and stored the token.
-	if !flow.ran {
+	// The selected flow is dispatched OFF the command loop (the callback is
+	// delivered by that loop, which the flow would otherwise park — bugs.md B27),
+	// so the effect lands asynchronously: wait for it instead of assuming the
+	// callback ran the flow inline. The store is the observable completion point
+	// (the flow's own flag is set before runOAuthFlowSync persists the tokens).
+	waitForCondition(t, func() bool { return store.HasAuth("openai") })
+	if !flow.ran.Load() {
 		t.Error("device flow was not invoked")
-	}
-	if _, ok := store.GetOAuth("openai"); !ok {
-		t.Error("oauth tokens not stored after device selection")
 	}
 }
 

@@ -155,11 +155,19 @@ func TestLoginCodexOAuth_Filmstrip(t *testing.T) {
 		t.Fatalf("auth-kind selector not rendered; visible = %v", engine.AgentFrame().Visible)
 	}
 
-	// Step 1: move to "oauth" (selector opens with apikey highlighted) and press
-	// Enter. The selector overlay captures input; the flow must start without
-	// freezing the UI.
+	// Step 1: "Sign in with OAuth (browser)" is row 1 (the picker keeps its
+	// declared order: apikey, oauth, oauth:device — bugs.md B28) and the
+	// selector opens on the default (apikey), so one arrow-down lands on it.
 	term.sendKey("\x1b[B") // down → oauth
 	term.sendKey("\r")     // enter → confirm
+
+	// Selecting OAuth shows the browser-vs-device method list; the flow only
+	// starts once that is answered. While this picker waits, the command loop
+	// must stay free to deliver the choice (bugs.md B27: it used to be parked
+	// here, which is the reported freeze).
+	waitForFrame(t, engine, "OpenAI Codex login method")
+	assertEngineResponsive(t, engine)
+	term.sendKey("\r") // enter → browser (first row / default)
 	select {
 	case <-flow.started:
 	case <-time.After(2 * time.Second):

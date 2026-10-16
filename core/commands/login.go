@@ -100,6 +100,41 @@ var loginFlowRunner = func(ctx core.Context, provider string) error {
 // ShortHelp returns a short description.
 func (c *LoginCommand) ShortHelp() string { return "Manage OAuth logins and API keys for providers" }
 
+// AsyncHint implements core.AsyncCommand: a `/login` invocation that waits on the
+// user or on the provider must run OFF the TUI command loop.
+//
+// Two of its steps block by contract — the codex browser/device method selector
+// (selectCodexMethod waits on a result channel) and the API-key clarifier prompt
+// (core.Context.ClarifyFunc blocks until the answer lands). The production host
+// runs a command body on the command loop and delivers selector callbacks *from*
+// that same loop, so running those steps there parks the loop: the picker renders
+// but every keystroke is queued behind it and the whole UI looks frozen (bugs.md
+// B27). Returning a label here routes the body through runAsyncCommand instead.
+//
+// Invocations that return immediately stay synchronous: discovery (`/login`), the
+// auth-kind picker (`/login:<provider>` — it returns right after showing the
+// selector, whose callback dispatches the continuation itself), a legacy inline
+// token, and `apikey <key>`.
+func (c *LoginCommand) AsyncHint(args []string) string {
+	if len(args) < 2 {
+		return ""
+	}
+	provider := normalizeProviderID(args[0])
+	switch strings.ToLower(args[1]) {
+	case "oauth":
+		// Browser login (waits for the localhost callback) and device-code login
+		// (polls until the user authorizes) both park on the provider.
+		return fmt.Sprintf("Signing in to %s…", provider)
+	case "apikey":
+		// Only the interactive variant blocks: with the key inline there is
+		// nothing to wait for.
+		if len(args) == 2 {
+			return fmt.Sprintf("Waiting for the %s API key…", provider)
+		}
+	}
+	return ""
+}
+
 // LongHelp returns usage help.
 func (c *LoginCommand) LongHelp() string {
 	return help.LongHelp(c.Name())
@@ -404,13 +439,18 @@ func (c *LoginCommand) pickAuthKind(ctx core.Context, provider, display string, 
 			Value:       k,
 			Label:       authKindLabel(k),
 			Description: authKindDescription(k, provider),
+			// The kinds are a preference order (kinds[0] is the default the selector
+			// highlights), not an unordered set: opt out of the selector's
+			// alphabetical default (bugs.md B28).
+			PreserveOrder: true,
 		})
 	}
 	if isCodexProvider(provider) {
 		items = append(items, tui.SelectorItem{
-			Value:       "oauth:device",
-			Label:       "Sign in with ChatGPT (device code)",
-			Description: "Headless login — paste a code on another device",
+			Value:         "oauth:device",
+			Label:         "Sign in with ChatGPT (device code)",
+			Description:   "Headless login — paste a code on another device",
+			PreserveOrder: true,
 		})
 	}
 	ctx.SelectOption("Sign in to "+display+":", items, kinds[0], func(v string, ok bool) {
@@ -421,9 +461,26 @@ func (c *LoginCommand) pickAuthKind(ctx core.Context, provider, display string, 
 		if v == "oauth:device" {
 			args = []string{provider, "oauth", "device"}
 		}
-		_ = c.Run(ctx, args)
+		// This callback is delivered ON the command loop, so the chosen flow must not
+		// run here: every kind except an inline key waits on the user (the codex
+		// browser/device selector, the API-key prompt) or on the provider.
+		runOffCommandLoop(ctx, "Login to "+display, func() error { return c.Run(ctx, args) })
 	})
 	return nil
+}
+
+// runOffCommandLoop runs a continuation that blocks on the user or on the network on
+// a background goroutine, so the TUI command loop stays free to process the input and
+// deliver the callbacks that continuation is waiting for (bugs.md B27). Selector
+// callbacks are delivered by the command loop itself (internal/app
+// wireInteractiveCallbacks → app.apply) and cannot return an error, so failures are
+// surfaced as a flash instead.
+func runOffCommandLoop(ctx core.Context, what string, run func() error) {
+	go func() {
+		if err := run(); err != nil {
+			ctx.Flash(fmt.Sprintf("%s failed: %v", what, err))
+		}
+	}()
 }
 
 func authKindLabel(kind string) string {
@@ -541,12 +598,13 @@ func codexMethodSelectorItems() []tui.SelectorItem {
 // the text prompter. A nil/cancelled prompt defaults to browser (the common
 // case) so scripted flows keep working.
 //
-// SelectOptionFunc is async (the production wiring returns immediately and
-// delivers via a callback goroutine), so this blocks on a result channel.
-// That is safe: for codex OAuth, handleOAuth runs on the runOAuthFlow
-// background goroutine whenever an EventBus is wired, and the selector
-// callback itself marshals onto the TUI commandLoop (app.apply) — blocking
-// here cannot deadlock the loop.
+// This BLOCKS on the selection result, so its caller must not be the TUI command
+// loop: production delivers the selector callback from that loop (app.apply), so
+// parking there would make the choice it waits for undeliverable (bugs.md B27).
+// Both callers satisfy that — `handleOAuth` runs off-loop for `/login:<p>:oauth`
+// (core.AsyncCommand) and the auth-kind picker dispatches through
+// runOffCommandLoop — while the sibling goroutine spawned by the SelectOptionFunc
+// wiring ("returns immediately, delivers later") fills the result channel.
 func (c *LoginCommand) selectCodexMethod(ctx core.Context) (string, error) {
 	if ctx.SelectOptionFunc != nil {
 		type result struct {

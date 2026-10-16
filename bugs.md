@@ -74,6 +74,19 @@ Until then the item stays open: it is the only entry in this file.
 
 ## Closed
 
+Closed 2026-10-16 — B27/B28, `/login:codex` → "Sign in with OAuth (browser)" froze the
+whole TUI, and the auth-kind picker ignored its declared order. The selector callback is
+delivered ON the TUI command loop, and `pickAuthKind` ran `c.Run` inline from it, so
+`selectCodexMethod` parked that loop waiting for the very callback it alone could
+deliver (the same defect hit `/login:<p>:oauth` typed inline and the API-key clarify
+prompt). Fixed with one off-loop dispatch helper for the picker continuation plus
+`core.AsyncCommand` on `LoginCommand` (`AsyncHint` opts the blocking invocations into the
+host's background path); every picker item now sets `PreserveOrder`. Pinned by
+`core/commands/login_loop_block_test.go` on a live engine with the production selector
+wiring (RED before: `responsive = false`, flow never started) and validated against the
+rendered frames. See
+[`docs/archive/b27-b28-login-oauth-loop-freeze.2026-10-16.md`](docs/archive/b27-b28-login-oauth-loop-freeze.2026-10-16.md).
+
 Closed 2026-10-10 — B24, the web band's clipped right edge ("YOLO" cut to
 "YOL"): the page reported the terminal geometry only when the socket opened and on
 `window.resize`, so a classic (width-taking) scrollbar appearing — the conversation
