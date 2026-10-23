@@ -72,7 +72,108 @@ Until then the item stays open: it is the only entry in this file.
    cells, so the cells-plane golden is the pin).
 3. If dropped: config migration note + `config_tail`/completion entries removed.
 
+## B30 — Exported session shows low per-request cache ratios amid rapid context growth
+
+**Observed**: export `.goa/exports/goa-export-20261023-210438.zip` was reported
+as having a very low cache ratio. Its ten completed requests have current-
+request hit ratios from 30.7% to 92.4% after the expected cold start, but
+`cache_read` rises monotonically and adjacent-request reuse is 98.65%–100%.
+There are 687,616 cached prompt tokens versus 184,108 fresh prompt tokens
+(78.9% weighted reuse), and `logs/cache_miss_requests.json` is empty. Thus the
+export does not presently demonstrate cache-key churn or eviction. It does
+show substantial growth: 53 tool results contribute 578,751 characters
+(approximately 144,687 tokens), including individual results of 51,419,
+33,599, 30,874, 24,987, and 22,402 characters. Request bodies in the retained
+HTTP log are truncated, so they cannot prove adjacent requests byte-identical.
+
+**Expected**: append-only turns reuse the largest stable provider prefix. Cache
+reporting must distinguish current-request hit ratio from previous-prompt
+reuse, and context growth should not be dominated by avoidable unbounded tool
+output. A low current-request ratio alone must not be treated as a cache-bust
+bug.
+
+**Investigation / optimization plan**
+
+1. Re-run `tooling/session_cache_report.py --full` and
+   `tooling/session_growth_report.py` against the extracted session; correlate
+   the request totals with retained trace events and cache-miss diagnostics.
+2. Inspect the lifecycle of each large tool result, including output limits,
+   persistence, replay, and compression. Determine whether Goa sent avoidable
+   full output where its tool contract promised bounded output, or whether the
+   model explicitly requested broad output.
+3. Inspect cache/session identifiers and request construction only as far as
+   the retained evidence permits. Do not infer a cache-identity defect from a
+   low ratio or from unavailable request bodies.
+4. If a concrete output-bound or replay defect is found, add it to the fix plan
+   before editing, implement the root-cause fix, and add a regression test that
+   fails before the change. If only usage-driven growth is found, close the
+   cache-bust hypothesis with measurements and log any separate actionable
+   optimization rather than weakening useful tool results speculatively.
+
+**Test / validation approach**
+
+1. Preserve the export measurements and before/after token-growth evidence in
+   the archived investigation. Keep the source ZIP unchanged.
+2. For any code fix, test the exact tool-output or request-construction path,
+   including boundary and error cases; verify that valid content is not lost
+   and that conversation history remains append-only outside compression.
+3. Run `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
+   `gocyclo -over 12 .`, and `go test -count=1 -race -cover ./...` separately
+   after any code change.
+
+## B31 — z.ai OAuth failure exposes only `zai_oauth_required`
+
+**Reported**: `⚡ OAuth login for zai failed: oauth flow: zai_oauth_required`.
+
+**Observed**: `internal/agentic/provider/oauth/zai.go` deliberately collapses
+every z.ai login failure to `ErrZaiOAuthRequired`, a stable sentinel intended
+for credential-resolution control flow. `core/commands/login.go` wraps the
+flow error and displays it directly through the asynchronous login flash.
+That explains the reported text, but the user's initiating broker/poll/business
+failure has not yet been reproduced. The current message discards the
+actionable stage and underlying cause.
+
+**Expected**: a failed z.ai OAuth login must report an actionable, sanitized
+reason (for example broker initialization, authorization polling, or business
+token exchange) while preserving `errors.Is(err, ErrZaiOAuthRequired)` for
+programmatic callers. A successful login must still mint and store both
+required credentials. The internal sentinel must not be the only user-facing
+diagnostic; no token, poll credential, or authorization URL secret may appear
+in logs or errors.
+
+**Reproduction / fix plan**
+
+1. Replay broker-init, broker-poll, and business-exchange failures through the
+   existing httptest z.ai flow harness. Identify where the original error is
+   collapsed and which stage can produce the reported login failure.
+2. Preserve the sentinel's control-flow contract while retaining or wrapping
+   the underlying sanitized cause at the OAuth layer. Do not remove the
+   sentinel, weaken quota credential resolution, or add message-text sniffing
+   in the TUI. Update this plan if the reproduction instead identifies a
+   protocol or endpoint defect.
+3. Add regression tests that fail with the current raw-only diagnostic, then
+   verify each failure stage retains a useful cause and
+   `errors.Is(err, ErrZaiOAuthRequired)` remains true. Cover z.ai and BigModel,
+   transport errors, denied responses, malformed responses, cancellation, and
+   the existing successful two-credential exchange.
+4. Add a `LoginCommand` asynchronous filmstrip test proving the actual visible
+   flash contains the actionable error rather than only the raw sentinel;
+   verify the engine remains responsive and no secret is rendered.
+5. Run `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
+   `gocyclo -over 12 .`, and `go test -count=1 -race -cover ./...` separately.
+   Archive the evidence and commit the completed fix.
+
 ## Closed
+
+Closed 2026-10-23 — B29, the reported multi-tool
+`elapsed / waiting / elapsed / elapsed` sequence was accurate concurrency state,
+not a queue-position
+rendering bug. The exported bash/bash/search/search events start bash1 and both
+searches while bash2 remains conflict-queued. New production-scheduler
+filmstrips prove both that mixed sequence and a fully serialized four-call batch
+(one `elapsed`, three `waiting`) on the visible terminal; no production code
+changed. See
+[`docs/archive/b29-multi-tool-waiting-elapsed.2026-10-23.md`](docs/archive/b29-multi-tool-waiting-elapsed.2026-10-23.md).
 
 Closed 2026-10-16 — B27/B28, `/login:codex` → "Sign in with OAuth (browser)" froze the
 whole TUI, and the auth-kind picker ignored its declared order. The selector callback is
