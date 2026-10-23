@@ -80,10 +80,16 @@ const (
 	bigmodelBusinessLoginURL = "https://open.bigmodel.cn/api/auth/z/login"
 )
 
-// ErrZaiOAuthRequired is the stable sentinel every z.ai login failure collapses
-// to. Callers (the quota plugin's credential resolution) branch on it rather
-// than on message text.
+// ErrZaiOAuthRequired is the stable sentinel matched by every failed z.ai
+// login. Callers branch on it with errors.Is rather than on message text; the
+// returned error also carries a separately sanitized, actionable diagnostic.
 var ErrZaiOAuthRequired = fmt.Errorf("zai_oauth_required")
+
+const (
+	zaiInitDiagnostic     = "z.ai OAuth broker initialization"
+	zaiPollDiagnostic     = "z.ai OAuth authorization polling"
+	zaiBusinessDiagnostic = "z.ai OAuth business token exchange"
+)
 
 // zaiFamily identifies which Coding Plan family a login targets.
 type zaiFamily string
@@ -242,7 +248,10 @@ func loginZai(ctx context.Context, cfg *zaiFlowConfig) (*Tokens, error) {
 // business exchange. It returns both credentials or an error; it never returns
 // a partially-usable token set, because holding an OAuth token the business
 // APIs reject is worse than holding none (it would look authenticated).
-func loginZaiFamily(ctx context.Context, family zaiFamily, cfg *zaiFlowConfig) (*Tokens, error) {
+func loginZaiFamily(ctx context.Context, family zaiFamily, cfg *zaiFlowConfig) (result *Tokens, retErr error) {
+	var secrets []string
+	defer func() { retErr = requireZaiOAuth(retErr, secrets) }()
+
 	ctx, cancel := context.WithTimeout(ctx, cfg.flowTimeout())
 	defer cancel()
 
@@ -255,10 +264,12 @@ func loginZaiFamily(ctx context.Context, family zaiFamily, cfg *zaiFlowConfig) (
 		}
 	}
 
+	secrets = append(secrets, pollToken)
 	ready, err := zaiStartFlow(ctx, cfg, family, pollToken)
 	if err != nil {
 		return nil, err
 	}
+	secrets = append(secrets, zaiPendingFlowSecrets(ready)...)
 
 	// Surface the URL BEFORE polling: the user needs it now, and the poll may
 	// run for minutes. The host may also open it in a browser.
@@ -268,6 +279,9 @@ func loginZaiFamily(ctx context.Context, family zaiFamily, cfg *zaiFlowConfig) (
 	}
 
 	outcome, err := zaiPollUntilReady(ctx, cfg, ready, pollToken)
+	if outcome != nil {
+		secrets = append(secrets, outcome.OAuthToken, outcome.ZcodeJWT)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -322,12 +336,12 @@ func zaiStartFlow(ctx context.Context, cfg *zaiFlowConfig, family zaiFamily, pol
 	body, _ := json.Marshal(map[string]string{"provider": family.Name()})
 	req, err := http.NewRequestWithContext(ctx, "POST", cfg.brokerURL()+"/oauth/cli/init", strings.NewReader(string(body)))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: create request: %w", zaiInitDiagnostic, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+pollToken)
 
-	data, err := zaiRequest(ctx, cfg, req, "z.ai oauth init")
+	data, err := zaiRequest(ctx, cfg, req, zaiInitDiagnostic)
 	if err != nil {
 		return nil, err
 	}
@@ -335,11 +349,11 @@ func zaiStartFlow(ctx context.Context, cfg *zaiFlowConfig, family zaiFamily, pol
 		Data zaiInitData `json:"data"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, fmt.Errorf("z.ai oauth init: parse response: %w", err)
+		return nil, fmt.Errorf("%s: parse response: %w", zaiInitDiagnostic, err)
 	}
 	init := env.Data
 	if init.FlowID == "" || init.AuthorizeURL == "" {
-		return nil, fmt.Errorf("z.ai oauth init: response missing flow_id/authorize_url")
+		return nil, fmt.Errorf("%s: response missing flow_id/authorize_url", zaiInitDiagnostic)
 	}
 	return &zaiPendingFlow{
 		AuthorizeURL: init.AuthorizeURL,
@@ -372,7 +386,7 @@ func zaiPollUntilReady(ctx context.Context, cfg *zaiFlowConfig, init *zaiPending
 		}
 
 		if flowExpired(init) {
-			return nil, fmt.Errorf("z.ai oauth: the login request expired before it was approved — start again with /login:zai:oauth")
+			return nil, fmt.Errorf("%s: the login request expired before it was approved — start again with /login:zai:oauth", zaiPollDiagnostic)
 		}
 
 		outcome, err := zaiPollOnce(ctx, cfg, init.FlowID, pollToken)
@@ -401,17 +415,17 @@ func zaiPollDecision(outcome *zaiPollOutcome) (bool, error) {
 	case "pending":
 		return false, nil
 	case "failed":
-		return false, fmt.Errorf("z.ai oauth: authorization failed in the browser")
+		return false, fmt.Errorf("%s: authorization failed in the browser", zaiPollDiagnostic)
 	case "ready":
 		if outcome.OAuthToken == "" {
-			return false, fmt.Errorf("z.ai oauth: ready response missing the family access token")
+			return false, fmt.Errorf("%s: ready response missing the family access token", zaiPollDiagnostic)
 		}
 		if outcome.ZcodeJWT == "" {
-			return false, fmt.Errorf("z.ai oauth: ready response missing the zcode JWT")
+			return false, fmt.Errorf("%s: ready response missing the zcode JWT", zaiPollDiagnostic)
 		}
 		return true, nil
 	default:
-		return false, fmt.Errorf("z.ai oauth: unknown poll status %q", outcome.status)
+		return false, fmt.Errorf("%s: unknown poll status %q", zaiPollDiagnostic, outcome.status)
 	}
 }
 
@@ -428,9 +442,9 @@ func flowExpired(init *zaiPendingFlow) bool {
 func ctxErr(ctx context.Context) error {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return fmt.Errorf("z.ai oauth: timed out waiting for browser authorization")
+		return fmt.Errorf("%s: timed out waiting for browser authorization", zaiPollDiagnostic)
 	case ctx.Err() != nil:
-		return fmt.Errorf("z.ai oauth: cancelled")
+		return fmt.Errorf("%s: cancelled", zaiPollDiagnostic)
 	default:
 		return nil
 	}
@@ -451,11 +465,11 @@ type zaiPollOutcome struct {
 func zaiPollOnce(ctx context.Context, cfg *zaiFlowConfig, flowID, pollToken string) (*zaiPollOutcome, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", cfg.brokerURL()+"/oauth/cli/poll/"+url.PathEscape(flowID), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: create request: %w", zaiPollDiagnostic, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+pollToken)
 
-	data, err := zaiRequest(ctx, cfg, req, "z.ai oauth poll")
+	data, err := zaiRequest(ctx, cfg, req, zaiPollDiagnostic)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +496,7 @@ func zaiPollOnce(ctx context.Context, cfg *zaiFlowConfig, flowID, pollToken stri
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, fmt.Errorf("z.ai oauth poll: parse response: %w", err)
+		return nil, fmt.Errorf("%s: parse response: %w", zaiPollDiagnostic, err)
 	}
 	out := &zaiPollOutcome{
 		status:    env.Data.Status,
@@ -503,22 +517,23 @@ func zaiPollOnce(ctx context.Context, cfg *zaiFlowConfig, flowID, pollToken stri
 }
 
 // zaiExchangeBusinessToken trades the OAuth access token for the business token
-// the business APIs accept. Every failure collapses to ErrZaiOAuthRequired: the
-// caller must not be able to mistake a denied exchange for a usable login.
+// the business APIs accept. Its detailed cause crosses the public flow boundary
+// through requireZaiOAuth, which adds ErrZaiOAuthRequired without exposing the
+// request token or an unsanitized server/transport message.
 func zaiExchangeBusinessToken(ctx context.Context, cfg *zaiFlowConfig, family zaiFamily, oauthToken string) (string, error) {
 	if strings.TrimSpace(oauthToken) == "" {
-		return "", ErrZaiOAuthRequired
+		return "", fmt.Errorf("%s: OAuth access token is missing", zaiBusinessDiagnostic)
 	}
 	body, _ := json.Marshal(map[string]string{"token": oauthToken})
 	req, err := http.NewRequestWithContext(ctx, "POST", cfg.businessURL(family), strings.NewReader(string(body)))
 	if err != nil {
-		return "", ErrZaiOAuthRequired
+		return "", fmt.Errorf("%s: create request: %w", zaiBusinessDiagnostic, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	data, err := zaiRequest(ctx, cfg, req, "z.ai business login")
+	data, err := zaiRequest(ctx, cfg, req, zaiBusinessDiagnostic)
 	if err != nil {
-		return "", ErrZaiOAuthRequired
+		return "", err
 	}
 	var env struct {
 		Code    *int   `json:"code"`
@@ -530,17 +545,21 @@ func zaiExchangeBusinessToken(ctx context.Context, cfg *zaiFlowConfig, family za
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
-		return "", ErrZaiOAuthRequired
+		return "", fmt.Errorf("%s: parse response: %w", zaiBusinessDiagnostic, err)
 	}
 	if !zaiBusinessCodeOK(env.Code) || (env.Success != nil && !*env.Success) {
-		return "", ErrZaiOAuthRequired
+		msg := strings.TrimSpace(env.Msg)
+		if msg == "" {
+			msg = "server rejected the OAuth grant"
+		}
+		return "", fmt.Errorf("%s: %s", zaiBusinessDiagnostic, msg)
 	}
 	token := strings.TrimSpace(env.Data.AccessToken)
 	if token == "" {
 		token = strings.TrimSpace(env.Data.CamelToken)
 	}
 	if token == "" {
-		return "", ErrZaiOAuthRequired
+		return "", fmt.Errorf("%s: response missing the business access token", zaiBusinessDiagnostic)
 	}
 	return token, nil
 }

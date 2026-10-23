@@ -43,6 +43,9 @@ type zaiStub struct {
 	expiresIn int
 	// businessCode forces a non-zero business code on the business login.
 	businessCode int
+	// family selects the provider token key returned by the ready response.
+	// Empty preserves the original z.ai stub behavior.
+	family string
 }
 
 func newZaiStub(t *testing.T) *zaiStub {
@@ -106,7 +109,12 @@ func (s *zaiStub) serveBroker() {
 }
 
 // familyKey is the provider discriminator this stub answers for.
-func (s *zaiStub) familyKey() string { return "zai" }
+func (s *zaiStub) familyKey() string {
+	if s.family != "" {
+		return s.family
+	}
+	return "zai"
+}
 
 // serveBusiness routes the Z.AI business login to a valid access_token.
 func (s *zaiStub) serveBusiness() {
@@ -258,9 +266,7 @@ func TestZaiLogin_BusinessLoginDeniedFails(t *testing.T) {
 	if err == nil {
 		t.Fatalf("loginZai succeeded with a denied business exchange: %+v", tokens)
 	}
-	if !strings.Contains(err.Error(), "zai_oauth_required") {
-		t.Errorf("error = %v, want the zai_oauth_required sentinel", err)
-	}
+	assertZaiOAuthDiagnostic(t, err, []string{"business token exchange", "denied"}, nil)
 }
 
 // TestZaiLogin_ExpiresInCarried pins the expiry mapping: expires_in is seconds

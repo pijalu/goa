@@ -72,49 +72,18 @@ Until then the item stays open: it is the only entry in this file.
    cells, so the cells-plane golden is the pin).
 3. If dropped: config migration note + `config_tail`/completion entries removed.
 
-## B31 — z.ai OAuth failure exposes only `zai_oauth_required`
-
-**Reported**: `⚡ OAuth login for zai failed: oauth flow: zai_oauth_required`.
-
-**Observed**: `internal/agentic/provider/oauth/zai.go` deliberately collapses
-every z.ai login failure to `ErrZaiOAuthRequired`, a stable sentinel intended
-for credential-resolution control flow. `core/commands/login.go` wraps the
-flow error and displays it directly through the asynchronous login flash.
-That explains the reported text, but the user's initiating broker/poll/business
-failure has not yet been reproduced. The current message discards the
-actionable stage and underlying cause.
-
-**Expected**: a failed z.ai OAuth login must report an actionable, sanitized
-reason (for example broker initialization, authorization polling, or business
-token exchange) while preserving `errors.Is(err, ErrZaiOAuthRequired)` for
-programmatic callers. A successful login must still mint and store both
-required credentials. The internal sentinel must not be the only user-facing
-diagnostic; no token, poll credential, or authorization URL secret may appear
-in logs or errors.
-
-**Reproduction / fix plan**
-
-1. Replay broker-init, broker-poll, and business-exchange failures through the
-   existing httptest z.ai flow harness. Identify where the original error is
-   collapsed and which stage can produce the reported login failure.
-2. Preserve the sentinel's control-flow contract while retaining or wrapping
-   the underlying sanitized cause at the OAuth layer. Do not remove the
-   sentinel, weaken quota credential resolution, or add message-text sniffing
-   in the TUI. Update this plan if the reproduction instead identifies a
-   protocol or endpoint defect.
-3. Add regression tests that fail with the current raw-only diagnostic, then
-   verify each failure stage retains a useful cause and
-   `errors.Is(err, ErrZaiOAuthRequired)` remains true. Cover z.ai and BigModel,
-   transport errors, denied responses, malformed responses, cancellation, and
-   the existing successful two-credential exchange.
-4. Add a `LoginCommand` asynchronous filmstrip test proving the actual visible
-   flash contains the actionable error rather than only the raw sentinel;
-   verify the engine remains responsive and no secret is rendered.
-5. Run `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
-   `gocyclo -over 12 .`, and `go test -count=1 -race -cover ./...` separately.
-   Archive the evidence and commit the completed fix.
-
 ## Closed
+
+Closed 2026-10-23 — B31, z.ai business-exchange failures discarded their cause
+and exposed only `zai_oauth_required`. Broker initialization, authorization
+polling, business exchange, transport, malformed-response, denial, and
+cancellation paths now retain sanitized actionable diagnostics while
+`errors.Is(err, ErrZaiOAuthRequired)` remains true. Poll/OAuth/zcode credentials
+and authorization-URL secrets are redacted. z.ai and BigModel success still mint
+both credentials, the existing auth-store persistence test passes, and an
+asynchronous visible-terminal filmstrip proves the actionable flash and a
+responsive engine. See
+[`docs/archive/b31-zai-oauth-diagnostics.2026-10-23.md`](docs/archive/b31-zai-oauth-diagnostics.2026-10-23.md).
 
 Closed 2026-10-23 — B30, the reported low cache ratios reflected rapid
 append-only growth, not cache-key churn or eviction. Ten completed requests
