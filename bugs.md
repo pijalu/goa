@@ -72,55 +72,6 @@ Until then the item stays open: it is the only entry in this file.
    cells, so the cells-plane golden is the pin).
 3. If dropped: config migration note + `config_tail`/completion entries removed.
 
-## B30 — Exported session shows low per-request cache ratios amid rapid context growth
-
-**Observed**: export `.goa/exports/goa-export-20261023-210438.zip` was reported
-as having a very low cache ratio. Its ten completed requests have current-
-request hit ratios from 30.7% to 92.4% after the expected cold start, but
-`cache_read` rises monotonically and adjacent-request reuse is 98.65%–100%.
-There are 687,616 cached prompt tokens versus 184,108 fresh prompt tokens
-(78.9% weighted reuse), and `logs/cache_miss_requests.json` is empty. Thus the
-export does not presently demonstrate cache-key churn or eviction. It does
-show substantial growth: 53 tool results contribute 578,751 characters
-(approximately 144,687 tokens), including individual results of 51,419,
-33,599, 30,874, 24,987, and 22,402 characters. Request bodies in the retained
-HTTP log are truncated, so they cannot prove adjacent requests byte-identical.
-
-**Expected**: append-only turns reuse the largest stable provider prefix. Cache
-reporting must distinguish current-request hit ratio from previous-prompt
-reuse, and context growth should not be dominated by avoidable unbounded tool
-output. A low current-request ratio alone must not be treated as a cache-bust
-bug.
-
-**Investigation / optimization plan**
-
-1. Re-run `tooling/session_cache_report.py --full` and
-   `tooling/session_growth_report.py` against the extracted session; correlate
-   the request totals with retained trace events and cache-miss diagnostics.
-2. Inspect the lifecycle of each large tool result, including output limits,
-   persistence, replay, and compression. Determine whether Goa sent avoidable
-   full output where its tool contract promised bounded output, or whether the
-   model explicitly requested broad output.
-3. Inspect cache/session identifiers and request construction only as far as
-   the retained evidence permits. Do not infer a cache-identity defect from a
-   low ratio or from unavailable request bodies.
-4. If a concrete output-bound or replay defect is found, add it to the fix plan
-   before editing, implement the root-cause fix, and add a regression test that
-   fails before the change. If only usage-driven growth is found, close the
-   cache-bust hypothesis with measurements and log any separate actionable
-   optimization rather than weakening useful tool results speculatively.
-
-**Test / validation approach**
-
-1. Preserve the export measurements and before/after token-growth evidence in
-   the archived investigation. Keep the source ZIP unchanged.
-2. For any code fix, test the exact tool-output or request-construction path,
-   including boundary and error cases; verify that valid content is not lost
-   and that conversation history remains append-only outside compression.
-3. Run `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
-   `gocyclo -over 12 .`, and `go test -count=1 -race -cover ./...` separately
-   after any code change.
-
 ## B31 — z.ai OAuth failure exposes only `zai_oauth_required`
 
 **Reported**: `⚡ OAuth login for zai failed: oauth flow: zai_oauth_required`.
@@ -164,6 +115,20 @@ in logs or errors.
    Archive the evidence and commit the completed fix.
 
 ## Closed
+
+Closed 2026-10-23 — B30, the reported low cache ratios reflected rapid
+append-only growth, not cache-key churn or eviction. Ten completed requests
+reused 98.65%–100.00% of the previous prompt and reached 687,616 cached versus
+184,108 fresh prompt tokens (78.88% weighted reuse), with an empty cache-miss
+journal, no bust/shrink flags or compaction, and no evidence of duplicate
+result replay. The 53 unique tool results account for 578,751 characters;
+large outputs were bounded or explicitly broad, with no exact repeated reads
+to deduplicate. The cache
+report now distinguishes current-request hits from previous-prompt reuse and
+prints weighted session reuse, with test-first regression coverage and all
+applicable repository gates run. No production tool or history code changed.
+See
+[`docs/archive/b30-cache-export-context-growth.2026-10-23.md`](docs/archive/b30-cache-export-context-growth.2026-10-23.md).
 
 Closed 2026-10-23 — B29, the reported multi-tool
 `elapsed / waiting / elapsed / elapsed` sequence was accurate concurrency state,

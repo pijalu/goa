@@ -18,6 +18,11 @@ internal/agentic/provider/cache_forensics.go):
           request by more than `shrink_tol` tokens — evidence of an in-place
           history rewrite (compaction / elision / injection).
 
+The hit% column is cache_read / this request's total prompt. prev_prompt%
+is cache_read / the immediately previous request's total prompt; it exposes
+healthy prefix reuse during rapid context growth, but is not byte-equality
+proof. The final summary weights cache reuse by prompt tokens, not requests.
+
 Usage:
     python3 tooling/session_cache_report.py SESSION.jsonl [--full]
                                           [--shrink-tol N] [--bust-tol N]
@@ -115,16 +120,22 @@ def main(argv=None):
 
     print(f"# {args.session}")
     print(f"# {len(requests)} requests with token_stats")
-    hdr = f"{'seq':>4} {'line':>6} {'prompt_n':>9} {'cache_read':>10} {'hit%':>6} {'pred':>6}  flags"
+    hdr = f"{'seq':>4} {'line':>6} {'prompt_n':>9} {'cache_read':>10} {'hit%':>6} {'prev_prompt%':>12} {'pred':>6}  flags"
     print(hdr)
     print("-" * len(hdr))
 
     flagged = 0
     prev_cache = None
     prev_total = None
+    total_fresh = 0
+    total_cached = 0
     for r in requests:
         total = r["prompt_n"] + r["cache_read"]
+        total_fresh += r["prompt_n"]
+        total_cached += r["cache_read"]
         hit = 100.0 * r["cache_read"] / total if total else 0.0
+        prev_reuse = 100.0 * r["cache_read"] / prev_total if prev_total else None
+        prev_reuse_str = f"{prev_reuse:.1f}%" if prev_reuse is not None else "-"
         flags = []
         if prev_cache is not None:
             if r["cache_read"] == 0:
@@ -145,10 +156,16 @@ def main(argv=None):
             note_str = f"  <- {note[0]}:{note[1]}" if note else ""
             print(
                 f"{r['seq']:>4} {r['line']:>6} {r['prompt_n']:>9} "
-                f"{r['cache_read']:>10} {hit:>5.1f}% {r['predicted']:>6}  "
+                f"{r['cache_read']:>10} {hit:>5.1f}% {prev_reuse_str:>12} {r['predicted']:>6}  "
                 f"{'; '.join(flags)}{note_str}"
             )
     print(f"# {flagged} rows shown (of {len(requests)})")
+    prompt_total = total_fresh + total_cached
+    weighted_reuse = 100.0 * total_cached / prompt_total if prompt_total else 0.0
+    print(
+        f"# weighted cache reuse: {weighted_reuse:.1f}% "
+        f"({total_cached} cached / {prompt_total} prompt tokens; {total_fresh} fresh)"
+    )
     return 0
 
 

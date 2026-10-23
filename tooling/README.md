@@ -17,7 +17,15 @@ python3 tooling/session_cache_report.py /path/to/.goa/sessions/<id>.jsonl [--ful
 
 Columns: `seq`, session-file `line`, `prompt_n` (uncached prompt tokens the
 provider processed fresh), `cache_read` (tokens served from the provider
-prefix cache), `hit%`, `pred` (predicted/output tokens).
+prefix cache), `hit%` (`cache_read / current total prompt`), `prev_prompt%`
+(`cache_read / previous request's total prompt`), and `pred` (predicted/output
+tokens). `prev_prompt%` is `-` when there is no non-empty previous prompt.
+
+The final `weighted cache reuse` summary is total cached tokens divided by
+total prompt tokens across all requests, including rows hidden without
+`--full`. A low `hit%` alongside high `prev_prompt%` can therefore be healthy
+append-only growth rather than a cache bust. Neither percentage proves request
+byte identity; use the miss journal for that.
 
 Flags:
 

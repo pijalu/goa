@@ -257,9 +257,10 @@ cost feature, not a nicety**:
 Reusable scripts in `tooling/` (see `tooling/README.md`):
 
 - `session_cache_report.py SESSION.jsonl [--full]` — per-request cache
-  timeline; flags `MISS(cold)` / `BUST(-N)` / `SHRINK(N)` / `GROW(+N)`,
-  annotated with the preceding event. Thresholds mirror
-  `cacheBustDropToleranceTokens`.
+  timeline; distinguishes current-request `hit%` from `prev_prompt%` reuse,
+  prints token-weighted session reuse, and flags `MISS(cold)` / `BUST(-N)` /
+  `SHRINK(N)` / `GROW(+N)`, annotated with the preceding event. Thresholds
+  mirror `cacheBustDropToleranceTokens`.
 - `session_growth_report.py SESSION.jsonl [--min-delta N] [--top N]` —
   correlates uncached-`prompt_n` spikes with flanking tool calls/results and
   lists the largest tool results (spot unbounded output).
