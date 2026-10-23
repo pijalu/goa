@@ -135,11 +135,13 @@ func TestFrame_TimerDefersThenRunsAfterDrain(t *testing.T) {
 	defer sch.Stop()
 
 	bridge := NewJSBridge(PluginDef{ID: "prime-fixture"}, ctx)
+
+	// Hold the frame before arming the zero-delay timer: its goroutine may
+	// otherwise run before enterFrame, so the test never establishes its
+	// intended precondition. The tick must defer until this frame drains.
+	leave := bridge.enterFrame()
 	ran := make(chan struct{})
 	sch.SetTimeoutGated(bridge, func() { close(ran) }, 0)
-
-	// Hold a frame so the tick defers, then drain it.
-	leave := bridge.enterFrame()
 	select {
 	case <-ran:
 		leave()
