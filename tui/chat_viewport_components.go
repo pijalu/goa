@@ -276,7 +276,12 @@ func renderGoaPanel(text string, preformatted bool, width int) []string {
 	}
 	var inner []string
 	if preformatted {
-		inner = append(inner, strings.Split(text, "\n")...)
+		// Preserve intentional newlines without markdown parsing, but wrap
+		// overwidth lines before the compositor has to clip them. ansi.Wrap
+		// keeps OSC-8 targets intact across continuation rows.
+		for _, line := range strings.Split(text, "\n") {
+			inner = append(inner, ansi.Wrap(line, innerWidth)...)
+		}
 	} else {
 		renderer := NewMDStreamRenderer(innerWidth, TheTheme)
 		inner = renderer.Render(text)

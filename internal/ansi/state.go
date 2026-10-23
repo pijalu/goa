@@ -113,10 +113,10 @@ func (a *AnsiState) GetActiveCodes() string {
 	if a.ulColor != "" {
 		parts = append(parts, a.ulColor)
 	}
-	if len(parts) == 0 {
-		return ""
+	var sgr string
+	if len(parts) > 0 {
+		sgr = "\x1b[" + strings.Join(parts, ";") + "m"
 	}
-	sgr := "\x1b[" + strings.Join(parts, ";") + "m"
 	if a.hyperlinkURL == "" {
 		return sgr
 	}

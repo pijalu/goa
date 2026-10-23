@@ -330,26 +330,41 @@ func splitAnsiSegments(s string) []ansiSegment {
 	}
 	i := 0
 	for i < len(s) {
-		c := s[i]
-		if c == 0x1b && i+1 < len(s) && s[i+1] == '[' {
-			// CSI: ESC [ ... final byte 0x40-0x7E
-			j := i + 2
-			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7E) {
-				j++
-			}
-			if j < len(s) {
-				j++ // include final byte
+		if s[i] == 0x1b {
+			if end := scanAnsiSequence(s, i); end > 0 {
 				flushLit()
-				segs = append(segs, ansiSegment{text: s[i:j], esc: true})
-				i = j
+				segs = append(segs, ansiSegment{text: s[i:end], esc: true})
+				i = end
 				continue
 			}
 		}
-		lit.WriteByte(c)
+		lit.WriteByte(s[i])
 		i++
 	}
 	flushLit()
 	return segs
+}
+
+// scanAnsiSequence returns the exclusive end of the complete CSI or OSC
+// sequence at start, or zero when start does not begin a complete sequence.
+// OSC targets are protocol bytes even when they contain printable URLs.
+func scanAnsiSequence(s string, start int) int {
+	if start+1 >= len(s) {
+		return 0
+	}
+	switch s[start+1] {
+	case '[':
+		// CSI: ESC [ ... final byte 0x40-0x7E.
+		for end := start + 2; end < len(s); end++ {
+			if s[end] >= 0x40 && s[end] <= 0x7E {
+				return end + 1
+			}
+		}
+	case ']':
+		// OSC: ESC ] ... BEL or ST.
+		return scanOSC(s, start+2)
+	}
+	return 0
 }
 
 // escapeTracker tracks whether we're inside an ANSI escape sequence.
@@ -464,12 +479,19 @@ func (w *lineWrapper) addWideWord(word, preState string) {
 		w.flushLine()
 	}
 	broken := breakLongWord(word, w.width)
+	chunkState := &AnsiState{}
+	updateStateFromSGR(chunkState, preState)
 	for j, bw := range broken {
+		activeBefore := chunkState.GetActiveCodes()
+		updateStateFromSGR(chunkState, bw)
 		if j < len(broken)-1 {
-			w.lines = append(w.lines, preState+bw+Reset)
+			// Close bleeding attributes on this physical row, then restore the
+			// logical state on the next. This keeps hyperlinks off panel borders
+			// and padding without dropping the link from continuation text.
+			w.lines = append(w.lines, activeBefore+bw+Reset+chunkState.GetLineEndReset())
 			continue
 		}
-		w.line.WriteString(preState + bw)
+		w.line.WriteString(activeBefore + bw)
 		w.lineWidth = Width(bw)
 	}
 }
@@ -644,25 +666,26 @@ func scanOSC(s string, start int) int {
 func splitWords(text string) []string {
 	var words []string
 	var cur strings.Builder
-	esc := &escapeTracker{}
-
-	for _, ch := range text {
-		if esc.update(ch) {
-			cur.WriteRune(ch)
+	flush := func() {
+		if cur.Len() > 0 {
+			words = append(words, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, seg := range splitAnsiSegments(text) {
+		if seg.esc {
+			cur.WriteString(seg.text)
 			continue
 		}
-		if ch == ' ' {
-			if cur.Len() > 0 {
-				words = append(words, cur.String())
-				cur.Reset()
+		for _, ch := range seg.text {
+			if ch == ' ' {
+				flush()
+				continue
 			}
-			continue
+			cur.WriteRune(ch)
 		}
-		cur.WriteRune(ch)
 	}
-	if cur.Len() > 0 {
-		words = append(words, cur.String())
-	}
+	flush()
 	return words
 }
 
@@ -672,20 +695,23 @@ func breakLongWord(word string, width int) []string {
 	var chunks []string
 	var chunk strings.Builder
 	cw := 0
-	esc := &escapeTracker{}
-
-	for _, ch := range word {
-		if esc.update(ch) {
-			chunk.WriteRune(ch)
+	for _, seg := range splitAnsiSegments(word) {
+		if seg.esc {
+			chunk.WriteString(seg.text)
 			continue
 		}
-		if cw+1 > width {
-			chunks = append(chunks, chunk.String())
-			chunk.Reset()
-			cw = 0
+		gr := uniseg.NewGraphemes(seg.text)
+		for gr.Next() {
+			cluster := gr.Str()
+			clusterWidth := clusterBaseWidth(cluster)
+			if cw > 0 && cw+clusterWidth > width {
+				chunks = append(chunks, chunk.String())
+				chunk.Reset()
+				cw = 0
+			}
+			chunk.WriteString(cluster)
+			cw += clusterWidth
 		}
-		chunk.WriteRune(ch)
-		cw++
 	}
 	if chunk.Len() > 0 {
 		chunks = append(chunks, chunk.String())

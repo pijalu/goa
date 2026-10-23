@@ -74,6 +74,23 @@ Until then the item stays open: it is the only entry in this file.
 
 ## Closed
 
+Closed 2026-10-23 — B33, z.ai business-token exchange rejected the provider's
+successful `code: 200` response as `Operation successful`, so neither the business
+token nor the broker-issued zcode JWT reached the auth store and quota reported
+`coding_plan_reset_zcode_jwt_required`. Business exchange now accepts its documented
+omitted/0/200 success codes while broker endpoints retain omitted/0. Exact-response
+replays, failure-path tests, managed-credential quota tests, and a production-path
+filmstrip verify both persisted credentials and a success-only notification. See
+[`docs/archive/b33-zai-business-code-200.2026-10-23.md`](docs/archive/b33-zai-business-code-200.2026-10-23.md).
+
+Closed 2026-10-23 — B32, OSC-8 hyperlink targets were counted as visible terminal
+columns and overwidth preformatted panel rows were clipped, hiding the z.ai
+authorization URL. ANSI truncation/wrapping now measures only visible graphemes and
+preserves hyperlink state across rows; login panels wrap long URLs instead of
+clipping them. Unit tests and a live-engine production-path filmstrip verify the
+complete visible URL and successful credential storage. See
+[`docs/archive/b32-zai-oauth-url-wrapping.2026-10-23.md`](docs/archive/b32-zai-oauth-url-wrapping.2026-10-23.md).
+
 Closed 2026-10-23 — B31, z.ai business-exchange failures discarded their cause
 and exposed only `zai_oauth_required`. Broker initialization, authorization
 polling, business exchange, transport, malformed-response, denial, and

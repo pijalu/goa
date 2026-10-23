@@ -187,6 +187,33 @@ func TestZaiLogin_ReturnsBothCredentials(t *testing.T) {
 	}
 }
 
+// TestZaiLogin_BusinessCode200Succeeds replays the business endpoint's HTTP-style
+// success envelope. The shared broker envelope accepts only code 0; the business
+// contract accepts both 0 and 200, and code 200 commonly carries the message
+// "Operation successful". It must not be surfaced as a login failure.
+func TestZaiLogin_BusinessCode200Succeeds(t *testing.T) {
+	s := newZaiStub(t)
+	s.serveBroker()
+	s.business.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeZaiJSON(w, http.StatusOK, map[string]any{
+			"code":    200,
+			"success": true,
+			"msg":     "Operation successful",
+			"data":    map[string]any{"access_token": "business-token-200"},
+		})
+	})
+	cfg := s.config()
+	cfg.notifyURL = func(string) {}
+
+	tokens, err := loginZai(ctxBackground(), cfg)
+	if err != nil {
+		t.Fatalf("loginZai rejected business code 200: %v", err)
+	}
+	if tokens.AccessToken != "business-token-200" || tokens.ZcodeJWT != "zcode-jwt-1" {
+		t.Errorf("tokens = %+v, want business code 200 token and zcode JWT", tokens)
+	}
+}
+
 // TestZaiLogin_PollsUntilReady pins the device-code-style contract: the flow
 // must poll (pending → ready) rather than assume a single answer.
 func TestZaiLogin_PollsUntilReady(t *testing.T) {

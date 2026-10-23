@@ -122,6 +122,37 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
+func TestTruncate_OSC8HyperlinkUsesVisibleText(t *testing.T) {
+	url := "https://chat.z.ai/api/oauth/authorize?state=" + strings.Repeat("s", 80)
+	got := Truncate("│ "+Hyperlink(url, url), 20)
+	want := "│ " + url[:18]
+	if visible := Strip(got); visible != want {
+		t.Errorf("Truncate(long OSC-8 hyperlink) visible text = %q, want %q; raw %q", visible, want, got)
+	}
+}
+
+func TestWrap_LongOSC8Hyperlink(t *testing.T) {
+	url := "https://chat.z.ai/api/oauth/authorize?client_id=public-client&state=" + strings.Repeat("s", 80)
+	lines := Wrap(Hyperlink(url, url), 40)
+	if len(lines) < 2 {
+		t.Fatalf("Wrap(long hyperlink) returned %d line, want wrapped rows", len(lines))
+	}
+	if got := Strip(strings.Join(lines, "")); got != url {
+		t.Errorf("wrapped hyperlink visible text = %q, want original URL %q", got, url)
+	}
+	for i, line := range lines {
+		if width := Width(line); width > 40 {
+			t.Errorf("line %d width = %d, want <= 40: %q", i, width, line)
+		}
+		if !strings.Contains(line, "\x1b]8;;\x07") {
+			t.Errorf("line %d does not close its hyperlink: %q", i, line)
+		}
+		if i > 0 && !strings.Contains(line, "\x1b]8;;"+url+"\x07") {
+			t.Errorf("line %d does not reopen the hyperlink: %q", i, line)
+		}
+	}
+}
+
 func TestWrap(t *testing.T) {
 	tests := []struct {
 		name  string

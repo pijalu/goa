@@ -531,7 +531,7 @@ func zaiExchangeBusinessToken(ctx context.Context, cfg *zaiFlowConfig, family za
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	data, err := zaiRequest(ctx, cfg, req, zaiBusinessDiagnostic)
+	data, err := zaiRequestWithCodePolicy(ctx, cfg, req, zaiBusinessDiagnostic, zaiBusinessCodeOK)
 	if err != nil {
 		return "", err
 	}
@@ -564,9 +564,9 @@ func zaiExchangeBusinessToken(ctx context.Context, cfg *zaiFlowConfig, family za
 	return token, nil
 }
 
-// zaiBusinessCodeOK accepts the business envelope's success convention. The
-// endpoint is inconsistent about sending `code` at all, so ABSENT is success
-// and only an explicit non-zero (or false) is failure.
+// zaiBusinessCodeOK accepts the business envelope's success convention: code
+// 0, HTTP-style code 200, or an omitted code. The success field is checked
+// separately by the exchange parser.
 func zaiBusinessCodeOK(code *int) bool {
 	if code == nil {
 		return true
@@ -574,9 +574,21 @@ func zaiBusinessCodeOK(code *int) bool {
 	return *code == 0 || *code == 200
 }
 
-// zaiRequest performs one JSON request and unwraps the {code,msg,data}
-// envelope, surfacing the server's message on a business error.
+// zaiRequest performs one broker JSON request. Broker success is code 0 (or an
+// omitted code, preserved for compatibility); unlike the business endpoint, it
+// must not treat code 200 as success.
 func zaiRequest(ctx context.Context, cfg *zaiFlowConfig, req *http.Request, what string) ([]byte, error) {
+	return zaiRequestWithCodePolicy(ctx, cfg, req, what, func(code *int) bool {
+		return code == nil || *code == 0
+	})
+}
+
+// zaiRequestWithCodePolicy performs one JSON request and applies the endpoint's
+// own business-code convention. HTTP success and JSON validity are shared, but
+// code classification cannot be: the business login accepts 0 and 200 while the
+// broker accepts only 0. Keeping the policy at this boundary prevents a valid
+// business response from being rejected before its parser sees it.
+func zaiRequestWithCodePolicy(ctx context.Context, cfg *zaiFlowConfig, req *http.Request, what string, codeOK func(*int) bool) ([]byte, error) {
 	resp, err := cfg.httpDoer()(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -597,10 +609,13 @@ func zaiRequest(ctx context.Context, cfg *zaiFlowConfig, req *http.Request, what
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, fmt.Errorf("%s: invalid response envelope", what)
 	}
-	if env.Code != nil && *env.Code != 0 {
+	if !codeOK(env.Code) {
 		msg := strings.TrimSpace(env.Msg)
-		if msg == "" {
+		if msg == "" && env.Code != nil {
 			msg = fmt.Sprintf("business error %d", *env.Code)
+		}
+		if msg == "" {
+			msg = "server rejected the request"
 		}
 		return nil, fmt.Errorf("%s: %s", what, msg)
 	}
