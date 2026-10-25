@@ -536,6 +536,66 @@ models:
       input: 1.2e-06
       output: 4e-06
     input_types: [text, image]
+  # Start Plan (free tier) — the model set ZCode ships for both families
+  # (zcode-builtin.json providerRules "account:*-start-plan" builtinModelIds:
+  # GLM-5.3-Flash, GLM-5.2, GLM-5-Turbo). Cost stays unset: Start Plan is
+  # quota-based, not metered per token. The zcode-plan runtime serves the
+  # same GLM stack, so windows match the zai entries (5-Turbo's output cap
+  # follows ZCode's modelRules maxOutputTokens).
+  - id: "glm-5.3-flash"
+    provider: zai-start-plan
+    api: openai-completions
+    name: "GLM-5.3-Flash (Start Plan)"
+    reasoning: true
+    context_window: 204800
+    max_tokens: 131072
+    thinking_format: zai
+    input_types: [text]
+  - id: "glm-5.2"
+    provider: zai-start-plan
+    api: openai-completions
+    name: "GLM-5.2 (Start Plan)"
+    reasoning: true
+    context_window: 1000000
+    max_tokens: 131072
+    thinking_format: zai
+    input_types: [text]
+  - id: "glm-5-turbo"
+    provider: zai-start-plan
+    api: openai-completions
+    name: "GLM-5-Turbo (Start Plan)"
+    reasoning: true
+    context_window: 200000
+    max_tokens: 64000
+    thinking_format: zai
+    input_types: [text]
+  - id: "glm-5.3-flash"
+    provider: bigmodel-start-plan
+    api: openai-completions
+    name: "GLM-5.3-Flash (Start Plan)"
+    reasoning: true
+    context_window: 204800
+    max_tokens: 131072
+    thinking_format: zai
+    input_types: [text]
+  - id: "glm-5.2"
+    provider: bigmodel-start-plan
+    api: openai-completions
+    name: "GLM-5.2 (Start Plan)"
+    reasoning: true
+    context_window: 1000000
+    max_tokens: 131072
+    thinking_format: zai
+    input_types: [text]
+  - id: "glm-5-turbo"
+    provider: bigmodel-start-plan
+    api: openai-completions
+    name: "GLM-5-Turbo (Start Plan)"
+    reasoning: true
+    context_window: 200000
+    max_tokens: 64000
+    thinking_format: zai
+    input_types: [text]
   - id: "qwen/qwen3.5-9b"
     provider: custom
     api: openai-completions

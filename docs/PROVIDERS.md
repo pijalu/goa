@@ -223,6 +223,27 @@ Providers without a curated entry fall back to `{PROVIDER_UPPER_SNAKE}_API_KEY`
 (e.g. `TENSORX_API_KEY`); the full list is whatever `models/api.json` declares,
 surfaced by `/login` and by the argument completions.
 
+### Z.ai / BigModel Start Plan (free GLM tier)
+
+The Start Plan providers (`zai-start-plan`, `bigmodel-start-plan`) are the free
+GLM tier served by the zcode plan backend. They ship three models
+(GLM-5.3-Flash, GLM-5.2, GLM-5-Turbo) and are quota-based: usage draws down a
+bundled allowance instead of a bill.
+
+- **Sign in**: `/login:zai:oauth` or `/login:bigmodel:oauth` (aliases
+  `z.ai-start-plan` / `bigmodel-start-plan`). This stores the zcode JWT the
+  runtime and the quota surface both use. A config `api_key` or the
+  `ZAI_START_PLAN_API_KEY` / `BIGMODEL_START_PLAN_API_KEY` environment
+  variables also authenticate inference.
+- **Select**: `/provider zai-start-plan` (or set the provider in config.yaml).
+- **Quota**: `/quota` shows a Start Plan row per family with the per-model
+  buckets; the status-bar segment shows the active family's usage.
+- **Device identity**: goa mints one `deviceMid` per install (shared by the
+  runtime and plugins) and sends it as `X-Device-Mid` — the plan backend
+  rejects balance and inference calls without it.
+- **Endpoint overrides**: `GOA_ZCODE_API_URL` (default
+  `https://zcode.z.ai/api/v1`) and `GOA_ZCODE_APP_VERSION` (default `0.0.0`).
+
 ### When no credential exists
 
 A request that cannot be authenticated fails **before** it is sent, naming the

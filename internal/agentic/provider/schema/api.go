@@ -26,30 +26,39 @@ const (
 type Provider string
 
 const (
-	ProviderOpenAI      Provider = "openai"
-	ProviderAnthropic   Provider = "anthropic"
-	ProviderGoogle      Provider = "google"
-	ProviderMistral     Provider = "mistral"
-	ProviderAWS         Provider = "aws"
-	ProviderAzure       Provider = "azure"
-	ProviderGitHub      Provider = "github"
-	ProviderTogether    Provider = "together"
-	ProviderFireworks   Provider = "fireworks"
-	ProviderGroq        Provider = "groq"
-	ProviderPerplexity  Provider = "perplexity"
-	ProviderDeepSeek    Provider = "deepseek"
-	ProviderOpenRouter  Provider = "openrouter"
-	ProviderLMStudio    Provider = "lm-studio"
-	ProviderOllama      Provider = "ollama"
-	ProviderKimi        Provider = "kimi"
-	ProviderKimiCode    Provider = "kimi-code"
-	ProviderZai         Provider = "zai"
-	ProviderZaiApi      Provider = "zai-api"
-	ProviderOpenCode    Provider = "opencode"
-	ProviderOpenCodeGo  Provider = "opencode-go"
-	ProviderOpenAICodex Provider = "openai-codex"
-	ProviderPoolside    Provider = "poolside"
-	ProviderCustom      Provider = "custom"
+	ProviderOpenAI     Provider = "openai"
+	ProviderAnthropic  Provider = "anthropic"
+	ProviderGoogle     Provider = "google"
+	ProviderMistral    Provider = "mistral"
+	ProviderAWS        Provider = "aws"
+	ProviderAzure      Provider = "azure"
+	ProviderGitHub     Provider = "github"
+	ProviderTogether   Provider = "together"
+	ProviderFireworks  Provider = "fireworks"
+	ProviderGroq       Provider = "groq"
+	ProviderPerplexity Provider = "perplexity"
+	ProviderDeepSeek   Provider = "deepseek"
+	ProviderOpenRouter Provider = "openrouter"
+	ProviderLMStudio   Provider = "lm-studio"
+	ProviderOllama     Provider = "ollama"
+	ProviderKimi       Provider = "kimi"
+	ProviderKimiCode   Provider = "kimi-code"
+	ProviderZai        Provider = "zai"
+	ProviderZaiApi     Provider = "zai-api"
+	// ProviderZaiStartPlan / ProviderBigModelStartPlan are the ZCode-parity
+	// Start Plan identities: free-tier GLM access proxied by the zcode-plan
+	// backend, authenticated with the zcode JWT minted by the z.ai / BigModel
+	// OAuth login (see internal/agentic/provider/oauth/zai.go and
+	// internal/agentic/provider/startplan). Both are independent of the paid
+	// Coding Plan connections: entitlement comes from billing/balance, never
+	// from the paid plan's quota.
+	ProviderZaiStartPlan      Provider = "zai-start-plan"
+	ProviderBigModelStartPlan Provider = "bigmodel-start-plan"
+	ProviderOpenCode          Provider = "opencode"
+	ProviderOpenCodeGo        Provider = "opencode-go"
+	ProviderOpenAICodex       Provider = "openai-codex"
+	ProviderPoolside          Provider = "poolside"
+	ProviderCustom            Provider = "custom"
 	// ProviderVercel is the Vercel AI Gateway: an OpenAI-compatible gateway in
 	// front of many vendors' models, addressed with vendor-namespaced model ids
 	// (e.g. "stealth/pixel-canary").

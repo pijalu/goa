@@ -15,6 +15,7 @@ import (
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal/agentic"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/agentic/provider/startplan"
 	authstore "github.com/pijalu/goa/internal/auth"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/plugins"
@@ -219,6 +220,9 @@ func (rt *pluginRuntime) extendedContext(s *subsystems) *plugins.ExtendContext {
 		SegmentColor: pluginSegmentColor,
 		OAuthToken: func(ctx context.Context, provider string) (map[string]any, error) {
 			return pluginOAuthToken(ctx, s.authStore, provider)
+		},
+		DeviceMid: func() string {
+			return startplan.DeviceMid()
 		},
 	}
 }

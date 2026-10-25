@@ -38,6 +38,12 @@ type ExtendContext struct {
 	// OAuthToken returns an opaque, Goa-managed OAuth access token. Plugins do
 	// not receive refresh tokens or direct access to the credential store.
 	OAuthToken func(ctx context.Context, provider string) (map[string]any, error)
+	// DeviceMid returns the persistent per-install device identity the zcode
+	// plan backend requires as X-Device-Mid. Plugins do not read the state
+	// file themselves: one identity is minted per install and shared by the
+	// runtime and every plugin, so the backend sees ONE device per goa.
+	// Nil disables goa.auth.deviceMid().
+	DeviceMid func() string
 }
 
 // setupExtendedGlobals wires the optional goa.* APIs onto the goa object.
@@ -84,6 +90,16 @@ func (b *JSBridge) setupOAuth(goaObj *goja.Object, tokenFn func(context.Context,
 		}
 		return b.vm.ToValue(result)
 	})
+	if midFn := b.ctx.Extended.DeviceMid; midFn != nil {
+		authObj.Set("deviceMid", func(call goja.FunctionCall) goja.Value {
+			// The device identity accompanies credential use on the plan
+			// backend (X-Device-Mid), so it rides the same capability gate.
+			if !b.hasPermission("oauth-token") {
+				return b.vm.ToValue("")
+			}
+			return b.vm.ToValue(midFn())
+		})
+	}
 	goaObj.Set("auth", authObj)
 }
 

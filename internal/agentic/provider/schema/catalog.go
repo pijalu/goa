@@ -473,6 +473,44 @@ var providerCatalog = []ProviderDef{
 		DefaultContextWindow: zaiContextWindowFloor,
 	},
 	{
+		// Z.ai Start Plan (ZCode parity): the free tier served by zcode's own
+		// plan backend. The runtime is the zcode-plan OpenAI-compatible proxy
+		// ({origin}/api/v1/zcode-plan), NOT api.z.ai: chat requests carry the
+		// zcode JWT from /login:zai:oauth as the Bearer credential plus the
+		// X-Device-Mid device header, and the servable model set is gated by
+		// billing/balance entitlements (internal/agentic/provider/startplan),
+		// not by this catalog's static list. Compat mirrors the z.ai entries
+		// because the proxy forwards to the same GLM serving stack. No peak
+		// windows: the free tier prices nothing.
+		ID: "zai-start-plan", Name: "Z.ai Start Plan", Provider: ProviderZaiStartPlan,
+		API: ApiOpenAICompletions, BaseURL: "https://zcode.z.ai/api/v1/zcode-plan",
+		DefaultModel: "glm-5.3-flash", EnvKeys: []string{"ZAI_START_PLAN_API_KEY"},
+		URLPatterns: []string{"zcode.z.ai/api/v1/zcode-plan"},
+		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true, ToolStream: true, OmitsStreamTerminator: true},
+		// Same prompt-cache affinity rationale as the z.ai family (long
+		// retention sends prompt_cache_key so GLM prefix-cache hits do not
+		// depend on content-keyed routing).
+		DefaultCacheRetention: CacheRetentionLong,
+		// Same silent-overflow floor as the z.ai family: the plan backend
+		// serves the same GLM stack that accepts over-window requests
+		// without raising a context-length error.
+		DefaultContextWindow: zaiContextWindowFloor,
+	},
+	{
+		// BigModel (CN) Start Plan: same zcode-plan runtime and credential
+		// shape as zai-start-plan, but the zcode JWT comes from
+		// /login:bigmodel:oauth and is a DIFFERENT identity — the plan backend
+		// validates the token against the account's family, so the two are
+		// deliberately not interchangeable (see the OAuth flow's family docs).
+		ID: "bigmodel-start-plan", Name: "BigModel Start Plan", Provider: ProviderBigModelStartPlan,
+		API: ApiOpenAICompletions, BaseURL: "https://zcode.z.ai/api/v1/zcode-plan",
+		DefaultModel: "glm-5.3-flash", EnvKeys: []string{"BIGMODEL_START_PLAN_API_KEY"},
+		URLPatterns:           []string{"zcode.z.ai/api/v1/zcode-plan"},
+		Compat:                ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true, ToolStream: true, OmitsStreamTerminator: true},
+		DefaultCacheRetention: CacheRetentionLong,
+		DefaultContextWindow:  zaiContextWindowFloor,
+	},
+	{
 		ID: "poolside", Name: "Poolside", Provider: ProviderPoolside,
 		API: ApiOpenAICompletions, BaseURL: "https://inference.poolside.ai/v1",
 		DefaultModel: "poolside-default", EnvKeys: []string{"POOLSIDE_API_KEY"},

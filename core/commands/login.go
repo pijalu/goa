@@ -147,20 +147,22 @@ func (c *LoginCommand) LongHelp() string {
 // Goa can select must always be giveable a credential (bugs.md "Vercel AI
 // Gateway: no way to add an API key"). openai-codex is the canonical Codex
 // entry; codex is kept as a credential alias of "openai".
-var curatedLoginProviders = []string{"copilot", "github", "openai", "openai-codex", "codex", "anthropic", "kimi", "zai", "bigmodel"}
+var curatedLoginProviders = []string{"copilot", "github", "openai", "openai-codex", "codex", "anthropic", "kimi", "zai", "bigmodel", "zai-start-plan", "bigmodel-start-plan"}
 
 // curatedLoginNames are the display names of the curated entries. Aliases that
 // share an auth-store key are named after the credential they store.
 var curatedLoginNames = map[string]string{
-	"copilot":      "GitHub Copilot",
-	"github":       "GitHub Copilot",
-	"openai":       "OpenAI",
-	"openai-codex": "OpenAI Codex",
-	"codex":        "OpenAI Codex (alias)",
-	"anthropic":    "Anthropic",
-	"kimi":         "Moonshot",
-	"zai":          "Z.ai Coding Plan",
-	"bigmodel":     "BigModel Coding Plan",
+	"copilot":             "GitHub Copilot",
+	"github":              "GitHub Copilot",
+	"openai":              "OpenAI",
+	"openai-codex":        "OpenAI Codex",
+	"codex":               "OpenAI Codex (alias)",
+	"anthropic":           "Anthropic",
+	"kimi":                "Moonshot",
+	"zai":                 "Z.ai Coding Plan",
+	"bigmodel":            "BigModel Coding Plan",
+	"zai-start-plan":      "Z.ai Start Plan (free tier)",
+	"bigmodel-start-plan": "BigModel Start Plan (free tier)",
 }
 
 // loginProvider is one sign-on option advertised by /login.
@@ -300,12 +302,20 @@ func completeAuthKinds(provider, prefix string) []core.ArgCompletion {
 // normalizeProviderID maps login aliases onto the canonical auth-store key.
 // /login:codex and /login:openai-codex share the "openai" Codex credential.
 // "z.ai" is a branding spelling of the same "zai" Coding Plan credential.
+// The Start Plan identities are aliases too — by design: the plan backend
+// validates the SAME zcode JWT the family's Coding Plan login mints, so both
+// entries write one credential (codex→openai precedent). /login:<sp>​:apikey
+// therefore lands in the family's API-key slot, exactly like /login:zai:apikey.
 func normalizeProviderID(provider string) string {
 	switch strings.ToLower(provider) {
 	case "codex", "openai-codex":
 		return "openai"
 	case "z.ai", "zai-coding", "zai-coding-plan", "zai-coding-cn":
 		return "zai"
+	case "zai-start-plan", "z.ai-start-plan":
+		return "zai"
+	case "bigmodel-start-plan":
+		return "bigmodel"
 	default:
 		return strings.ToLower(provider)
 	}

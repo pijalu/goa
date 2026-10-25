@@ -9,6 +9,7 @@ import (
 
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/agentic/provider/startplan"
 	"github.com/pijalu/goa/internal/auth"
 )
 
@@ -23,6 +24,13 @@ func resolveAPIKey(store *auth.Store, providerID string) string {
 	if sid := codexStoreID(providerID); sid != "" {
 		providerID = sid
 	}
+	// Start Plan providers authenticate with the family's zcode JWT, not the
+	// OAuth access token: the plan backend rejects the business token. An
+	// explicit credential (stored API key / env) still wins so a hand-pasted
+	// JWT or a staging mirror can override the login-derived value.
+	if family, ok := startplan.FamilyOf(agenticprovider.Provider(providerID)); ok {
+		return resolveStartPlanAPIKey(store, providerID, string(family))
+	}
 	if store != nil {
 		if key, ok := store.GetAPIKey(providerID); ok && key != "" {
 			return key
@@ -31,6 +39,24 @@ func resolveAPIKey(store *auth.Store, providerID string) string {
 			if key := oauthAccessToken(store, providerID, tokens); key != "" {
 				return key
 			}
+		}
+	}
+	return envAPIKey(providerID)
+}
+
+// resolveStartPlanAPIKey resolves the zcode JWT for a Start Plan provider:
+// the provider's own stored API key first (explicit override), then the
+// family login's ZcodeJWT, then the catalog env vars. The access token is
+// deliberately NOT a fallback — the plan backend validates the zcode JWT
+// identity, and sending the business token would produce an auth failure
+// that looks like a server bug.
+func resolveStartPlanAPIKey(store *auth.Store, providerID, family string) string {
+	if store != nil {
+		if key, ok := store.GetAPIKey(providerID); ok && key != "" {
+			return key
+		}
+		if tokens, ok := store.GetOAuth(family); ok && tokens != nil && tokens.ZcodeJWT != "" {
+			return tokens.ZcodeJWT
 		}
 	}
 	return envAPIKey(providerID)

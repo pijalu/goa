@@ -51,6 +51,11 @@ register("minimax", require("./fetchers/minimax.js"));
 register("openrouter", require("./fetchers/openrouter.js"));
 register("opencode", require("./fetchers/opencode.js"));
 register(_fallbackId, require("./fetchers/local.js"));
+// Start Plan (free GLM tier) — one instance per family so authAvailable()
+// checks each family's OWN login token (a zai login must not light up the
+// bigmodel row). The module is a factory for exactly that reason.
+register("zai-start-plan", require("./fetchers/zai-start-plan.js")("zai"));
+register("bigmodel-start-plan", require("./fetchers/zai-start-plan.js")("bigmodel"));
 
 // The z.ai Coding Plan reset surface (status/opportunity/use/history-read,
 // bugs.md #7). The require cache hands zai.js and plugin.js the SAME instance,
@@ -839,7 +844,7 @@ function appendProviderRows(rows, id) {
 		}
 		if (entry.error === "auth_required") {
 			var loginHint = fetcher.auth && fetcher.auth.type === "goa_oauth"
-				? "`/login:openai:oauth`"
+				? "`/login:" + (fetcher.auth.provider || "openai") + ":oauth`"
 				: "`/quota:login:" + id + "`";
 			rows.push("| " + name + " | — | — | — | — | auth required — " + loginHint + " |");
 			return;

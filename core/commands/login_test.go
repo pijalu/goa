@@ -759,6 +759,40 @@ func TestNormalizeProviderID_ZaiAliases(t *testing.T) {
 	}
 }
 
+// The Start Plan identities are credential aliases of their family (the plan
+// backend validates the same zcode JWT the Coding Plan login mints), so both
+// /login entries must resolve onto the family store keys — codex→openai
+// precedent.
+func TestNormalizeProviderID_StartPlanAliases(t *testing.T) {
+	for _, alias := range []string{"zai-start-plan", "ZAI-START-PLAN", "z.ai-start-plan"} {
+		if got := normalizeProviderID(alias); got != "zai" {
+			t.Errorf("normalizeProviderID(%q) = %q, want zai", alias, got)
+		}
+	}
+	for _, alias := range []string{"bigmodel-start-plan", "BigModel-Start-Plan"} {
+		if got := normalizeProviderID(alias); got != "bigmodel" {
+			t.Errorf("normalizeProviderID(%q) = %q, want bigmodel", alias, got)
+		}
+	}
+}
+
+// The /login discovery surface must advertise both Start Plan entries so a
+// user selecting the provider in /models can find its login without docs.
+func TestLoginCuratedListsStartPlan(t *testing.T) {
+	found := map[string]bool{}
+	for _, id := range curatedLoginProviders {
+		found[id] = true
+	}
+	for _, id := range []string{"zai-start-plan", "bigmodel-start-plan"} {
+		if !found[id] {
+			t.Errorf("curatedLoginProviders missing %q", id)
+		}
+		if curatedLoginNames[id] == "" {
+			t.Errorf("curatedLoginNames[%q] empty", id)
+		}
+	}
+}
+
 // TestNewOAuthFlow_ZaiAndBigModelResolve proves both families get a real flow
 // (not nil), which is what /login:zai:oauth dispatches into.
 func TestNewOAuthFlow_ZaiAndBigModelResolve(t *testing.T) {

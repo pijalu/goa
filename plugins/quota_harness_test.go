@@ -43,6 +43,11 @@ type quotaTestEnv struct {
 	// completions stores JS completers registered via goa.registerCompletion,
 	// keyed by command name (drives the completion tests like the app does).
 	completions map[string]func(prefix string) []Completion
+	// deviceMid is the per-install device identity returned by
+	// goa.auth.deviceMid(). Empty by default: a missing identity is the
+	// production state on a fresh install, and the Start Plan fetcher must
+	// fail closed on it without touching the network.
+	deviceMid string
 }
 
 type quotaResponder struct {
@@ -80,6 +85,14 @@ func (e *quotaTestEnv) setOAuthToken(provider string, tok map[string]any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.oauthTokens[provider] = tok
+}
+
+// setDeviceMid installs the device identity goa.auth.deviceMid() returns.
+// The closure reads live state, so tests may call this before or after load.
+func (e *quotaTestEnv) setDeviceMid(mid string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.deviceMid = mid
 }
 
 // setActiveProvider sets the active provider id in the mocked goa.config().
@@ -207,6 +220,11 @@ func (e *quotaTestEnv) context() PluginContext {
 					return nil, fmt.Errorf("no test oauth token for %q", provider)
 				}
 				return tok, nil
+			},
+			DeviceMid: func() string {
+				e.mu.Lock()
+				defer e.mu.Unlock()
+				return e.deviceMid
 			},
 		},
 	}

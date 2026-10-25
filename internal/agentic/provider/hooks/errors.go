@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
+	"github.com/pijalu/goa/internal/agentic/provider/startplan"
 )
 
 const errorOrder = 700
@@ -60,6 +61,13 @@ func (h *ErrorHook) ApplyError(ctx *ErrorContext) error {
 
 	ctx.IsRateLimit = ctx.StatusCode == http.StatusTooManyRequests || containsAny(body, rateLimitPatterns)
 	ctx.IsRetryable = h.isRetryable(ctx)
+
+	// Start Plan errors carry a structured business code, not prose: classify
+	// them explicitly so the substring heuristics above can neither miss a
+	// quota error nor misread a busy code as an overflow.
+	if schema.IsStartPlanProvider(ctx.Model.Provider) {
+		applyStartPlanBusinessError(ctx)
+	}
 
 	if ctx.IsRetryable {
 		ctx.RetryAfter = parseRetryAfter(ctx.Headers, h.profile.ErrorRules.RetryAfterHeader)
@@ -128,6 +136,30 @@ func isRetryableNetworkError(err error) bool {
 		}
 	}
 	return false
+}
+
+// applyStartPlanBusinessError parses the zcode plan backend's business error
+// envelope ({"code":3008,...}) out of the response body and reclassifies the
+// context. Codes 3008/3009/3010 (server-busy variants) are transient and set
+// IsRateLimit, which routes them through the canonical rate-limit retry
+// policy (same behavior as ZCode's retryable mapping). 1005 (quota
+// exhausted), 3007 (security verification) and 3001 (parameter error) are
+// terminal: retrying cannot succeed and only burns the retry budget. A body
+// without a recognizable code falls through to the generic classification —
+// an outage or unknown message must never be turned into a local block.
+func applyStartPlanBusinessError(ctx *ErrorContext) {
+	code, msg, ok := startplan.ParseBusinessCode(ctx.Body)
+	if !ok {
+		return
+	}
+	if ctx.Err != nil {
+		// Keep the transport error as the cause; the code travels in the chain
+		// so callers can errors.As their way to the business semantics.
+		ctx.Err = startplan.WrapBusinessError(ctx.Err, code, msg)
+	}
+	ctx.IsRetryable = startplan.IsRetryableCode(code)
+	ctx.IsRateLimit = ctx.IsRetryable
+	ctx.IsContextOverflow = false
 }
 
 // isOpenAIProfile reports whether the resolved variant profile targets an

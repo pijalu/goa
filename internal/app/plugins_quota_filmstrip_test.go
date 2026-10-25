@@ -29,7 +29,11 @@ import (
 // Quotas tables) deterministically.
 func newQuotaFilmstripScenario(t *testing.T) *uiScenario {
 	t.Helper()
-	sc := newUIScenario(t, 100, 30)
+	// 100x44: the extended /quota view (Session Usage + Provider Quotas with
+	// every offline row — Codex, Anthropic, both Start Plan families) must fit
+	// the viewport for the filmstrip assertions; the Start Plan rows added in
+	// v1.4.0 overflowed the old 30-line frame.
+	sc := newUIScenario(t, 100, 44)
 
 	pm := newPluginTestSubsystems(t)
 	sc.app.subs.pluginMgr = pm.pluginMgr

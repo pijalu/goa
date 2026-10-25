@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
+	"github.com/pijalu/goa/internal/agentic/provider/startplan"
 )
 
 const authOrder = 100
@@ -59,7 +60,14 @@ func (h *AuthHook) ApplyRequest(ctx *RequestContext) error {
 		h.applyProviderHeaders(ctx)
 		return nil
 	}
+	return h.applyResolvedCredential(ctx, auth)
+}
 
+// applyResolvedCredential resolves the request credential once no explicit
+// option key exists: an externally-set Authorization header wins, then the
+// profile/catalog env vars, then the missing-credential error (with the
+// Start Plan login hint appended for plan providers).
+func (h *AuthHook) applyResolvedCredential(ctx *RequestContext, auth schema.AuthConfig) error {
 	// If Authorization header is already present, treat key as unused.
 	if hasHeader(ctx.Headers, "Authorization") || hasHeader(ctx.Headers, "Cf-Aig-Authorization") {
 		injectAuth(ctx.Headers, auth, "unused")
@@ -91,6 +99,11 @@ func (h *AuthHook) ApplyRequest(ctx *RequestContext) error {
 	}
 
 	if h.profile.Auth.Required {
+		if family, ok := startplan.FamilyOf(ctx.Model.Provider); ok {
+			// The working credential is the family login's zcode JWT; name it
+			// so the remedy is the login command, not a docs detour.
+			checked = append(checked, family.LoginHint())
+		}
 		return &schema.MissingCredentialError{
 			Provider: string(ctx.Model.Provider),
 			Sources:  checked,
@@ -119,6 +132,10 @@ func (h *AuthHook) applyProviderHeaders(ctx *RequestContext) {
 
 	if ctx.Model.Provider == schema.ProviderGitHub {
 		applyGitHubCopilotHeaders(ctx)
+	}
+
+	if schema.IsStartPlanProvider(ctx.Model.Provider) {
+		applyStartPlanHeaders(ctx)
 	}
 
 	if isOpenCodeGateway(ctx.Model) {
@@ -156,6 +173,17 @@ func applyCodexHeaders(ctx *RequestContext) {
 	}
 	if !hasHeader(ctx.Headers, "accept") {
 		ctx.Headers["accept"] = "text/event-stream"
+	}
+}
+
+// applyStartPlanHeaders sets the headers the zcode plan backend requires:
+// X-Device-Mid is mandatory on every plan request — a missing header returns
+// 400 {"code":3001} (parameter error), which is a local defect, never an
+// outage. The id is the persistent deviceMid minted by the startplan
+// package. A caller-supplied header (staging mirror, manual test) wins.
+func applyStartPlanHeaders(ctx *RequestContext) {
+	if mid := startplan.DeviceMid(); mid != "" && !hasHeader(ctx.Headers, "X-Device-Mid") {
+		ctx.Headers["X-Device-Mid"] = mid
 	}
 }
 

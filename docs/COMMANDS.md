@@ -604,6 +604,14 @@ over SSH/headless. These are what the Coding Plan reset-credit surface needs
 (`/quota:resets`); the API key alone cannot authenticate there. Sign-in is
 independent of the API key: use both, one for inference, the other for reset
 credits. See PLUGINS.md → "z.ai Coding Plan reset credits".
+
+Z.ai / BigModel Start Plan (free GLM tier): the same `/login:zai:oauth` /
+`/login:bigmodel:oauth` sign-in also covers the dedicated Start Plan providers
+(`zai-start-plan`, `bigmodel-start-plan`) — the runtime resolves their zcode
+JWT from the family login. They appear in `/login`'s curated list, in
+`/quota` with per-model balance rows, and serve GLM-5.3-Flash, GLM-5.2 and
+GLM-5-Turbo on the quota-based plan backend. See PROVIDERS.md → "Z.ai /
+BigModel Start Plan".
 ```
 
 ### `/logout` — Clear provider tokens

@@ -24,6 +24,20 @@ type InvalidCredentialError struct {
 	Reason string
 }
 
+// IsStartPlanProvider reports whether p is a Start Plan identity. Start Plan
+// providers share the zcode-plan runtime, authenticate with the zcode JWT,
+// and gate availability on billing/balance rather than a static API key —
+// several layers (credential resolution, header injection, error
+// classification) branch on this, so it lives beside the constants it reads.
+func IsStartPlanProvider(p Provider) bool {
+	switch p {
+	case ProviderZaiStartPlan, ProviderBigModelStartPlan:
+		return true
+	default:
+		return false
+	}
+}
+
 // Error implements error.
 func (e *InvalidCredentialError) Error() string {
 	if e == nil {
