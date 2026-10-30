@@ -91,6 +91,32 @@ win through the normal cascade.
    precedence, run the config/app/command suites and all repository quality
    gates separately, then archive this entry and commit the verified fix.
 
+### B39 — Complete `@~` as the home directory
+
+**Observed behavior.** `@` path completion cannot complete the bare `@~` token.
+It should expand the tilde to the current user's home directory and list that
+directory's entries instead of leaving the token unresolved or returning no
+completion candidates.
+
+**Expected behavior.** A bare `@~` completion request lists the home directory.
+`@~/` and `@~/prefix` use the same home-directory resolution while preserving
+the existing completion filtering and insertion behavior. Ordinary relative,
+absolute, and escaped `@` paths remain unchanged; home-directory resolution
+failures produce no candidates rather than a panic or an incorrect path.
+
+**Fix and validation plan.**
+1. Trace `@` completion tokenization, filesystem root selection, candidate
+   rendering, and insertion to locate where bare-tilde expansion is skipped.
+2. Add RED unit tests with an isolated home directory for bare `@~`, `@~/`, and
+   `@~/prefix`, plus regression cases for ordinary relative/absolute paths,
+   escaped spaces, and home-resolution failure.
+3. Implement the smallest shared resolver change so listing and insertion agree
+   on the expanded path without altering the user's token unexpectedly.
+4. Validate the actual interactive completion output with a production-path
+   filmstrip (and WEB cell coverage if the shared completion path feeds WEB),
+   then run the touched app/TUI suites and all repository quality gates
+   separately. Archive this entry and commit the verified fix.
+
 ## Closed
 
 Closed 2026-10-30 — B36, user-referenced images attached immediately, escaped
