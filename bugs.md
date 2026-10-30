@@ -28,7 +28,79 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
+### B37 — Let `read` return images to vision-capable models
+
+**Observed behavior.** `read` classifies PNG and other image files as binary and
+returns only metadata. The model therefore says it cannot view a PNG and falls
+back to numerical/browser inspection even when the active model accepts image
+input. Provider content blocks already have image and non-vision downgrade
+concepts, but tool results currently carry only strings and protocol serializers
+only emit tool-result text.
+
+**Expected behavior / proposed option.** Add an optional boolean
+`include_image` argument to `read`, defaulting to `false`. A call such as
+`{"path":"screenshot.png","include_image":true}` returns a visual tool-result
+attachment instead of the binary-file notice. The mechanism must be generic and
+composable: tools may return image paths in their structured result, the agent
+carries them on the tool-result message, and provider adapters encode them using
+the existing image pipeline. Vision-capable models receive the image; text-only
+models receive an explicit image-omitted placeholder and never image bytes.
+Ordinary text reads, directory listings, documentation reads, errors, renderers,
+and read deduplication remain unchanged.
+
+**Fix and validation plan.**
+1. Add RED schema/execution tests for `include_image`, real PNG/JPEG/GIF/WEBP
+   content, invalid images, default behavior, and path-resolution errors.
+2. Add generic tool-result attachment tests through scheduler, history migration,
+   capability downgrade, session persistence/reload, and observer/UI behavior.
+3. Add protocol tests proving actual provider payloads contain encoded image
+   content in the correct tool-result envelope for each supported API family;
+   prove text-only transforms contain no Base64 image payload.
+4. Run a provider-mocked agent turn in which the model calls `read` with
+   `include_image:true` and receives the image on the next request, then run all
+   touched suites and repository quality gates separately. Document the option,
+   archive this entry, and commit the verified feature.
+
+### B38 — Keep provider configuration global unless a project explicitly overrides it
+
+**Observed behavior.** Project configuration can acquire provider/model and
+general settings copied from the global configuration. This duplicates provider
+credentials and configuration keys into project `.goa` files, makes projects
+unnecessarily stateful, and prevents later global changes from being the single
+source of truth.
+
+**Expected behavior.** `$HOME/.goa` owns provider definitions/credentials, the
+available model configuration, general compression/tool settings, and the global
+default provider/model selection by default. A project `.goa` may intentionally
+select or override a default provider/model and other settings, but merely
+initializing or using a project must not copy global provider definitions,
+credentials, or general configuration into it. Explicit project overrides still
+win through the normal cascade.
+
+**Fix and validation plan.**
+1. Trace config initialization, `goa config` reads/writes, provider/model
+   selection, and project/home persistence to identify the copy boundary.
+2. Add RED tests using isolated HOME and project directories: fresh project
+   setup inherits global providers/models and general settings without writing
+   them locally; global default selection works with no project file; deliberate
+   project provider/model overrides persist locally and take precedence.
+3. Add secret-hygiene tests proving API keys, tokens, provider endpoints/models,
+   and unrelated global sections are absent from newly written project files,
+   while existing explicit project overrides remain backward compatible.
+4. Validate the actual CLI/config UI output and global→project→local→env→flag
+   precedence, run the config/app/command suites and all repository quality
+   gates separately, then archive this entry and commit the verified fix.
+
 ## Closed
+
+Closed 2026-10-30 — B36, user-referenced images attached immediately, escaped
+paths failed validation, and a leading absolute image path became a slash
+command. Submission now resolves literal and shell-unescaped paths, presents one
+safe-default batch confirmation for all unique images, attaches only on explicit
+acceptance, sends declined references as text, and restores cancelled input.
+Production filmstrips, WEB cell-grid accept/decline/cancel tests, parser and
+command-routing regressions, race suites, vet, and staticcheck validate the fix.
+See [`docs/archive/b36-image-attachment-confirmation.2026-10-30.md`](docs/archive/b36-image-attachment-confirmation.2026-10-30.md).
 
 Closed 2026-10-30 — B26, consuming `tui.modeline` initially changed the required
 default footer and displaced its live second-row statistics. Null defaults now

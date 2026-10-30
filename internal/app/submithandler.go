@@ -147,18 +147,67 @@ func (a *App) handlePendingMainInput(text string) bool {
 // dispatchUserSubmit routes a normal user submission to either a slash command
 // or the agent.
 func (a *App) dispatchUserSubmit(engine *tui.TUI, chat *tui.ChatViewport, text string) {
-	isCmd := strings.HasPrefix(text, "/")
 	messageText, images, unreadable := splitUserInput(text)
-	if !isCmd {
-		a.displayUserMessage(chat, messageText, images)
-		a.displayUnattachedImages(chat, unreadable)
+	isCmd := strings.HasPrefix(text, "/") && !(len(images) > 0 && hasLeadingImagePath(text))
+	if isCmd {
+		engine.RequestRender()
+		a.handleSlashCommand(text)
+		return
+	}
+	if len(images) > 0 {
+		a.confirmImageAttachments(engine, chat, text, messageText, images, unreadable)
+		return
+	}
+	a.deliverUserMessage(engine, chat, messageText, nil, unreadable)
+}
+
+// confirmImageAttachments holds the entire submission until the user makes an
+// explicit choice. One batch card covers every unique image so a multi-image
+// paste cannot launch a series of partially approved sends.
+func (a *App) confirmImageAttachments(engine *tui.TUI, chat *tui.ChatViewport, original, messageText string, images, unreadable []string) {
+	title := "Attach image?"
+	attachLabel := "Attach image"
+	if len(images) > 1 {
+		title = fmt.Sprintf("Attach %d images?", len(images))
+		attachLabel = fmt.Sprintf("Attach %d images", len(images))
+	}
+	body := "The following image(s) will be sent to the model:\n\n" + strings.Join(images, "\n")
+	answers, _ := engine.ShowConfirm(title, body, []tui.ConfirmOption{
+		{ID: "attach", Label: attachLabel, Style: "ok"},
+		{ID: "text", Label: "Send as text without attaching"},
+	}, "text", true)
+
+	go func() {
+		select {
+		case choice := <-answers:
+			a.apply(func() {
+				switch choice {
+				case "attach":
+					a.deliverUserMessage(engine, chat, messageText, images, unreadable)
+				case "text":
+					a.deliverUserMessage(engine, chat, original, nil, unreadable)
+				default:
+					a.restoreCancelledImageSubmit(engine, original)
+				}
+			})
+		case <-engine.Stopped():
+		}
+	}()
+}
+
+func (a *App) restoreCancelledImageSubmit(engine *tui.TUI, original string) {
+	if inp := a.subs.getInput(); inp != nil {
+		inp.SetText(original)
+		engine.SetFocus(inp)
 	}
 	engine.RequestRender()
-	if isCmd {
-		a.handleSlashCommand(text)
-	} else {
-		a.sendToAgentWithImages(messageText, images)
-	}
+}
+
+func (a *App) deliverUserMessage(engine *tui.TUI, chat *tui.ChatViewport, text string, images, unreadable []string) {
+	a.displayUserMessage(chat, text, images)
+	a.displayUnattachedImages(chat, unreadable)
+	engine.RequestRender()
+	a.sendToAgentWithImages(text, images)
 }
 
 func (a *App) flashError(msg string) {

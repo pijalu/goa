@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/config"
@@ -331,6 +332,70 @@ func TestSplitUserInput_DedupesRepeatedImage(t *testing.T) {
 
 	if !reflect.DeepEqual(images, []string{a}) {
 		t.Errorf("images = %v, want [%s]", images, a)
+	}
+}
+
+func shellEscapeImagePath(path string) string {
+	path = strings.ReplaceAll(path, `\`, `\\`)
+	return strings.ReplaceAll(path, " ", `\ `)
+}
+
+func TestSplitUserInput_AttachesShellEscapedImagePaths(t *testing.T) {
+	dir := t.TempDir()
+	a := writePNG(t, dir, "Screenshot 2026-10-30 at 15.29.10.png")
+	b := writePNG(t, dir, "second image.png")
+	input := "compare " + shellEscapeImagePath(a) + " and @" + shellEscapeImagePath(b)
+
+	msg, images, unreadable := splitUserInput(input)
+
+	if msg != "compare and" {
+		t.Errorf("message = %q, want %q", msg, "compare and")
+	}
+	if !reflect.DeepEqual(images, []string{a, b}) {
+		t.Errorf("images = %v, want %v", images, []string{a, b})
+	}
+	if len(unreadable) != 0 {
+		t.Errorf("unreadable = %v, want none", unreadable)
+	}
+}
+
+func TestSplitUserInput_AttachesShellEscapedRelativeImagePaths(t *testing.T) {
+	dir := t.TempDir()
+	writePNG(t, dir, "Screenshot 2026-10-30 at 15.29.10.png")
+	if err := os.Mkdir(filepath.Join(dir, "images"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writePNG(t, filepath.Join(dir, "images"), "second image.png")
+	t.Chdir(dir)
+
+	msg, images, unreadable := splitUserInput(`compare Screenshot\ 2026-10-30\ at\ 15.29.10.png and images/second\ image.png`)
+
+	if msg != "compare and" {
+		t.Errorf("message = %q, want compare and", msg)
+	}
+	want := []string{"Screenshot 2026-10-30 at 15.29.10.png", "images/second image.png"}
+	if !reflect.DeepEqual(images, want) {
+		t.Errorf("images = %v, want %v", images, want)
+	}
+	if len(unreadable) != 0 {
+		t.Errorf("unreadable = %v, want none", unreadable)
+	}
+}
+
+func TestSplitUserInput_DedupesEscapedAndLiteralImagePaths(t *testing.T) {
+	path := writePNG(t, t.TempDir(), "two words.png")
+	input := shellEscapeImagePath(path) + " @" + path
+
+	msg, images, unreadable := splitUserInput(input)
+
+	if msg != "" {
+		t.Errorf("message = %q, want empty", msg)
+	}
+	if !reflect.DeepEqual(images, []string{path}) {
+		t.Errorf("images = %v, want one image at %s", images, path)
+	}
+	if len(unreadable) != 0 {
+		t.Errorf("unreadable = %v, want none", unreadable)
 	}
 }
 

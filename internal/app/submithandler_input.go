@@ -43,10 +43,11 @@ func splitUserInput(text string) (messageText string, images []string, unreadabl
 				field++
 				continue
 			}
-			if internal.IsImageFile(path) {
-				if !seen[path] {
-					seen[path] = true
-					images = append(images, path)
+			resolvedPath, isImage := existingImagePath(path)
+			if isImage {
+				if !seen[resolvedPath] {
+					seen[resolvedPath] = true
+					images = append(images, resolvedPath)
 				}
 			} else {
 				unreadable = append(unreadable, path)
@@ -83,7 +84,7 @@ func inputFieldSpans(line string) []inputFieldSpan {
 // prose before a bare image filename from becoming part of that filename.
 func imageCandidateAt(line string, fields []inputFieldSpan, start int) (raw, path string, next int, ok bool) {
 	first := line[fields[start].start:fields[start].end]
-	if !canStartImagePath(first) {
+	if !canStartImagePath(first) && !strings.Contains(first, `\`) {
 		if looksLikeImageName(first) {
 			return first, first, start + 1, true
 		}
@@ -100,6 +101,55 @@ func imageCandidateAt(line string, fields []inputFieldSpan, start int) (raw, pat
 		}
 	}
 	return "", "", start + 1, false
+}
+
+// existingImagePath validates the literal path first, then its shell-unescaped
+// form. Trying the literal bytes first preserves valid Unix filenames containing
+// backslashes; the fallback supports paths pasted from a shell prompt (\ , \\,
+// and the other ordinary backslash escapes) without trusting the extension.
+func existingImagePath(path string) (string, bool) {
+	if internal.IsImageFile(path) {
+		return path, true
+	}
+	unescaped := unescapeShellPath(path)
+	if unescaped != path && internal.IsImageFile(unescaped) {
+		return unescaped, true
+	}
+	return path, false
+}
+
+// unescapeShellPath removes ordinary shell backslash quoting from one path.
+// A trailing backslash is preserved: it is not escaping a following byte.
+func unescapeShellPath(path string) string {
+	if !strings.Contains(path, `\`) {
+		return path
+	}
+	var out strings.Builder
+	out.Grow(len(path))
+	for i := 0; i < len(path); i++ {
+		if path[i] == '\\' && i+1 < len(path) {
+			i++
+		}
+		out.WriteByte(path[i])
+	}
+	return out.String()
+}
+
+// hasLeadingImagePath distinguishes an absolute image path from a slash
+// command. Commands remain commands even when one of their arguments is an
+// image; only a valid image reference at byte zero takes the attachment route.
+func hasLeadingImagePath(text string) bool {
+	line, _, _ := strings.Cut(text, "\n")
+	fields := inputFieldSpans(line)
+	if len(fields) == 0 || fields[0].start != 0 {
+		return false
+	}
+	_, path, _, ok := imageCandidateAt(line, fields, 0)
+	if !ok {
+		return false
+	}
+	_, valid := existingImagePath(path)
+	return valid
 }
 
 func canStartImagePath(field string) bool {
