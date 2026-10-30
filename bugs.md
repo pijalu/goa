@@ -28,34 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B35 — Image attachment paths containing whitespace are split and rejected
-
-**Reported**:
-
-```text
-Image: @/Users/muaddib/Desktop/Screenshot 2026-10-30 at 14.52.06.png
-```
-
-returns:
-
-```text
-│ [image not attached — could not read: 14.52.06.png]
-```
-
-**Expected**: the complete `@`-prefixed image path is read and attached, including
-spaces in the filename; no unreadable-image error is shown.
-
-**Fix plan / test approach**
-
-1. Reproduce through `splitUserInput` with the reported path shape and inspect
-   the actual submitted/visible result. Check `@` handling as well as whitespace.
-2. Replace whitespace-only candidate parsing with path-aware parsing that keeps
-   prose and URL behavior intact. Add cases for spaces, `@`, missing files,
-   repeated paths, and surrounding prose/newlines.
-3. Validate attachment rendering on a live terminal/filmstrip, run the image
-   paste/attachment suites with `-race`, run all quality gates separately, then
-   archive and commit the closed item.
-
 ## B26 — `tui.modeline` is dead configuration: nothing reads it
 
 **Reported** (while answering B24): "I would expect WEB to follow TUI" — for the

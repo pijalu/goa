@@ -194,6 +194,64 @@ func TestSplitUserInput_AttachesExistingImages(t *testing.T) {
 	}
 }
 
+func TestSplitUserInput_AttachesImagePathsWithSpaces(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+	}{{"bare", ""}, {"at", "@"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writePNG(t, dir, "Screenshot 2026-10-30 at 14.52.06.png")
+			text := "before\nImage: " + tc.prefix + path + "\nafter"
+
+			msg, images, unreadable := splitUserInput(text)
+
+			if want := "before\nImage:\nafter"; msg != want {
+				t.Errorf("message = %q, want %q", msg, want)
+			}
+			if !reflect.DeepEqual(images, []string{path}) {
+				t.Errorf("images = %v, want [%s]", images, path)
+			}
+			if len(unreadable) != 0 {
+				t.Errorf("unreadable = %v, want none", unreadable)
+			}
+		})
+	}
+}
+
+func TestSplitUserInput_KeepsMissingAtPrefixedImageWithSpaces(t *testing.T) {
+	path := "/nope/Screenshot 2026-10-30 at 14.52.06.png"
+	text := "Image: @" + path + " please"
+
+	msg, images, unreadable := splitUserInput(text)
+
+	if msg != text {
+		t.Errorf("message = %q, want %q", msg, text)
+	}
+	if len(images) != 0 {
+		t.Errorf("images = %v, want none", images)
+	}
+	if !reflect.DeepEqual(unreadable, []string{path}) {
+		t.Errorf("unreadable = %v, want [%s]", unreadable, path)
+	}
+}
+
+func TestSplitUserInput_DedupesAtPrefixedImageWithSpaces(t *testing.T) {
+	path := writePNG(t, t.TempDir(), "two words.png")
+
+	msg, images, unreadable := splitUserInput("@" + path + " @" + path)
+
+	if msg != "" {
+		t.Errorf("message = %q, want empty", msg)
+	}
+	if !reflect.DeepEqual(images, []string{path}) {
+		t.Errorf("images = %v, want one image at %s", images, path)
+	}
+	if len(unreadable) != 0 {
+		t.Errorf("unreadable = %v, want none", unreadable)
+	}
+}
+
 func TestSplitUserInput_PreservesNewlines(t *testing.T) {
 	dir := t.TempDir()
 	a := writePNG(t, dir, "a.png")

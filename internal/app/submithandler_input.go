@@ -19,39 +19,93 @@ import (
 
 // splitUserInput separates validated image attachments from the message text.
 //
-// A token is only an attachment when it names an existing regular file whose
-// bytes sniff as an image. That single rule is what keeps prose intact: a
+// A candidate is only an attachment when it names an existing regular file
+// whose bytes sniff as an image. That single rule is what keeps prose intact: a
 // sentence that merely mentions "logo.png", and any URL that happens to end in
 // an image suffix, stay in the message instead of being stripped out and then
 // silently dropped because the file does not exist (the pre-fix behaviour).
 //
-// Candidates that look like an image but cannot be read are returned in
-// unreadable and kept in the text, so the user is told about it rather than
-// losing both the words and the image.
+// Explicit paths (including @-prefixed paths) may contain whitespace. Their
+// candidate span ends at the image suffix, while ordinary prose is still read
+// one field at a time. Candidates that look like an image but cannot be read are
+// returned in unreadable and kept in the text, so the user is told about it
+// rather than losing both the words and the image.
 func splitUserInput(text string) (messageText string, images []string, unreadable []string) {
 	seen := make(map[string]bool)
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
-		fields := strings.Fields(line)
+		fields := inputFieldSpans(line)
 		kept := make([]string, 0, len(fields))
-		for _, field := range fields {
-			if !looksLikeImageName(field) {
-				kept = append(kept, field)
+		for field := 0; field < len(fields); {
+			raw, path, next, ok := imageCandidateAt(line, fields, field)
+			if !ok {
+				kept = append(kept, line[fields[field].start:fields[field].end])
+				field++
 				continue
 			}
-			if internal.IsImageFile(field) {
-				if !seen[field] {
-					seen[field] = true
-					images = append(images, field)
+			if internal.IsImageFile(path) {
+				if !seen[path] {
+					seen[path] = true
+					images = append(images, path)
 				}
-				continue
+			} else {
+				unreadable = append(unreadable, path)
+				kept = append(kept, strings.Fields(raw)...)
 			}
-			unreadable = append(unreadable, field)
-			kept = append(kept, field)
+			field = next
 		}
 		lines[i] = strings.Join(kept, " ")
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n")), images, unreadable
+}
+
+type inputFieldSpan struct {
+	start int
+	end   int
+}
+
+// inputFieldSpans is strings.Fields with source offsets, allowing a multi-field
+// path to retain the exact whitespace present in its on-disk name.
+func inputFieldSpans(line string) []inputFieldSpan {
+	fields := strings.Fields(line)
+	spans := make([]inputFieldSpan, 0, len(fields))
+	searchFrom := 0
+	for _, field := range fields {
+		start := searchFrom + strings.Index(line[searchFrom:], field)
+		spans = append(spans, inputFieldSpan{start: start, end: start + len(field)})
+		searchFrom = start + len(field)
+	}
+	return spans
+}
+
+// imageCandidateAt returns the image candidate beginning at field and the next
+// unconsumed field. Only explicit paths can span fields; this prevents ordinary
+// prose before a bare image filename from becoming part of that filename.
+func imageCandidateAt(line string, fields []inputFieldSpan, start int) (raw, path string, next int, ok bool) {
+	first := line[fields[start].start:fields[start].end]
+	if !canStartImagePath(first) {
+		if looksLikeImageName(first) {
+			return first, first, start + 1, true
+		}
+		return "", "", start + 1, false
+	}
+
+	for end := start; end < len(fields); end++ {
+		if end > start && canStartImagePath(line[fields[end].start:fields[end].end]) {
+			break
+		}
+		raw = line[fields[start].start:fields[end].end]
+		if looksLikeImageName(raw) {
+			return raw, strings.TrimPrefix(raw, "@"), end + 1, true
+		}
+	}
+	return "", "", start + 1, false
+}
+
+func canStartImagePath(field string) bool {
+	return strings.HasPrefix(field, "@") || strings.HasPrefix(field, "/") ||
+		strings.HasPrefix(field, "./") || strings.HasPrefix(field, "../") ||
+		strings.HasPrefix(field, "~/")
 }
 
 // looksLikeImageName is the cheap pre-filter for an attachment candidate: an
