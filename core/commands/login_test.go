@@ -11,11 +11,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/core"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/auth"
+	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -191,6 +193,62 @@ func TestLoginCommandOAuthStoresTokens(t *testing.T) {
 	got, ok := store.GetOAuth("copilot")
 	if !ok || got.AccessToken != "oauth-token" {
 		t.Errorf("token = %+v", got)
+	}
+}
+
+type panickingOAuthFlow struct{}
+
+func (panickingOAuthFlow) Run(context.Context, uiWriter, prompter) (*oauth.Tokens, error) {
+	panic("oauth boom")
+}
+
+func TestLoginCommandAsyncOAuthPanicBecomesError(t *testing.T) {
+	bus := event.MakeBus(4, 4, 4, 4)
+	cmd := &LoginCommand{
+		Store:       mustStore(t),
+		flowFactory: func(string) oauthFlow { return panickingOAuthFlow{} },
+	}
+	if err := cmd.Run(core.Context{EventBus: bus}, []string{"opencode", "oauth"}); err != nil {
+		t.Fatalf("async login launch: %v", err)
+	}
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case ev := <-bus.Chat:
+			if ev.Flash != nil && strings.Contains(ev.Flash.Text, "oauth boom") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("expected OAuth panic to be reported as a login error")
+		}
+	}
+}
+
+func TestLoginCommandSyncOAuthPanicBecomesError(t *testing.T) {
+	cmd := &LoginCommand{
+		Store:       mustStore(t),
+		flowFactory: func(string) oauthFlow { return panickingOAuthFlow{} },
+	}
+	err := cmd.Run(core.Context{}, []string{"opencode", "oauth"})
+	if err == nil || !strings.Contains(err.Error(), "oauth boom") {
+		t.Fatalf("sync OAuth panic error = %v, want oauth boom", err)
+	}
+}
+
+func TestLoginContinuationPanicBecomesError(t *testing.T) {
+	bus := event.MakeBus(4, 4, 4, 4)
+	runOffCommandLoop(core.Context{EventBus: bus}, "Login to opencode", func() error {
+		panic("continuation boom")
+	})
+
+	select {
+	case ev := <-bus.Chat:
+		if ev.Flash == nil || !strings.Contains(ev.Flash.Text, "continuation boom") {
+			t.Fatalf("continuation panic event = %+v, want flash error", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected continuation panic to be reported as a login error")
 	}
 }
 

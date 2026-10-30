@@ -28,6 +28,50 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
+## B36 — Start Plan catalog additions left the preset-order gate stale
+
+**Observed during B34 validation (2026-10-30)**: the full race suite failed
+`config.TestPresetProviders_StableOrder` with `PresetProviders() = 25 presets,
+want 23`. Commit `a1782e10` intentionally added `zai-start-plan` and
+`bigmodel-start-plan` to the provider catalog with wizard-addable base URLs but
+did not extend the exact-order expectation, despite the test's documented
+contract requiring that update.
+
+**Expected**: the stable-order test names both intended Start Plan presets in
+catalog order; no provider is removed or hidden to make the old count pass.
+
+**Fix plan / test approach**: add both IDs between `zai-api` and `poolside`, run
+the stable-order and catalog-coverage tests, then rerun the full race suite.
+Archive and commit separately after the gate is green.
+
+## B35 — Image attachment paths containing whitespace are split and rejected
+
+**Reported**:
+
+```text
+Image: @/Users/muaddib/Desktop/Screenshot 2026-10-30 at 14.52.06.png
+```
+
+returns:
+
+```text
+│ [image not attached — could not read: 14.52.06.png]
+```
+
+**Expected**: the complete `@`-prefixed image path is read and attached, including
+spaces in the filename; no unreadable-image error is shown.
+
+**Fix plan / test approach**
+
+1. Reproduce through `splitUserInput` with the reported path shape and inspect
+   the actual submitted/visible result. Check `@` handling as well as whitespace.
+2. Replace whitespace-only candidate parsing with path-aware parsing that keeps
+   prose and URL behavior intact. Add cases for spaces, `@`, missing files,
+   repeated paths, and surrounding prose/newlines.
+3. Validate attachment rendering on a live terminal/filmstrip, run the image
+   paste/attachment suites with `-race`, run all quality gates separately, then
+   archive and commit the closed item.
+
 ## B26 — `tui.modeline` is dead configuration: nothing reads it
 
 **Reported** (while answering B24): "I would expect WEB to follow TUI" — for the
@@ -73,6 +117,15 @@ Until then the item stays open: it is the only entry in this file.
 3. If dropped: config migration note + `config_tail`/completion entries removed.
 
 ## Closed
+
+Closed 2026-10-30 — B34, login panics escaped the host command recovery boundary
+through background OAuth and picker-continuation goroutines; direct synchronous
+login calls were unguarded too. Panic-to-error boundaries now cover all three
+paths. The exact `/login:opencode:oauth` production route returns its unsupported
+provider error without crashing. RED-before/GREEN-after panic tests, rendered
+output assertions, race-enabled package suites, vet, staticcheck, and the full
+repository race suite validate the fix. See
+[`docs/archive/b34-login-panic-boundaries.2026-10-30.md`](docs/archive/b34-login-panic-boundaries.2026-10-30.md).
 
 Closed 2026-10-23 — B33, z.ai business-token exchange rejected the provider's
 successful `code: 200` response as `Operation successful`, so neither the business

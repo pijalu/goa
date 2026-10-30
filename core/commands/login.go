@@ -321,8 +321,19 @@ func normalizeProviderID(provider string) string {
 	}
 }
 
+// recoverLoginPanic converts a login panic into an ordinary command error. It
+// must be deferred by the goroutine executing the login work: recovery does not
+// cross goroutine boundaries.
+func recoverLoginPanic(what string, err *error) {
+	if r := recover(); r != nil {
+		*err = fmt.Errorf("%s panicked: %v", what, r)
+	}
+}
+
 // Run executes the login command.
-func (c *LoginCommand) Run(ctx core.Context, args []string) error {
+func (c *LoginCommand) Run(ctx core.Context, args []string) (err error) {
+	defer recoverLoginPanic("login", &err)
+
 	if c.Store == nil {
 		return fmt.Errorf("auth store not configured")
 	}
@@ -487,7 +498,12 @@ func (c *LoginCommand) pickAuthKind(ctx core.Context, provider, display string, 
 // surfaced as a flash instead.
 func runOffCommandLoop(ctx core.Context, what string, run func() error) {
 	go func() {
-		if err := run(); err != nil {
+		var err error
+		func() {
+			defer recoverLoginPanic("login continuation", &err)
+			err = run()
+		}()
+		if err != nil {
 			ctx.Flash(fmt.Sprintf("%s failed: %v", what, err))
 		}
 	}()
@@ -683,7 +699,12 @@ func (c *LoginCommand) runOAuthFlow(ctx core.Context, provider string, flow oaut
 		return c.runOAuthFlowSync(ctx, provider, flow, ctx)
 	}
 	go func() {
-		if err := c.runOAuthFlowSync(ctx, provider, flow, liveOAuthWriter{ctx: ctx}); err != nil {
+		var err error
+		func() {
+			defer recoverLoginPanic("oauth flow", &err)
+			err = c.runOAuthFlowSync(ctx, provider, flow, liveOAuthWriter{ctx: ctx})
+		}()
+		if err != nil {
 			ctx.Flash(fmt.Sprintf("OAuth login for %s failed: %v", provider, err))
 		}
 	}()
