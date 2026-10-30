@@ -30,14 +30,13 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 ## Closed
 
-Closed 2026-10-30 — B26, `tui.modeline.left/right` was loaded but never consumed by
-production rendering. The TUI footer now renders all six configured segments with
-nil/empty compatibility, existing width priorities, live agent state, and no duplicate
-configured activity; WEB follows the identical terminal cells. Production-wiring,
-segment/state, 120/40-column filmstrip, and terminal-versus-WEB grid tests pass, as do
-vet, staticcheck, affected packages, and the full race-enabled repository suite. The
-complexity scans report only the documented pre-existing unrelated entries. Full
-resolution and validation evidence:
+Closed 2026-10-30 — B26, consuming `tui.modeline` initially changed the required
+default footer and displaced its live second-row statistics. Null defaults now
+preserve the original two-row TUI/WEB presentation; unchanged copies of the
+inert pre-renderer defaults receive the same compatibility behavior, while
+custom left/right segments remain functional. Exact production-layout RED/GREEN
+tests, copied-home-config coverage, event-driven filmstrips, three-case WEB cell
+parity, and all repository quality gates validate the resolution. See
 [`docs/archive/b26-configured-modeline.2026-10-30.md`](docs/archive/b26-configured-modeline.2026-10-30.md).
 
 Closed 2026-10-30 — B34, login panics escaped the host command recovery boundary

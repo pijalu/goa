@@ -1,9 +1,9 @@
-# B26 — `tui.modeline` was dead configuration
+# B26 — `tui.modeline` consumption and default-footer compatibility
 
 Date: 2026-10-30  
-Status: **FIXED — implemented and validated**
+Status: **Fixed — configured modelines work and the required legacy footer remains the default**
 
-## Report
+## Original report
 
 The user expected WEB to follow the TUI status bar configured through
 `tui.modeline.left/right`. Investigation found that configuration loading and cascade
@@ -13,17 +13,22 @@ had no visible effect.
 
 ## Product decision
 
-Implement the configured left/right segments in the TUI footer. WEB follows the same
+Implement configured left/right segments in the TUI footer. WEB follows the same
 footer cells through `webui.VirtualTerminal`; it does not need a second modeline
 implementation.
 
-## Resolution
+The follow-up regression report added a compatibility requirement: enabling modeline
+consumption must not change the established default footer. The default must retain
+both original rows, their ordering, and all live statistics.
 
-- `internal/app/tui.go` now passes `cfg.TUI.ModeLine.Left/Right` to every production
-  footer at construction.
+## Initial implementation
+
+Commit `dea61981` wired `cfg.TUI.ModeLine.Left/Right` into every production footer and
+added the configurable renderer:
+
 - `tui.Footer` owns a copied modeline configuration independently of `FooterData`, so
   token, context, activity, and other agent-event updates cannot reset it.
-- The first footer row renders configured segments in their declared left/right order:
+- Configured first-row segments render in their declared left/right order:
   - `app-badge` → `⬡ goa`
   - `mode-badge` → profile, goal/todo markers, and autonomy mode
   - `current-file` → the existing working-directory/git display
@@ -31,60 +36,129 @@ implementation.
   - `activity` → the current activity label
   - `help-hint` → `/help`
 - Unknown and empty entries render nothing. Explicit empty lists produce empty sides;
-  two nil lists preserve the legacy fixed footer for programmatic callers without
-  configuration. YAML omission continues to inherit the lower cascade layer.
-- The second row retains steering, model, team, workflow, and plugin state. Token stats
-  move to the configured modeline. When `activity` is configured, main, companion, and
-  delegated model formatters no longer duplicate it on the model row; when it is not
-  configured, the model row remains the activity fallback.
-- Orchestration output continues to replace the normal footer chrome. The additional
+  two nil lists preserve the legacy fixed footer. YAML omission continues to inherit
+  the lower cascade layer.
+- With a configured modeline, the second row retains steering, model, team, workflow,
+  and plugin state. When `activity` is configured, main, companion, and delegated model
+  formatters suppress duplicate model-row activity; otherwise the model row remains the
+  activity fallback.
+- Orchestration output continues to replace normal footer chrome. The additional
   agent-stats line remains intact.
-- Narrow-width rendering reuses the existing footer segment ladder. `/help` has the new
-  lowest tier and drops first; essential context/model information is retained as far
-  as possible, with final truncation guaranteeing that rows never exceed the terminal.
-- The shipped YAML and `docs/CONFIGURATION.md` now enumerate the supported names and
-  describe empty, inheritance, width, and WEB behavior.
+- Narrow-width rendering reuses the footer segment ladder. `/help` has the lowest tier
+  and drops first; final truncation guarantees that rows never exceed the terminal.
+
+## Default-footer regression
+
+The initial implementation also activated the previously inert shipped segment lists.
+That changed the default rather than only enabling customization.
+
+Observed:
+
+```text
+⬡ goa coding-posture │ YOLO ~/dev/goa (⎇ feature/zai) /help
+(kimi-code) k3.1-pro • xhigh • [8%|3%]
+```
+
+Required:
+
+```text
+~/dev/goa (⎇ feature/zai) coding-posture │ YOLO
+↑636.7K ↓101.8K 10.1 tok/s CH:97.4%▸99.4% TC:360 8.4%/1.0M c:0m-1 (kimi-code) k3.1-pro • xhigh • [8%|3%]
+```
+
+The configured renderer put every configured segment on row 1 and built row 2 only
+from steering/model/plugin state. Consequently, the default gained an application
+badge and help hint, reordered workdir and mode state, and displaced the complete
+second-row token, throughput, cache-hit, tool-count, context, and compaction fields.
+Existing tests proved configuration consumption and TUI/WEB parity but had encoded the
+new layout instead of protecting the required default.
+
+The compatibility scope included existing generated home configs: the same six-segment
+lists had shipped before the renderer existed and were still present in
+`~/.goa/config.yaml`. Changing only embedded YAML would therefore leave those
+installations on the regressed path.
+
+## Final resolution
+
+- The embedded defaults are now `left: null` and `right: null`. Two nil lists select the
+  original footer renderer, preserving the standard layout and its established width
+  degradation exactly:
+  - Row 1: workdir/git on the left; goal/profile/todo/mode state on the right.
+  - Row 2: complete live stats/activity/steering on the left;
+    model/team/workflow/plugin state on the right.
+- `configureFooterModeLine` is the shared production config-to-footer boundary. It
+  passes custom selections to `Footer.SetModeLine`, but treats an unchanged copy of
+  the exact pre-renderer six-segment defaults as no customization. Existing generated
+  configs therefore retain the footer those configs originally produced. Changing or
+  reordering the selection opts into the configured renderer.
+- Custom segment ordering, nil-versus-explicit-empty behavior, activity deduplication,
+  orchestration, dynamic footer state, and narrow-width handling are unchanged.
+- The UI scenario harness uses the same production configuration boundary. WEB tests
+  cover default, copied pre-renderer defaults, and genuinely customized modelines.
+- `config/configs/default.yaml` and `docs/CONFIGURATION.md` document the null defaults,
+  the standard two-row contract, a working custom example, and the copied-default
+  compatibility rule.
 
 ## Regression coverage
 
-- The original production-boundary test was RED before implementation:
-  `TestNewFooter_AppliesConfiguredModeLine` could not find `⬡ goa` or `/help` despite
-  configuring them. It passed after wiring `newFooter` to `SetModeLine`.
-- Footer tests cover every segment, left/right ordering, unknown/empty entries,
-  explicit-empty versus nil compatibility, widths 8–240, help-first degradation,
-  dynamic goal/team/plugin/steering state, and orchestration behavior.
-- Main, companion, and delegated activity-deduplication tests were RED when the
-  filmstrip exposed duplicate activity, then passed after the model formatter fix. A
-  separate test protects the no-`activity`-segment fallback.
-- `TestModeLineFilmstrip_DefaultSegmentsFollowAgentState` drives real app token,
-  context, and thinking events and captures `AgentFrame`/`Filmstrip` output at 120 and
-  40 columns. The final wide footer was:
+- Original RED: `TestNewFooter_AppliesConfiguredModeLine` could not find `⬡ goa` or
+  `/help` despite configuring them. It passed after production wiring was added and
+  still passes after the compatibility fix.
+- Default-layout RED: `TestNewFooter_DefaultModeLinePreservesLegacyLayout` loads the
+  real embedded configuration and supplies the reported live values. Before the fix it
+  produced the badge/help first row and model-only second row. It now compares both
+  complete rows, with only adaptive padding normalized, against the required content
+  and ordering.
+- Copied-default coverage: `TestNewFooter_CopiedPreRendererDefaultsPreserveLegacyLayout`
+  writes the old six-segment lists into an isolated home `config.yaml`, loads the real
+  cascade, and applies the same exact two-row assertion. The pre-fix reproduction
+  used an equivalent constructed config and was RED; the final cascade-level test
+  passes after the fix. It covers the existing-user path that embedded-default-only
+  coverage would miss.
+- Footer tests retain coverage for every segment, left/right ordering, unknown/empty
+  entries, explicit-empty versus nil behavior, widths 8–240, help-first degradation,
+  dynamic goal/team/plugin/steering state, orchestration, and activity deduplication.
+- `TestModeLineFilmstrip_DefaultFooterFollowsAgentState` drives real app token, context,
+  and thinking events through the production component tree. The observed wide footer
+  at 120 columns was:
 
   ```text
-  ⬡ goa coder │ SOLO project … ↑400 ↓20 2.0%/16.0K thinking /help
-                                                             ⬡ test-model • medium
+  project                                                                                                     coder │ SOLO
+  ↑400 ↓20 2.0%/16.0K                                                                       ⬡ test-model thinking • medium
   ```
 
-  At 40 columns, low-priority app/activity/help content was gone while context and the
-  model remained visible.
-- `TestWebUI_ModeLineMatchesTerminalCells` compares terminal-emulator replay with the
-  WEB virtual-terminal grid at `120x30`, `60x12`, and `40x10`, proving cell-for-cell
-  parity rather than merely checking a shared configuration value.
+  The observed 40-column footer was:
+
+  ```text
+  project                     coder │ SOLO
+  ↑400 ↓20 2.0%/16.0K        ⬡ test-model
+  ```
+
+  Neither frame contains `⬡ goa` or `/help`; live statistics remain on row 2 beside
+  the model. The filmstrip also records each event-to-frame transition.
+- `TestWebUI_ModeLineMatchesTerminalCells` compares terminal-emulator replay with WEB
+  virtual-terminal cells at `120x30`, `60x12`, and `40x10` for all three configuration
+  cases: null defaults, copied pre-renderer defaults, and custom segments. Wide-frame
+  assertions additionally check content, default row membership, and absence of the
+  default app/help badges.
 
 ## Validation evidence
 
 All commands were run against the final implementation:
 
-- `go test -count=1 -timeout 120s ./tui` — PASS
-- `go test -count=1 -timeout 120s ./internal/app` — PASS
-- `go vet ./...` — PASS
-- `staticcheck ./...` — PASS
-- `go test -count=1 -race -cover -timeout 300s ./...` — PASS across the repository
+- Targeted B26 production, filmstrip, and WEB tests — PASS.
+- `go test -count=1 -timeout 120s ./tui` — PASS.
+- `go test -count=1 -timeout 120s ./internal/app` — PASS.
+- `go test -count=1 -timeout 120s ./config` — PASS.
+- `go vet ./...` — PASS.
+- `staticcheck ./...` — PASS.
+- `go test -count=1 -race -cover -timeout 300s ./...` — PASS across the repository.
 - `gocognit -over 15 .` — no new B26 violations. Existing unrelated entries remain:
   `TestResolveStartPlanAPIKey` (23), `GoalDriver.Drive` (21),
   `AgentManager.executeRunner` (16), and `initGoalSystem` (16).
 - `gocyclo -over 12 .` — no new B26 violations. Existing unrelated entries remain:
   `TestDeviceMid_PersistsAndStable` (13) and `GoalDriver.Drive` (13).
 
-No validation server, browser, or live LLM process was started, so there is no
-validation process to clean up.
+Validation used structured terminal `AgentFrame`/`Filmstrip` output, terminal-emulator
+replay, and WEB virtual-terminal grids. No validation server, browser, PTY application,
+or live LLM process was started, so no validation process required cleanup.

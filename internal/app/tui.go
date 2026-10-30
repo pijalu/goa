@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -151,12 +152,30 @@ func (a *App) configureChat(chat *tui.ChatViewport) {
 func (a *App) newFooter() *tui.Footer {
 	footer := tui.NewFooter()
 	if cfg := a.subs.cfg; cfg != nil {
-		footer.SetModeLine(cfg.TUI.ModeLine.Left, cfg.TUI.ModeLine.Right)
+		configureFooterModeLine(footer, cfg.TUI.ModeLine)
 	}
 	footer.SetData(tui.FooterData{Workdir: a.subs.projectDir})
 	footer.RefreshGit()
 	return footer
 }
+
+// configureFooterModeLine keeps unchanged copies of the pre-renderer default
+// segment lists on the legacy footer path. Those lists were inert when they
+// shipped and were copied into generated user configs; activating them now
+// would regress the standard two-row footer those users already had.
+func configureFooterModeLine(footer *tui.Footer, cfg config.ModeLineSegmentConfig) {
+	if isPreRendererModeLineDefault(cfg) {
+		footer.SetModeLine(nil, nil)
+		return
+	}
+	footer.SetModeLine(cfg.Left, cfg.Right)
+}
+
+func isPreRendererModeLineDefault(cfg config.ModeLineSegmentConfig) bool {
+	return slices.Equal(cfg.Left, []string{"app-badge", "mode-badge", "current-file"}) &&
+		slices.Equal(cfg.Right, []string{"token-bar", "activity", "help-hint"})
+}
+
 func (a *App) configureKeyLogging(engine *tui.TUI) {
 	cfg := a.subs.cfg
 	if !cfg.Logging.TraceKeys {

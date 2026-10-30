@@ -357,17 +357,13 @@ tui:
   theme: "dark"
   layout: "default"
   show_timestamps: false
-  # First status-row segments, in display order. Supported names:
-  # app-badge, mode-badge, current-file, token-bar, activity, help-hint.
+  # Optional first status-row segment overrides, in display order. Supported
+  # names: app-badge, mode-badge, current-file, token-bar, activity, help-hint.
+  # Null on both sides preserves the standard two-row footer and its full
+  # second-row statistics. Set either side to a list to customize the first row.
   modeline:
-    left:
-      - "app-badge"
-      - "mode-badge"
-      - "current-file"
-    right:
-      - "token-bar"
-      - "activity"
-      - "help-hint"
+    left: null
+    right: null
   transparency:
     show_thinking: true
     show_streaming: true

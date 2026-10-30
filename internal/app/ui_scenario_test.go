@@ -115,7 +115,7 @@ func newUIScenarioOn(tb testing.TB, term tui.Terminal, w, h int, tuiCfg *config.
 	}
 	// Mirror createTUIComponents/newFooter: modeline configuration is renderer
 	// state, independent of the FooterData rebuilt by subsequent agent events.
-	footer.SetModeLine(cfg.TUI.ModeLine.Left, cfg.TUI.ModeLine.Right)
+	configureFooterModeLine(footer, cfg.TUI.ModeLine)
 	// Same production rule as assembleEngine: the in-chat status line is only
 	// added when the spinner location is "chat" (statusbar = footer-only).
 	if spinnerLocation(cfg) != "statusbar" {

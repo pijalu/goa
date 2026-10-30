@@ -8,24 +8,30 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/webui"
 	"github.com/pijalu/goa/tui"
 )
 
-func b26ModeLineSession(t *testing.T, term tui.Terminal, w, h int) *uiScenario {
+type modeLineParityCase struct {
+	name     string
+	modeLine config.ModeLineSegmentConfig
+	legacy   bool
+	wants    []string
+	rejects  []string
+}
+
+func b26ModeLineSession(t *testing.T, term tui.Terminal, w, h int, modeLine config.ModeLineSegmentConfig) *uiScenario {
 	t.Helper()
 	sc := b4Session(t, term, w, h)
-	sc.footer.SetModeLine(
-		[]string{"app-badge", "mode-badge", "current-file"},
-		[]string{"token-bar", "activity", "help-hint"},
-	)
+	configureFooterModeLine(sc.footer, modeLine)
 	return sc
 }
 
-func b26TermScreen(t *testing.T, w, h int) []string {
+func b26TermScreen(t *testing.T, w, h int, modeLine config.ModeLineSegmentConfig) []string {
 	t.Helper()
 	term := &testTerminal{w: w, h: h}
-	sc := b26ModeLineSession(t, term, w, h)
+	sc := b26ModeLineSession(t, term, w, h, modeLine)
 	b4Render(sc)
 	emu := tui.NewTermEmulator(h, w)
 	emu.Process(strings.Join(term.writes, ""))
@@ -36,10 +42,10 @@ func b26TermScreen(t *testing.T, w, h int) []string {
 	return rows
 }
 
-func b26WebScreen(t *testing.T, w, h int) []string {
+func b26WebScreen(t *testing.T, w, h int, modeLine config.ModeLineSegmentConfig) []string {
 	t.Helper()
 	vt := webui.NewVirtualTerminal(webui.DefaultCols, webui.DefaultRows)
-	sc := b26ModeLineSession(t, vt, webui.DefaultCols, webui.DefaultRows)
+	sc := b26ModeLineSession(t, vt, webui.DefaultCols, webui.DefaultRows, modeLine)
 	vt.Resize(w, h)
 	b4Render(sc)
 	return strings.Split(vt.Grid().Text(), "\n")
@@ -50,16 +56,41 @@ func b26WebScreen(t *testing.T, w, h int) []string {
 // emulator's replay proves that WEB follows the configured TUI modeline rather
 // than maintaining a second status-bar implementation.
 func TestWebUI_ModeLineMatchesTerminalCells(t *testing.T) {
-	for _, geometry := range [][2]int{{120, 30}, {60, 12}, {40, 10}} {
-		w, h := geometry[0], geometry[1]
-		t.Run(geoName(w, h), func(t *testing.T) { assertModeLineCellParity(t, w, h) })
+	legacyWants := []string{"/home/user/project", "↑169k", "deepseek-v4-flash"}
+	legacyRejects := []string{"⬡ goa", "/help"}
+	tests := []modeLineParityCase{
+		{name: "default", legacy: true, wants: legacyWants, rejects: legacyRejects},
+		{
+			name: "copied_pre_renderer_defaults",
+			modeLine: config.ModeLineSegmentConfig{
+				Left:  []string{"app-badge", "mode-badge", "current-file"},
+				Right: []string{"token-bar", "activity", "help-hint"},
+			},
+			legacy: true, wants: legacyWants, rejects: legacyRejects,
+		},
+		{
+			name: "configured",
+			modeLine: config.ModeLineSegmentConfig{
+				Left:  []string{"current-file", "app-badge", "mode-badge"},
+				Right: []string{"token-bar", "activity", "help-hint"},
+			},
+			wants: []string{"⬡ goa", "/help", "↑169k", "deepseek-v4-flash"},
+		},
+	}
+	for _, tc := range tests {
+		for _, geometry := range [][2]int{{120, 30}, {60, 12}, {40, 10}} {
+			w, h := geometry[0], geometry[1]
+			t.Run(tc.name+"/"+geoName(w, h), func(t *testing.T) {
+				assertModeLineCellParity(t, w, h, tc)
+			})
+		}
 	}
 }
 
-func assertModeLineCellParity(t *testing.T, w, h int) {
+func assertModeLineCellParity(t *testing.T, w, h int, tc modeLineParityCase) {
 	t.Helper()
-	want := b26TermScreen(t, w, h)
-	got := b26WebScreen(t, w, h)
+	want := b26TermScreen(t, w, h, tc.modeLine)
+	got := b26WebScreen(t, w, h, tc.modeLine)
 	if len(got) != len(want) {
 		t.Fatalf("web rows = %d, terminal rows = %d", len(got), len(want))
 	}
@@ -69,7 +100,22 @@ func assertModeLineCellParity(t *testing.T, w, h int) {
 		}
 	}
 	if w == 120 {
-		assertModeLineContainsAll(t, strings.Join(want, "\n"), []string{"⬡ goa", "/help", "↑169k", "deepseek-v4-flash"})
+		assertWideModeLineContent(t, want, tc)
+	}
+}
+
+func assertWideModeLineContent(t *testing.T, rows []string, tc modeLineParityCase) {
+	t.Helper()
+	text := strings.Join(rows, "\n")
+	assertModeLineContainsAll(t, text, tc.wants)
+	for _, unwanted := range tc.rejects {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("terminal band unexpectedly contains %q:\n%s", unwanted, text)
+		}
+	}
+	if tc.legacy {
+		assertModeLineContainsAll(t, rows[len(rows)-2], []string{"/home/user/project"})
+		assertModeLineContainsAll(t, rows[len(rows)-1], []string{"↑169k", "deepseek-v4-flash"})
 	}
 }
 

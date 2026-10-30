@@ -8,20 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic"
 )
 
-// TestModeLineFilmstrip_DefaultSegmentsFollowAgentState exercises configured
-// modeline cells through the production app event path and records the visible
-// terminal frames, including the narrow-width priority behavior.
-func TestModeLineFilmstrip_DefaultSegmentsFollowAgentState(t *testing.T) {
-	sc := newUIScenarioCfg(t, 120, 24, &config.TUIConfig{
-		ModeLine: config.ModeLineSegmentConfig{
-			Left:  []string{"app-badge", "mode-badge", "current-file"},
-			Right: []string{"token-bar", "activity", "help-hint"},
-		},
-	})
+// TestModeLineFilmstrip_DefaultFooterFollowsAgentState exercises the shipped
+// two-row footer through the production app event path and records visible
+// terminal frames, including narrow-width priority behavior.
+func TestModeLineFilmstrip_DefaultFooterFollowsAgentState(t *testing.T) {
+	sc := newUIScenarioCfg(t, 120, 24, nil)
 	sc.engine.ApplySync(func() {
 		data := sc.footer.Data()
 		data.Workdir = "project"
@@ -42,10 +36,24 @@ func TestModeLineFilmstrip_DefaultSegmentsFollowAgentState(t *testing.T) {
 	}
 
 	wide := sc.filmstrip().Last().Frame
+	if len(wide.Visible) < 2 {
+		t.Fatalf("default frame has too few rows: %s", wide.Dump())
+	}
+	rows := wide.Visible[len(wide.Visible)-2:]
+	for _, want := range []string{"project", "SOLO"} {
+		if !strings.Contains(rows[0], want) {
+			t.Errorf("default first row missing %q\n%s", want, wide.Dump())
+		}
+	}
+	for _, want := range []string{"↑400", "↓20", "2.0%", "thinking", "test-model"} {
+		if !strings.Contains(rows[1], want) {
+			t.Errorf("default statistics row missing %q\n%s", want, wide.Dump())
+		}
+	}
 	wideText := strings.Join(wide.Visible, "\n")
-	for _, want := range []string{"⬡ goa", "SOLO", "project", "2.0%", "thinking", "/help", "test-model"} {
-		if !strings.Contains(wideText, want) {
-			t.Errorf("default modeline missing %q\n%s", want, wide.Dump())
+	for _, unwanted := range []string{"⬡ goa", "/help"} {
+		if strings.Contains(wideText, unwanted) {
+			t.Errorf("default footer unexpectedly renders %q\n%s", unwanted, wide.Dump())
 		}
 	}
 
@@ -60,9 +68,9 @@ func TestModeLineFilmstrip_DefaultSegmentsFollowAgentState(t *testing.T) {
 		}
 	}
 	if strings.Contains(narrowText, "/help") {
-		t.Errorf("lowest-priority help survived before essential modeline content:\n%s", narrow.Dump())
+		t.Errorf("default narrow footer unexpectedly gained a help hint:\n%s", narrow.Dump())
 	}
 
-	t.Logf("configured modeline agent frames:\nWIDE:\n%s\nNARROW:\n%s\nFILMSTRIP:\n%s",
+	t.Logf("default footer agent frames:\nWIDE:\n%s\nNARROW:\n%s\nFILMSTRIP:\n%s",
 		wide.Dump(), narrow.Dump(), sc.filmstrip().Render())
 }

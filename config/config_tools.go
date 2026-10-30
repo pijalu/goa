@@ -104,7 +104,8 @@ type SearchConfig struct {
 	Exclude    []string `yaml:"exclude"`
 }
 
-// ModeLineSegmentConfig configures a single mode line segment or side.
+// ModeLineSegmentConfig configures optional first-row segment overrides.
+// Nil left and right lists preserve the standard two-row footer.
 type ModeLineSegmentConfig struct {
 	Left  []string `yaml:"left,omitempty"`
 	Right []string `yaml:"right,omitempty"`
