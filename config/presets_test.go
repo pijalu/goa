@@ -155,7 +155,7 @@ func TestPresetProviders_StableOrder(t *testing.T) {
 	expected := []string{
 		"openai", "openai-codex", "lmstudio", "ollama", "openrouter",
 		"opencode", "opencode-go", "deepseek", "kimi", "kimi-code",
-		"zai", "zai-api", "poolside",
+		"zai", "zai-api", "zai-start-plan", "bigmodel-start-plan", "poolside",
 		"vercel",
 		"anthropic", "google", "mistral",
 		"groq", "xai", "together", "fireworks", "perplexity", "github",

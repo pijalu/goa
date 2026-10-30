@@ -28,22 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B36 — Start Plan catalog additions left the preset-order gate stale
-
-**Observed during B34 validation (2026-10-30)**: the full race suite failed
-`config.TestPresetProviders_StableOrder` with `PresetProviders() = 25 presets,
-want 23`. Commit `a1782e10` intentionally added `zai-start-plan` and
-`bigmodel-start-plan` to the provider catalog with wizard-addable base URLs but
-did not extend the exact-order expectation, despite the test's documented
-contract requiring that update.
-
-**Expected**: the stable-order test names both intended Start Plan presets in
-catalog order; no provider is removed or hidden to make the old count pass.
-
-**Fix plan / test approach**: add both IDs between `zai-api` and `poolside`, run
-the stable-order and catalog-coverage tests, then rerun the full race suite.
-Archive and commit separately after the gate is green.
-
 ## B35 — Image attachment paths containing whitespace are split and rejected
 
 **Reported**:
