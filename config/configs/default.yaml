@@ -357,6 +357,8 @@ tui:
   theme: "dark"
   layout: "default"
   show_timestamps: false
+  # First status-row segments, in display order. Supported names:
+  # app-badge, mode-badge, current-file, token-bar, activity, help-hint.
   modeline:
     left:
       - "app-badge"

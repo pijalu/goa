@@ -11,11 +11,12 @@ import (
 
 // Footer displays a two-line status bar at the bottom of the TUI.
 //
-// Concurrency: the commandLoop is the sole owner of data. SetData/SetMinorMode/
+// Concurrency: the commandLoop is the sole owner of data. SetData/SetModeLine/SetMinorMode/
 // SetModelBusy/SetCompanionBusy/SetGitInfo/RefreshGit and Render all run on the
 // loop (serialized by the commandLoop), so no mutex is required.
 type Footer struct {
-	data FooterData
+	data     FooterData
+	modeLine modeLineConfig
 }
 
 // NewFooter creates a Footer.

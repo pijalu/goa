@@ -28,51 +28,17 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## B26 — `tui.modeline` is dead configuration: nothing reads it
-
-**Reported** (while answering B24): "I would expect WEB to follow TUI" — for the
-status bar, whose segments come from `tui.modeline`.
-
-**Observed**: `config/config_tools.go:119` defines `ModeLine
-ModeLineSegmentConfig` with `left`/`right` segment lists (the user's config sets
-`left: [app-badge, mode-badge, current-file]`, `right: [token-bar, activity,
-help-hint]`), and **no production code references `ModeLine` at all** — a repo-wide
-search for the identifier finds only its declaration. The status bar both the TUI and
-the web band show is `tui.Footer`'s own fixed layout (cwd + mode / model + stats), so
-a user who configures the modeline sees nothing change, in either renderer.
-
-**Expected**: either the configured segments drive the status bar in the TUI (and the
-web band follows it, since it renders the same cells), or the dead config is removed
-and the schema stops advertising it.
-
-**Note (2026-10-10, awaiting a decision — do not close silently)**: reported by the
-user while answering B24, with the explicit expectation "I would expect WEB to follow
-TUI". What the user sees today in the web band is the TUI's own footer —
-`<cwd> … <mode> │ <autonomy>` and `<provider> <model> • <thinking level> •
-<tokens|context|loop>` — because the band renders the same cells the engine paints;
-the configured segments (`app-badge`, `mode-badge`, `current-file` / `token-bar`,
-`activity`, `help-hint`) appear nowhere, in either renderer. Two ways to close it,
-and the choice is a product decision:
-
-1. **Implement** the segments in `tui/footer_render.go` (the ladder in
-   `dropFooterTier` already handles narrow widths) — the web band then follows for
-   free, being the same cells; or
-2. **Remove** `ModeLine` from `config/config_tools.go` and its docs, so the schema
-   stops offering a knob that does nothing.
-
-Until then the item stays open: it is the only entry in this file.
-
-**Fix plan / test approach**
-
-1. Decide with the user which way to close it: implement `modeline.left/right`
-   segments (app-badge, mode-badge, current-file, token-bar, activity, help-hint) in
-   `tui/footer_render.go`, or drop the field from the config schema plus its docs.
-2. If implemented: a footer render test per segment, the ladder (dropFooterTier) kept
-   for narrow widths, and a web check that the band shows the same row (it is the same
-   cells, so the cells-plane golden is the pin).
-3. If dropped: config migration note + `config_tail`/completion entries removed.
-
 ## Closed
+
+Closed 2026-10-30 — B26, `tui.modeline.left/right` was loaded but never consumed by
+production rendering. The TUI footer now renders all six configured segments with
+nil/empty compatibility, existing width priorities, live agent state, and no duplicate
+configured activity; WEB follows the identical terminal cells. Production-wiring,
+segment/state, 120/40-column filmstrip, and terminal-versus-WEB grid tests pass, as do
+vet, staticcheck, affected packages, and the full race-enabled repository suite. The
+complexity scans report only the documented pre-existing unrelated entries. Full
+resolution and validation evidence:
+[`docs/archive/b26-configured-modeline.2026-10-30.md`](docs/archive/b26-configured-modeline.2026-10-30.md).
 
 Closed 2026-10-30 — B34, login panics escaped the host command recovery boundary
 through background OAuth and picker-continuation goroutines; direct synchronous

@@ -318,6 +318,9 @@ tui:
   spinner: hexagon                   # hexagon (default), arc, dots, line, star, orbit, quadrant, flare, none
   animated_title: true               # Animate the terminal title with the spinner while working (default: true)
   show_timestamps: false             # Show timestamps in the chat viewport
+  modeline:                           # First status row; see Status Modeline below
+    left: [app-badge, mode-badge, current-file]
+    right: [token-bar, activity, help-hint]
   transparency:
     show_thinking: true              # Show reasoning/thinking blocks
     show_streaming: true             # Show streaming status indicators
@@ -598,6 +601,29 @@ goa --logfile ./goa.log            # Write agent/LLM trace logs to file
 # When --logfile is set, --debug is implied and every agent output event is
 # traced to the file. Useful for diagnosing hangs or missing responses.
 ```
+
+## Status Modeline
+
+`tui.modeline.left` and `tui.modeline.right` select and order the segments on the
+first footer row. The supported segment names are:
+
+- `app-badge`: the Goa brand (`⬡ goa`).
+- `mode-badge`: profile, active-goal markers, and autonomy mode.
+- `current-file`: working directory and git branch/status.
+- `token-bar`: token, cache, cost, tool, and context statistics.
+- `activity`: the current agent activity label.
+- `help-hint`: the `/help` command hint.
+
+The second row retains the essential model, team, workflow, steering, and plugin
+display. Token statistics and activity move to the configured modeline instead of
+being duplicated on that row. Unknown or empty entries render nothing. Use `[]`
+for an explicitly empty side. In YAML, an omitted list inherits the next-lower
+cascade layer (the shipped defaults above when no override exists). Programmatic
+footers with two nil lists retain the legacy fixed layout. Under width pressure,
+the existing footer
+priority ladder drops low-value fields first, starting with the help hint. The
+Web UI renders the same footer cells as the terminal, so no separate Web
+modeline configuration is needed.
 
 ## Runtime TUI Toggles
 

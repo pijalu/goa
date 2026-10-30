@@ -39,11 +39,13 @@ func (f *Footer) Render(width int) []string {
 	if f.data.OrchestrationStats != "" {
 		return f.renderOrchStatsLines(width, styler)
 	}
+	if f.modeLine.enabled() {
+		return f.renderConfiguredFooter(width, fg, styler)
+	}
 
 	// Line 1: working directory (left) / [◈ active-goal marker] profile(minor) + mode badge (right)
 	workdir := f.formatWorkdirAdaptive(width)
-	modeBadge := ansi.Fg(f.modeColor()) + strings.ToUpper(f.data.Mode) + ansi.Reset + fg
-	right1 := fmt.Sprintf("%s %s %s", f.goalProfileLabel(fg), ansi.BoxVertical, modeBadge)
+	right1 := f.modeBadgeText(fg)
 	line1 := renderTwoCol(workdir, right1, width, styler)
 
 	// Line 2: conversation stats / activity / steering hint (left) / model +
@@ -120,11 +122,17 @@ func (f *Footer) buildLeftSide(fg string) string {
 			left2 = appendWithSep(left2, f.data.Tokens)
 		}
 	}
-	if f.data.SteeringHint != "" {
-		hint := ansi.Fg("#d29922") + f.data.SteeringHint + ansi.Reset + fg
+	if hint := f.buildSteeringHint(fg); hint != "" {
 		left2 = appendWithSep(left2, hint)
 	}
 	return left2
+}
+
+func (f *Footer) buildSteeringHint(fg string) string {
+	if f.data.SteeringHint == "" {
+		return ""
+	}
+	return ansi.Fg("#d29922") + f.data.SteeringHint + ansi.Reset + fg
 }
 
 // appendWithSep appends s to base with a vertical-bar separator, or returns s when
@@ -227,7 +235,7 @@ func (f *Footer) buildActiveAgentDisplay(availWidth int) string {
 			mainModel = s
 		}
 	}
-	mainPart := FormatModelPart(mainModel, "", f.data.MainActivity, f.data.ModelBusy, false, peakStatusForProvider(f.data.Provider, time.Now()))
+	mainPart := FormatModelPart(mainModel, "", f.modelRowActivity(f.data.MainActivity), f.data.ModelBusy, false, peakStatusForProvider(f.data.Provider, time.Now()))
 
 	// Active agent part: color the role label to match the chat widget.
 	role := f.data.ActiveAgentRole
@@ -239,7 +247,7 @@ func (f *Footer) buildActiveAgentDisplay(availWidth int) string {
 		agentModel = "(" + f.data.ActiveAgentProvider + ") " + agentModel
 	}
 	label := ansi.Fg(hashColor(role)) + role + ansi.Reset + " "
-	agentPart := label + FormatModelPart(agentModel, "", f.data.CompanionActivity, true, true, peakStatusForProvider(f.data.ActiveAgentProvider, time.Now()))
+	agentPart := label + FormatModelPart(agentModel, "", f.modelRowActivity(f.data.CompanionActivity), true, true, peakStatusForProvider(f.data.ActiveAgentProvider, time.Now()))
 
 	return mainPart + " " + ansi.Fg("#8b949e") + "|" + ansi.Reset + " " + agentPart
 }
@@ -324,7 +332,7 @@ func stripProviderPrefix(model string) string {
 func (f *Footer) buildMainModelDisplay(fg string, availWidth int) string {
 	var right2 string
 	if f.data.Model != "" {
-		part := FormatModelPart(f.data.Model, f.data.ThinkingLevel, f.data.MainActivity, f.data.ModelBusy, true, peakStatusForProvider(f.data.Provider, time.Now()))
+		part := FormatModelPart(f.data.Model, f.data.ThinkingLevel, f.modelRowActivity(f.data.MainActivity), f.data.ModelBusy, true, peakStatusForProvider(f.data.Provider, time.Now()))
 		right2 = part
 	} else {
 		right2 = "no-model"
@@ -350,7 +358,13 @@ func (f *Footer) buildMainModelDisplay(fg string, availWidth int) string {
 // never wider than the terminal (a wider line is clipped mid-glyph by the
 // screen, which is exactly the reported defect).
 func (f *Footer) fitStatusLine(left, right string, width int, fg string) (string, string) {
-	leftSegments := f.widthLadderSegments()
+	return f.fitStatusLineSegments(left, f.widthLadderSegments(), right, width, fg)
+}
+
+// fitStatusLineSegments is fitStatusLine with an explicit left-side segment
+// source. A nil source keeps the caller's left string intact, as required by
+// the configured modeline layout where stats live on the first row.
+func (f *Footer) fitStatusLineSegments(left string, leftSegments []FooterSegment, right string, width int, fg string) (string, string) {
 	fits := func() bool { return visibleWidth(left)+1+visibleWidth(right) <= width }
 
 	for _, drop := range []func(){
@@ -566,7 +580,7 @@ func (f *Footer) buildCompanionMainPart(vis companionVis) string {
 		mainLevel = f.data.ThinkingLevel
 	}
 	mainActive := !f.data.CompanionBusy
-	return FormatModelPart(mainModel, mainLevel, f.data.MainActivity, f.data.ModelBusy, mainActive, peakStatusForProvider(f.data.Provider, time.Now()))
+	return FormatModelPart(mainModel, mainLevel, f.modelRowActivity(f.data.MainActivity), f.data.ModelBusy, mainActive, peakStatusForProvider(f.data.Provider, time.Now()))
 }
 
 func (f *Footer) buildCompanionSubPart(vis companionVis) string {
@@ -582,7 +596,7 @@ func (f *Footer) buildCompanionSubPart(vis companionVis) string {
 	if vis.showThinking {
 		compLevel = f.data.CompanionThinkingLevel
 	}
-	return FormatModelPart(companionDisplay, compLevel, f.data.CompanionActivity, f.data.CompanionBusy, f.data.CompanionBusy, peakStatusForProvider(f.data.Provider, time.Now()))
+	return FormatModelPart(companionDisplay, compLevel, f.modelRowActivity(f.data.CompanionActivity), f.data.CompanionBusy, f.data.CompanionBusy, peakStatusForProvider(f.data.Provider, time.Now()))
 }
 
 func (f *Footer) applyCompanionProviderPrefix(companionDisplay string, showProvider bool) string {

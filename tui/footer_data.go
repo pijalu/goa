@@ -95,10 +95,11 @@ type FooterSegment struct {
 }
 
 // The status-line priority ladder (bugs.md B11), lowest value → dropped first:
-// the amount is the first casualty and the context/quota figure is never
-// dropped. The model identity (tier 8) is preserved by ellipsizing the model
-// name before anything at tier 8 is removed.
+// a configured help hint is the first casualty, followed by the amount; the
+// context/quota figure is never dropped. The model identity (tier 8) is
+// preserved by ellipsizing the model name before anything at tier 8 is removed.
 const (
+	FooterTierHelp     = 0 // /help (configured modeline only)
 	FooterTierAmount   = 1 // $0.6259
 	FooterTierProvider = 2 // (opencode-go)
 	FooterTierTokens   = 3 // ↑291.6K ↓130.4K

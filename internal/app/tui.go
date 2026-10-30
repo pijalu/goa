@@ -150,6 +150,9 @@ func (a *App) configureChat(chat *tui.ChatViewport) {
 
 func (a *App) newFooter() *tui.Footer {
 	footer := tui.NewFooter()
+	if cfg := a.subs.cfg; cfg != nil {
+		footer.SetModeLine(cfg.TUI.ModeLine.Left, cfg.TUI.ModeLine.Right)
+	}
 	footer.SetData(tui.FooterData{Workdir: a.subs.projectDir})
 	footer.RefreshGit()
 	return footer
