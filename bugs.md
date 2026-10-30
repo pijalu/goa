@@ -28,36 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-### B38 — Keep provider configuration global unless a project explicitly overrides it
-
-**Observed behavior.** Project configuration can acquire provider/model and
-general settings copied from the global configuration. This duplicates provider
-credentials and configuration keys into project `.goa` files, makes projects
-unnecessarily stateful, and prevents later global changes from being the single
-source of truth.
-
-**Expected behavior.** `$HOME/.goa` owns provider definitions/credentials, the
-available model configuration, general compression/tool settings, and the global
-default provider/model selection by default. A project `.goa` may intentionally
-select or override a default provider/model and other settings, but merely
-initializing or using a project must not copy global provider definitions,
-credentials, or general configuration into it. Explicit project overrides still
-win through the normal cascade.
-
-**Fix and validation plan.**
-1. Trace config initialization, `goa config` reads/writes, provider/model
-   selection, and project/home persistence to identify the copy boundary.
-2. Add RED tests using isolated HOME and project directories: fresh project
-   setup inherits global providers/models and general settings without writing
-   them locally; global default selection works with no project file; deliberate
-   project provider/model overrides persist locally and take precedence.
-3. Add secret-hygiene tests proving API keys, tokens, provider endpoints/models,
-   and unrelated global sections are absent from newly written project files,
-   while existing explicit project overrides remain backward compatible.
-4. Validate the actual CLI/config UI output and global→project→local→env→flag
-   precedence, run the config/app/command suites and all repository quality
-   gates separately, then archive this entry and commit the verified fix.
-
 ### B39 — Complete `@~` as the home directory
 
 **Observed behavior.** `@` path completion cannot complete the bare `@~` token.
@@ -85,6 +55,14 @@ failures produce no candidates rather than a panic or an incorrect path.
    separately. Archive this entry and commit the verified fix.
 
 ## Closed
+
+Closed 2026-10-30 — B38, thinking-level persistence copied global provider
+credentials, model catalogs, and zero-valued general sections into project
+config files. Catalog writes now remain home-only; project persistence is
+selection-only and preserves explicit project provider/model/general overrides.
+Real-filesystem secret-hygiene and cascade regressions, fresh-project inheritance,
+race-enabled repository tests, vet, and staticcheck validate the fix. See
+[`docs/archive/b38-project-config-scope.2026-10-30.md`](docs/archive/b38-project-config-scope.2026-10-30.md).
 
 Closed 2026-10-30 — B37, `read` could only report images as binary even for
 vision-capable models. The explicit `include_image` option now returns generic

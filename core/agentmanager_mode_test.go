@@ -568,9 +568,10 @@ func TestAgentManager_SetThinkingLevel_WithoutSession_DoesNotQueue(t *testing.T)
 // recordingConfigSaver implements config.ConfigSaver for tests: it records
 // home/project providers+models save calls and can inject an error.
 type recordingConfigSaver struct {
-	homeSaves    int
-	projectSaves int
-	err          error
+	homeSaves          int
+	projectSaves       int
+	projectActiveSaves int
+	err                error
 }
 
 func (f *recordingConfigSaver) Save(cfg *config.Config) error { return f.err }
@@ -586,6 +587,7 @@ func (f *recordingConfigSaver) SaveProjectProvidersAndModels(cfg *config.Config)
 	return f.err
 }
 func (f *recordingConfigSaver) SaveProjectActiveModel(cfg *config.Config) error {
+	f.projectActiveSaves++
 	return f.err
 }
 func (f *recordingConfigSaver) SaveHomeField(path []string, value any) error    { return f.err }
@@ -736,8 +738,11 @@ func TestAgentManager_SetThinkingLevel_AutoSaveModel(t *testing.T) {
 	if err := am.SetThinkingLevel("low"); err != nil {
 		t.Fatalf("SetThinkingLevel: %v", err)
 	}
-	if saver.projectSaves != 1 {
-		t.Errorf("project saves = %d, want 1 (auto_save_model on)", saver.projectSaves)
+	if saver.projectActiveSaves != 1 {
+		t.Errorf("project active-selection saves = %d, want 1 (auto_save_model on)", saver.projectActiveSaves)
+	}
+	if saver.projectSaves != 0 {
+		t.Errorf("project catalog saves = %d, want 0; catalogs are global", saver.projectSaves)
 	}
 }
 

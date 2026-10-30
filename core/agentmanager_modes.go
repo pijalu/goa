@@ -165,8 +165,10 @@ func (am *AgentManager) saveModelThinkingLevel(level string) error {
 		return fmt.Errorf("failed to save model thinking level: %w", err)
 	}
 	if cfg.Execution.AutoSaveModelEnabled() {
-		if err := saver.SaveProjectProvidersAndModels(cfg); err != nil {
-			return fmt.Errorf("failed to save model thinking level to project: %w", err)
+		// Thinking levels live in the global model catalog. The project layer
+		// may pin the selection, but must never receive a copy of that catalog.
+		if err := saver.SaveProjectActiveModel(cfg); err != nil {
+			return fmt.Errorf("failed to save active model to project: %w", err)
 		}
 	}
 	return nil

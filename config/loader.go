@@ -52,8 +52,9 @@ type ConfigSaver interface {
 	// active_model in ~/.goa/config.yaml without overwriting other home settings.
 	SaveHomeProvidersAndModels(cfg *Config) error
 
-	// SaveProjectProvidersAndModels updates providers, models, active_provider, and
-	// active_model in .goa/config.yaml without overwriting other project settings.
+	// SaveProjectProvidersAndModels is deprecated: use SaveProjectActiveModel.
+	// It persists only active_provider and active_model. Provider definitions and
+	// model catalogs are global state and must never be copied into a project.
 	SaveProjectProvidersAndModels(cfg *Config) error
 
 	// SaveProjectActiveModel persists ONLY active_provider and active_model into
@@ -547,53 +548,12 @@ func (cl *CascadeLoader) SaveHomeProvidersAndModels(cfg *Config) error {
 	return nil
 }
 
-// SaveProjectProvidersAndModels updates providers, models, active_provider, and
-// active_model in .goa/config.yaml without overwriting other project settings.
-// It reads the existing project file (if any), applies the provider/model fields
-// from cfg, and writes the merged result back.
+// SaveProjectProvidersAndModels is retained for compatibility with older
+// callers. Provider definitions and model catalogs belong to the home layer;
+// only the intentional project selection may be pinned here. Field-scoped
+// writes preserve every explicit project override already present on disk.
+//
+// Deprecated: use SaveProjectActiveModel.
 func (cl *CascadeLoader) SaveProjectProvidersAndModels(cfg *Config) error {
-	cl.writeMu.Lock()
-	defer cl.writeMu.Unlock()
-	configDir := filepath.Join(cl.projectDir, ".goa")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("create project config dir: %w", err)
-	}
-	pathYaml := filepath.Join(configDir, "config.yaml")
-
-	projectCfg := &Config{}
-	data, err := os.ReadFile(pathYaml)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("read project config: %w", err)
-		}
-		// If the project config doesn't exist, nothing to update
-		return nil
-	}
-	if err := yaml.Unmarshal(data, projectCfg); err != nil {
-		return fmt.Errorf("unmarshal project config: %w", err)
-	}
-
-	projectCfg.ActiveProvider = cfg.ActiveProvider
-	projectCfg.ActiveModel = cfg.ActiveModel
-	projectCfg.Providers = cfg.Providers
-	projectCfg.Models = persistableModels(cfg.Models)
-
-	saveCfg := projectCfg.DeepCopy()
-	saveCfg.FirstRun = false
-	saveCfg.ConfigDir = ""
-	sanitizeBareStallDurations(&saveCfg.Execution, pathYaml)
-
-	out, err := yaml.Marshal(saveCfg)
-	if err != nil {
-		return fmt.Errorf("marshal project config: %w", err)
-	}
-	prev, hadPrev := existingConfigBytes(pathYaml)
-	if err := os.WriteFile(pathYaml, out, 0644); err != nil {
-		return fmt.Errorf("write project config: %w", err)
-	}
-	if err := validateConfigBytes(out, "project"); err != nil {
-		rollbackConfigFile(pathYaml, prev, hadPrev)
-		return fmt.Errorf("%w; the previous project config was restored", err)
-	}
-	return nil
+	return cl.SaveProjectActiveModel(cfg)
 }
