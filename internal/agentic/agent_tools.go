@@ -9,6 +9,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/perms"
 	"github.com/pijalu/goa/internal/toolaccess"
@@ -128,11 +129,21 @@ func indexResultsByID(results []ToolCallResult) map[string]ToolCallResult {
 
 func (a *Agent) appendToolResults(tcs []provider.ContentBlock, realResults []ToolCallResult) {
 	byID := indexResultsByID(realResults)
+	visionCapable := provider.IsVisionModel(a.Model())
 	for _, tc := range tcs {
 		content := a.resolveToolResultContent(tc, byID)
+		result := byID[tc.ToolCallID]
+		images := result.Images
+		if result.Err != nil || a.budgetToolCalls[tc.ToolCallID] != "" {
+			images = nil
+		}
+		if len(images) > 0 && !visionCapable {
+			images = nil
+			content = appendToolImageOmission(content)
+		}
 		toolResult := Message{
 			Type: Content, Role: ToolRole, Content: content,
-			ToolName: tc.ToolName, ToolCallID: tc.ToolCallID,
+			ToolName: tc.ToolName, ToolCallID: tc.ToolCallID, Images: images,
 		}
 		// Mark execution outcome authoritatively (metaToolError): the
 		// runaway-loop guardrail counts successful tool results as progress
@@ -153,10 +164,17 @@ func (a *Agent) appendToolResults(tcs []provider.ContentBlock, realResults []Too
 			a.emitEvent(OutputEvent{
 				Type: EventToolResult, State: StateToolResult,
 				ToolName: tc.ToolName, ToolResult: content, Text: content,
-				ToolCallID: tc.ToolCallID,
+				ToolCallID: tc.ToolCallID, Images: images,
 			})
 		}
 	}
+}
+
+func appendToolImageOmission(content string) string {
+	if content == "" {
+		return schema.ToolImageOmittedPlaceholder
+	}
+	return content + "\n\n" + schema.ToolImageOmittedPlaceholder
 }
 
 // fileToolNames are the tools whose successful results are treated as

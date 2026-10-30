@@ -32,7 +32,7 @@ func (h *MessageHook) Init(profile schema.VariantProfile) error {
 
 // ApplyRequest transforms messages before they reach the protocol converter.
 func (h *MessageHook) ApplyRequest(ctx *RequestContext) error {
-	ctx.Context.Messages = downgradeImages(ctx.Context.Messages, h.profile)
+	ctx.Context.Messages = downgradeImages(ctx.Context.Messages, ctx.Model, h.profile)
 	ctx.Context.Messages = filterStopReasons(ctx.Context.Messages)
 	ctx.Context.Messages = keepSignatureOnlyThinking(ctx.Context.Messages)
 	ctx.Context.Messages = convertThinkingToTextWhenRequired(ctx.Context.Messages, ctx.Model, h.profile)
@@ -46,32 +46,61 @@ func (h *MessageHook) ApplyResponse(ctx *ResponseContext) error { return nil }
 // ApplyError is a no-op for messages.
 func (h *MessageHook) ApplyError(ctx *ErrorContext) error { return nil }
 
-func downgradeImages(messages []schema.Message, profile schema.VariantProfile) []schema.Message {
-	if profile.Compat.ImageURLScheme != "" {
-		return messages
-	}
+func downgradeImages(messages []schema.Message, model schema.Model, profile schema.VariantProfile) []schema.Message {
 	out := make([]schema.Message, len(messages))
-	for i, m := range messages {
-		out[i] = m
-		if len(m.Content) == 0 {
-			continue
-		}
-		converted := make([]schema.ContentBlock, 0, len(m.Content))
-		previousPlaceholder := false
-		for _, b := range m.Content {
-			if b.Type == schema.ContentBlockImage {
-				if !previousPlaceholder {
-					converted = append(converted, schema.ContentBlock{Type: schema.ContentBlockText, Text: "(image omitted)"})
-				}
-				previousPlaceholder = true
-				continue
-			}
-			converted = append(converted, b)
-			previousPlaceholder = b.Type == schema.ContentBlockText && b.Text == "(image omitted)"
-		}
-		out[i].Content = converted
+	for i, message := range messages {
+		out[i] = downgradeMessageImages(message, modelSupportsImages(model), profile)
 	}
 	return out
+}
+
+func modelSupportsImages(model schema.Model) bool {
+	if model.IsVisionModel {
+		return true
+	}
+	for _, inputType := range model.InputTypes {
+		if inputType == "image" {
+			return true
+		}
+	}
+	return false
+}
+
+func downgradeMessageImages(message schema.Message, visionCapable bool, profile schema.VariantProfile) schema.Message {
+	if len(message.Content) == 0 {
+		return message
+	}
+	if message.Role == schema.RoleToolResult {
+		if !visionCapable {
+			message.Content = schema.DowngradeToolResultImages(message.Content)
+		}
+		return message
+	}
+	// User-image handling keeps its existing protocol compatibility gate;
+	// the active-model capability gate above is specific to tool attachments.
+	if profile.Compat.ImageURLScheme != "" {
+		return message
+	}
+	message.Content = downgradeNonToolImages(message.Content)
+	return message
+}
+
+func downgradeNonToolImages(blocks []schema.ContentBlock) []schema.ContentBlock {
+	const placeholder = "(image omitted)"
+	converted := make([]schema.ContentBlock, 0, len(blocks))
+	previousPlaceholder := false
+	for _, block := range blocks {
+		if block.Type == schema.ContentBlockImage {
+			if !previousPlaceholder {
+				converted = append(converted, schema.ContentBlock{Type: schema.ContentBlockText, Text: placeholder})
+			}
+			previousPlaceholder = true
+			continue
+		}
+		converted = append(converted, block)
+		previousPlaceholder = block.Type == schema.ContentBlockText && block.Text == placeholder
+	}
+	return converted
 }
 
 func filterStopReasons(messages []schema.Message) []schema.Message {

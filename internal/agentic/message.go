@@ -56,7 +56,7 @@ type Message struct {
 	Timings        *TokenTimings   `json:"timings,omitempty"`         // Token generation performance metrics
 	PromptProgress *PromptProgress `json:"prompt_progress,omitempty"` // Prompt processing progress information
 
-	// Images holds image attachments for multimodal user messages.
+	// Images holds image attachments for multimodal user and tool-result messages.
 	// Each entry is a file path; the provider layer loads and encodes the
 	// image when building the request.
 	Images []string

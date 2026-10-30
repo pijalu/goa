@@ -83,18 +83,22 @@ func convertGoogleMessages(messages []schema.Message, systemPrompt string) []map
 			role = "model"
 		}
 		if msg.Role == schema.RoleToolResult {
-			contents = append(contents, map[string]any{
-				"role": "function",
-				"parts": []map[string]any{{
-					"functionResponse": map[string]any{
-						"name": extractToolName(msg.Content),
-						"response": map[string]any{
-							"name":    extractToolName(msg.Content),
-							"content": extractText(msg.Content),
-						},
+			_, _, text := extractToolCallInfo(msg.Content)
+			parts := []map[string]any{{
+				"functionResponse": map[string]any{
+					"name": extractToolName(msg.Content),
+					"response": map[string]any{
+						"name":    extractToolName(msg.Content),
+						"content": text,
 					},
-				}},
-			})
+				},
+			}}
+			for _, block := range msg.Content {
+				if block.Type == schema.ContentBlockImage {
+					parts = append(parts, convertGoogleParts([]schema.ContentBlock{block}, msg.Role)...)
+				}
+			}
+			contents = append(contents, map[string]any{"role": "function", "parts": parts})
 			continue
 		}
 		parts := convertGoogleParts(msg.Content, msg.Role)

@@ -33,6 +33,9 @@ const (
 // makes the loss visible in the transcript instead of silently dropping it.
 const ImageUnavailablePlaceholder = "(image unavailable: the attachment could not be read)"
 
+// ToolImageOmittedPlaceholder replaces tool-result images for text-only models.
+const ToolImageOmittedPlaceholder = "(tool image omitted: model does not support images)"
+
 // EncodedImage is a resolved image attachment: Base64 payload plus MIME type,
 // exactly what every vision API expects on the wire.
 type EncodedImage struct {
@@ -73,6 +76,38 @@ func SniffImageMime(data []byte) string {
 		}
 	}
 	return ""
+}
+
+// DowngradeToolResultImages removes image blocks and records the omission in
+// the tool-result text itself, where every provider protocol preserves it.
+func DowngradeToolResultImages(blocks []ContentBlock) []ContentBlock {
+	result := make([]ContentBlock, 0, len(blocks))
+	omitted := false
+	toolResultIndex := -1
+	for _, block := range blocks {
+		if block.Type == ContentBlockImage {
+			omitted = true
+			continue
+		}
+		if block.Type == ContentBlockToolResult && toolResultIndex < 0 {
+			toolResultIndex = len(result)
+		}
+		result = append(result, block)
+	}
+	if !omitted {
+		return blocks
+	}
+	if toolResultIndex < 0 {
+		return append(result, ContentBlock{Type: ContentBlockText, Text: ToolImageOmittedPlaceholder})
+	}
+	text := &result[toolResultIndex].Text
+	if !strings.Contains(*text, ToolImageOmittedPlaceholder) {
+		if *text != "" {
+			*text += "\n\n"
+		}
+		*text += ToolImageOmittedPlaceholder
+	}
+	return result
 }
 
 // EncodeImage resolves an image content source into Base64 bytes plus MIME type.

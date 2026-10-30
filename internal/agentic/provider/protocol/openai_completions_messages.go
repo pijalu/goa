@@ -329,9 +329,32 @@ func convertToolResultMessage(msg schema.Message, compat openAICompletionsCompat
 	if compat.ToolResultAsUser {
 		formatted := fmt.Sprintf("<tool_result>\n<tool_name>%s</tool_name>\n<tool_call_id>%s</tool_call_id>\n<content>\n%s\n</content>\n</tool_result>",
 			toolName, toolCallID, text)
-		return map[string]any{"role": "user", "content": formatted}
+		return map[string]any{"role": "user", "content": buildOpenAIToolResultContent(formatted, msg.Content)}
 	}
-	return map[string]any{"role": "tool", "content": text, "tool_call_id": toolCallID}
+	return map[string]any{"role": "tool", "content": buildOpenAIToolResultContent(text, msg.Content), "tool_call_id": toolCallID}
+}
+
+func buildOpenAIToolResultContent(text string, blocks []schema.ContentBlock) any {
+	if !hasImageBlock(blocks) {
+		return text
+	}
+	parts := make([]map[string]any, 0, len(blocks)+1)
+	if text != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": text})
+	}
+	for _, block := range blocks {
+		if block.Type != schema.ContentBlockImage {
+			continue
+		}
+		if dataURL := schema.ImageToDataURL(block.ImageData); dataURL != "" {
+			parts = append(parts, map[string]any{
+				"type": "image_url", "image_url": map[string]any{"url": dataURL},
+			})
+		} else {
+			parts = append(parts, map[string]any{"type": "text", "text": schema.ImageUnavailablePlaceholder})
+		}
+	}
+	return parts
 }
 
 func extractOpenAIText(blocks []schema.ContentBlock) string {

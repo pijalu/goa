@@ -86,7 +86,7 @@ func (b *historyBuilder) handleToolResult(ev OutputEvent) {
 		b.messages = append(b.messages, Message{
 			Type: Content, Role: ToolRole,
 			Content: ev.ToolResult, ToolCallID: ev.ToolCallID,
-			ToolName: ev.ToolName,
+			ToolName: ev.ToolName, Images: ev.Images,
 		})
 	}
 }

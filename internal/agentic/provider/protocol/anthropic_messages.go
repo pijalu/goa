@@ -138,22 +138,42 @@ func convertAnthropicMessages(messages []schema.Message, compat anthropicCompat)
 		case schema.RoleAssistant:
 			out = append(out, map[string]any{"role": "assistant", "content": convertAnthropicAssistantBlocks(msg.Content)})
 		case schema.RoleToolResult:
-			for _, block := range msg.Content {
-				if block.Type == schema.ContentBlockToolResult {
-					out = append(out, map[string]any{
-						"role": "user",
-						"content": []map[string]any{{
-							"type":        "tool_result",
-							"tool_use_id": block.ToolCallID,
-							"content":     block.Text,
-							"is_error":    block.IsError,
-						}},
-					})
-				}
-			}
+			out = append(out, convertAnthropicToolResultMessages(msg)...)
 		}
 	}
 	return out
+}
+
+func convertAnthropicToolResultMessages(msg schema.Message) []map[string]any {
+	var out []map[string]any
+	for _, block := range msg.Content {
+		if block.Type != schema.ContentBlockToolResult {
+			continue
+		}
+		out = append(out, map[string]any{
+			"role": "user",
+			"content": []map[string]any{{
+				"type":        "tool_result",
+				"tool_use_id": block.ToolCallID,
+				"content":     convertAnthropicToolResultContent(block, msg.Content),
+				"is_error":    block.IsError,
+			}},
+		})
+	}
+	return out
+}
+
+func convertAnthropicToolResultContent(result schema.ContentBlock, blocks []schema.ContentBlock) any {
+	if !hasImageBlock(blocks) {
+		return result.Text
+	}
+	content := []schema.ContentBlock{{Type: schema.ContentBlockText, Text: result.Text}}
+	for _, block := range blocks {
+		if block.Type == schema.ContentBlockImage {
+			content = append(content, block)
+		}
+	}
+	return convertAnthropicContentBlocks(content)
 }
 
 func convertAnthropicContentBlocks(blocks []schema.ContentBlock) []map[string]any {

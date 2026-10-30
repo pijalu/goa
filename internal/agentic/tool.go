@@ -20,6 +20,8 @@ type ToolSchema struct {
 // ToolResult carries the output of a tool execution plus control signals.
 type ToolResult struct {
 	Output string
+	// Images contains optional image paths attached to this tool result.
+	Images []string
 	Error  error
 	// StopTurn stops the current tool batch after this result.
 	// Used by goal tools: non-active statuses stop the turn so the

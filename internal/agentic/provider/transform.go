@@ -4,6 +4,8 @@
 
 package provider
 
+import "github.com/pijalu/goa/internal/agentic/provider/schema"
+
 // TransformMessages applies a series of transformations to messages before
 // sending them to an LLM. This handles cross-provider compatibility concerns:
 //
@@ -51,7 +53,6 @@ func TransformMessages(
 
 const (
 	nonVisionUserImagePlaceholder = "(image omitted: model does not support images)"
-	nonVisionToolImagePlaceholder = "(tool image omitted: model does not support images)"
 )
 
 func downgradeImages(messages []Message, model Model) []Message {
@@ -65,7 +66,7 @@ func downgradeImages(messages []Message, model Model) []Message {
 		case RoleUser:
 			msg.Content = downgradeImagesInContent(msg.Content, nonVisionUserImagePlaceholder)
 		case RoleToolResult:
-			msg.Content = downgradeImagesInContent(msg.Content, nonVisionToolImagePlaceholder)
+			msg.Content = schema.DowngradeToolResultImages(msg.Content)
 		}
 		result[i] = msg
 	}

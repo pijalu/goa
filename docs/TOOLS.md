@@ -102,15 +102,32 @@ not exist.
 | `end_line` | number | Last line to read, 1-indexed (optional) |
 | `max_lines` | number | Max lines (optional, default 500) |
 | `max_bytes` | number | Max bytes (optional, default 50000) |
+| `show_numbers` | boolean | Show line numbers (optional, default true) |
+| `include_image` | boolean | Attach PNG/JPEG/GIF/WebP image content for vision-capable models (optional, default false) |
 
-**Example:**
+**Text example:**
 ```json
 {
-  "file_path": "src/main.go",
-  "offset": 0,
-  "limit": 50
+  "path": "src/main.go",
+  "start_line": 1,
+  "max_lines": 50
 }
 ```
+
+**Image example:**
+```json
+{
+  "path": "screenshot.png",
+  "include_image": true
+}
+```
+
+With `include_image: true`, Goa detects PNG, JPEG, GIF, and WebP content by
+signature and attaches the image through the provider's image pipeline. The
+active model must support image input. Text-only models receive an explicit
+`(tool image omitted: model does not support images)` notice and never receive
+image bytes. Invalid image content returns an `invalid_image` error. Without
+this option, images retain the ordinary binary-file behavior.
 
 ### `write` — Write file contents
 

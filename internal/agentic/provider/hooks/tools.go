@@ -134,7 +134,11 @@ func transformToolResultMessage(m schema.Message, compat schema.ToolCompat) []sc
 
 func convertToolResultToUser(m schema.Message) schema.Message {
 	m.Role = schema.RoleUser
+	m.Content = append([]schema.ContentBlock(nil), m.Content...)
 	for i := range m.Content {
+		if m.Content[i].Type != schema.ContentBlockToolResult {
+			continue
+		}
 		m.Content[i].Type = schema.ContentBlockText
 		m.Content[i].Text = fmt.Sprintf("<tool_result name=\"%s\" id=\"%s\">%s</tool_result>",
 			m.Content[i].ToolName, m.Content[i].ToolCallID, m.Content[i].Text)

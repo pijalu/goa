@@ -28,39 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-### B37 — Let `read` return images to vision-capable models
-
-**Observed behavior.** `read` classifies PNG and other image files as binary and
-returns only metadata. The model therefore says it cannot view a PNG and falls
-back to numerical/browser inspection even when the active model accepts image
-input. Provider content blocks already have image and non-vision downgrade
-concepts, but tool results currently carry only strings and protocol serializers
-only emit tool-result text.
-
-**Expected behavior / proposed option.** Add an optional boolean
-`include_image` argument to `read`, defaulting to `false`. A call such as
-`{"path":"screenshot.png","include_image":true}` returns a visual tool-result
-attachment instead of the binary-file notice. The mechanism must be generic and
-composable: tools may return image paths in their structured result, the agent
-carries them on the tool-result message, and provider adapters encode them using
-the existing image pipeline. Vision-capable models receive the image; text-only
-models receive an explicit image-omitted placeholder and never image bytes.
-Ordinary text reads, directory listings, documentation reads, errors, renderers,
-and read deduplication remain unchanged.
-
-**Fix and validation plan.**
-1. Add RED schema/execution tests for `include_image`, real PNG/JPEG/GIF/WEBP
-   content, invalid images, default behavior, and path-resolution errors.
-2. Add generic tool-result attachment tests through scheduler, history migration,
-   capability downgrade, session persistence/reload, and observer/UI behavior.
-3. Add protocol tests proving actual provider payloads contain encoded image
-   content in the correct tool-result envelope for each supported API family;
-   prove text-only transforms contain no Base64 image payload.
-4. Run a provider-mocked agent turn in which the model calls `read` with
-   `include_image:true` and receives the image on the next request, then run all
-   touched suites and repository quality gates separately. Document the option,
-   archive this entry, and commit the verified feature.
-
 ### B38 — Keep provider configuration global unless a project explicitly overrides it
 
 **Observed behavior.** Project configuration can acquire provider/model and
@@ -118,6 +85,15 @@ failures produce no candidates rather than a panic or an incorrect path.
    separately. Archive this entry and commit the verified fix.
 
 ## Closed
+
+Closed 2026-10-30 — B37, `read` could only report images as binary even for
+vision-capable models. The explicit `include_image` option now returns generic
+image-path attachments through tool scheduling, history, session reload, and all
+supported provider envelopes. Unsupported or unknown models receive an explicit
+omission notice with no image bytes or attachment paths. Format, invalid-input,
+default-behavior, provider-mocked agent, protocol, persistence, hook, and
+production filmstrip regressions plus repository quality gates validate the fix.
+See [`docs/archive/b37-read-image-attachments.2026-10-30.md`](docs/archive/b37-read-image-attachments.2026-10-30.md).
 
 Closed 2026-10-30 — B36, user-referenced images attached immediately, escaped
 paths failed validation, and a leading absolute image path became a slash

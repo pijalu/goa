@@ -112,6 +112,9 @@ func streamGoogle(model provider.Model, ctx provider.Context, opts provider.Stre
 }
 
 func buildGoogleBody(model provider.Model, ctx provider.Context, opts provider.StreamOptions) map[string]interface{} {
+	if !provider.IsVisionModel(model) {
+		ctx.Messages = downgradeGoogleToolResultImages(ctx.Messages)
+	}
 	contents := convertGoogleMessages(ctx.Messages, ctx.SystemPrompt)
 
 	body := map[string]interface{}{
@@ -151,20 +154,21 @@ func convertGoogleMessages(messages []provider.Message, systemPrompt string) []m
 		}
 		if msg.Role == provider.RoleToolResult {
 			// Function response - sent as "function" role
-			contents = append(contents, map[string]interface{}{
-				"role": "function",
-				"parts": []map[string]interface{}{
-					{
-						"functionResponse": map[string]interface{}{
-							"name": extractToolName(msg.Content),
-							"response": map[string]interface{}{
-								"name":    extractToolName(msg.Content),
-								"content": extractText(msg.Content),
-							},
-						},
+			parts := []map[string]interface{}{{
+				"functionResponse": map[string]interface{}{
+					"name": extractToolName(msg.Content),
+					"response": map[string]interface{}{
+						"name":    extractToolName(msg.Content),
+						"content": extractToolResultText(msg.Content),
 					},
 				},
-			})
+			}}
+			for _, block := range msg.Content {
+				if block.Type == provider.ContentBlockImage {
+					parts = append(parts, convertParts([]provider.ContentBlock{block}, msg.Role)...)
+				}
+			}
+			contents = append(contents, map[string]interface{}{"role": "function", "parts": parts})
 			continue
 		}
 
@@ -178,6 +182,17 @@ func convertGoogleMessages(messages []provider.Message, systemPrompt string) []m
 	}
 
 	return contents
+}
+
+func downgradeGoogleToolResultImages(messages []provider.Message) []provider.Message {
+	result := make([]provider.Message, len(messages))
+	for i, message := range messages {
+		if message.Role == provider.RoleToolResult {
+			message.Content = schema.DowngradeToolResultImages(message.Content)
+		}
+		result[i] = message
+	}
+	return result
 }
 
 func convertParts(blocks []provider.ContentBlock, role provider.Role) []map[string]interface{} {
@@ -233,6 +248,15 @@ func extractText(blocks []provider.ContentBlock) string {
 		}
 	}
 	return ""
+}
+
+func extractToolResultText(blocks []provider.ContentBlock) string {
+	for _, block := range blocks {
+		if block.Type == provider.ContentBlockToolResult {
+			return block.Text
+		}
+	}
+	return extractText(blocks)
 }
 
 func extractToolName(blocks []provider.ContentBlock) string {

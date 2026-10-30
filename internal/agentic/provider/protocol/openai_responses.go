@@ -261,7 +261,7 @@ func convertResponsesInput(messages []schema.Message, systemPrompt string, profi
 			input = append(input, map[string]any{
 				"type":    "function_call_output",
 				"call_id": normalizeResponsesToolCallID(tcID),
-				"output":  text,
+				"output":  buildResponsesToolResultOutput(text, msg.Content),
 			})
 		}
 	}
@@ -296,6 +296,27 @@ func convertResponsesAssistant(msg schema.Message) []map[string]any {
 		})
 	}
 	return out
+}
+
+func buildResponsesToolResultOutput(text string, blocks []schema.ContentBlock) any {
+	if !hasImageBlock(blocks) {
+		return text
+	}
+	parts := make([]map[string]any, 0, len(blocks)+1)
+	if text != "" {
+		parts = append(parts, map[string]any{"type": "input_text", "text": text})
+	}
+	for _, block := range blocks {
+		if block.Type != schema.ContentBlockImage {
+			continue
+		}
+		if dataURL := schema.ImageToDataURL(block.ImageData); dataURL != "" {
+			parts = append(parts, map[string]any{"type": "input_image", "image_url": dataURL})
+		} else {
+			parts = append(parts, map[string]any{"type": "input_text", "text": schema.ImageUnavailablePlaceholder})
+		}
+	}
+	return parts
 }
 
 func normalizeResponsesToolCallID(id string) string {

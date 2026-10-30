@@ -29,6 +29,7 @@ type ToolCallResult struct {
 	Name     string
 	CallID   string
 	Output   string
+	Images   []string
 	Err      error
 	StopTurn bool
 	// Meta carries out-of-band control data from the tool's ToolResult.
@@ -201,6 +202,7 @@ func (s *ToolScheduler) start(st *scheduledTask) {
 				Name:     st.Name,
 				CallID:   st.CallID,
 				Output:   result.Output,
+				Images:   result.Images,
 				Err:      result.Error,
 				StopTurn: result.StopTurn,
 				Meta:     result.Meta,

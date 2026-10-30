@@ -19,6 +19,7 @@ import (
 	"github.com/pijalu/goa/docs"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/ansi"
 )
 
@@ -54,11 +55,11 @@ func (t *ReadFileTool) Schema() agentic.ToolSchema {
 				},
 				"start_line": map[string]any{
 					"type":        "integer",
-					"description": "first line (1-indexed, default: 1)",
+					"description": "first line",
 				},
 				"end_line": map[string]any{
 					"type":        "integer",
-					"description": "last line (1-indexed, default: end)",
+					"description": "last line",
 				},
 				"max_lines": map[string]any{
 					"type":        "integer",
@@ -72,6 +73,10 @@ func (t *ReadFileTool) Schema() agentic.ToolSchema {
 					"type":        "boolean",
 					"description": "show line numbers (default: true)",
 				},
+				"include_image": map[string]any{
+					"type":        "boolean",
+					"description": "attach image",
+				},
 			},
 			"required": []string{"path"},
 		},
@@ -80,12 +85,13 @@ func (t *ReadFileTool) Schema() agentic.ToolSchema {
 
 // readFileParams holds the parsed input for ReadFileTool.
 type readFileParams struct {
-	Path        string `json:"path"`
-	StartLine   int    `json:"start_line"`
-	EndLine     int    `json:"end_line"`
-	MaxLines    int    `json:"max_lines"`
-	MaxBytes    int    `json:"max_bytes"`
-	ShowNumbers *bool  `json:"show_numbers"`
+	Path         string `json:"path"`
+	StartLine    int    `json:"start_line"`
+	EndLine      int    `json:"end_line"`
+	MaxLines     int    `json:"max_lines"`
+	MaxBytes     int    `json:"max_bytes"`
+	ShowNumbers  *bool  `json:"show_numbers"`
+	IncludeImage bool   `json:"include_image"`
 }
 
 // showNumbers returns the effective show_numbers value.
@@ -99,37 +105,60 @@ func (p readFileParams) showNumbers() bool {
 // Execute reads the file at the given path. Paths with the goa:// scheme are
 // resolved against Goa's embedded documentation instead of the filesystem.
 func (t *ReadFileTool) Execute(input string) (string, error) {
+	result, err := t.ExecuteWithResult(input)
+	return result.Output, err
+}
+
+// ExecuteWithResult returns ordinary read output, or an image attachment when
+// include_image explicitly requests one. Attachment paths are encoded later by
+// the active provider's existing image pipeline.
+func (t *ReadFileTool) ExecuteWithResult(input string) (agentic.ToolResult, error) {
 	p, err := t.parseParams(input)
 	if err != nil {
-		return "", err
+		return agentic.ToolResult{}, err
 	}
 
 	if docName, ok := parseGoaDocPath(p.Path); ok {
 		data, err := docs.Get(docName)
 		if err != nil {
-			return "", t.readFileError(p.Path, err)
+			return agentic.ToolResult{}, t.readFileError(p.Path, err)
 		}
 		docPath := goaDocDisplayPath(docName)
-		return t.renderFile(docPath, []byte(data), p), nil
+		return agentic.ToolResult{Output: t.renderFile(docPath, []byte(data), p)}, nil
 	}
 
 	resolvedPath, err := ResolveToolPath(t.WorktreeMgr, p.Path)
 	if err != nil {
-		return "", t.readFileError(p.Path, err)
+		return agentic.ToolResult{}, t.readFileError(p.Path, err)
 	}
 
 	if err := t.syncWorktree(resolvedPath); err != nil {
-		return "", t.worktreeSyncError(err)
+		return agentic.ToolResult{}, t.worktreeSyncError(err)
 	}
 
 	// If the path is a directory, return a listing instead of an error.
 	if fi, statErr := os.Stat(resolvedPath); statErr == nil && fi.IsDir() {
-		return t.readDir(resolvedPath)
+		output, err := t.readDir(resolvedPath)
+		return agentic.ToolResult{Output: output}, err
 	}
 
 	targetPath, data, err := t.readFile(resolvedPath, p.Path)
 	if err != nil {
-		return "", err
+		return agentic.ToolResult{}, err
+	}
+	if p.IncludeImage {
+		mime := schema.SniffImageMime(data)
+		if mime == "" {
+			return agentic.ToolResult{}, &internal.ToolError{
+				Tool: "read", Type: "invalid_image",
+				Detail:   "The file content is not a supported PNG, JPEG, GIF, or WebP image.",
+				HintText: "Set include_image to false to read a text file, or provide a supported image.",
+			}
+		}
+		return agentic.ToolResult{
+			Output: fmt.Sprintf("Image content\nMIME type: %s\nSize: %d bytes", mime, len(data)),
+			Images: []string{targetPath},
+		}, nil
 	}
 
 	// touchFile: keep the language server's view of this file fresh on read
@@ -138,9 +167,9 @@ func (t *ReadFileTool) Execute(input string) (string, error) {
 
 	rendered := t.renderFile(targetPath, data, p)
 	if targetPath != resolvedPath {
-		return fmt.Sprintf("Note: file not found, used closest match: %s\n%s", targetPath, rendered), nil
+		return agentic.ToolResult{Output: fmt.Sprintf("Note: file not found, used closest match: %s\n%s", targetPath, rendered)}, nil
 	}
-	return t.maybeDedup(targetPath, rendered, p), nil
+	return agentic.ToolResult{Output: t.maybeDedup(targetPath, rendered, p)}, nil
 }
 
 // maybeDedup implements the E1.3 read-dedup guard: when enabled and this exact

@@ -45,9 +45,18 @@ func migrateMessage(m Message) provider.Message {
 			text += "\n" + note
 		}
 	}
-	blocks = append(blocks, provider.ContentBlock{
-		Type: provider.ContentBlockText, Text: text,
-	})
+	if m.Role == ToolRole {
+		blocks = append(blocks, provider.ContentBlock{
+			Type:       provider.ContentBlockToolResult,
+			ToolCallID: m.ToolCallID,
+			ToolName:   m.ToolName,
+			Text:       text,
+		})
+	} else {
+		blocks = append(blocks, provider.ContentBlock{
+			Type: provider.ContentBlockText, Text: text,
+		})
+	}
 	for _, path := range m.Images {
 		blocks = append(blocks, provider.ContentBlock{
 			Type:      provider.ContentBlockImage,
@@ -57,16 +66,6 @@ func migrateMessage(m Message) provider.Message {
 	if m.Thinking != "" {
 		blocks = append(blocks, provider.ContentBlock{
 			Type: provider.ContentBlockThinking, Thinking: m.Thinking,
-		})
-	}
-	// Preserve tool call identity so the provider can format tool results
-	// correctly (e.g. Gemma/Qwen need tool_call_id and tool_name).
-	if m.Role == ToolRole {
-		blocks = append(blocks, provider.ContentBlock{
-			Type:       provider.ContentBlockToolResult,
-			ToolCallID: m.ToolCallID,
-			ToolName:   m.ToolName,
-			Text:       m.Content,
 		})
 	}
 	return provider.Message{

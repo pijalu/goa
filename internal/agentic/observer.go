@@ -160,6 +160,7 @@ type OutputEvent struct {
 	ToolInput      string
 	ToolCallID     string
 	ToolResult     string
+	Images         []string        `json:"images,omitempty"`
 	Timings        *TokenTimings   `json:"timings,omitempty"`
 	PromptProgress *PromptProgress `json:"prompt_progress,omitempty"`
 
