@@ -203,9 +203,16 @@ func TestQuotaPlugin_ZaiOAuthThenQuota_Filmstrip(t *testing.T) {
 			t.Errorf("post-login visible quota missing %q:\n%s", want, snap.Frame.Dump())
 		}
 	}
+	// Chat history legitimately retains the pre-refresh card. Assert the new
+	// card, not old scrollback: timing determines whether both cards fit in the
+	// viewport, but only the latest card proves which cache entry /quota replayed.
+	latestQuota := visible
+	if start := strings.LastIndex(latestQuota, "## Session Usage (current)"); start >= 0 {
+		latestQuota = latestQuota[start:]
+	}
 	for _, unwanted := range []string{"auth required", "/login:zai:oauth", "BigModel Start Plan", "Codex"} {
-		if strings.Contains(visible, unwanted) {
-			t.Errorf("post-login visible quota contains %q:\n%s", unwanted, snap.Frame.Dump())
+		if strings.Contains(latestQuota, unwanted) {
+			t.Errorf("latest post-login quota contains %q:\n%s", unwanted, snap.Frame.Dump())
 		}
 	}
 	t.Logf("z.ai OAuth → quota filmstrip:\n%s", film.Render())

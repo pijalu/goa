@@ -68,6 +68,12 @@ var cliUnits = []cliUnit{
 		Summary: "Install, list, toggle and remove MCP servers from the shell",
 		Body:    func() string { return mcpCLIUsage },
 	},
+	{
+		Name:    "cleanup",
+		Title:   "Project configuration cleanup (goa cleanup)",
+		Summary: "Remove confirmed redundant or conflicting project configuration",
+		Body:    func() string { return cleanupCLIUsage },
+	},
 }
 
 // cliUnitByName resolves a verb (case-insensitively) to its unit.
@@ -134,6 +140,7 @@ const cliShortUsage = `Usage:
   goa server [options]                 Serve the TUI as a web page
   goa attach --server HOST:PORT        Drive a goa server session from here
   goa mcp <subcommand>                 Manage MCP servers from the shell
+  goa cleanup                          Clean up project configuration (no TUI)
   goa help [topic]                     Full manual, or one topic
 
 Run "goa --help" for the complete manual: all modes, every option, and the

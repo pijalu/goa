@@ -20,12 +20,13 @@ full, without starting the TUI.
 goa [options]                      Interactive TUI (default mode)
 goa server [options]               Serve the TUI as a web page (Web UI)
 goa mcp <subcommand> [args]        Manage MCP servers from the shell
+goa cleanup                        Reconcile project configuration (console only)
 goa help [topic]                   This manual, or one topic in isolation
 ```
 
-Goa takes **no positional arguments**. A prompt is passed with `--prompt`
-(or `--prompt-file`); a stray word is reported as an unknown command rather than
-silently ignored.
+Apart from the documented subcommands, Goa takes **no positional arguments**. A
+prompt is passed with `--prompt` (or `--prompt-file`); a stray word is reported
+as an unknown command rather than silently ignored.
 
 ## Modes
 
@@ -36,6 +37,7 @@ silently ignored.
 | **Autonomous goal** | `--prompt "<objective>" --goal` | Runs the prompt as a goal objective (headless) |
 | **Web UI** | `goa server` | Serves the *same* session over HTTP/WebSocket to a browser (see *Web UI*) |
 | **MCP servers** | `goa mcp <subcommand>` | Install, list, enable/disable, remove MCP servers — no TUI, no agent |
+| **Project cleanup** | `goa cleanup` | Compare home/project configuration and confirm each removal — no TUI, no agent |
 | **ACP server** | `--acp` | Speaks the Agent Client Protocol over stdin/stdout for editor clients |
 | **Orchestrator resume** | `--orchestrate <run-id>` | Replays a persisted multi-agent run and resumes it headless |
 | **Memory consolidation** | `--dream`, `--dream-apply` | Merges `.goa/memory/*.md`; `--dream-apply` writes the consolidated result |
@@ -110,6 +112,18 @@ the home config, `GOA_*` variables and the CLI flags still apply. `--home` (or
 `GOA_HOME`) relocates the home directory that holds config, cache, logs and
 usage state; the project layers stay relative to the working directory.
 
+### Project configuration cleanup
+
+Run `goa cleanup` from a project directory to compare only the home and project
+configuration files. The console wizard identifies duplicate active settings,
+same-ID provider/model entries, and other shared top-level sections. It explains
+conflicting field names without printing credential values and asks `(y/n)`
+before every removal. The default
+answer is no. Project-only entries and intentional overrides are preserved
+unless their removal is explicitly approved; home and local configuration are
+never changed. EOF or cancellation before the final write leaves the project
+file unchanged. The command exits directly and never starts the TUI.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -151,8 +165,8 @@ parser as `goa mcp`, `/export` bundles a diagnosis, and so on. See the
 `goa --help` prints four parts in this order:
 
 1. this narrative — modes, configuration, environment, files, examples;
-2. one section per command-line surface (`goa server`, `goa mcp`), each the
-   same text that surface's own `--help` prints;
+2. one section per command-line surface (`goa server`, `goa mcp`, `goa cleanup`),
+   each the same text that surface's own `--help` prints;
 3. the **documentation index** — every embedded document, each readable with
    `goa help <topic>` or the `goa://<TOPIC>` namespace;
 4. the **option reference** — built from the live flag set, so a newly

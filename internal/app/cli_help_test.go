@@ -102,7 +102,7 @@ func TestCLIManual_CoversEveryFeature(t *testing.T) {
 	manual := cliManual()
 	for _, want := range []string{
 		// Invocation surfaces
-		"goa server", "goa mcp", "goa help",
+		"goa server", "goa mcp", "goa cleanup", "goa help",
 		// Modes
 		"--prompt", "--prompt-file", "--goal", "--orchestrate", "--acp",
 		"--dream", "--export-output", "--check-update", "--perf-load",
@@ -140,7 +140,7 @@ func TestCLIManual_HasNoTUIArtifacts(t *testing.T) {
 // TestCLIShortUsage_PointsAtTheManual keeps the error path useful: a usage error
 // must tell the user how to reach the full documentation.
 func TestCLIShortUsage_PointsAtTheManual(t *testing.T) {
-	for _, want := range []string{"goa --help", "goa server", "goa mcp", "goa help"} {
+	for _, want := range []string{"goa --help", "goa server", "goa mcp", "goa cleanup", "goa help"} {
 		if !strings.Contains(cliShortUsage, want) {
 			t.Errorf("short usage does not mention %q", want)
 		}
@@ -164,6 +164,7 @@ func TestHelpTopic(t *testing.T) {
 		{"verb help short", []string{"server", "-h"}, "server", true},
 		{"verb help word", []string{"server", "help"}, "server", true},
 		{"mcp verb help", []string{"mcp", "help"}, "mcp", true},
+		{"cleanup verb help", []string{"cleanup", "--help"}, "cleanup", true},
 		// Not help requests: they must fall through to the normal paths.
 		{"server mode", []string{"server"}, "", false},
 		{"unknown verb", []string{"serve"}, "", false},
@@ -189,6 +190,7 @@ func TestHelpText_Topics(t *testing.T) {
 		{"manual", "", []string{"# Goa", "## Command-line options", "## Documentation"}},
 		{"server unit", "server", []string{"goa server", "--server-auth", "--server-read-only"}},
 		{"mcp unit", "mcp", []string{"goa mcp add", "goa mcp remove"}},
+		{"cleanup unit", "cleanup", []string{"goa cleanup", "values", "(y/n)"}},
 		{"webui doc", "webui", []string{"goa server", "127.0.0.1:8080"}},
 		{"webui doc case-insensitive", "WEBUI", []string{"goa server"}},
 		{"options section", "options", []string{"--model", "--server-addr"}},

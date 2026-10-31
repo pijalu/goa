@@ -35,6 +35,12 @@ func Main() {
 		return
 	}
 
+	// `goa cleanup` is a console-only configuration wizard. Dispatch it before
+	// flag parsing and subsystem construction so it can never start the TUI.
+	if runCleanupCLI(os.Args[1:]) {
+		return
+	}
+
 	// `goa attach` is a plain CLI subcommand with its own flag set: it never
 	// builds this process's session, it drives a remote one.
 	if runAttachCLI(os.Args[1:]) {

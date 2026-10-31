@@ -54,44 +54,17 @@ failures produce no candidates rather than a panic or an incorrect path.
    then run the touched app/TUI suites and all repository quality gates
    separately. Archive this entry and commit the verified fix.
 
-### B41 — Add a console-only `goa cleanup` for project configuration
-
-**Observed behavior.** Goa uses both `~/.goa` and `<project>/.goa`, but project
-configuration can retain duplicate or clashing values such as models and
-providers. There is no cleanup command to identify redundant project entries
-or reconcile them with home configuration.
-
-**Expected behavior.** Running `goa cleanup` in a project directory compares
-project configuration with home configuration and offers to remove project
-items that merely duplicate inherited values, including model and provider
-entries. Intentional overrides are preserved by default. When values conflict,
-such as the same provider using a different key, Goa explains the conflict and
-asks for confirmation before changing or removing the project item. Cleanup
-uses a normal console wizard with `(y/n)` questions and other input as needed;
-it never starts the TUI. Declining or cancelling leaves configuration
-unchanged, and secrets are never printed.
-
-**Fix and validation plan.**
-1. Trace CLI dispatch, configuration loading, cascade precedence, and typed
-   config persistence. Define cleanup candidates from the effective home and
-   project layers without treating embedded defaults or local/environment/flag
-   overrides as removable project data.
-2. Add RED tests using isolated temporary home and project directories for
-   exact duplicates, project-only values, conflicting model/provider values,
-   and same-provider/different-key conflicts. Cover accept, decline, invalid
-   input, cancellation/EOF, idempotent reruns, and preservation of unrelated
-   formatting or configuration where supported by the persistence layer.
-3. Implement `goa cleanup` before TUI startup as a console-only workflow:
-   present each proposed action, request confirmation where values differ,
-   write only approved project changes, and report a concise summary. Keep
-   home configuration untouched and redact credentials in all output.
-4. Validate the real command in a project directory through a scripted console
-   session, checking prompts, both confirmation branches, resulting files, and
-   the absence of TUI control sequences. Run config and CLI regression suites
-   and all repository quality gates separately. Archive this entry and commit
-   the verified fix.
-
 ## Closed
+
+Closed 2026-10-31 — B41, project configuration had no safe way to remove
+redundant or conflicting values inherited from home configuration. The new
+console-only `goa cleanup` confirms every removal, defaults to preserving
+entries, cancels atomically on EOF, hides values and credentials, writes only
+approved project changes, and rejects concurrent edits. RED/GREEN regressions,
+real PTY wizard runs, secret/TUI-sequence checks, the full race-enabled
+repository suite, vet, and staticcheck validate the fix. Complexity reports are
+limited to documented unrelated pre-existing hotspots. See
+[`docs/archive/b41-project-config-cleanup.2026-10-31.md`](docs/archive/b41-project-config-cleanup.2026-10-31.md).
 
 Closed 2026-10-31 — B40, successful z.ai OAuth could leave `/quota` replaying a
 cached login hint, while built-in fetchers exposed unconfigured provider rows.
