@@ -100,6 +100,24 @@ function providerConfigured(fetcherId) {
 	return p && (p.id || p.provider || p.endpoint || p.baseUrl);
 }
 
+// pruneUnconfiguredProviders removes snapshots for providers no longer present
+// in the live configuration. Built-in fetchers describe capabilities, not
+// configured accounts; keeping their cache entries would render phantom rows
+// and could retain account data after the provider is removed.
+function pruneUnconfiguredProviders() {
+	for (var id in _cache) {
+		if (id !== _fallbackId && !providerConfigured(id)) {
+			delete _cache[id];
+			delete _lastFetch[id];
+		}
+	}
+	for (var id in _lastFetch) {
+		if (id !== _fallbackId && !providerConfigured(id)) {
+			delete _lastFetch[id];
+		}
+	}
+}
+
 // normalizeId strips dots/dashes so "z.ai" matches "zai".
 function normalizeId(id) {
 	return String(id).replace(/[.\-_]/g, "").toLowerCase();
@@ -144,6 +162,11 @@ function sessionContext(fetcherId) {
 function refreshDue(fetcherId, force) {
 	var fetcher = _fetchers[fetcherId];
 	if (!fetcher) {
+		return null;
+	}
+	if (fetcherId !== _fallbackId && !providerConfigured(fetcherId)) {
+		delete _cache[fetcherId];
+		delete _lastFetch[fetcherId];
 		return null;
 	}
 	var now = Date.now();
@@ -196,8 +219,25 @@ function refreshAllDue(force) {
 // completely absent entry is unknown). Used by /quota to decide between an
 // instant render and the async cold-start path.
 function hasUsableCache() {
+	pruneUnconfiguredProviders();
 	for (var id in _fetchers) {
 		if (_cache[id]) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// authCacheNeedsRefresh detects a login that happened after an auth_required
+// snapshot was cached. The normal five-minute refresh interval must not replay
+// a stale login instruction after the credential is already available.
+function authCacheNeedsRefresh() {
+	for (var id in _fetchers) {
+		if (id === _fallbackId || !providerConfigured(id)) {
+			continue;
+		}
+		var entry = _cache[id];
+		if (entry && entry.error === "auth_required" && authAvailable(id, _fetchers[id])) {
 			return true;
 		}
 	}
@@ -224,7 +264,11 @@ function authAvailable(fetcherId, fetcher) {
 }
 
 function cacheAuthRequiredStates() {
+	pruneUnconfiguredProviders();
 	for (var id in _fetchers) {
+		if (id !== _fallbackId && !providerConfigured(id)) {
+			continue;
+		}
 		var fetcher = _fetchers[id];
 		if (fetcher.auth && !authAvailable(id, fetcher) && !_cache[id]) {
 			refreshDue(id, true);
@@ -521,7 +565,7 @@ function quotaCommand(args) {
 			// instant render. Cold cache (plugin just loaded, scheduler tick
 			// hasn't landed yet) → acknowledge immediately and fetch on a
 			// timer goroutine, emitting the table via goa.output when done.
-			if (!hasUsableCache()) {
+			if (!hasUsableCache() || authCacheNeedsRefresh()) {
 				scheduleAsyncQuotaRender();
 				return "Fetching quotas… results will appear when ready (usually a few seconds).";
 			}
@@ -825,6 +869,9 @@ function renderSessionTable() {
 // id, or a single status row for auth/error states. Providers with no usable
 // data (not configured, never fetched) contribute nothing.
 function appendProviderRows(rows, id) {
+	if (id !== _fallbackId && !providerConfigured(id)) {
+		return;
+	}
 	var fetcher = _fetchers[id];
 	var entry = _cache[id];
 	if (!entry) {
@@ -977,8 +1024,12 @@ function limitsWithRunOut(limits) {
 
 // renderAuthStatus lists each provider's quota auth state as a markdown table.
 function renderAuthStatus() {
+	pruneUnconfiguredProviders();
 	var rows = [];
 	for (var id in _fetchers) {
+		if (id === _fallbackId || !providerConfigured(id)) {
+			continue;
+		}
 		var f = _fetchers[id];
 		if (!f.auth || f.auth.type === "none") {
 			continue;
@@ -1673,7 +1724,7 @@ function completeMatches(items, prefix) {
 function providerEntries(purpose) {
 	var out = [];
 	for (var id in _fetchers) {
-		if (id === _fallbackId || !_fetchers[id].quotaEndpoint) {
+		if (id === _fallbackId || !_fetchers[id].quotaEndpoint || (purpose === "" && !providerConfigured(id))) {
 			continue;
 		}
 		var label = _fetchers[id].name || id;

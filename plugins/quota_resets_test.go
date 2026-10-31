@@ -132,6 +132,7 @@ const resetUsageBody = `{
 // forced codex refresh lands data instead of auth_required.
 func wireCodexAuth(t *testing.T, e *quotaTestEnv) {
 	t.Helper()
+	e.setProvider("codex", map[string]any{"id": "codex", "provider": "codex"})
 	e.setOAuthToken("openai", codexTokenStub())
 	e.respond("wham/usage", 200, resetUsageBody)
 }
@@ -537,7 +538,8 @@ func TestQuotaReset_DeclinedConfirmSendsNothing(t *testing.T) {
 // TestQuotaReset_AuthRequiredShortCircuits pins the auth gate: without a Goa
 // OAuth token the reset command refuses before touching confirm or HTTP.
 func TestQuotaReset_AuthRequiredShortCircuits(t *testing.T) {
-	env := newQuotaTestEnv(t) // no oauth token installed
+	env := newQuotaTestEnv(t) // configured, but no oauth token installed
+	env.setProvider("codex", map[string]any{"id": "codex", "provider": "codex"})
 	env.load(t)
 	cap := startCapture(t, env)
 
@@ -784,6 +786,7 @@ func TestQuotaReset_StartupNoticeFiresOnceWithCredits(t *testing.T) {
 // credits on the usage snapshot ⇒ no startup notice at all.
 func TestQuotaReset_StartupNoticeSilentWithoutCredits(t *testing.T) {
 	env := newQuotaTestEnv(t)
+	env.setProvider("codex", map[string]any{"id": "codex", "provider": "codex"})
 	env.setOAuthToken("openai", codexTokenStub())
 	env.respond("wham/usage", 200, noResetsUsageBody)
 	env.load(t)

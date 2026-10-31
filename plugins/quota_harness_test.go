@@ -125,6 +125,13 @@ func (e *quotaTestEnv) setProvider(configID string, p map[string]any) {
 	e.config["providers"].(map[string]any)[configID] = p
 }
 
+// removeProvider deletes a provider from the mocked live configuration.
+func (e *quotaTestEnv) removeProvider(configID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.config["providers"].(map[string]any), configID)
+}
+
 // configSnapshot returns a deep copy of the mocked config. goa.config() hands
 // the map to goja, which wraps it (objectGoMapSimple) and reads it from
 // scheduler timer goroutines off the test's lock; returning a fresh copy per
@@ -247,6 +254,7 @@ const (
 // (the state these tests drive).
 func registerStubOAuth(t *testing.T, e *quotaTestEnv) {
 	t.Helper()
+	e.setProvider(stubOAuthID, map[string]any{"id": stubOAuthID, "provider": stubOAuthID})
 	if e.bridge == nil {
 		t.Fatal("registerStubOAuth called before env.load")
 	}

@@ -5,13 +5,20 @@
 package app
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/agentic/provider/startplan"
+	"github.com/pijalu/goa/internal/auth"
 	"github.com/pijalu/goa/plugins"
+	"github.com/pijalu/goa/provider"
 )
 
 // newQuotaFilmstripScenario builds a full-TUI uiScenario with the REAL
@@ -20,19 +27,18 @@ import (
 //
 //   - "anthropic" is configured WITHOUT an API key → its fetcher resolves no
 //     token and returns the no_api_key error entry before any HTTP call;
-//   - every other API-key fetcher is unconfigured → same no-network path;
-//   - OAuth fetchers short-circuit to auth_required (token absent);
+//   - every other provider is unconfigured and omitted without network I/O;
+//   - configured OAuth fixtures short-circuit to auth_required when logged out;
 //   - the local fallback fetcher reads session counters only.
 //
 // So the plugin's cache primes itself with zero network I/O, letting the
 // test assert on bare /quota's EXTENDED view (Session Usage + Provider
 // Quotas tables) deterministically.
-func newQuotaFilmstripScenario(t *testing.T) *uiScenario {
+func newQuotaFilmstripScenario(t *testing.T, extraProviders ...config.ProviderConfig) *uiScenario {
 	t.Helper()
 	// 100x44: the extended /quota view (Session Usage + Provider Quotas with
-	// every offline row — Codex, Anthropic, both Start Plan families) must fit
-	// the viewport for the filmstrip assertions; the Start Plan rows added in
-	// v1.4.0 overflowed the old 30-line frame.
+	// the configured offline and Start Plan rows) must fit the viewport for
+	// the filmstrip assertions; these rows overflowed the old 30-line frame.
 	sc := newUIScenario(t, 100, 44)
 
 	pm := newPluginTestSubsystems(t)
@@ -48,7 +54,16 @@ func newQuotaFilmstripScenario(t *testing.T) *uiScenario {
 		// "[∞]" local path (offline-deterministic).
 		{ID: "local-llama", Name: "Local Llama", Provider: "lmstudio", Endpoint: "http://localhost:1234/v1"},
 	}
+	sc.app.subs.cfg.Providers = append(sc.app.subs.cfg.Providers, extraProviders...)
 	sc.app.subs.cfg.ActiveProvider = "local-llama"
+	store, err := auth.NewStore("")
+	if err != nil {
+		t.Fatalf("auth store: %v", err)
+	}
+	providerMgr := provider.NewProviderManager(sc.app.subs.cfg)
+	providerMgr.SetAuthStore(store)
+	sc.app.subs.authStore = store
+	sc.app.subs.providerMgr = providerMgr
 
 	// This scenario drives PRODUCTION async paths (async slash commands,
 	// activatePluginUI's refresh/confirm drains) that spawn goroutines, so it
@@ -122,6 +137,78 @@ func TestQuotaPlugin_ExtendedInfoInTUI_Filmstrip(t *testing.T) {
 	assertFrameContains(t, snap, "Provider Quotas")
 	assertFrameContains(t, snap, "Anthropic")
 	assertFrameContains(t, snap, "no API key")
+	for _, unconfigured := range []string{"Codex", "Z.ai Start Plan", "BigModel Start Plan"} {
+		if strings.Contains(strings.Join(snap.Frame.Visible, "\n"), unconfigured) {
+			t.Errorf("unconfigured provider %q reached visible quota table:\n%s", unconfigured, snap.Frame.Dump())
+		}
+	}
+}
+
+// TestQuotaPlugin_ZaiOAuthThenQuota_Filmstrip drives the production auth
+// store, provider manager, bundled plugin, slash-command dispatcher, and
+// visible terminal through the reported sequence. The first render caches
+// auth_required; persisting the OAuth credential must make the next /quota
+// refresh and show the real Start Plan balance without a restart.
+func TestQuotaPlugin_ZaiOAuthThenQuota_Filmstrip(t *testing.T) {
+	balanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer zjwt-visible" {
+			t.Errorf("Authorization = %q, want login-derived zcode JWT", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("X-Device-Mid") == "" {
+			t.Error("Start Plan request omitted X-Device-Mid")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 200,
+			"data": map[string]any{
+				"server_time": 1800000000,
+				"plans": []any{map[string]any{
+					"plan_id": "p1", "user_plan_id": "up1", "status": "active", "name": "Start",
+					"starts_at": 1700000000, "ends_at": 1900000000,
+					"entitlements": []any{map[string]any{"effective_at": 1700000000}},
+				}},
+				"balances": []any{map[string]any{
+					"bucket_id": "b1", "user_plan_id": "up1", "total_units": 100, "remaining_units": 40,
+					"expires_at": 1900000000, "capabilities": []string{"model:glm-visible"},
+				}},
+			},
+		})
+	}))
+	t.Cleanup(balanceServer.Close)
+	startplan.SetDeviceMidDir(t.TempDir())
+	t.Cleanup(func() { startplan.SetDeviceMidDir("") })
+
+	sc := newQuotaFilmstripScenario(t, config.ProviderConfig{
+		ID: "zai-start-plan", Name: "Z.ai Start Plan", Provider: "zai-start-plan",
+		Endpoint: balanceServer.URL + "/api/v1/zcode-plan",
+	})
+	subs := sc.app.subs
+	waitFor(t, sc.engine, 3*time.Second, func() bool {
+		return strings.Contains(quotaCommandOutput(t, subs), "auth required")
+	}, "logged-out Start Plan state never primed")
+
+	if err := subs.authStore.SetOAuth("zai", &oauth.Tokens{AccessToken: "business-visible", ZcodeJWT: "zjwt-visible"}); err != nil {
+		t.Fatalf("persist OAuth login: %v", err)
+	}
+	sc.engine.ApplySync(func() { sc.app.handleSlashCommand("/quota") })
+	// The initial command returns immediately; the refreshed table arrives
+	// later through goa.output -> ChatEvent. Drive the same event handlers as
+	// commandLoop while waiting for that asynchronous render.
+	waitForFrame(t, sc, "60%")
+	film := sc.filmstrip()
+	snap := film.Capture("zai-oauth-quota-refreshed", sc.engine.AgentFrame(), sc.status.Text())
+	visible := strings.Join(snap.Frame.Visible, "\n")
+	for _, want := range []string{"Z.ai Start Plan", "glm-visible", "60%"} {
+		if !strings.Contains(visible, want) {
+			t.Errorf("post-login visible quota missing %q:\n%s", want, snap.Frame.Dump())
+		}
+	}
+	for _, unwanted := range []string{"auth required", "/login:zai:oauth", "BigModel Start Plan", "Codex"} {
+		if strings.Contains(visible, unwanted) {
+			t.Errorf("post-login visible quota contains %q:\n%s", unwanted, snap.Frame.Dump())
+		}
+	}
+	t.Logf("z.ai OAuth → quota filmstrip:\n%s", film.Render())
 }
 
 // TestQuotaPlugin_SegmentShowsCompactWhileExtendedAvailable pins the pairing

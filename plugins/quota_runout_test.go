@@ -48,6 +48,7 @@ func clockOf(ms int64) string {
 // renders the full /quota table from it.
 func seedWindow(t *testing.T, env *quotaTestEnv, provider string, used, limit int, resetsAtMs, periodMs int64) string {
 	t.Helper()
+	env.setProvider(provider, map[string]any{"id": provider, "provider": provider})
 	env.evalJS(t, fmt.Sprintf(`
 		_cache[%q] = {
 			plan: "pro",
