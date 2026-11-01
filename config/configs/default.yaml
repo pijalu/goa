@@ -326,27 +326,35 @@ tools:
     bg_exec: false
     delegate_to: false
     memento: false
-    terminals: true
+    terminals: false
     request_review: false
     ssh_bash: false
     webfetch: true
     verify: false
-    python: true
-    run_code: true
+    python: false
+    run_code: false
     agent: false
     agent_swarm: false
     goa: false
     lsp: false
-    todo_list: false
-    # agent_mcp (drive MCP servers via the agent-mcp daemon): OFF by default.
-    # Opt in with tools.enabled.agent_mcp: true; the tool then talks to the
-    # shared agent-mcp daemon (auto-starting it on first use) for MCP
-    # discovery, tool calls, resources, prompts, and config management.
-    agent_mcp: false
+    todo_list: true
+    # mcp (drive MCP servers via the agent-mcp daemon): ON by default (B46
+    # minimal-set + search availability). The tool is deferred — the model
+    # discovers it via tool search — talks to the shared agent-mcp daemon
+    # (auto-starting it on first use) for MCP discovery, tool calls,
+    # resources, prompts, and connecting new servers (config_add). Disable
+    # with tools.enabled.mcp: false.
+    mcp: true
     # Goal tool: ON by default so the model can create goals with no config
     # edit. Setting it false blocks ONLY autonomous `create`; every other goal
     # action keeps working whenever a goal exists (user-started or queued).
     goal: true
+    # Minimal default tool set (B46): everything below ships OFF but stays
+    # toggleable via /tools or config.
+    # schedule_* tools (persistent reminders across sessions):
+    schedule: false
+    # session_search/session_event_read (read-only recall of prior sessions):
+    session: false
   search:
     threads: 4
     max_results: 30

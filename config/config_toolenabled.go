@@ -53,11 +53,22 @@ type ToolEnabledConfig struct {
 	// the tool ENABLED by default, matching the requested behavior. All other
 	// flags here are opt-IN; this one is opt-OUT.
 	ClarifyDisabled bool `yaml:"clarify_disabled"`
-	// AgentMCP controls the `agent_mcp` tool (drive MCP servers through the
+	// AgentMCP controls the `mcp` tool (drive MCP servers through the
 	// agent-mcp daemon/library: list tools, call tools, read resources,
-	// prompts, config add). Opt-IN: defaults to false; enable with
-	// `tools.enabled.agent_mcp: true`.
-	AgentMCP bool `yaml:"agent_mcp"`
+	// prompts, connect servers via config_add). Opt-OUT: defaults to true
+	// (set in the embedded default config) so a fresh install can discover it
+	// via tool search; disable with `tools.enabled.mcp: false`.
+	AgentMCP bool `yaml:"mcp"`
+	// Schedule gates the schedule_create/schedule_delete/schedule_list tool
+	// family (persistent reminders across sessions). Opt-IN: defaults to
+	// false per the minimal default tool set; enable with
+	// `tools.enabled.schedule: true` or /tools.
+	Schedule bool `yaml:"schedule"`
+	// Session gates the session_search/session_event_read tool family
+	// (read-only recall over prior sessions). Opt-IN: defaults to false per
+	// the minimal default tool set; enable with `tools.enabled.session: true`
+	// or /tools.
+	Session bool `yaml:"session"`
 	// set records which fields were explicitly present in YAML so deep merges
 	// can override earlier layers only for those keys.
 	set map[string]bool
@@ -121,7 +132,9 @@ func (t *ToolEnabledConfig) fieldPtr(name string) *bool {
 		"lsp":              &t.LSP,
 		"todo_list":        &t.Todo,
 		"clarify_disabled": &t.ClarifyDisabled,
-		"agent_mcp":        &t.AgentMCP,
+		"mcp":              &t.AgentMCP,
+		"schedule":         &t.Schedule,
+		"session":          &t.Session,
 	}
 	return fields[name]
 }

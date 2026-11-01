@@ -60,15 +60,17 @@ func initBaseSubsystems(cfg *config.Config, projectDir string, headless bool) ba
 	}
 
 	// Scheduler tools (P18/TL2): persistent job store + model-facing
-	// schedule_create/delete/list. Always registered — they are harmless
-	// read/write tools over a durable file, matching the dsh schedule package
-	// which exposes them for every session. Their schemas are deferred to
-	// tool_search (tools/deferred.go) since they are rarely used; the model
-	// loads them on demand, after which they execute normally.
+	// schedule_create/delete/list. Gated by tools.enabled.schedule (B46
+	// minimal default tool set: OFF by default, toggleable via /tools) —
+	// their schemas are deferred to tool_search; the model loads them on
+	// demand, after which they execute normally. The store is always built:
+	// schedules persist and fire regardless of the tool gate.
 	scheduleStore := newScheduleStore(scheduleStorePath(projectDir))
-	toolRegistry.Register(&tools.ScheduleCreateTool{Store: scheduleStore})
-	toolRegistry.Register(&tools.ScheduleDeleteTool{Store: scheduleStore})
-	toolRegistry.Register(&tools.ScheduleListTool{Store: scheduleStore})
+	if cfg.Tools.Enabled.Schedule {
+		toolRegistry.Register(&tools.ScheduleCreateTool{Store: scheduleStore})
+		toolRegistry.Register(&tools.ScheduleDeleteTool{Store: scheduleStore})
+		toolRegistry.Register(&tools.ScheduleListTool{Store: scheduleStore})
+	}
 
 	return baseSubsystems{
 		worktreeMgr:       worktreeMgr,

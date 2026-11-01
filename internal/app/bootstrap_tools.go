@@ -171,9 +171,9 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 	registerAgentMCPTool(reg, cfg)
 }
 
-// registerAgentMCPTool registers the agent_mcp tool (drive MCP servers
-// through the agent-mcp daemon/client library) when enabled in config.
-// The tool is opt-in: tools.enabled.agent_mcp defaults to false.
+// registerAgentMCPTool registers the mcp tool (drive MCP servers through
+// the agent-mcp daemon/client library) when enabled in config. Default-ON:
+// tools.enabled.mcp defaults to true (B46); users disable it explicitly.
 func registerAgentMCPTool(reg *tools.ToolRegistry, cfg *config.Config) {
 	if !cfg.Tools.Enabled.AgentMCP {
 		return
@@ -420,10 +420,13 @@ func makeWebFetchTool(sessionStore *core.SessionStore, cfg *config.Config, proje
 }
 
 // registerSessionQueryTools registers the read-only session query tools
-// (session_search, session_event_read) over the shared session store.
-func registerSessionQueryTools(reg *tools.ToolRegistry, sessionStore *core.SessionStore) {
-	// Session tools are always registered: they are read-only and give the
-	// model the ability to recall decisions from prior sessions.
+// (session_search, session_event_read) over the shared session store,
+// gated by tools.enabled.session (B46 minimal default tool set: OFF by
+// default, toggleable via /tools).
+func registerSessionQueryTools(reg *tools.ToolRegistry, sessionStore *core.SessionStore, cfg *config.Config) {
+	if !cfg.Tools.Enabled.Session {
+		return
+	}
 	reg.Register(&tools.SessionSearchTool{Store: sessionStore})
 	reg.Register(&tools.SessionEventReadTool{Store: sessionStore})
 }

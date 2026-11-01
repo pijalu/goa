@@ -257,11 +257,12 @@ func TestAgentMCPCallToolArgsRawJSON(t *testing.T) {
 }
 
 // TestAgentMCPSchemaIsValid checks the schema shape the deferred loader
-// ships: name, enum actions, and required action.
+// ships: name (B46: the tool is the generic "mcp" tool), enum actions, and
+// required action.
 func TestAgentMCPSchemaIsValid(t *testing.T) {
 	s := (&AgentMCPTool{}).Schema()
-	if s.Name != "agent_mcp" {
-		t.Errorf("name = %s", s.Name)
+	if s.Name != "mcp" {
+		t.Errorf("name = %s, want mcp", s.Name)
 	}
 	props, ok := s.Schema["properties"].(map[string]any)
 	if !ok {
@@ -299,6 +300,6 @@ func TestAgentMCPDocsAndExamples(t *testing.T) {
 
 func TestAgentMCPRetryableFalse(t *testing.T) {
 	if (&AgentMCPTool{}).IsRetryable(errors.New("x")) {
-		t.Error("agent_mcp errors must not be retryable")
+		t.Error("mcp tool errors must not be retryable")
 	}
 }

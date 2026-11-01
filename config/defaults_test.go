@@ -73,6 +73,63 @@ func TestDefaultConfig_ContextCompressionMaxTokensAuto(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_MCPToolEnabled verifies the mcp tool (agent-mcp MCP
+// bridge, B46) is opt-OUT: enabled by the embedded default config so a fresh
+// install can discover it via tool search; users disable it explicitly via
+// tools.enabled.mcp: false.
+func TestDefaultConfig_MCPToolEnabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	loader := NewCascadeLoader(t.TempDir(), "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.Tools.Enabled.AgentMCP {
+		t.Errorf("Tools.Enabled.AgentMCP = false, want true (mcp is opt-out)")
+	}
+}
+
+// TestDefaultConfig_MinimalToolSet pins the B46 minimal default tool set:
+// ON by default — bash/edit/write/read (ungated core), goal, todo_list,
+// webfetch (stays), mcp. OFF by default — python, terminals, run_code,
+// verify, schedule, session, and the other opt-in tools. smartsearch is
+// gated separately (tools.smartsearch.enabled) and also ships off.
+func TestDefaultConfig_MinimalToolSet(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	loader := NewCascadeLoader(t.TempDir(), "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	on := map[string]bool{
+		"goal":     cfg.Tools.Enabled.Goal,
+		"todo":     cfg.Tools.Enabled.Todo,
+		"webfetch": cfg.Tools.Enabled.WebFetch,
+		"mcp":      cfg.Tools.Enabled.AgentMCP,
+	}
+	for name, got := range on {
+		if !got {
+			t.Errorf("tools.enabled.%s = false, want true (minimal-set default)", name)
+		}
+	}
+	off := map[string]bool{
+		"python":    cfg.Tools.Enabled.PythonEnabled,
+		"terminals": cfg.Tools.Enabled.Terminals,
+		"run_code":  cfg.Tools.Enabled.RunCode,
+		"verify":    cfg.Tools.Enabled.Verify,
+		"schedule":  cfg.Tools.Enabled.Schedule,
+		"session":   cfg.Tools.Enabled.Session,
+	}
+	for name, got := range off {
+		if got {
+			t.Errorf("tools.enabled.%s = true, want false (minimal-set default)", name)
+		}
+	}
+	if cfg.Tools.SmartSearch.Enabled {
+		t.Errorf("tools.smartsearch.enabled = true, want false (minimal-set default)")
+	}
+}
+
 // TestDefaultThemeYAML verifies built-in themes exist.
 func TestDefaultThemeYAML(t *testing.T) {
 	dark := DefaultThemeYAML("dark")
@@ -160,8 +217,10 @@ func TestDefaultConfig_AgentDrivenToolsEnabled(t *testing.T) {
 	}
 }
 
-// TestDefaultConfig_PythonToolEnabled verifies the python tool is opt-OUT:
-// enabled by default via the embedded config.
+// TestDefaultConfig_PythonToolEnabled verifies the python tool is opt-IN:
+// disabled by the embedded default per the B46 minimal default tool set
+// (bash, edit/write/read, goals, todos, webfetch, mcp); users enable it via
+// /tools or tools.enabled.python: true.
 func TestDefaultConfig_PythonToolEnabled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	loader := NewCascadeLoader(t.TempDir(), "", nil)
@@ -169,7 +228,7 @@ func TestDefaultConfig_PythonToolEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if !cfg.Tools.Enabled.PythonEnabled {
-		t.Errorf("Tools.Enabled.PythonEnabled = false, want true (python is opt-out)")
+	if cfg.Tools.Enabled.PythonEnabled {
+		t.Errorf("Tools.Enabled.PythonEnabled = true, want false (minimal-set default)")
 	}
 }

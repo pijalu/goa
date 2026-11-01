@@ -12,7 +12,7 @@ import (
 	"github.com/pijalu/goa/internal/tuirender"
 )
 
-// AgentMCPRenderer renders agent_mcp tool calls and results for the TUI.
+// AgentMCPRenderer renders mcp tool calls and results for the TUI.
 type AgentMCPRenderer struct{}
 
 // NewAgentMCPRenderer creates a new AgentMCPRenderer.
@@ -20,10 +20,10 @@ func NewAgentMCPRenderer() *AgentMCPRenderer {
 	return &AgentMCPRenderer{}
 }
 
-// RenderCall renders the agent_mcp tool call header.
+// RenderCall renders the mcp tool call header.
 func (r *AgentMCPRenderer) RenderCall(args map[string]any, ctx tuirender.RenderContext) string {
 	action, _ := args["action"].(string)
-	parts := []string{rToolTitle("agent_mcp"), rAccent(action)}
+	parts := []string{rToolTitle("mcp"), rAccent(action)}
 	if server, _ := args["server"].(string); server != "" {
 		parts = append(parts, server)
 	}
@@ -76,7 +76,7 @@ func renderCallFilters(args map[string]any) []string {
 	return parts
 }
 
-// RenderResult summarizes the agent_mcp result output.
+// RenderResult summarizes the mcp result output.
 func (r *AgentMCPRenderer) RenderResult(output string, ctx tuirender.RenderContext) string {
 	if output == "" {
 		return ""
@@ -84,15 +84,16 @@ func (r *AgentMCPRenderer) RenderResult(output string, ctx tuirender.RenderConte
 	return rToolOutput(r.summarize(output))
 }
 
-// summarize folds the JSON payload (plus any daemon notice) into a few
-// human-readable lines; anything unparseable passes through truncated.
+// summarize folds the JSON payload (plus any trailing lines — daemon
+// notices, the config_add connect hint) into a few human-readable lines;
+// anything unparseable passes through truncated.
 func (r *AgentMCPRenderer) summarize(output string) string {
 	body := strings.TrimSpace(output)
 	notice := ""
 	if idx := strings.Index(body, "\n\n"); idx >= 0 {
 		head, rest := body[:idx], body[idx+2:]
-		if strings.Contains(rest, "auto-starting") {
-			notice = strings.TrimSpace(rest)
+		if trimmed := strings.TrimSpace(rest); trimmed != "" && json.Valid([]byte(head)) {
+			notice = trimmed
 			body = head
 		}
 	}

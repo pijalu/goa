@@ -1,4 +1,4 @@
-# agent_mcp
+# mcp
 
 Drive MCP (Model Context Protocol) servers through the [agent-mcp](https://github.com/pijalu/agent-mcp)
 client library. All operations run against the shared agent-mcp daemon, so
@@ -7,7 +7,8 @@ with any other agent-mcp client (CLI, other agents).
 
 ## When to use
 
-- The project relies on MCP servers managed by agent-mcp (`agent-mcp config add ...`).
+- The project relies on MCP servers managed by agent-mcp (`agent-mcp config add ...`,
+  or self-register one with `config_add` — see "Connecting a server automatically").
 - You need an MCP tool call, resource, or prompt that goa's native MCP
   integration (`internal/mcp`) does not expose as a `mcp__server__tool`.
 - You need to discover what an MCP server offers before calling it.
@@ -23,8 +24,24 @@ with any other agent-mcp client (CLI, other agents).
 | `read_resource` | `server`, `uri` | returns the resource body |
 | `list_prompts` | `server` | paginated |
 | `get_prompt` | `server`, `prompt` | `args` is a JSON string map |
-| `config_add` | `name` + `command` or `url` | upserts into the agent-mcp config; reports added/updated |
+| `config_add` | `name` + `command` or `url` | upserts into the agent-mcp config; reports added/updated + next step |
 | `shutdown` | — | stops the shared daemon; idempotent when absent |
+
+## Connecting a server automatically
+
+You do not need to know the config layout — `config_add` is the whole flow:
+
+1. Upsert the server: `{"action":"config_add","name":"docs","command":"npx",
+   "argv":["-y","@modelcontextprotocol/server-docs"]}` for a stdio server, or
+   `{"action":"config_add","name":"api","url":"https://mcp.example.com/mcp"}`
+   (optionally `"transport":"sse"|"streamable"`, `"headers":{...}`) for a
+   remote one.
+2. The result reports `added` vs `updated`, the config path written, and the
+   next step: verify with `{"action":"list_tools","server":"<name>"}`.
+3. Call it: `{"action":"call_tool","server":"<name>","tool":T,"args":{...}}`.
+
+The daemon picks up the new entry on its next client call — no restart, no
+manual TOML editing.
 
 ## Filtering and shaping
 

@@ -24,8 +24,8 @@ func TestRunCodeDefaultsLoaded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load error: %v", err)
 	}
-	if !cfg.Tools.Enabled.RunCode {
-		t.Error("run_code should be enabled by default (opt-out like python)")
+	if cfg.Tools.Enabled.RunCode {
+		t.Error("run_code should be disabled by default (B46 minimal set, opt-in)")
 	}
 	if cfg.Tools.RunCode.TimeoutSeconds != 60 {
 		t.Errorf("run_code timeout_seconds = %d, want 60", cfg.Tools.RunCode.TimeoutSeconds)
@@ -64,8 +64,8 @@ tools:
 	if cfg.Tools.RunCode.TimeoutSeconds != 30 {
 		t.Errorf("run_code timeout_seconds = %d, want 30 (project override)", cfg.Tools.RunCode.TimeoutSeconds)
 	}
-	if !cfg.Tools.Enabled.RunCode {
-		t.Error("run_code should stay enabled after a project merge")
+	if cfg.Tools.Enabled.RunCode {
+		t.Error("run_code should stay disabled after a project merge that does not enable it (B46 minimal set)")
 	}
 }
 

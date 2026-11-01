@@ -195,6 +195,9 @@ tools:
   # Optional tools toggles. Most are opt-IN (default false).
   # `clarify_disabled` is the exception: it is opt-OUT (default false),
   # so the ask_user_question tool is ENABLED by default.
+  # The minimal default set (B46) is: bash/edit/write/read (ungated), goal,
+  # todo_list, webfetch, and mcp — everything else ships off and is
+  # discovered via tool search.
   enabled:
     bg_exec: false            # background process execution
     memento: false           # thinking artifacts
@@ -202,9 +205,10 @@ tools:
     ssh_bash: false          # remote shell execution
     delegate_to: false       # multi-agent delegation
     request_review: false    # multi-agent review requests
-    webfetch: false           # web fetching
-    python: true             # embedded gpython interpreter (opt-out)
+    webfetch: true            # web fetching (B46 minimal set keeps it on)
+    python: false            # embedded gpython interpreter (opt-in since B46)
     todo_list: true          # session todo list (opt-out; goal-linked when a goal is active)
+    mcp: true                # drive MCP servers via agent-mcp (B46: default on, opt-out)
     clarify_disabled: false  # set true to remove the ask_user_question tool
   edit:
     allow_fuzz_on_edits: true        # DEFAULT: enabled

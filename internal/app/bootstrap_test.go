@@ -139,23 +139,25 @@ func TestRegisterTools_SmartSearchRespectsEnabled(t *testing.T) {
 }
 
 // TestRegisterTools_RunCodeRespectsEnabled pins the run_code code-mode tool
-// (gap TL7) registration gating: opt-out by default (mirroring python), so the
-// model can submit a multi-tool program unless the user disables it.
+// (gap TL7) registration gating: opt-IN by default (B46 minimal default tool
+// set), so the tool is absent unless the user enables it via /tools or
+// tools.enabled.run_code: true.
 func TestRegisterTools_RunCodeRespectsEnabled(t *testing.T) {
 	projectDir := t.TempDir()
 
-	// Enabled (embedded default): the tool is registered and wired with the
-	// app registry as its sub-call surface plus a dispatch log dir under the
-	// project.
+	// Enabled explicitly (the new default is OFF): the tool is registered and
+	// wired with the app registry as its sub-call surface plus a dispatch log
+	// dir under the project.
 	cfg, err := config.NewCascadeLoader(projectDir, "", nil).Load()
 	if err != nil {
 		t.Fatalf("load default config: %v", err)
 	}
+	cfg.Tools.Enabled.SetEnabled("run_code", true)
 	reg := tools.NewToolRegistry()
 	registerTools(reg, nil, nil, projectDir, cfg, nil, false)
 	rc, ok := reg.Get("run_code")
 	if !ok {
-		t.Fatal("run_code should be registered by default (opt-out like python)")
+		t.Fatal("run_code should be registered when enabled")
 	}
 	rcTool, ok := rc.(*tools.RunCodeTool)
 	if !ok {
@@ -171,7 +173,7 @@ func TestRegisterTools_RunCodeRespectsEnabled(t *testing.T) {
 		t.Error("run_code worker must be jailed by default (gap TL7 jailed worker)")
 	}
 
-	// Disabled: absent from the registry.
+	// Disabled again: absent from the registry.
 	cfg.Tools.Enabled.SetEnabled("run_code", false)
 	reg = tools.NewToolRegistry()
 	registerTools(reg, nil, nil, projectDir, cfg, nil, false)
@@ -188,6 +190,7 @@ func TestRegisterTools_RunCodeDispatchDirEmptyWithoutProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load default config: %v", err)
 	}
+	cfg.Tools.Enabled.SetEnabled("run_code", true)
 	reg := tools.NewToolRegistry()
 	registerTools(reg, nil, nil, "", cfg, nil, false)
 	rc, ok := reg.Get("run_code")

@@ -65,8 +65,8 @@ func TestConfigMenu_EnabledToolsToggleSurvivesReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.Tools.Enabled.GetEnabled("todo_list") {
-		t.Fatal("precondition: todo_list should default disabled in this config")
+	if cfg.Tools.Enabled.GetEnabled("verify") {
+		t.Fatal("precondition: verify should default disabled in this config")
 	}
 
 	ctx, sr, _, _ := newMenuTestContext(t, nil)
@@ -77,13 +77,13 @@ func TestConfigMenu_EnabledToolsToggleSurvivesReload(t *testing.T) {
 	_ = menu.showRoot()
 	sr.onSel("tools", true)         // Tools settings:
 	sr.onSel("enabled_tools", true) // Toggle optional tools:
-	sr.onSel("todo_list", true)     // toggle ON
+	sr.onSel("verify", true)        // toggle ON
 
 	reloaded, err := cl.Load()
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if !reloaded.Tools.Enabled.GetEnabled("todo_list") {
+	if !reloaded.Tools.Enabled.GetEnabled("verify") {
 		t.Fatal("/config enabled-tools toggle did not survive reload")
 	}
 }

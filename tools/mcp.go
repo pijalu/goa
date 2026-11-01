@@ -24,9 +24,9 @@ import (
 // to stop accepting connections, mirroring `agent-mcp server shutdown`.
 const shutdownWait = 10 * time.Second
 
-// AgentMCPBackend is the library surface agent_mcp drives; the real backend
-// is an *agent-mcp client.Client, and tests inject fakes. The interface is
-// declared here so the tool never names the concrete type.
+// AgentMCPBackend is the library surface the mcp tool drives; the real
+// backend is an *agent-mcp client.Client, and tests inject fakes. The
+// interface is declared here so the tool never names the concrete type.
 type AgentMCPBackend interface {
 	Do(ctx context.Context, r client.Request) (any, error)
 	ShutdownDaemon(ctx context.Context, wait time.Duration) (client.ShutdownResult, error)
@@ -74,12 +74,12 @@ type AgentMCPTool struct {
 	notice strings.Builder
 }
 
-// Schema returns the tool schema for agent_mcp.
+// Schema returns the tool schema for the mcp tool.
 func (t *AgentMCPTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
-		Name: "agent_mcp",
+		Name: "mcp",
 		Description: "Drive MCP servers via the agent-mcp daemon: list servers/tools/resources/prompts, " +
-			"call tools, read resources, get prompts, add servers to the config, shut the daemon down.",
+			"call tools, read resources, get prompts, connect new servers (config_add), shut the daemon down.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -156,7 +156,7 @@ func (t *AgentMCPTool) Execute(input string) (string, error) {
 	var p agentMCPParams
 	if err := json.Unmarshal([]byte(input), &p); err != nil {
 		return "", &internal.ToolError{
-			Tool: "agent_mcp", Type: "invalid_input",
+			Tool: "mcp", Type: "invalid_input",
 			Detail:   fmt.Sprintf("Cannot parse parameters: %v", err),
 			HintText: "Ensure your input is valid JSON with the required fields.",
 		}
@@ -185,7 +185,7 @@ func (t *AgentMCPTool) Execute(input string) (string, error) {
 // badAction reports an unknown or missing action.
 func (t *AgentMCPTool) badAction(detail string) error {
 	return &internal.ToolError{
-		Tool: "agent_mcp", Type: "invalid_input",
+		Tool: "mcp", Type: "invalid_input",
 		Detail: detail,
 		HintText: "Use one of: list_servers, list_tools, call_tool, list_resources, " +
 			"read_resource, list_prompts, get_prompt, config_add, shutdown",
@@ -217,7 +217,7 @@ func (t *AgentMCPTool) run(ctx context.Context, be AgentMCPBackend, r client.Req
 	body, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return "", &internal.ToolError{
-			Tool: "agent_mcp", Type: "invalid_input",
+			Tool: "mcp", Type: "invalid_input",
 			Detail:   fmt.Sprintf("Cannot encode result: %v", err),
 			HintText: "Retry with the raw flag if the payload contains non-JSON data.",
 		}
@@ -225,11 +225,13 @@ func (t *AgentMCPTool) run(ctx context.Context, be AgentMCPBackend, r client.Req
 	return t.tagResult(string(body)), nil
 }
 
-// configAdd upserts one server entry in the agent-mcp config.
+// configAdd upserts one server entry in the agent-mcp config and returns an
+// explicit next step so goa can connect a server without knowing the config
+// layout (B46 self-service connect).
 func (t *AgentMCPTool) configAdd(be AgentMCPBackend, p agentMCPParams) (string, error) {
 	if p.Name == "" || (p.Command == "" && p.URL == "") {
 		return "", &internal.ToolError{
-			Tool: "agent_mcp", Type: "invalid_params",
+			Tool: "mcp", Type: "invalid_params",
 			Detail:   "config_add requires name and either command or url",
 			HintText: "Pass name plus command/argv (stdio) or url/transport/headers (remote).",
 		}
@@ -246,7 +248,11 @@ func (t *AgentMCPTool) configAdd(be AgentMCPBackend, p agentMCPParams) (string, 
 		return "", t.toolError(err)
 	}
 	body, _ := json.MarshalIndent(res, "", "  ")
-	return t.tagResult(string(body)), nil
+	// Self-service connect hint (B46): the model learns the next step at the
+	// moment it matters, without knowing the config layout.
+	hint := fmt.Sprintf("Server %q is %s in the agent-mcp config. Verify the connection with {\"action\":\"list_tools\",\"server\":%q} before calling its tools.",
+		res.Name, res.Action, res.Name)
+	return t.tagResult(string(body) + "\n\n" + hint), nil
 }
 
 // shutdown asks the daemon to tear down; idempotent when absent.
@@ -325,7 +331,7 @@ func (t *AgentMCPTool) toolError(err error) error {
 		hint = "The agent-mcp daemon or client failed unexpectedly; retry or use the agent-mcp CLI to diagnose."
 	}
 	return &internal.ToolError{
-		Tool: "agent_mcp", Type: kind,
+		Tool: "mcp", Type: kind,
 		Detail:   err.Error(),
 		HintText: hint,
 	}
@@ -333,11 +339,11 @@ func (t *AgentMCPTool) toolError(err error) error {
 
 func (t *AgentMCPTool) IsRetryable(err error) bool { return false }
 
-//go:embed agent_mcp.short.md agent_mcp.long.md
+//go:embed mcp.short.md mcp.long.md
 var agentMCPDocs embed.FS
 
-func (t *AgentMCPTool) ShortDoc() string { return readDoc(agentMCPDocs, "agent_mcp.short.md") }
-func (t *AgentMCPTool) LongDoc() string  { return readDoc(agentMCPDocs, "agent_mcp.long.md") }
+func (t *AgentMCPTool) ShortDoc() string { return readDoc(agentMCPDocs, "mcp.short.md") }
+func (t *AgentMCPTool) LongDoc() string  { return readDoc(agentMCPDocs, "mcp.long.md") }
 
 func (t *AgentMCPTool) Examples() []string {
 	return []string{

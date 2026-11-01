@@ -632,6 +632,27 @@ optional AI summarization via sub-agent.
 
 See `docs/tools/webfetch.md` for full configuration reference.
 
+### `mcp` — Drive MCP servers (agent-mcp)
+
+Drives MCP servers through the shared agent-mcp daemon — discovery, tool
+calls, resources, and prompts stay warm across goa runs and are shared with
+other agent-mcp clients. **Enabled by default** (opt out with
+`tools.enabled.mcp: false`); like other deferred tools the full schema
+loads on demand via `tool_search select:mcp`.
+
+**Actions:** `list_servers`, `list_tools`, `call_tool`, `list_resources`,
+`read_resource`, `list_prompts`, `get_prompt`, `config_add`, `shutdown`.
+
+**Self-service connect:** `config_add` upserts a stdio (`command`/`argv`)
+or remote (`url`, optional `transport`/`headers`) server into the agent-mcp
+config without manual editing — the result names the next step (verify with
+`list_tools`, then `call_tool`). The daemon picks up the new entry on its
+next client call; no restart.
+
+**Errors:** `invalid_params`, `mcp_error` (unreachable server, tool-reported
+failures), `internal_error`. Unknown server/tool names are parameter
+mistakes — run `list_servers` / `list_tools` first.
+
 ### `agent` — Spawn a sub-agent
 
 Spawns a focused sub-agent in an isolated context to execute a specific task.

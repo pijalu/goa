@@ -28,6 +28,55 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
+### B47 — quota status bar shows the Coding-Plan reset count
+
+**Observed behavior.** The z.ai quota footer segment appends `+N↻` after the
+window percentages ("[48%|9%] +3↻"), spending scarce status-bar columns on
+reset bookkeeping that belongs to `/quota:resets`.
+
+**Expected behavior.** The footer segment shows only the quota windows.
+Available resets stay discoverable where they are actionable: `/quota:resets`
+lists them with expiries and `/quota:reset` claims one.
+
+**Fix and validation plan.**
+1. RED: flip the plugin goja test that pins the `+N↻` suffix to assert the
+   segment never carries it.
+2. Drop the suffix in `withCodingPlanResets`
+   (plugins/bundled/provider-quota/plugin.js); keep the throttled
+   suppression; update the function comment.
+3. GREEN: plugin test suite; documentation sweep for any `+N↻` mentions.
+
+### B48 — bash tool runs the user's default shell; must default to bash
+
+**Observed behavior.** `newBashCommand` (tools/bash.go) resolves the shell
+from `$SHELL` (falling back to /bin/bash), so on machines whose login shell
+is zsh/fish the bash tool executes that shell instead of bash — syntax
+differences (globbing, `disown`, `=~` regex, option defaults) leak into every
+command, and the model never knows which shell it is driving.
+
+**Expected behavior.**
+1. Default: the bash tool always executes `bash`, regardless of `$SHELL`.
+2. Opt-in: `tools.bash.shell: user` selects the user's default login shell
+   (resolved from `$SHELL`, /bin/bash fallback); the choice is a normal
+   config value (`tools.bash.shell`), so /config and the cascade can change
+   it.
+3. When user-shell mode is active, the tool description the LLM sees names
+   the resolved shell (e.g. "Runs in zsh.") so the model writes correct
+   syntax for that shell; bash mode keeps the plain description.
+
+**Fix and validation plan.**
+1. RED: bash tool test — with `SHELL` pointing at a non-bash shell, default
+   construction resolves the bash binary (fails today); `Shell: "user"`
+   resolves `$SHELL` and the schema description carries the resolved shell
+   name; config test pins `tools.bash.shell: bash` in the embedded default.
+2. Implement: `BashTool.Shell` field (empty/"bash" → bash; "user" →
+   `$SHELL` with /bin/bash fallback), schema description suffix in user
+   mode, `Shell` field on the bash config struct + `default.yaml`,
+   registration wiring in bootstrap_tools.go.
+3. Docs: bash.short.md/bash.long.md note the option; default.yaml comment.
+4. Gates run separately (vet, staticcheck, gocognit, gocyclo, full race
+   suite), archive to docs/archive, close this entry, commit.
+
 ### B40 — Editing a file takes a shell/python3 detour for repeated small replacements
 
 **Observed behavior.** When a task needs several small, independent
@@ -86,6 +135,23 @@ failures produce no candidates rather than a panic or an incorrect path.
    separately. Archive this entry and commit the verified fix.
 
 ## Closed
+
+Closed 2026-11-01 — B46, the agent-mcp bridge tool shipped as `agent_mcp`,
+opt-in (`tools.enabled.agent_mcp: false`) with no automatic-connect guidance,
+and the default tool set had drifted past the minimal principle. The tool is
+now `mcp` everywhere (schema, deferred catalog, renderer registry, config key
+`tools.enabled.mcp`, docs, skill), defaults to ON with opt-out on a fresh
+install, and connects servers by itself: `config_add` upserts stdio or remote
+servers into the agent-mcp config and the result names the next step (verify
+with `list_tools`, then `call_tool`) — the long doc and the embedded skill
+document the same flow. The default tool set is the agreed minimum
+(bash/edit/write/read, goals, todos, webfetch, mcp): python, terminals,
+run_code ship off, and NEW `tools.enabled.schedule`/`session` gates keep the
+schedule and session-query families out of the default registration. RED
+default/schema/skill failures observed before GREEN; per-package suites, the
+documentation sweep, vet, staticcheck, and complexity budgets validate the
+fix. See
+[`docs/archive/b46-mcp-tool-minimal-defaults.2026-11-01.md`](docs/archive/b46-mcp-tool-minimal-defaults.2026-11-01.md).
 
 Closed 2026-11-01 — B43, agent-mcp lived entirely under `internal/`, so goa
 could not consume the shared MCP daemon as a library and skills that need

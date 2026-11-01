@@ -13,7 +13,7 @@ import (
 	"github.com/pijalu/goa/internal"
 )
 
-// newLiveAgentMCPTool builds an agent_mcp tool whose backend is the REAL
+// newLiveAgentMCPTool builds an mcp tool whose backend is the REAL
 // agent-mcp client (NewWithManager) over an in-process MCP fixture server.
 // This is the end-to-end proof: goa tool params -> agent-mcp client library
 // -> MCP server -> shaped payload.

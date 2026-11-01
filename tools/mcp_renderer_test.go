@@ -21,7 +21,7 @@ func TestAgentMCPRenderer_RenderCall(t *testing.T) {
 		{
 			name: "call_tool with server and tool",
 			args: map[string]any{"action": "call_tool", "server": "alpha", "tool": "echo"},
-			want: []string{"agent_mcp", "call_tool", "alpha", "echo"},
+			want: []string{"mcp", "call_tool", "alpha", "echo"},
 		},
 		{
 			name: "read_resource with uri",

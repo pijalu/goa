@@ -45,12 +45,12 @@ tools:
 		t.Error("Goal = false, want true (home config sets a key absent from embedded defaults)")
 	}
 	// Keys not pinned by the home layer keep their embedded defaults
-	// (embedded: webfetch=true, terminals=true).
+	// (embedded: webfetch=true, terminals=false per the B46 minimal set).
 	if !cfg.Tools.Enabled.WebFetch {
 		t.Error("WebFetch = false, want true (embedded default inherited when home is silent)")
 	}
-	if !cfg.Tools.Enabled.Terminals {
-		t.Error("Terminals = false, want true (embedded default inherited when home is silent)")
+	if cfg.Tools.Enabled.Terminals {
+		t.Error("Terminals = true, want false (embedded default inherited when home is silent)")
 	}
 }
 
