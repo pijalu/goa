@@ -4,30 +4,108 @@
 
 package tui
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // ── Completion debounce ──
 
-// scheduleAutoComp triggers auto-completion on the next render cycle.
-// The actual completion runs synchronously on the TUI goroutine via
-// a render request, so no timer or goroutine is needed.
-// Debounce is handled by the render loop's pacing (50ms interval).
+// scheduleAutoComp triggers auto-completion after typing pauses. Cheap
+// in-memory completions (slash commands, history search) run synchronously
+// as before; filesystem completions (@ prefixes) are debounced and run off
+// the UI goroutine — a per-keystroke fd or ReadDir walk on the command loop
+// stalled editing on large trees (B49). Rapid keystrokes each push the run
+// further out and coalesce into one search for the final prefix; a search
+// outlived by newer typing applies nothing (stale-drop).
 func (e *Editor) scheduleAutoComp() {
 	// History-search mode drives its own completion from the searcher, so it
 	// must refresh even when no base completer is configured.
 	if e.completer == nil && !e.searchMode {
 		return
 	}
-	// Cancel any pending timer
+	if e.searchMode {
+		e.updateAutoComp()
+		return
+	}
+	prefix := e.resolveAutoCompPrefix()
+	if prefix == "" || !shouldTriggerAutoComp(prefix) {
+		// Left the completion context: close the popup and drop any
+		// pending run.
+		e.stopCompTimer()
+		e.clearCompletion()
+		if e.tui != nil {
+			e.tui.RequestRender()
+		}
+		return
+	}
+	if !strings.HasPrefix(prefix, "@") {
+		// In-memory completer (commands, arguments): immediate feedback.
+		e.updateAutoComp()
+		if e.tui != nil && e.compState.Active() {
+			e.tui.RequestRender()
+		}
+		return
+	}
+	// Filesystem completion (B49): debounce and search off the UI goroutine.
+	e.stopCompTimer()
+	gen := e.compGen.Add(1)
+	e.compTimer = time.AfterFunc(e.compDebounce, func() {
+		e.compSearch(prefix, gen)
+	})
+}
+
+// compSearch runs the @ completion off the UI goroutine and hands the
+// result to the command loop, which owns compState. The search itself is
+// bounded by the filefind engine (shallow ReadDir first, capped fd rescue
+// — B49).
+func (e *Editor) compSearch(prefix string, gen int64) {
+	items := e.completer.Complete(prefix)
+	if e.tui != nil {
+		e.tui.ApplySync(func() {
+			e.applyCompResult(prefix, items, gen)
+			e.tui.RequestRender()
+		})
+		return
+	}
+	// No engine attached (headless use, tests): apply directly; callers
+	// synchronize through compApplied.
+	e.applyCompResult(prefix, items, gen)
+}
+
+// applyCompResult installs an async completion result unless the generation
+// moved on while the search ran (the user kept typing — stale-drop). Every
+// finished search signals compApplied AFTER compState settled, so waiters
+// reading compState after a signal are race-free.
+func (e *Editor) applyCompResult(prefix string, items []Completion, gen int64) {
+	defer e.signalCompApplied()
+	if e.compGen.Load() != gen {
+		return
+	}
+	if len(items) == 0 || (len(items) == 1 && items[0].Value == prefix) {
+		e.clearCompletion() // nothing to show
+		return
+	}
+	e.compState.Phase = PhaseCommand
+	e.compState.Items = items
+	e.compState.Idx = 0
+	e.compState.Prefix = prefix
+	e.compState.UserNavigated = false
+}
+
+func (e *Editor) stopCompTimer() {
 	if e.compTimer != nil {
 		e.compTimer.Stop()
 		e.compTimer = nil
 	}
-	// Run completion synchronously now for immediate feedback
-	e.updateAutoComp()
-	// Request a render if we have a TUI reference
-	if e.tui != nil && e.compState.Active() {
-		e.tui.RequestRender()
+}
+
+// signalCompApplied wakes one waiter synchronizing on a finished search.
+// Never blocks: extra signals collapse into the buffered slot.
+func (e *Editor) signalCompApplied() {
+	select {
+	case e.compApplied <- struct{}{}:
+	default:
 	}
 }
 

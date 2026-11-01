@@ -246,6 +246,33 @@ func TestComplete_AbsoluteOutsideRoot(t *testing.T) {
 	if len(got) != 1 || got[0].Path != outside+"/note.txt" {
 		t.Errorf("Complete(%q) = %v, want [%s/note.txt] absolute", prefix, paths(got), outside)
 	}
+
+	t.Run("absolute prefix lists outside-root entries absolute", func(t *testing.T) {
+		// B49 ordering: the shallow ReadDir answers first — "/et" lists the
+		// real /etc entry as an absolute completion. Slash handling is
+		// platform-dependent (/etc is a symlink on macOS), so only the
+		// absolute-prefix property is asserted.
+		got := New(root).WithFD(true).Complete("/et")
+		if len(got) == 0 {
+			t.Fatal("no completions for absolute prefix /et")
+		}
+		for _, e := range got {
+			if !strings.HasPrefix(e.Path, "/") {
+				t.Errorf("entry %q not absolute", e.Path)
+			}
+		}
+	})
+
+	t.Run("fd absolute hits outside root stay absolute", func(t *testing.T) {
+		// Drive fd past the shallow pass: no /etc entry matches "zzz", so
+		// the fd rescue answers; the absolute hit outside root stays
+		// absolute after normalization.
+		fakeFD(t, "hosts", 0)
+		got := New(root).WithFD(true).Complete("/etc/zzz")
+		if !containsPath(got, "/etc/hosts") {
+			t.Errorf("fd path = %v, want /etc/hosts kept absolute", paths(got))
+		}
+	})
 }
 
 // TestComplete_Cap: results are capped at maxResults after ranking.
@@ -313,14 +340,6 @@ func TestComplete_FDPath(t *testing.T) {
 		dirs := New(root).WithFD(true).Complete("plans/su")
 		if len(dirs) != 1 || dirs[0].Path != "plans/sub/" || !dirs[0].IsDir {
 			t.Errorf("dir hit = %+v, want [{plans/sub/ true}]", dirs)
-		}
-	})
-
-	t.Run("absolute hits outside root stay absolute", func(t *testing.T) {
-		fakeFD(t, "/etc/hosts", 0)
-		got := New(root).WithFD(true).Complete("/et")
-		if !containsPath(got, "/etc/hosts") {
-			t.Errorf("fd path = %v, want /etc/hosts kept absolute", paths(got))
 		}
 	})
 

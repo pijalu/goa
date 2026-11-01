@@ -59,68 +59,6 @@ drifted whitespace, (b) the same replacement across M files.
    through the tool only (no shell fallback); run the touched suites and the
    repository quality gates separately.
 
-### B39 — Complete `@~` as the home directory
-
-**Observed behavior.** `@` path completion cannot complete the bare `@~` token.
-It should expand the tilde to the current user's home directory and list that
-directory's entries instead of leaving the token unresolved or returning no
-completion candidates.
-
-**Expected behavior.** A bare `@~` completion request lists the home directory.
-`@~/` and `@~/prefix` use the same home-directory resolution while preserving
-the existing completion filtering and insertion behavior. Ordinary relative,
-absolute, and escaped `@` paths remain unchanged; home-directory resolution
-failures produce no candidates rather than a panic or an incorrect path.
-
-**Fix and validation plan.**
-1. Trace `@` completion tokenization, filesystem root selection, candidate
-   rendering, and insertion to locate where bare-tilde expansion is skipped.
-2. Add RED unit tests with an isolated home directory for bare `@~`, `@~/`, and
-   `@~/prefix`, plus regression cases for ordinary relative/absolute paths,
-   escaped spaces, and home-resolution failure.
-3. Implement the smallest shared resolver change so listing and insertion agree
-   on the expanded path without altering the user's token unexpectedly.
-4. Validate the actual interactive completion output with a production-path
-   filmstrip (and WEB cell coverage if the shared completion path feeds WEB),
-   then run the touched app/TUI suites and all repository quality gates
-   separately. Archive this entry and commit the verified fix.
-
-### B49 — `@` completion can burn CPU on huge trees; needs ordered capped search, `~` expansion, encoded-path support
-
-**Observed behavior.** The `@` path completion resolves a prefix with a broad
-filesystem walk: on a prefix matching many entries (repo root, home,
-GOPATH/vendor trees) it can dive deep and burn CPU collecting a huge candidate
-list. It also has no `~` handling (bare `@~` — tracked separately as B39) and
-no decoding of encoded paths: a pasted `file://` URL or a percent-encoded
-path (`my%20file`) never matches anything on disk.
-
-**Expected behavior.**
-1. Ordered search that avoids the deep dive: match directories first, then
-   files inside matching directories — best/shallowest matches first instead
-   of an unbounded recursive walk.
-2. Hard result cap: completion stops once the cap is reached, so a broad
-   prefix can never trigger a full deep search; the cap (not the tree size)
-   bounds the work.
-3. `~` expands to the home directory (`@~`, `@~/`, `@~/prefix`) — same
-   resolution as B39; share its resolver rather than duplicating it.
-4. Encoded-path support: `file://` scheme stripped (empty/`localhost` host)
-   and percent-encoding decoded (`%20` → space) before matching, so a pasted
-   `file:///home/u/my%20notes/` completes like the literal path.
-
-**Fix and validation plan.**
-1. Reproduce: time `@` completion against a synthetic deep/wide tree and a
-   real huge tree (GOPATH), recording walk depth, result count, CPU; try
-   `@file://…%20…` and `@~/` inputs.
-2. RED: completion tests — dir-before-file ordering, hard cap (bounded work
-   on a synthetic tree), `~` expansion cases (defer to B39's), `file://` +
-   `%20` decode cases, and unchanged behavior for ordinary/escaped paths.
-3. Implement one shared resolver pipeline: decode (`file://` strip +
-   percent-decode) → tilde expansion → ordered, capped walk feeding the
-   existing candidate ranking/insertion.
-4. Validate with a production-path filmstrip (actual completion output,
-   cap + ordering visible), the touched app/TUI suites, and the repository
-   quality gates separately; archive and commit.
-
 ### B50 — thoughtfull ships default-on; new installs should keep only telegram
 
 **Observed behavior.** The embedded skills allowlist default
@@ -147,6 +85,25 @@ it) stay exactly as they are.
    commit.
 
 ## Closed
+
+Closed 2026-11-01 — B39+B49, `@` path completion reran a filesystem search
+synchronously on every keystroke on the UI goroutine, and the engine ran the
+unbounded `fd` deep search first (no depth cap, `--follow`, no timeout), so a
+prefix over a huge tree could stall editing; `@~` never expanded (B39) and
+pasted `file://` / percent-encoded paths never matched. The shared resolver
+(internal/filefind) now decodes `file://`/`%20` (raw-form retry so literal
+`%xx` names still match), expands `~`/`~/…` to `$HOME` (no candidates when
+HOME is unset), answers from a shallow `os.ReadDir` first and only lets a
+bounded `fd` rescue deep queries (`--max-depth 3+depth`, no `--follow`,
+250 ms timeout, 50-result cap); the tui Editor debounces `@` completions
+(150 ms, keystrokes coalesce), runs the search off the UI goroutine, and
+stale-drops results via a generation counter — slash commands and history
+search stay synchronous. RED observed (fd argv on shallow queries; tilde and
+encoded prefixes nil; three keystrokes ran completion synchronously 3×),
+tui/filefind suites green under race, a production-path filmstrip shows the
+async popup, `@plans/` drill-down, Tab insert, `@~/todo.txt` and `@f%20g` →
+`@f g.md`, and all gates pass separately. See
+[`docs/archive/b39-b49-at-completion-bounded-async.2026-11-01.md`](docs/archive/b39-b49-at-completion-bounded-async.2026-11-01.md).
 
 Closed 2026-11-01 — B48, the bash tool resolved its shell from `$SHELL`, so
 an account whose login shell is zsh/fish silently drove that shell instead of

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pijalu/goa/internal"
@@ -82,8 +83,11 @@ type Editor struct {
 	compTimer    *time.Timer
 	compDebounce time.Duration
 
-	// Abort channel for cancelling in-flight completion requests
-	compAbort chan struct{}
+	// B49 async completion: compGen invalidates in-flight searches when the
+	// user keeps typing (stale-drop); compApplied signals each finished
+	// search so callers/tests can synchronize on the result.
+	compGen     atomic.Int64
+	compApplied chan struct{}
 
 	// TUI reference for showing overlays (completion popup, etc.) — deprecated, use inline list
 	tui *TUI
@@ -154,7 +158,7 @@ func NewEditor() *Editor {
 		killRing:               NewKillRing(20),
 		kb:                     DefaultKeybindingsManager(),
 		compDebounce:           150 * time.Millisecond,
-		compAbort:              make(chan struct{}),
+		compApplied:            make(chan struct{}, 1),
 		preferredVisualCol:     -1,
 		readClipboardImage:     internal.ReadClipboardImageBytes,
 		readClipboardFilePaths: internal.ReadClipboardFilePaths,
@@ -564,7 +568,7 @@ func (e *Editor) backspace() {
 	e.dirty = len(e.buf) > 0
 	e.shrinkPending = true
 	e.clearPreferredCol()
-	e.updateAutoComp()
+	e.scheduleAutoComp()
 }
 
 func (e *Editor) deleteForward() {

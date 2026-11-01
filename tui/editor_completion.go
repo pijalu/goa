@@ -70,6 +70,11 @@ func (e *Editor) cycleCompletion(delta int) {
 }
 
 func (e *Editor) clearCompletion() {
+	// Invalidate any in-flight async search (B49): a popup dismissed by
+	// Escape, submit or typing must not reappear when the search lands.
+	// The pending timer stays owner-goroutine property (scheduleAutoComp
+	// manages it); a stale timer's result is dropped by the generation check.
+	e.compGen.Add(1)
 	e.compState.Clear()
 }
 

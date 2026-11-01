@@ -12,16 +12,23 @@ package filefind
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // maxResults bounds both the fd query and the final ranked candidate list
 // (the same cap the @ completer has always applied to fd).
 const maxResults = 50
+
+// fdTimeout bounds the fd rescue search: completion is interactive, so a
+// slow fd on a huge tree must never hold a keystroke-triggered result
+// hostage (B49).
+const fdTimeout = 250 * time.Millisecond
 
 // Entry is one filesystem candidate.
 type Entry struct {
@@ -63,6 +70,9 @@ func (s *Search) WithFD(use bool) *Search { s.useFD = use; return s }
 // Complete returns ranked candidates for pathPrefix under the search root,
 // applying the rules shared by every file completer:
 //
+//   - file:// URLs and percent-escapes (%20) decode before matching, with a
+//     raw retry so literal "%xx" names still complete (B49);
+//   - a leading ~ expands to $HOME; with HOME unset, ~ yields nothing (B49);
 //   - a token that already names an existing regular file yields nothing
 //     (popup suppressed — "the path is done");
 //   - directories complete with a trailing "/" so typing drills down;
@@ -70,24 +80,53 @@ func (s *Search) WithFD(use bool) *Search { s.useFD = use; return s }
 //     fuzzy, shorter basenames first within a tier (Issue 8);
 //   - at most maxResults entries are returned.
 func (s *Search) Complete(pathPrefix string) []Entry {
-	dir, partial := splitPathPrefix(pathPrefix)
+	decoded := decodePrefix(pathPrefix)
+	entries, suppressed := s.complete(decoded)
+	if suppressed || len(entries) > 0 {
+		return entries
+	}
+	// The decoded form matched nothing: retry the raw text so a literal
+	// "%20" in a file name still completes. Skipped when decoding was a
+	// no-op.
+	if decoded == pathPrefix {
+		return nil
+	}
+	entries, _ = s.complete(pathPrefix)
+	return entries
+}
+
+// complete is one resolution pass: tilde expansion, splitting, suppression,
+// candidate gathering, ranking. suppressed reports that the typed token
+// already names an existing file (a terminal nil — no raw retry).
+func (s *Search) complete(pathPrefix string) (entries []Entry, suppressed bool) {
+	expanded, ok := expandTilde(pathPrefix)
+	if !ok {
+		// ~ requested but HOME is unset: searching a literal "~" directory
+		// would be wrong — report no candidates (B49).
+		return nil, false
+	}
+	dir, partial := splitPathPrefix(expanded)
 	searchDir := resolveSearchDir(dir, s.root)
 
 	// Exact-path suppression: the typed token already names an existing file,
 	// so completion is finished — no candidates, no popup.
 	if partial != "" && isExistingFile(searchDir, partial) {
-		return nil
+		return nil, true
 	}
 
-	candidates := s.fdCandidates(searchDir, partial)
+	// B49: answer from the shallow directory listing first — one ReadDir of
+	// the directory the user is typing in. The fd deep search only rescues
+	// queries the listing cannot answer, so a keystroke-triggered completion
+	// never walks the whole tree.
+	candidates := readDirCandidates(s.root, searchDir, dir, partial)
 	if len(candidates) == 0 {
-		candidates = readDirCandidates(s.root, searchDir, dir, partial)
+		candidates = s.fdCandidates(searchDir, partial)
 	}
 	ranked := Rank(candidates, partial)
 	if len(ranked) > maxResults {
 		ranked = ranked[:maxResults]
 	}
-	return ranked
+	return ranked, false
 }
 
 // Complete is the package-level convenience entry point: search root with
@@ -141,7 +180,9 @@ func (s *Search) fdCandidates(searchDir, query string) []Entry {
 	if !s.useFD || !fdAvailable {
 		return nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	// B49: bound the rescue search with a wall-clock cap so a slow fd on a
+	// huge tree cannot hold the completion hostage.
+	ctx, cancel := context.WithTimeout(context.Background(), fdTimeout)
 	defer cancel()
 	results, err := fdSearch(ctx, searchDir, query, maxResults)
 	if err != nil || len(results) == 0 {
@@ -179,21 +220,19 @@ func fdSearch(ctx context.Context, baseDir, query string, maxResults int) ([]fdR
 		return nil, nil // fd not available, caller should fall back
 	}
 
+	// B49: bound the dive. Depth grows only with the path segments the user
+	// typed, never with tree size; symlinks are not followed (one link could
+	// otherwise pull the whole filesystem into a keystroke-triggered search).
 	args := []string{
 		"--base-directory", baseDir,
 		"--max-results", fmt.Sprintf("%d", maxResults),
+		"--max-depth", fmt.Sprintf("%d", 3+strings.Count(query, "/")),
 		"--type", "f",
 		"--type", "d",
-		"--follow",
 		"--hidden",
 		"--exclude", ".git",
 		"--exclude", ".git/*",
 		"--exclude", ".git/**",
-	}
-
-	// Use full-path mode for multi-segment queries
-	if strings.Contains(query, "/") {
-		args = append(args, "--full-path")
 	}
 
 	if query != "" {
@@ -277,6 +316,45 @@ func splitPathPrefix(prefix string) (dir, partial string) {
 		return prefix[:idx+1], prefix[idx+1:]
 	}
 	return "", prefix
+}
+
+// decodePrefix normalizes a typed path prefix for matching (B49): a file://
+// URL — bare or with the file://localhost authority — is stripped to its
+// path, and percent-escapes (%20 for the spaces browser copies produce)
+// are decoded. An invalid escape (%zz) keeps the raw text; Complete also
+// retries the raw form when the decoded form matches nothing, so literal
+// "%xx" file names still complete.
+func decodePrefix(prefix string) string {
+	switch {
+	case strings.HasPrefix(prefix, "file://localhost/"):
+		prefix = prefix[len("file://localhost"):]
+	case prefix == "file://localhost":
+		prefix = "/"
+	case strings.HasPrefix(prefix, "file://"):
+		prefix = prefix[len("file://"):]
+	}
+	if decoded, err := url.PathUnescape(prefix); err == nil {
+		return decoded
+	}
+	return prefix
+}
+
+// expandTilde resolves a leading ~ against $HOME: "~" and "~/…" map onto
+// the home directory (bare ~ gains a trailing "/" so it lists home). The
+// prefix passes through unchanged when no tilde is involved; ok=false
+// signals a tilde that cannot expand (HOME unset).
+func expandTilde(prefix string) (expanded string, ok bool) {
+	if prefix != "~" && !strings.HasPrefix(prefix, "~/") {
+		return prefix, true
+	}
+	home := os.Getenv("HOME")
+	if home == "" {
+		return "", false
+	}
+	if prefix == "~" {
+		return home + "/", true
+	}
+	return home + "/" + prefix[len("~/"):], true
 }
 
 // resolveSearchDir anchors a typed dir against workdir: relative dirs are
