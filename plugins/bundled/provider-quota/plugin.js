@@ -379,28 +379,10 @@ function statusRender() {
 		}
 		return { text: "[∞]", color: "ok" };
 	}
-	return withCodingPlanResets(colorizedSegment(entry), entry);
-}
-
-// withCodingPlanResets appends the available Coding Plan reset count to the
-// z.ai quota segment ("[38%|62%]+1↻"). A present-but-throttled status renders
-// nothing extra: a cooldown is not quota, and the retry boundary already
-// shows up on /quota:resets. Non-object segments (the no-color host fallback)
-// get the same suffix in plain text.
-function withCodingPlanResets(seg, entry) {
-	if (!seg) {
-		return seg;
-	}
-	var cp = entry && entry.codingPlan;
-	var n = cp && !cp.throttled ? cp.availableCount : 0;
-	if (!n) {
-		return seg;
-	}
-	var suffix = "+" + n + "↻";
-	if (typeof seg === "string") {
-		return seg + " " + suffix;
-	}
-	return { text: seg.text + " " + suffix, color: seg.color };
+	// B47: the z.ai Coding Plan reset suffix ("+N↻") was removed from this
+	// segment — the status bar shows quota windows only; reset availability
+	// stays on /quota:resets.
+	return colorizedSegment(entry);
 }
 
 // colorizedSegment builds "[8%|24%]" (or "[8%|24%|85%]" when the provider

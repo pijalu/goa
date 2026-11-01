@@ -241,19 +241,19 @@ func TestQuotaZaiCodingPlan_StatusSurfacesInResetsAndQuota(t *testing.T) {
 }
 
 // TestQuotaZaiCodingPlan_SegmentShowsResetCount pins the status-bar contract:
-// the available reset count rides along with the active z.ai quota, and stays
-// out of the way when there is nothing available.
+// the footer segment shows only the quota windows — reset availability lives
+// on /quota:resets, never as a suffix in the status bar (B47).
 func TestQuotaZaiCodingPlan_SegmentShowsResetCount(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	wireZaiCodingPlan(t, env)
 	env.load(t)
 	env.callCommand("quota", "refresh")
 
-	if seg := env.renderSegment(); !strings.Contains(seg, "+3↻") {
-		t.Fatalf("segment must show the 3 available Coding Plan resets: %q", seg)
+	if seg := env.renderSegment(); strings.Contains(seg, "↻") {
+		t.Fatalf("segment must not show a reset suffix (resets live on /quota:resets, not the status bar): %q", seg)
 	}
 
-	// No resets available → no suffix (a count of zero is noise).
+	// No resets available → likewise quiet.
 	env.respond("coding-plan/reset/status", 200,
 		`{"code":0,"data":{"available_five_hour_resets":[],"available_week_resets":[],"has_unread_history":false}}`)
 	env.callCommand("quota", "refresh")

@@ -28,24 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-### B47 — quota status bar shows the Coding-Plan reset count
-
-**Observed behavior.** The z.ai quota footer segment appends `+N↻` after the
-window percentages ("[48%|9%] +3↻"), spending scarce status-bar columns on
-reset bookkeeping that belongs to `/quota:resets`.
-
-**Expected behavior.** The footer segment shows only the quota windows.
-Available resets stay discoverable where they are actionable: `/quota:resets`
-lists them with expiries and `/quota:reset` claims one.
-
-**Fix and validation plan.**
-1. RED: flip the plugin goja test that pins the `+N↻` suffix to assert the
-   segment never carries it.
-2. Drop the suffix in `withCodingPlanResets`
-   (plugins/bundled/provider-quota/plugin.js); keep the throttled
-   suppression; update the function comment.
-3. GREEN: plugin test suite; documentation sweep for any `+N↻` mentions.
-
 ### B48 — bash tool runs the user's default shell; must default to bash
 
 **Observed behavior.** `newBashCommand` (tools/bash.go) resolves the shell
@@ -135,6 +117,15 @@ failures produce no candidates rather than a panic or an incorrect path.
    separately. Archive this entry and commit the verified fix.
 
 ## Closed
+
+Closed 2026-11-01 — B47, the z.ai quota footer segment appended `+N↻` after
+the window percentages ("[48%|9%] +3↻"), spending scarce status-bar columns
+on reset bookkeeping that belongs to `/quota:resets`. The suffix is removed:
+the footer shows the quota windows only, while `/quota:resets` (list with
+expiries), `/quota:reset[:week]`/`/quota:reset:claim`, and the `/quota` table
+row stay unchanged. RED observed (flipped goja test failed with the live
+suffix), plugin suite green, no `+N↻` mentions left in docs. See
+[`docs/archive/b47-quota-status-bar-resets.2026-11-01.md`](docs/archive/b47-quota-status-bar-resets.2026-11-01.md).
 
 Closed 2026-11-01 — B46, the agent-mcp bridge tool shipped as `agent_mcp`,
 opt-in (`tools.enabled.agent_mcp: false`) with no automatic-connect guidance,
