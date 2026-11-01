@@ -85,6 +85,67 @@ failures produce no candidates rather than a panic or an incorrect path.
    then run the touched app/TUI suites and all repository quality gates
    separately. Archive this entry and commit the verified fix.
 
+### B49 — `@` completion can burn CPU on huge trees; needs ordered capped search, `~` expansion, encoded-path support
+
+**Observed behavior.** The `@` path completion resolves a prefix with a broad
+filesystem walk: on a prefix matching many entries (repo root, home,
+GOPATH/vendor trees) it can dive deep and burn CPU collecting a huge candidate
+list. It also has no `~` handling (bare `@~` — tracked separately as B39) and
+no decoding of encoded paths: a pasted `file://` URL or a percent-encoded
+path (`my%20file`) never matches anything on disk.
+
+**Expected behavior.**
+1. Ordered search that avoids the deep dive: match directories first, then
+   files inside matching directories — best/shallowest matches first instead
+   of an unbounded recursive walk.
+2. Hard result cap: completion stops once the cap is reached, so a broad
+   prefix can never trigger a full deep search; the cap (not the tree size)
+   bounds the work.
+3. `~` expands to the home directory (`@~`, `@~/`, `@~/prefix`) — same
+   resolution as B39; share its resolver rather than duplicating it.
+4. Encoded-path support: `file://` scheme stripped (empty/`localhost` host)
+   and percent-encoding decoded (`%20` → space) before matching, so a pasted
+   `file:///home/u/my%20notes/` completes like the literal path.
+
+**Fix and validation plan.**
+1. Reproduce: time `@` completion against a synthetic deep/wide tree and a
+   real huge tree (GOPATH), recording walk depth, result count, CPU; try
+   `@file://…%20…` and `@~/` inputs.
+2. RED: completion tests — dir-before-file ordering, hard cap (bounded work
+   on a synthetic tree), `~` expansion cases (defer to B39's), `file://` +
+   `%20` decode cases, and unchanged behavior for ordinary/escaped paths.
+3. Implement one shared resolver pipeline: decode (`file://` strip +
+   percent-decode) → tilde expansion → ordered, capped walk feeding the
+   existing candidate ranking/insertion.
+4. Validate with a production-path filmstrip (actual completion output,
+   cap + ordering visible), the touched app/TUI suites, and the repository
+   quality gates separately; archive and commit.
+
+### B50 — thoughtfull ships default-on; new installs should keep only telegram
+
+**Observed behavior.** The embedded skills allowlist default
+(`skills.enabled` in `config/configs/default.yaml`) ships
+`[telegram, thoughtfull]` — both sticky knowledge skills apply on a fresh
+install with no config edit. thoughtfull (thinking discipline) is opinionated
+workflow guidance that a default install should not impose.
+
+**Expected behavior.** The shipped default list keeps only `telegram`:
+thoughtfull becomes opt-in via `/config` → Skills → Embedded or
+`skills.embedded_enabled` (or an explicit `skills.enabled` pin). Existing
+home configs that pin `skills.enabled` are untouched; the default-provided
+gate semantics (default list applies embedded-scoped, explicit pins replace
+it) stay exactly as they are.
+
+**Fix and validation plan.**
+1. RED: update `config/config_skills_default_test.go` — embedded default
+   `skills.enabled` = `[telegram]` only, shipped-cascade assertion likewise.
+2. Flip the `skills.enabled` default in `config/configs/default.yaml` and
+   update its comment (telegram stays ON out of the box; thoughtfull opt-in).
+3. Documentation sweep: any doc claiming both skills ship on by default
+   (docs/SKILLS.md, embedded skill docs, skills tests) updated to match.
+4. Gates separately + full race suite; archive to docs/archive; close and
+   commit.
+
 ## Closed
 
 Closed 2026-11-01 — B48, the bash tool resolved its shell from `$SHELL`, so
