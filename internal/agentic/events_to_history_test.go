@@ -5,6 +5,7 @@
 package agentic
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -196,5 +197,182 @@ func TestEventsToHistory_EmptyToolResult(t *testing.T) {
 	}
 	if got[1].Role != ToolRole || got[1].ToolCallID != "c1" {
 		t.Errorf("expected tool role message, got Role=%s", got[1].Role)
+	}
+}
+
+// summarizeTxEvents builds the session-JSONL event sequence for one turn:
+// user → assistant → end, followed by a completed summarize compaction
+// transaction (start → summary{strategy, summary} → end).
+func summarizeTxEvents(id, userText, assistantText, summary string, shadowedEnd int) []OutputEvent {
+	return []OutputEvent{
+		{Type: EventContent, Role: User, Text: userText},
+		{Type: EventContent, Role: Assistant, State: StateContent, Text: assistantText},
+		{Type: EventEnd},
+		{Type: EventCompactionStart, CompactionTx: &CompactionTx{ID: id}},
+		{Type: EventCompactionSummary, CompactionTx: &CompactionTx{
+			ID: id, Strategy: string(CompressionSummarize), Summary: summary,
+			ShadowedStart: 0, ShadowedEnd: shadowedEnd, ShadowedCount: shadowedEnd,
+		}},
+		{Type: EventCompactionEnd, CompactionTx: &CompactionTx{ID: id}},
+	}
+}
+
+// B44 RED: a completed summarize compaction transaction must be honored on
+// replay — the shadowed pre-compaction transcript is replaced by the
+// checkpoint pair, and post-compaction turns append after it. Restoring such
+// a session used to rebuild the FULL transcript, silently growing the context
+// back to the pre-compaction size.
+func TestEventsToHistory_SummarizeCheckpointReplay(t *testing.T) {
+	const summary = "condensed earlier conversation"
+	events := summarizeTxEvents("cx-1", "u1", "a1", summary, 2)
+	events = append(events,
+		OutputEvent{Type: EventContent, Role: User, Text: "u2"},
+		OutputEvent{Type: EventContent, Role: Assistant, State: StateContent, Text: "a2"},
+		OutputEvent{Type: EventEnd},
+	)
+
+	got := EventsToHistory(events)
+	want := []Message{
+		{Type: Content, Role: User, Content: frameCompactedSummary(summary)},
+		{Type: Content, Role: Assistant, Content: summary},
+		{Type: Content, Role: User, Content: "u2"},
+		{Type: Content, Role: Assistant, Content: "a2"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("replayed history = %d messages, want %d: %#v", len(got), len(want), got)
+	}
+	for i, m := range want {
+		if got[i].Role != m.Role || got[i].Content != m.Content {
+			t.Errorf("replayed[%d] = %s/%q, want %s/%q", i, got[i].Role, got[i].Content, m.Role, m.Content)
+		}
+	}
+}
+
+// B44 RED: a completed fresh_window transaction replays to the preserved
+// tail (the same chain-safe boundary the live reset kept), not the full
+// transcript.
+func TestEventsToHistory_FreshWindowReplay(t *testing.T) {
+	events := []OutputEvent{
+		{Type: EventContent, Role: User, Text: "u1"},
+		{Type: EventContent, Role: Assistant, State: StateContent, Text: "a1"},
+		{Type: EventEnd},
+		{Type: EventContent, Role: User, Text: "u2"},
+		{Type: EventContent, Role: Assistant, State: StateContent, Text: "a2"},
+		{Type: EventEnd},
+		{Type: EventContent, Role: User, Text: "u3"},
+		{Type: EventContent, Role: Assistant, State: StateContent, Text: "a3"},
+		{Type: EventEnd},
+		{Type: EventCompactionStart, CompactionTx: &CompactionTx{ID: "cx-fw"}},
+		{Type: EventCompactionSummary, CompactionTx: &CompactionTx{
+			ID: "cx-fw", Strategy: string(CompressionFreshWindow),
+			PreserveTurns: 1, ShadowedStart: 0, ShadowedEnd: 6, ShadowedCount: 6,
+		}},
+		{Type: EventCompactionEnd, CompactionTx: &CompactionTx{ID: "cx-fw"}},
+	}
+
+	got := EventsToHistory(events)
+	if len(got) != 2 {
+		t.Fatalf("replayed history = %d messages, want the preserved last turn [u3 a3]: %#v", len(got), got)
+	}
+	if got[0].Role != User || got[0].Content != "u3" || got[1].Role != Assistant || got[1].Content != "a3" {
+		t.Errorf("preserved tail = %s/%q, %s/%q, want u3/a3",
+			got[0].Role, got[0].Content, got[1].Role, got[1].Content)
+	}
+}
+
+// B44 RED: a completed remote-compaction transaction replays to the persisted
+// replacement transcript the server produced.
+func TestEventsToHistory_RemoteCompactReplay(t *testing.T) {
+	events := []OutputEvent{
+		{Type: EventContent, Role: User, Text: "u1"},
+		{Type: EventContent, Role: Assistant, State: StateContent, Text: "a1"},
+		{Type: EventEnd},
+		{Type: EventCompactionStart, CompactionTx: &CompactionTx{ID: "cx-remote"}},
+		{Type: EventCompactionSummary, CompactionTx: &CompactionTx{
+			ID: "cx-remote", Strategy: string(CompressionRemoteCompact),
+			ShadowedStart: 0, ShadowedEnd: 2, ShadowedCount: 2,
+			Replacement: []Message{
+				{Type: Content, Role: User, Content: "r1"},
+				{Type: Content, Role: Assistant, Content: "r2"},
+			},
+		}},
+		{Type: EventCompactionEnd, CompactionTx: &CompactionTx{ID: "cx-remote"}},
+		{Type: EventContent, Role: User, Text: "u2"},
+		{Type: EventContent, Role: Assistant, State: StateContent, Text: "a2"},
+		{Type: EventEnd},
+	}
+
+	got := EventsToHistory(events)
+	want := []string{"r1", "r2", "u2", "a2"}
+	if len(got) != len(want) {
+		t.Fatalf("replayed history = %d messages, want %d: %#v", len(got), len(want), got)
+	}
+	for i, c := range want {
+		if got[i].Content != c {
+			t.Errorf("replayed[%d].Content = %q, want %q", i, got[i].Content, c)
+		}
+	}
+}
+
+// B44 guard: a FAILED compaction attempt (compaction_end with an error, no
+// summary) must not shadow the transcript — the live history was untouched.
+func TestEventsToHistory_FailedCompactionKeepsTranscript(t *testing.T) {
+	events := []OutputEvent{
+		{Type: EventContent, Role: User, Text: "u1"},
+		{Type: EventContent, Role: Assistant, State: StateContent, Text: "a1"},
+		{Type: EventEnd},
+		{Type: EventCompactionStart, CompactionTx: &CompactionTx{ID: "cx-fail"}},
+		{Type: EventCompactionEnd, CompactionTx: &CompactionTx{ID: "cx-fail", Error: "boom"}},
+	}
+
+	got := EventsToHistory(events)
+	if len(got) != 2 || got[0].Content != "u1" || got[1].Content != "a1" {
+		t.Errorf("failed compaction altered the transcript: %#v", got)
+	}
+}
+
+// B44 guard: a transaction summary without the replay fields (sessions
+// recorded before the fields existed) is ignored — the full transcript is
+// kept, matching the old restore behavior.
+func TestEventsToHistory_LegacyTripleWithoutFieldsIgnored(t *testing.T) {
+	events := []OutputEvent{
+		{Type: EventContent, Role: User, Text: "u1"},
+		{Type: EventContent, Role: Assistant, State: StateContent, Text: "a1"},
+		{Type: EventEnd},
+		{Type: EventCompactionStart, CompactionTx: &CompactionTx{ID: "cx-old"}},
+		{Type: EventCompactionSummary, CompactionTx: &CompactionTx{ID: "cx-old"}},
+		{Type: EventCompactionEnd, CompactionTx: &CompactionTx{ID: "cx-old"}},
+	}
+
+	got := EventsToHistory(events)
+	if len(got) != 2 || got[0].Content != "u1" || got[1].Content != "a1" {
+		t.Errorf("legacy triple altered the transcript: %#v", got)
+	}
+}
+
+// The new replay fields must survive the session-JSONL round trip.
+func TestCompactionTx_ReplayFieldsJSONRoundTrip(t *testing.T) {
+	ev := OutputEvent{
+		Type: EventCompactionSummary,
+		CompactionTx: &CompactionTx{
+			ID: "cx-rt", Strategy: string(CompressionSummarize), Summary: "S",
+			ShadowedEnd: 4, ShadowedCount: 4, PreserveTurns: 2,
+			Replacement: []Message{{Type: Content, Role: User, Content: "r1"}},
+		},
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back OutputEvent
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tx := back.CompactionTx
+	if tx == nil || tx.Strategy != string(CompressionSummarize) || tx.Summary != "S" || tx.PreserveTurns != 2 {
+		t.Fatalf("round trip lost replay fields: %+v", tx)
+	}
+	if len(tx.Replacement) != 1 || tx.Replacement[0].Role != User || tx.Replacement[0].Content != "r1" {
+		t.Errorf("round trip lost replacement: %+v", tx.Replacement)
 	}
 }

@@ -98,6 +98,8 @@ func (a *Agent) compactRemote(ctx context.Context, txID string) (bool, error) {
 	after := a.ContextStats()
 	a.emitCompactionTxSummary(&CompactionTx{
 		ID:             txID,
+		Strategy:       string(CompressionRemoteCompact),
+		Replacement:    append([]Message(nil), replacement...),
 		ShadowedStart:  0,
 		ShadowedEnd:    shadowedEnd,
 		ShadowedCount:  shadowedEnd,

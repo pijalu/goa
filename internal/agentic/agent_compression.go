@@ -72,7 +72,7 @@ const elidedToolCallArguments = "[elided]"
 const elidedToolResultContent = "[tool result elided]"
 
 func (a *Agent) Compact(ctx context.Context) error {
-	return a.compactOrdered(ctx, a.compactSlotStrategy())
+	return a.compactOrdered(ctx, a.compactSlotStrategy(), false)
 }
 
 // compactSlotStrategy resolves the strategy slot a full-window compaction
@@ -91,10 +91,15 @@ func (a *Agent) compactSlotStrategy() CompressionStrategy {
 //	selective → summarize) → emergency (message-drop ceiling, in the
 //	reactive paths).
 //
+// explicitSummarize marks a caller that explicitly requested the summarize
+// method (manual /compress:summarize): the fresh_window upgrade is skipped
+// — an explicit summarize must produce an LLM summary — while remote
+// compaction (a server-side summarize) may still serve the request. B44.
+//
 // The prune pass runs AHEAD of the transaction: when it resolves the context
 // pressure on its own, no compaction of any kind is needed and no strategy
 // fires (the pruned history stays as-is).
-func (a *Agent) compactOrdered(ctx context.Context, slot CompressionStrategy) error {
+func (a *Agent) compactOrdered(ctx context.Context, slot CompressionStrategy, explicitSummarize bool) error {
 	a.mu.Lock()
 	empty := len(a.history) == 0
 	before := a.computeContextStats()
@@ -154,7 +159,7 @@ func (a *Agent) compactOrdered(ctx context.Context, slot CompressionStrategy) er
 	// (configured) → the local summarize ladder below. Both preferred
 	// strategies complete the transaction's start → summary → end triple on
 	// success so observers see the standard compaction lifecycle.
-	if handled, err := a.tryPreferredCompaction(ctx, txID, slot); handled {
+	if handled, err := a.tryPreferredCompaction(ctx, txID, slot, explicitSummarize); handled {
 		return err
 	}
 
@@ -218,6 +223,8 @@ func (a *Agent) compactOrdered(ctx context.Context, slot CompressionStrategy) er
 	after := a.ContextStats()
 	a.emitCompactionTxSummary(&CompactionTx{
 		ID:             txID,
+		Strategy:       string(CompressionSummarize),
+		Summary:        summary,
 		ShadowedStart:  0,
 		ShadowedEnd:    shadowedEnd,
 		ShadowedCount:  shadowedEnd,
@@ -251,8 +258,9 @@ func (a *Agent) compactOrdered(ctx context.Context, slot CompressionStrategy) er
 //     untouched, and we fall THROUGH to fresh_window / the local ladder.
 //  2. fresh_window: when configured (the gate is on, or this escalation slot
 //     named it), the zero-LLM window reset runs — the cheapest full
-//     compaction, still completing the transaction triple.
-func (a *Agent) tryPreferredCompaction(ctx context.Context, txID string, slot CompressionStrategy) (handled bool, err error) {
+//     compaction, still completing the transaction triple. Never for an
+//     explicit summarize request (B44).
+func (a *Agent) tryPreferredCompaction(ctx context.Context, txID string, slot CompressionStrategy, explicitSummarize bool) (handled bool, err error) {
 	if a.remoteCompactionAvailable() {
 		applied, rerr := a.compactRemote(ctx, txID)
 		if applied {
@@ -262,7 +270,7 @@ func (a *Agent) tryPreferredCompaction(ctx context.Context, txID string, slot Co
 			a.cfg.Logger.Log(Info, "Compact: remote compaction unavailable/failed (%v); falling back", rerr)
 		}
 	}
-	if a.freshWindowSelected(slot) {
+	if !explicitSummarize && a.freshWindowSelected(slot) {
 		return true, a.compactFreshWindow(txID)
 	}
 	return false, nil

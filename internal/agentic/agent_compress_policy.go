@@ -164,13 +164,17 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 		before, res := a.runSelective()
 		a.emitCompactionResult(string(CompressionSelective), before, res, "")
 	case CompressionSummarize:
-		return a.Compact(ctx)
+		// B44: an EXPLICIT summarize request must summarize. Route through
+		// compactOrdered with the summarize slot pinned explicit, so the
+		// fresh_window upgrade (zero-LLM window reset) cannot fire; remote
+		// compaction — a server-side summarize — may still serve it.
+		return a.compactOrdered(ctx, CompressionSummarize, true)
 	case CompressionFreshWindow:
 		// Fresh window routes through compactOrdered with itself as the
 		// escalation slot so the Phase 2b.3 ordering holds even on a layer
 		// that named it directly: remote_compact still wins when available,
 		// then the zero-LLM window reset runs.
-		return a.compactOrdered(ctx, CompressionFreshWindow)
+		return a.compactOrdered(ctx, CompressionFreshWindow, false)
 	case CompressionHybrid:
 		return a.compressHybrid(ctx)
 	case CompressionMicro:

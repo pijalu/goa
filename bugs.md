@@ -59,35 +59,6 @@ the terminal width at every geometry.
 3. Validate with the tui-test filmstrip against a real PTY resize at three
    geometries, plus the touched suites and repository quality gates.
 
-### B44 — Manual `/compress:summarize` may not replace content with a summary
-
-**Observed behavior.** Two defects around manual summarize compaction:
-(1) `Compact` resolves its escalation slot from the hard-layer strategy,
-ignoring the explicitly requested `summarize` — with `fresh_window.enabled`
-(or a hard layer named `fresh_window`) a manual `/compress:summarize` silently
-runs the zero-LLM window reset and drops the conversation instead of
-summarizing it; (2) the compaction only exists in memory: session replay
-(`EventsToHistory`) ignores the compaction transaction triple, so restoring a
-session rebuilds the FULL pre-compaction transcript — the checkpoint
-"replacement" is lost and the context silently grows back.
-
-**Expected behavior.** An explicit `summarize` request always produces an LLM
-summary (remote server-side compaction may serve it; the non-summarizing
-`fresh_window` reset must not). Session restore honors completed compaction
-transactions: the replayed history matches the live post-compaction history
-(checkpoint pair + post-compaction turns), including across restore.
-
-**Fix and validation plan.**
-1. RED tests: explicit summarize with `fresh_window.enabled=true` must call
-   the summarize provider (existing provenance provider harness); replaying a
-   session JSONL containing a completed `compaction_start→summary→end` triple
-   must yield the checkpointed history, not the shadowed transcript.
-2. Fix: pin the slot for an explicit `summarize` request; teach
-   `EventsToHistory` to drop the shadowed range and land the checkpoint pair
-   from the transaction events.
-3. Run the agentic + core suites, a real-session filmstrip if feasible, and
-   the repository quality gates; archive with the fix record.
-
 ### B43 — agent-mcp as an embedded MCP bridge library
 
 **Feature request.** Integrate `/Users/muaddib/dev/agent-mcp` as a tool so
@@ -165,6 +136,20 @@ failures produce no candidates rather than a panic or an incorrect path.
    separately. Archive this entry and commit the verified fix.
 
 ## Closed
+
+Closed 2026-11-01 — B44, a manual `/compress:summarize` silently ran the
+zero-LLM fresh_window reset (dropping the conversation without summarizing)
+because `Compact` resolved its slot from the hard layer, and restored sessions
+rebuilt the full pre-compaction transcript because session replay ignored the
+compaction transaction triple. Explicit summarize now pins the summarize slot
+(fresh_window upgrade skipped; remote server-side summarize may still serve),
+completed transactions persist their replay payload (strategy, summary,
+preserve-turns, remote replacement), and `EventsToHistory` rebuilds the
+checkpoint the live compaction landed — checkpoint pair, preserved tail, or
+replacement — with legacy sessions and failed attempts unchanged. RED/GREEN
+bypass and replay regressions, guard tests, agentic + core race suites, vet,
+staticcheck, and complexity budgets validate the fix. See
+[`docs/archive/b44-compress-summarize-restore.2026-11-01.md`](docs/archive/b44-compress-summarize-restore.2026-11-01.md).
 
 Closed 2026-11-01 — B42, the start wizard lost the API key and custom
 endpoints (the transition re-read the already-cleared editor after committing)

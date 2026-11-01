@@ -82,8 +82,12 @@ func (a *Agent) compactFreshWindow(txID string) error {
 	after := a.ContextStats()
 	// Provenance summary: the whole pre-reset history was shadowed; Usage is
 	// nil because fresh_window never calls the model (zero-LLM contract).
+	// PreserveTurns is persisted so session replay can rebuild the identical
+	// tail (bugs.md B44).
 	a.emitCompactionTxSummary(&CompactionTx{
 		ID:             txID,
+		Strategy:       string(CompressionFreshWindow),
+		PreserveTurns:  a.freshWindowPreserveTurns(),
 		ShadowedStart:  0,
 		ShadowedEnd:    shadowedEnd,
 		ShadowedCount:  shadowedEnd,

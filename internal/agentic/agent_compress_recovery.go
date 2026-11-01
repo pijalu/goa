@@ -80,7 +80,7 @@ func (a *Agent) compressOverflowRecovery(ctx context.Context) {
 		// local ladder): the on-error slot is threaded through so a
 		// fresh_window selection still yields to an available remote
 		// compaction first.
-		if err := a.compactOrdered(ctx, strategy); err != nil && a.cfg.Logger != nil {
+		if err := a.compactOrdered(ctx, strategy, false); err != nil && a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Error, "Context-overflow compaction failed: %v", err)
 		}
 		a.emitContextStats()

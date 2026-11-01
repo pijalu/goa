@@ -69,6 +69,26 @@ type CompactionTx struct {
 	// when the provider emitted one (nil otherwise).
 	Usage *provider.Usage `json:"usage,omitempty"`
 
+	// Strategy names the compaction strategy that completed this transaction
+	// ("summarize" | "fresh_window" | "remote_compact"). It is the replay
+	// discriminator: EventsToHistory trusts a completed transaction only when
+	// it carries a known strategy plus its replay payload. Empty on legacy
+	// sessions (recorded before the field existed) and on failed attempts.
+	Strategy string `json:"strategy,omitempty"`
+
+	// Summary is the raw summary text of a completed summarize transaction
+	// (the same text that replaced the history), so session replay can
+	// rebuild the checkpoint pair without re-asking the model.
+	Summary string `json:"summary,omitempty"`
+
+	// PreserveTurns is the preservation-tail length a fresh_window
+	// transaction used, so replay can rebuild the identical tail.
+	PreserveTurns int `json:"preserve_turns,omitempty"`
+
+	// Replacement is the persisted replacement transcript of a completed
+	// remote_compaction transaction (server-provided messages).
+	Replacement []Message `json:"replacement,omitempty"`
+
 	// Error records an unsuccessful compaction attempt on compaction_end
 	// (empty on success). dsh compaction/end {error?}.
 	Error string `json:"error,omitempty"`
