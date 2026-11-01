@@ -72,6 +72,11 @@ type BashConfig struct {
 	// is considered too complex for reliable static analysis. Zero defaults to
 	// the analyzer's conservative threshold (50).
 	MaxComplexityScore int `yaml:"max_complexity_score"`
+	// Shell selects which shell executes bash-tool commands (B48). "bash" (the
+	// default) always runs bash regardless of the account's login shell;
+	// "user" runs $SHELL (falling back to bash when unset) and the tool
+	// description names the resolved shell so the model emits matching syntax.
+	Shell string `yaml:"shell"`
 	// EnableComplexityAnalysis enables the AST-based complexity analyzer.
 	// When enabled, the LLM is told to keep bash scripts simple and avoid
 	// dynamic command construction. Disabled by default.

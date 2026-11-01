@@ -225,7 +225,10 @@ Users can override via `~/.goa/search_priority.json`.
 
 Runs shell commands with security controls (blocked/allowed command
 filtering, env masking, output truncation, and an optional project-directory
-jail).
+jail). Commands always run in **bash** regardless of the account's login
+shell (`tools.bash.shell: bash`, the default); set `tools.bash.shell: user`
+to run the login shell instead — the tool description then names the
+resolved shell so the model emits matching syntax.
 
 **Parameters:**
 | Field | Type | Description |

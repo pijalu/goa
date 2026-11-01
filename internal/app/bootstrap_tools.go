@@ -90,6 +90,7 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		MaxOutputBytes:   cfg.Tools.Bash.MaxOutputBytes,
 		MaxCaptureBytes:  cfg.Tools.Bash.MaxCaptureBytes,
 		EnableComplexity: cfg.Tools.Bash.EnableComplexityAnalysis,
+		Shell:            cfg.Tools.Bash.Shell,
 		WarnFileEdits:    cfg.Tools.Bash.WarnFileEdits == nil || *cfg.Tools.Bash.WarnFileEdits,
 		// Resolve live so /config → tools.bash.warn_file_edits takes effect immediately.
 		WarnFileEditsResolver: func() bool {

@@ -28,37 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-### B48 — bash tool runs the user's default shell; must default to bash
-
-**Observed behavior.** `newBashCommand` (tools/bash.go) resolves the shell
-from `$SHELL` (falling back to /bin/bash), so on machines whose login shell
-is zsh/fish the bash tool executes that shell instead of bash — syntax
-differences (globbing, `disown`, `=~` regex, option defaults) leak into every
-command, and the model never knows which shell it is driving.
-
-**Expected behavior.**
-1. Default: the bash tool always executes `bash`, regardless of `$SHELL`.
-2. Opt-in: `tools.bash.shell: user` selects the user's default login shell
-   (resolved from `$SHELL`, /bin/bash fallback); the choice is a normal
-   config value (`tools.bash.shell`), so /config and the cascade can change
-   it.
-3. When user-shell mode is active, the tool description the LLM sees names
-   the resolved shell (e.g. "Runs in zsh.") so the model writes correct
-   syntax for that shell; bash mode keeps the plain description.
-
-**Fix and validation plan.**
-1. RED: bash tool test — with `SHELL` pointing at a non-bash shell, default
-   construction resolves the bash binary (fails today); `Shell: "user"`
-   resolves `$SHELL` and the schema description carries the resolved shell
-   name; config test pins `tools.bash.shell: bash` in the embedded default.
-2. Implement: `BashTool.Shell` field (empty/"bash" → bash; "user" →
-   `$SHELL` with /bin/bash fallback), schema description suffix in user
-   mode, `Shell` field on the bash config struct + `default.yaml`,
-   registration wiring in bootstrap_tools.go.
-3. Docs: bash.short.md/bash.long.md note the option; default.yaml comment.
-4. Gates run separately (vet, staticcheck, gocognit, gocyclo, full race
-   suite), archive to docs/archive, close this entry, commit.
-
 ### B40 — Editing a file takes a shell/python3 detour for repeated small replacements
 
 **Observed behavior.** When a task needs several small, independent
@@ -117,6 +86,18 @@ failures produce no candidates rather than a panic or an incorrect path.
    separately. Archive this entry and commit the verified fix.
 
 ## Closed
+
+Closed 2026-11-01 — B48, the bash tool resolved its shell from `$SHELL`, so
+an account whose login shell is zsh/fish silently drove that shell instead of
+bash (a `$SHELL` pointing at a missing binary made every command fail with
+exit -1). The tool now always executes bash by default (`tools.bash.shell:
+bash`, pinned in the embedded config); `tools.bash.shell: user` opts into the
+login shell (`$SHELL`, /bin/bash fallback, unrecognized values fail safe),
+and in user mode the tool description names the resolved shell so the model
+emits matching syntax. RED observed twice (default-vs-$SHELL execution
+failure; config pin before the default flip), bash/config/app suites green,
+full race suite, vet, staticcheck, and complexity budgets pass. See
+[`docs/archive/b48-bash-default-shell.2026-11-01.md`](docs/archive/b48-bash-default-shell.2026-11-01.md).
 
 Closed 2026-11-01 — B47, the z.ai quota footer segment appended `+N↻` after
 the window percentages ("[48%|9%] +3↻"), spending scarce status-bar columns

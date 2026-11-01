@@ -6,6 +6,12 @@ Copyright (C) 2026 Pierre Poissinger
 
 Execute shell commands locally.
 
+Shell:
+    Commands run in bash by default, regardless of the account's login shell
+    (tools.bash.shell: bash). Set tools.bash.shell: user to run the login
+    shell instead — the tool description then names the resolved shell so
+    commands can be written in its syntax.
+
 Working directory:
   Commands run with the working directory set to the project root by default.
   Do NOT prepend `cd <project root> &&` — it is redundant. Only pass the

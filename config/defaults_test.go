@@ -89,6 +89,21 @@ func TestDefaultConfig_MCPToolEnabled(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_BashShell pins the B48 default: tools.bash.shell is
+// "bash" — commands run bash regardless of the account's login shell;
+// "user" is an explicit opt-in.
+func TestDefaultConfig_BashShell(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	loader := NewCascadeLoader(t.TempDir(), "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Tools.Bash.Shell != "bash" {
+		t.Errorf("Tools.Bash.Shell = %q, want %q (B48 default)", cfg.Tools.Bash.Shell, "bash")
+	}
+}
+
 // TestDefaultConfig_MinimalToolSet pins the B46 minimal default tool set:
 // ON by default — bash/edit/write/read (ungated core), goal, todo_list,
 // webfetch (stays), mcp. OFF by default — python, terminals, run_code,

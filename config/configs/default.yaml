@@ -273,6 +273,11 @@ tools:
       - "*PASSWORD*"
     compress_output: false
     jail: false
+    # B48: always execute commands with bash regardless of the account's
+    # login shell, so the model's POSIX commands behave identically for
+    # every user. Set "user" to run the login shell ($SHELL); in that mode
+    # the tool description names the resolved shell.
+    shell: bash
   ssh:
     hosts: []
   python:

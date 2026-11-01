@@ -686,11 +686,11 @@ func TestAdvanceShellWord_EdgeCases(t *testing.T) {
 }
 
 func TestBashTool_NewBashCommand(t *testing.T) {
-	cmd := newBashCommand("echo hello")
+	cmd := newBashCommand(defaultBashShell, "echo hello")
 	if cmd == nil {
 		t.Fatal("newBashCommand returned nil")
 	}
-	// Should use $SHELL or /bin/bash
+	// Should use the resolved shell
 	if cmd.Path == "" {
 		t.Error("expected non-empty command path")
 	}
@@ -711,7 +711,7 @@ func TestBashTool_Jail_CdToProjectRoot_WithChainedCommands(t *testing.T) {
 
 func TestBashTool_NewBashCommand_UsesShell(t *testing.T) {
 	// Test that newBashCommand uses the expected shell path
-	cmd := newBashCommand("echo hello")
+	cmd := newBashCommand(defaultBashShell, "echo hello")
 	if cmd.Path == "" {
 		t.Error("expected non-empty Path")
 	}

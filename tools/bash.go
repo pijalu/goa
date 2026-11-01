@@ -75,6 +75,14 @@ type BashTool struct {
 	// command and returns a clear output-too-large error.
 	MaxCaptureBytes int
 
+	// Shell selects which shell executes commands (B48). "" and "bash" (the
+	// default) always run bash regardless of the user's login shell, so
+	// POSIX commands the model emits behave identically on every account.
+	// "user" runs $SHELL (falling back to bash when unset); in that mode the
+	// tool description names the resolved shell so the model emits syntax
+	// the actual shell understands. Configured via tools.bash.shell.
+	Shell string
+
 	// CompressionResolver, when non-nil, is called at execution time to
 	// determine whether output compression is active. This enables
 	// per-model/provider resolution instead of a static config bool.
@@ -157,6 +165,12 @@ func (t *BashTool) Schema() agentic.ToolSchema {
 	description := "Run a shell command." + cwdNote
 	if t.EnableComplexity {
 		description = "Run a shell command. Complex scripts may be rejected — use simple commands." + cwdNote
+	}
+	// B48: in user-shell mode the description names the resolved shell so the
+	// model emits syntax the actual shell understands (zsh/fish/pwsh differ
+	// from bash). Default bash mode stays silent — bash is the assumption.
+	if t.Shell == "user" {
+		description += " Commands run in the user's shell: " + t.shellPath() + "."
 	}
 	schema := map[string]any{
 		"type": "object",
@@ -320,7 +334,7 @@ func (t *BashTool) reportResult(ctx context.Context, p *bashParams, fileEditHint
 func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.Duration, bool, bool, error) {
 	timeoutS := normalizeBashTimeout(p.Timeout)
 
-	cmd := newBashCommand(p.Command)
+	cmd := newBashCommand(t.shellPath(), p.Command)
 	// Default workdir to ProjectDir when not explicitly set. This eliminates
 	// the need for the model to prefix every command with "cd /project && ".
 	if p.Workdir != "" {
@@ -910,11 +924,30 @@ func buildCommandEnv(extra map[string]string) []string {
 	return env
 }
 
-func newBashCommand(command string) *exec.Cmd {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/bash"
+// defaultBashShell is the shell the bash tool always uses unless the user
+// explicitly opts into the login shell via tools.bash.shell: user (B48).
+const defaultBashShell = "/bin/bash"
+
+// resolveShell maps a tools.bash.shell preference to a shell binary path.
+// "" and "bash" (the default) always run bash so the model's POSIX commands
+// behave identically no matter which login shell the account uses; only
+// "user" honors $SHELL, falling back to bash when unset. Any unrecognized
+// value fails safe to bash.
+func resolveShell(preference string) string {
+	if preference == "user" {
+		if shell := os.Getenv("SHELL"); shell != "" {
+			return shell
+		}
 	}
+	return defaultBashShell
+}
+
+// shellPath resolves the configured shell preference to a binary path.
+func (t *BashTool) shellPath() string {
+	return resolveShell(t.Shell)
+}
+
+func newBashCommand(shell, command string) *exec.Cmd {
 	cmd := exec.Command(shell, "-c", command)
 	return configureBashCommand(cmd)
 }

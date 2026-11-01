@@ -155,7 +155,7 @@ func TestMementoTool_GlobalMemoryDir_HomeEnv(t *testing.T) {
 // newBashCommand tests
 
 func TestNewBashCommand(t *testing.T) {
-	cmd := newBashCommand("echo hello")
+	cmd := newBashCommand(defaultBashShell, "echo hello")
 	if cmd == nil {
 		t.Fatal("expected non-nil command")
 	}
