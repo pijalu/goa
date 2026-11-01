@@ -168,6 +168,17 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 		reg.Register(&ask.AskUserQuestionTool{})
 	}
 	registerSmartSearchTool(reg, wm, projectDir, cfg, changeTracker)
+	registerAgentMCPTool(reg, cfg)
+}
+
+// registerAgentMCPTool registers the agent_mcp tool (drive MCP servers
+// through the agent-mcp daemon/client library) when enabled in config.
+// The tool is opt-in: tools.enabled.agent_mcp defaults to false.
+func registerAgentMCPTool(reg *tools.ToolRegistry, cfg *config.Config) {
+	if !cfg.Tools.Enabled.AgentMCP {
+		return
+	}
+	reg.Register(&tools.AgentMCPTool{})
 }
 
 func registerVerifyTool(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) {

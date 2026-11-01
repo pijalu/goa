@@ -36,6 +36,7 @@ func init() {
 	RegisterToolRenderer("schedule_list", &tools.ScheduleRenderer{})
 	RegisterToolRenderer("delegate_to", &tools.DelegateRenderer{})
 	RegisterToolRenderer("request_review", &tools.DelegateRenderer{})
+	RegisterToolRenderer("agent_mcp", tools.NewAgentMCPRenderer())
 }
 
 // SyncToolTheme updates the theme provider used by tool renderers. Call this

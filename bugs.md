@@ -28,25 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-### B43 — agent-mcp as an embedded MCP bridge library
-
-**Feature request.** Integrate `/Users/muaddib/dev/agent-mcp` as a tool so
-goa can create skills that connect to MCP servers without external tooling.
-goa may embed agent-mcp as a library (updating that repo is allowed, without
-breaking its existing CLI features).
-
-**Expected behavior.** goa exposes agent-mcp's capabilities (browser/MCP
-driving) as goa tools/skills; the library API is importable, stable, and keeps
-every existing agent-mcp behavior working.
-
-**Fix and validation plan.**
-1. Survey agent-mcp's public surface and its own tests/CI.
-2. Extract/refactor an importable package (module boundary or go.mod
-   `replace`) keeping CLI behavior byte-compatible; add library-level tests in
-   agent-mcp.
-3. Wire a goa tool (and skill template) on top; validate both repos' suites
-   and a live MCP connect round-trip.
-
 ### B40 — Editing a file takes a shell/python3 detour for repeated small replacements
 
 **Observed behavior.** When a task needs several small, independent
@@ -105,6 +86,22 @@ failures produce no candidates rather than a panic or an incorrect path.
    separately. Archive this entry and commit the verified fix.
 
 ## Closed
+
+Closed 2026-11-01 — B43, agent-mcp lived entirely under `internal/`, so goa
+could not consume the shared MCP daemon as a library and skills that need
+warm cross-process MCP sessions required the standalone binary. agent-mcp now
+ships an importable `client` package (ops, payload shaping, daemon
+connect/auto-start, error taxonomy, `Client` facade, plus an external-facing
+embedder API — `ServerEntry`/`UpsertServerEntry`, `NewSessionManager`,
+`NewWithManager`) with its CLI byte-identical (132 tests unchanged, suite and
+gates green); goa consumes it through an opt-in deferred `agent_mcp` tool
+(nine actions: discovery, calls, resources, prompts, config add, daemon
+shutdown) with a TUI renderer, an embedded `agent_mcp` skill, fake-backend
+plus live round-trip tests against an in-process MCP server, and the full
+race-enabled repository suite, vet, staticcheck, and complexity budgets green
+after the streaming-validation registry test caught the new renderer and the
+gocyclo budget forced three refactors. See
+[`docs/archive/b43-agent-mcp-library.2026-11-01.md`](docs/archive/b43-agent-mcp-library.2026-11-01.md).
 
 Closed 2026-11-01 — B45, the configured modeline degraded ungracefully on
 resize: a routine partial `SetData` rebuild (companion stream ticks,

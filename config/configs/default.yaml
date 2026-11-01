@@ -338,6 +338,11 @@ tools:
     goa: false
     lsp: false
     todo_list: false
+    # agent_mcp (drive MCP servers via the agent-mcp daemon): OFF by default.
+    # Opt in with tools.enabled.agent_mcp: true; the tool then talks to the
+    # shared agent-mcp daemon (auto-starting it on first use) for MCP
+    # discovery, tool calls, resources, prompts, and config management.
+    agent_mcp: false
     # Goal tool: ON by default so the model can create goals with no config
     # edit. Setting it false blocks ONLY autonomous `create`; every other goal
     # action keeps working whenever a goal exists (user-started or queued).

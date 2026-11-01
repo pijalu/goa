@@ -53,6 +53,11 @@ type ToolEnabledConfig struct {
 	// the tool ENABLED by default, matching the requested behavior. All other
 	// flags here are opt-IN; this one is opt-OUT.
 	ClarifyDisabled bool `yaml:"clarify_disabled"`
+	// AgentMCP controls the `agent_mcp` tool (drive MCP servers through the
+	// agent-mcp daemon/library: list tools, call tools, read resources,
+	// prompts, config add). Opt-IN: defaults to false; enable with
+	// `tools.enabled.agent_mcp: true`.
+	AgentMCP bool `yaml:"agent_mcp"`
 	// set records which fields were explicitly present in YAML so deep merges
 	// can override earlier layers only for those keys.
 	set map[string]bool
@@ -116,6 +121,7 @@ func (t *ToolEnabledConfig) fieldPtr(name string) *bool {
 		"lsp":              &t.LSP,
 		"todo_list":        &t.Todo,
 		"clarify_disabled": &t.ClarifyDisabled,
+		"agent_mcp":        &t.AgentMCP,
 	}
 	return fields[name]
 }

@@ -41,3 +41,8 @@ func (*ScheduleListTool) Deferred() bool   { return true }
 // (select:python); before that, calls get the standard deferred-redirect
 // error naming the remedy.
 func (*PythonTool) Deferred() bool { return true }
+
+// agent_mcp drives MCP servers through the agent-mcp daemon; it is opt-in
+// (tools.enabled.agent_mcp) and its discovery schema is heavy, so it loads
+// on demand via tool_search.
+func (*AgentMCPTool) Deferred() bool { return true }
