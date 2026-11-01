@@ -24,51 +24,21 @@ func allWizardStates() []wizardState {
 		stateModelSelect,
 		stateModelSetup,
 		stateModelAdvanced,
-		stateWebFetchSummary,
-		stateCompanionModel,
-		stateDreamModel,
-		stateCompanionModelSetup,
-		stateCompanionProviderType,
-		stateCompanionProviderEndpoint,
-		stateCompanionProviderKey,
-		stateCompanionProviderTest,
-		stateCompanionModelSelect,
-		stateCompanionModelAdvanced,
-		stateMode,
-		stateSkillMode,
-		stateAdvancedOptions,
-		statePromptPreview,
-		stateWorkflowPreview,
 		stateDone,
 	}
 }
 
 // stateNames is for readable test failures.
 var stateNames = map[wizardState]string{
-	stateWelcome:                   "stateWelcome",
-	stateProviderType:              "stateProviderType",
-	stateProviderEndpoint:          "stateProviderEndpoint",
-	stateProviderKey:               "stateProviderKey",
-	stateProviderTest:              "stateProviderTest",
-	stateModelSelect:               "stateModelSelect",
-	stateModelSetup:                "stateModelSetup",
-	stateModelAdvanced:             "stateModelAdvanced",
-	stateWebFetchSummary:           "stateWebFetchSummary",
-	stateCompanionModel:            "stateCompanionModel",
-	stateDreamModel:                "stateDreamModel",
-	stateCompanionModelSetup:       "stateCompanionModelSetup",
-	stateCompanionProviderType:     "stateCompanionProviderType",
-	stateCompanionProviderEndpoint: "stateCompanionProviderEndpoint",
-	stateCompanionProviderKey:      "stateCompanionProviderKey",
-	stateCompanionProviderTest:     "stateCompanionProviderTest",
-	stateCompanionModelSelect:      "stateCompanionModelSelect",
-	stateCompanionModelAdvanced:    "stateCompanionModelAdvanced",
-	stateMode:                      "stateMode",
-	stateSkillMode:                 "stateSkillMode",
-	stateAdvancedOptions:           "stateAdvancedOptions",
-	statePromptPreview:             "statePromptPreview",
-	stateWorkflowPreview:           "stateWorkflowPreview",
-	stateDone:                      "stateDone",
+	stateWelcome:          "stateWelcome",
+	stateProviderType:     "stateProviderType",
+	stateProviderEndpoint: "stateProviderEndpoint",
+	stateProviderKey:      "stateProviderKey",
+	stateProviderTest:     "stateProviderTest",
+	stateModelSelect:      "stateModelSelect",
+	stateModelSetup:       "stateModelSetup",
+	stateModelAdvanced:    "stateModelAdvanced",
+	stateDone:             "stateDone",
 }
 
 func newTestWizard(t *testing.T) *wizardComponent {
@@ -143,25 +113,24 @@ func TestWizardInvariant_everyStateHasBackPath(t *testing.T) {
 	}
 }
 
-// Invariant: every Yes/No selection screen responds to Up/Down by changing
-// its selection. This is the exact regression from stateDreamModel.
-func TestWizardInvariant_yesNoScreensRespondToUpDown(t *testing.T) {
-	// Each Yes/No screen maps to a probe that reads its current selection.
+// Invariant: every option list responds to Up/Down by changing its selection
+// with wraparound. This is the exact regression class from the old Yes/No
+// screens (stateDreamModel froze on Down).
+func TestWizardInvariant_optionScreensRespondToUpDown(t *testing.T) {
+	// Each option screen maps to a probe that reads its current selection.
 	probes := map[wizardState]func(*wizardComponent) int{
-		stateWebFetchSummary: func(w *wizardComponent) int { return w.webfetchSummaryEnabled },
-		stateDreamModel:      func(w *wizardComponent) int { return w.dreamEnabled },
-		stateSkillMode:       func(w *wizardComponent) int { return w.skillMode },
-		statePromptPreview:   func(w *wizardComponent) int { return w.previewYesNo },
-		stateWorkflowPreview: func(w *wizardComponent) int { return w.previewYesNo },
-		stateCompanionModel:  func(w *wizardComponent) int { return w.companionUseMainModel },
+		stateProviderType: func(w *wizardComponent) int { return w.main.selectedPresetIndex },
+		stateModelSelect:  func(w *wizardComponent) int { return w.main.selectedModelIdx },
+		stateModelSetup:   func(w *wizardComponent) int { return w.main.modelFieldIdx },
 	}
 	for st, probe := range probes {
 		w := newTestWizard(t)
+		w.main.availableModels = []string{"m0", "m1"} // stateModelSelect needs rows
 		w.state = st
 		before := probe(w)
 		w.HandleInput(tui.KeyDown)
 		if probe(w) == before {
-			t.Errorf("%s: Down did not change selection (missing from handleVertical/yesNoField → frozen)", stateNames[st])
+			t.Errorf("%s: Down did not change selection (missing from handleVertical → frozen)", stateNames[st])
 		}
 		mid := probe(w)
 		w.HandleInput(tui.KeyUp)
@@ -172,8 +141,8 @@ func TestWizardInvariant_yesNoScreensRespondToUpDown(t *testing.T) {
 }
 
 // Invariant: every state has a defined step number (never the fallthrough 1
-// unless it genuinely is step 1). The stateDreamModel header showed "Step 1/10"
-// because it fell through the stepForState switch.
+// unless it genuinely is step 1). A header falling through stepForState shows
+// "Step 1/2" on a later screen.
 func TestWizardInvariant_everyStateHasStepNumber(t *testing.T) {
 	// step-1 group is legitimately 1.
 	stepOne := map[wizardState]bool{
@@ -212,20 +181,12 @@ func TestWizardInvariant_advertisedQuickPicksAreHandled(t *testing.T) {
 		{stateProviderType, "2", func(w *wizardComponent) int { return w.main.selectedPresetIndex }},
 		// model list: seed two models, "2" selects index 1 (default 0).
 		{stateModelSelect, "2", func(w *wizardComponent) int { return w.main.selectedModelIdx }},
-		// "2" -> mode 1 (default 0).
-		{stateMode, "2", func(w *wizardComponent) int { return w.selectedMode }},
-		// "2" -> inline=1 (default 0).
-		{stateSkillMode, "2", func(w *wizardComponent) int { return w.skillMode }},
-		// "1" -> Yes=enabled=1 (default 0). Matches visible order (Yes first).
-		{stateWebFetchSummary, "1", func(w *wizardComponent) int { return w.webfetchSummaryEnabled }},
-		// "2" -> No=disabled=0 (initDefaults sets 1).
-		{stateDreamModel, "2", func(w *wizardComponent) int { return w.dreamEnabled }},
-		// "1" -> Yes=use main=1 (default 0).
-		{stateCompanionModel, "1", func(w *wizardComponent) int { return w.companionUseMainModel }},
-		// "1" toggles advancedMode (default 0 -> 1).
-		{stateAdvancedOptions, "1", func(w *wizardComponent) int { return w.advancedMode }},
 		// "1" toggles reasoning (default true -> false).
 		{stateModelAdvanced, "1", func(w *wizardComponent) int { return boolToInt(w.main.modelReasoning) }},
+		// "2" cycles thinking level (default high -> xhigh).
+		{stateModelAdvanced, "2", func(w *wizardComponent) int {
+			return boolToInt(w.main.modelThinkingLevel == "xhigh")
+		}},
 	}
 	for _, tc := range cases {
 		w := newTestWizard(t)

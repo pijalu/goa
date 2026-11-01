@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -17,6 +18,17 @@ type WizardResult struct {
 	ConfigWritten bool
 	Cancelled     bool
 }
+
+// Quick-start defaults applied by the wizard without asking (bugs.md B42):
+// the setup flow only collects provider + key + model; everything else runs
+// on the embedded configuration with these postures.
+const (
+	// wizardDefaultMajor is the persona the wizard activates on finish.
+	wizardDefaultMajor = "coding-posture"
+	// wizardDefaultAutonomy is the tool-execution posture for the persona:
+	// all tool calls run without confirmation.
+	wizardDefaultAutonomy = internal.AutonomyYolo
+)
 
 // RunSetupWizard launches the interactive setup wizard using the TUI engine.
 func RunSetupWizard(projectDir string, loader *CascadeLoader) (*WizardResult, error) {
@@ -95,21 +107,6 @@ const (
 	stateModelSelect
 	stateModelSetup
 	stateModelAdvanced
-	stateWebFetchSummary
-	stateCompanionModel
-	stateDreamModel
-	stateCompanionModelSetup
-	stateCompanionProviderType
-	stateCompanionProviderEndpoint
-	stateCompanionProviderKey
-	stateCompanionProviderTest
-	stateCompanionModelSelect
-	stateCompanionModelAdvanced
-	stateMode
-	stateSkillMode
-	stateAdvancedOptions
-	statePromptPreview
-	stateWorkflowPreview
 	stateDone
 )
 
@@ -150,33 +147,12 @@ type wizardComponent struct {
 	saved      bool
 	saveErr    error
 
-	main      modelSlot
-	companion modelSlot
+	main modelSlot
 
-	selectedMode int
-	inputMode    string
-	editor       *tui.LineEditor
+	inputMode string
+	editor    *tui.LineEditor
 
-	companionUseMainModel int // 0 = no (configure separately), 1 = yes (use main model)
-	copyPrompts           bool
-	copyWorkflows         bool
-	previewYesNo          int
-	focused               bool
-
-	skillMode              int // 0 = sub-agent, 1 = inline
-	advancedMode           int // 0 = defaults, 1 = customize
-	maxToolRepeat          string
-	compressEnabled        int // 0 = no, 1 = yes
-	compressMaxTokens      string
-	compressThreshold      string
-	allowFuzzEdits         int // 0 = no, 1 = yes
-	advancedFieldIdx       int
-	webfetchSummaryEnabled int // 0 = no, 1 = yes
-
-	// Dream mode settings
-	dreamEnabled          int // 0 = no, 1 = yes
-	dreamAuto             int // 0 = no, 1 = yes
-	dreamApplyAfterReview int // 0 = no, 1 = yes
+	focused bool
 }
 
 func newWizardComponent(cfg *Config, loader *CascadeLoader, projectDir string, done chan<- *WizardResult) *wizardComponent {
@@ -198,18 +174,6 @@ func (w *wizardComponent) initDefaults() {
 	w.main.modelMaxTokens = "0"
 	w.main.modelReasoning = true
 	w.main.modelThinkingLevel = "high"
-	w.companion.modelTemp = "0.2"
-	w.companion.modelMaxTokens = "0"
-	w.companion.modelReasoning = true
-	w.companion.modelThinkingLevel = "high"
-	w.maxToolRepeat = "1"
-	w.compressEnabled = 0
-	w.compressMaxTokens = "0"
-	w.compressThreshold = "100"
-	w.allowFuzzEdits = 1 // default: on
-	w.dreamEnabled = 1
-	w.dreamAuto = 0
-	w.dreamApplyAfterReview = 0
 }
 
 func (w *wizardComponent) finish() {

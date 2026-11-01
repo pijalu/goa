@@ -28,6 +28,116 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
+### B45 — Configured modeline degrades ungracefully on resize
+
+**Observed behavior.** With `tui.modeline` configured (the recent template
+feature), resizing the terminal produces three defects the original two-row
+status bar does not have: (1) a routine `SetData` rebuild that omits
+`Mode`/`Profile` (partial FooterData) wipes the autonomy badge — the row
+renders `◈◈ (companion) ⬩ │` with an empty mode; (2) `stripPluginSegments`
+finds each plugin text in the ANSI-stripped string but slices the raw styled
+string at that index, cutting inside an SGR sequence and emitting a dangling
+`ESC [` that leaks color state at narrow widths; (3) the second row's steering
+hint sits on the never-dropped left side, so under width pressure the model
+identity is squeezed toward nothing while the hint survives.
+
+**Expected behavior.** The configured modeline degrades exactly like the
+original status bar: mode/profile survive routine footer rebuilds (preserved
+like git/minor-mode), plugin segments are removed without breaking escape
+sequences, the steering hint drops before the model identity is shortened, and
+every footer row (modeline, model row, agent/orchestration lines) stays within
+the terminal width at every geometry.
+
+**Fix and validation plan.**
+1. RED tests: partial-SetData badge wipe; plugin-strip mid-ANSI cut;
+   narrow-width model squeeze with steering hint; full-width sweep
+   (1–200 cols) asserting no row exceeds the terminal and the mode badge,
+   quota figure and model identity degrade in ladder order.
+2. Fix: preserve `Mode`/`Profile` in `preserveFooterData`; make plugin
+   stripping ANSI-safe (cut on raw indexes derived from the raw string);
+   tier the steering hint into the shared ladder.
+3. Validate with the tui-test filmstrip against a real PTY resize at three
+   geometries, plus the touched suites and repository quality gates.
+
+### B44 — Manual `/compress:summarize` may not replace content with a summary
+
+**Observed behavior.** Two defects around manual summarize compaction:
+(1) `Compact` resolves its escalation slot from the hard-layer strategy,
+ignoring the explicitly requested `summarize` — with `fresh_window.enabled`
+(or a hard layer named `fresh_window`) a manual `/compress:summarize` silently
+runs the zero-LLM window reset and drops the conversation instead of
+summarizing it; (2) the compaction only exists in memory: session replay
+(`EventsToHistory`) ignores the compaction transaction triple, so restoring a
+session rebuilds the FULL pre-compaction transcript — the checkpoint
+"replacement" is lost and the context silently grows back.
+
+**Expected behavior.** An explicit `summarize` request always produces an LLM
+summary (remote server-side compaction may serve it; the non-summarizing
+`fresh_window` reset must not). Session restore honors completed compaction
+transactions: the replayed history matches the live post-compaction history
+(checkpoint pair + post-compaction turns), including across restore.
+
+**Fix and validation plan.**
+1. RED tests: explicit summarize with `fresh_window.enabled=true` must call
+   the summarize provider (existing provenance provider harness); replaying a
+   session JSONL containing a completed `compaction_start→summary→end` triple
+   must yield the checkpointed history, not the shadowed transcript.
+2. Fix: pin the slot for an explicit `summarize` request; teach
+   `EventsToHistory` to drop the shadowed range and land the checkpoint pair
+   from the transaction events.
+3. Run the agentic + core suites, a real-session filmstrip if feasible, and
+   the repository quality gates; archive with the fix record.
+
+### B43 — agent-mcp as an embedded MCP bridge library
+
+**Feature request.** Integrate `/Users/muaddib/dev/agent-mcp` as a tool so
+goa can create skills that connect to MCP servers without external tooling.
+goa may embed agent-mcp as a library (updating that repo is allowed, without
+breaking its existing CLI features).
+
+**Expected behavior.** goa exposes agent-mcp's capabilities (browser/MCP
+driving) as goa tools/skills; the library API is importable, stable, and keeps
+every existing agent-mcp behavior working.
+
+**Fix and validation plan.**
+1. Survey agent-mcp's public surface and its own tests/CI.
+2. Extract/refactor an importable package (module boundary or go.mod
+   `replace`) keeping CLI behavior byte-compatible; add library-level tests in
+   agent-mcp.
+3. Wire a goa tool (and skill template) on top; validate both repos' suites
+   and a live MCP connect round-trip.
+
+### B40 — Editing a file takes a shell/python3 detour for repeated small replacements
+
+**Observed behavior.** When a task needs several small, independent
+search/replace edits in one file (or the same replacement applied across a few
+files), the agent reaches for `python3 - <<'PY' ... PY` heredocs or `sed -i`
+instead of the `edit` tool. The workaround is slower, bypasses the tool's
+`not_found` / `occurrence` / stale-line diagnostics, silently no-ops when the
+pattern drifts by a whitespace character, and the host posts a warning that the
+file was modified outside the tool — so the transcript ends up with a mix of
+tracked and untracked file writes and an easy-to-miss silent failure.
+
+**Expected behavior.** Bulk and repeated edits stay inside one tool call: a
+single `edit` batch already applies many edits to the same file atomically and
+in order, and it reports per-edit failures instead of no-ops. The ergonomic gap
+is the multi-file case ("apply this replacement to every file in the list") and
+the "replace this symbol everywhere in the package" case, both of which
+currently degrade to a shell loop.
+
+**Fix and validation plan.**
+1. Reproduce the two shapes: (a) N edits in one file where one pattern has
+drifted whitespace, (b) the same replacement across M files.
+2. Add a batch/multi-file edit form (paths list + edits per path, or a glob
+   scope) that keeps today's all-or-nothing per-file semantics and reports a
+   per-path result.
+3. Make a non-matching pattern a hard, visible failure in every form rather than
+   a silent skip, and keep the stale-line guard for line-addressed edits.
+4. Validate with unit tests for mixed match/no-match batches and for partial
+   multi-file failure, then a real session that performs a multi-file rename
+   through the tool only (no shell fallback); run the touched suites and the
+   repository quality gates separately.
+
 ### B39 — Complete `@~` as the home directory
 
 **Observed behavior.** `@` path completion cannot complete the bare `@~` token.
@@ -55,6 +165,19 @@ failures produce no candidates rather than a panic or an incorrect path.
    separately. Archive this entry and commit the verified fix.
 
 ## Closed
+
+Closed 2026-11-01 — B42, the start wizard lost the API key and custom
+endpoints (the transition re-read the already-cleared editor after committing)
+and dropped every digit 1-9 typed into an endpoint or key (the digit
+quick-pick intercepted editor content). The wizard is now a real quick start:
+provider → (endpoint) → (key) → model → advanced (thinking level, default
+high) → done, with companion/mode/skill/webfetch/dream/copy questions removed
+and the fixed coding-posture + yolo posture applied without asking. RED/GREEN
+unit and invariant suites, an end-to-end terminal-loop run against a local
+model-catalog server asserting the saved sandboxed-home config verbatim, the
+full race-enabled repository suite, vet, staticcheck, and complexity budgets
+validate the fix. See
+[`docs/archive/b42-wizard-quickstart-key-loss.2026-11-01.md`](docs/archive/b42-wizard-quickstart-key-loss.2026-11-01.md).
 
 Closed 2026-10-31 — B41, project configuration had no safe way to remove
 redundant or conflicting values inherited from home configuration. The new

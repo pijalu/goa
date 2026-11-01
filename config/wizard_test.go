@@ -41,12 +41,6 @@ func TestWizardComponent_initDefaults_ReasoningEnabledHigh(t *testing.T) {
 	if w.main.modelThinkingLevel != "high" {
 		t.Errorf("main.modelThinkingLevel = %q, want high", w.main.modelThinkingLevel)
 	}
-	if !w.companion.modelReasoning {
-		t.Errorf("companion.modelReasoning = %v, want true", w.companion.modelReasoning)
-	}
-	if w.companion.modelThinkingLevel != "high" {
-		t.Errorf("companion.modelThinkingLevel = %q, want high", w.companion.modelThinkingLevel)
-	}
 }
 
 func TestWizardComponent_initModelSetup(t *testing.T) {
@@ -354,18 +348,6 @@ func TestModelsEndpoint(t *testing.T) {
 	}
 }
 
-func TestWizardComponent_escapeFromAdvancedOptionsGoesSkillMode(t *testing.T) {
-	done := make(chan *WizardResult, 1)
-	w := newWizardComponent(&Config{}, nil, "/tmp", done)
-	w.state = stateAdvancedOptions
-	w.advancedMode = 0
-
-	w.HandleInput(tui.KeyEscape)
-	if w.state != stateSkillMode {
-		t.Errorf("state = %d, want stateSkillMode; Escape did not go back from advanced options", w.state)
-	}
-}
-
 func TestWizardComponent_escapeFromEveryStateGoesBack(t *testing.T) {
 	cases := []struct {
 		state    wizardState
@@ -379,23 +361,6 @@ func TestWizardComponent_escapeFromEveryStateGoesBack(t *testing.T) {
 		{stateModelSelect, stateProviderTest, func(w *wizardComponent) { w.main.availableModels = []string{"a"} }},
 		{stateModelSetup, stateProviderTest, func(w *wizardComponent) { w.initModelSetup("") }},
 		{stateModelAdvanced, stateModelSetup, nil},
-		{stateWebFetchSummary, stateModelAdvanced, nil},
-		{stateDreamModel, stateWebFetchSummary, nil},
-		{stateCompanionModel, stateDreamModel, nil},
-		{stateCompanionProviderType, stateCompanionModel, nil},
-		{stateCompanionProviderEndpoint, stateCompanionProviderType, func(w *wizardComponent) { w.inputMode = "endpoint" }},
-		{stateCompanionProviderKey, stateCompanionProviderType, func(w *wizardComponent) { w.inputMode = "apikey" }},
-		{stateCompanionProviderTest, stateCompanionProviderType, nil},
-		{stateCompanionModelSelect, stateCompanionProviderTest, func(w *wizardComponent) { w.companion.availableModels = []string{"a"} }},
-		{stateCompanionModelSetup, stateCompanionProviderTest, func(w *wizardComponent) { w.initModelSetup("") }},
-		{stateCompanionModelAdvanced, stateCompanionModelSetup, nil},
-		{stateMode, stateCompanionModelSetup, nil},
-		{stateMode, stateCompanionModel, func(w *wizardComponent) { w.companionUseMainModel = 1 }},
-		{stateSkillMode, stateMode, nil},
-		{stateAdvancedOptions, stateSkillMode, nil},
-		{statePromptPreview, stateAdvancedOptions, nil},
-		{stateWorkflowPreview, statePromptPreview, nil},
-		{stateDone, stateWorkflowPreview, nil},
 	}
 
 	for _, tc := range cases {
@@ -415,7 +380,10 @@ func TestWizardComponent_escapeFromEveryStateGoesBack(t *testing.T) {
 	}
 }
 
-func TestWizardComponent_executionModeSolo(t *testing.T) {
+// The wizard no longer asks the execution mode: it always applies the fixed
+// quick-start posture (coding-posture major, yolo autonomy) on both the
+// canonical mode state and the legacy execution-mode fallback.
+func TestWizardComponent_saveConfigQuickStartPosture(t *testing.T) {
 	cfg := &Config{}
 	done := make(chan *WizardResult, 1)
 	w := newWizardComponent(cfg, nil, "/tmp", done)
@@ -423,67 +391,26 @@ func TestWizardComponent_executionModeSolo(t *testing.T) {
 	w.main.providerName = "OpenAI"
 	w.main.modelID = "gpt-4o"
 	w.main.modelName = "gpt-4o"
-	w.state = stateMode
-	w.selectedMode = 0 // Solo
 	w.saveConfig()
 
-	if cfg.Execution.Mode != internal.ExecutionSolo {
-		t.Errorf("Execution.Mode = %q, want %q", cfg.Execution.Mode, internal.ExecutionSolo)
+	got := cfg.DefaultModeState()
+	if got.Major != internal.MajorMode("coding-posture") || got.Autonomy != internal.AutonomyYolo {
+		t.Errorf("DefaultModeState = %s/%s, want coding-posture/yolo", got.Major, got.Autonomy)
+	}
+	if cfg.Execution.Mode != internal.ExecutionYolo {
+		t.Errorf("Execution.Mode = %q, want %q", cfg.Execution.Mode, internal.ExecutionYolo)
 	}
 
 	lines := w.renderDone(80)
 	found := false
 	for _, line := range lines {
-		if strings.Contains(line, "Mode:") && strings.Contains(line, "Solo") {
+		if strings.Contains(ansi.Strip(line), "Mode:") && strings.Contains(ansi.Strip(line), "yolo") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("renderDone did not show Mode: Solo; got %v", lines)
-	}
-}
-
-func TestWizardComponent_executionModeSummaryMatchesSelection(t *testing.T) {
-	modes := []struct {
-		idx      int
-		modeName string
-		modeVal  internal.ExecutionMode
-	}{
-		{0, "Solo", internal.ExecutionSolo},
-		{1, "Yolo", internal.ExecutionYolo},
-		{2, "Confirm", internal.ExecutionConfirm},
-		{3, "Review", internal.ExecutionReview},
-	}
-
-	for _, tc := range modes {
-		t.Run(tc.modeName, func(t *testing.T) {
-			cfg := &Config{}
-			done := make(chan *WizardResult, 1)
-			w := newWizardComponent(cfg, nil, "/tmp", done)
-			w.main.providerID = "openai"
-			w.main.providerName = "OpenAI"
-			w.main.modelID = "gpt-4o"
-			w.main.modelName = "gpt-4o"
-			w.selectedMode = tc.idx
-			w.saveConfig()
-
-			if cfg.Execution.Mode != tc.modeVal {
-				t.Errorf("Execution.Mode = %q, want %q", cfg.Execution.Mode, tc.modeVal)
-			}
-
-			lines := w.renderDone(80)
-			found := false
-			for _, line := range lines {
-				if strings.Contains(line, "Mode:") && strings.Contains(line, tc.modeName) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Errorf("renderDone did not show Mode: %s; got %v", tc.modeName, lines)
-			}
-		})
+		t.Errorf("renderDone did not show the quick-start mode (coding-posture/yolo); got %v", lines)
 	}
 }
 

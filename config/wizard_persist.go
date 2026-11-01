@@ -14,43 +14,17 @@ import (
 )
 
 // -- Persistence --------------------------------------------------
+//
+// Quick-start persistence (bugs.md B42): the wizard writes ONLY what it
+// asked — provider, key, endpoint, model, thinking level — plus the fixed
+// quick-start posture (coding-posture major, yolo autonomy). Skills, tools,
+// webfetch, memory/dream, compression and companion settings are left to the
+// embedded defaults / existing configuration; re-running the wizard must not
+// rewrite them.
 
 func (w *wizardComponent) saveConfig() {
 	w.applyProviderConfig()
-	w.config.SetActiveMajor("coder")
-	w.applyExecutionMode()
 
-	// Save companion model and provider
-	if w.companionUseMainModel == 1 {
-		// Same provider/model as main
-		w.config.MultiAgent.CompanionModel = w.main.modelID
-		w.config.MultiAgent.CompanionProvider = w.main.providerID
-	} else if w.companion.modelName != "" {
-		// Companion has separate provider/model
-		w.config.MultiAgent.CompanionModel = w.companion.modelID
-		if w.companion.providerID != "" {
-			w.config.MultiAgent.CompanionProvider = w.companion.providerID
-			// Add companion provider if different from main
-			if w.companion.providerID != w.main.providerID && w.companion.providerID != "" {
-				w.config.Providers = append(w.config.Providers, ProviderConfig{
-					ID:       w.companion.providerID,
-					Name:     w.companion.providerName,
-					Endpoint: w.companion.endpoint,
-					APIKey:   w.companion.apiKey,
-				})
-			}
-			w.config.Models = append(w.config.Models, ModelConfig{
-				ID:            w.companion.modelID,
-				Name:          w.companion.modelName,
-				ProviderID:    w.companion.providerID,
-				Model:         w.companion.modelName,
-				Temperature:   parseTemp(w.companion.modelTemp),
-				MaxTokens:     parseIntDefault(w.companion.modelMaxTokens, 0),
-				Reasoning:     &w.companion.modelReasoning,
-				ThinkingLevel: w.companion.modelThinkingLevel,
-			})
-		}
-	}
 	if w.loader == nil {
 		return
 	}
@@ -66,7 +40,7 @@ func (w *wizardComponent) applyProviderConfig() {
 	if w.main.providerID == "" {
 		return
 	}
-	model := w.resolveDefaultModel()
+
 	w.config.Providers = []ProviderConfig{
 		{
 			ID:        w.main.providerID,
@@ -88,34 +62,20 @@ func (w *wizardComponent) applyProviderConfig() {
 			MaxTokens:   parseIntDefault(w.main.modelMaxTokens, 0),
 		},
 	}
-	_ = model
-	if w.companionUseMainModel == 1 {
-		w.config.MultiAgent.CompanionModel = w.main.modelID
-	}
 
-	// Apply model advanced options.
+	// Apply model advanced options. Thinking level defaults to high (the
+	// quick-start posture); "off" means the user explicitly disabled it.
 	w.config.Models[0].Reasoning = &w.main.modelReasoning
 	if w.main.modelThinkingLevel != "" && w.main.modelThinkingLevel != "off" {
 		w.config.Models[0].ThinkingLevel = w.main.modelThinkingLevel
 	}
 
-	// Apply skill mode.
-	if w.skillMode == 1 {
-		w.config.Skills.ExecutionMode = AgenticSkillModeInline
-	} else {
-		w.config.Skills.ExecutionMode = AgenticSkillModeSubAgent
-	}
-
-	// Apply webfetch summarization preference.
-	w.config.Tools.WebFetch.Summary.Enabled = w.webfetchSummaryEnabled == 1
-
-	// Apply dream mode preferences.
-	w.config.Memory.Dream.Enabled = w.dreamEnabled == 1
-	w.config.Memory.Dream.Auto = w.dreamAuto == 1
-	w.config.Memory.Dream.ApplyAfterReview = w.dreamApplyAfterReview == 1
-	// Default dream model falls back to the active main model.
-	w.config.Memory.Dream.Model = w.main.modelID
-	w.config.Memory.Dream.Provider = w.main.providerID
+	// Fixed quick-start posture: coding-posture persona, yolo autonomy. Both
+	// the canonical mode state and the legacy execution-mode fallback carry
+	// the same choice so every surface agrees.
+	w.config.SetActiveMajor(wizardDefaultMajor)
+	w.config.Mode.Default.Autonomy = wizardDefaultAutonomy
+	w.config.Execution.Mode = internal.ExecutionYolo
 }
 
 func parseTemp(s string) float64 {
@@ -132,49 +92,19 @@ func parseIntDefault(s string, def int) int {
 	return v
 }
 
-func (w *wizardComponent) resolveDefaultModel() string {
-	if w.main.selectedPresetIndex >= 0 {
-		presets := PresetProviders()
-		if w.main.selectedPresetIndex < len(presets) && presets[w.main.selectedPresetIndex].DefaultModel != "" {
-			return presets[w.main.selectedPresetIndex].DefaultModel
-		}
-	}
-	return "gpt-4o"
-}
-
-func (w *wizardComponent) applyExecutionMode() {
-	modeValues := []internal.ExecutionMode{
-		internal.ExecutionSolo,
-		internal.ExecutionYolo,
-		internal.ExecutionConfirm,
-		internal.ExecutionReview,
-	}
-	if w.selectedMode >= 0 && w.selectedMode < len(modeValues) {
-		w.config.Execution.Mode = modeValues[w.selectedMode]
-	}
-}
-
 func (w *wizardComponent) ensureProjectDirs() {
 	projectGoa := filepath.Join(w.projectDir, ".goa")
-	os.MkdirAll(projectGoa, 0755)
-	os.MkdirAll(filepath.Join(projectGoa, "memory"), 0755)
-	os.MkdirAll(filepath.Join(projectGoa, "skills"), 0755)
-	os.MkdirAll(filepath.Join(projectGoa, "prompts"), 0755)
-	os.MkdirAll(filepath.Join(projectGoa, "workflows"), 0755)
-	if w.copyPrompts {
-		w.copyEmbeddedPrompts(filepath.Join(projectGoa, "prompts"))
+	for _, dir := range []string{
+		projectGoa,
+		filepath.Join(projectGoa, "memory"),
+		filepath.Join(projectGoa, "skills"),
+		filepath.Join(projectGoa, "prompts"),
+		filepath.Join(projectGoa, "workflows"),
+	} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return
+		}
 	}
-	if w.copyWorkflows {
-		w.copyEmbeddedWorkflows(filepath.Join(projectGoa, "workflows"))
-	}
-}
-
-func (w *wizardComponent) copyEmbeddedPrompts(destDir string) {
-	_ = destDir
-}
-
-func (w *wizardComponent) copyEmbeddedWorkflows(destDir string) {
-	_ = destDir
 }
 
 // -- Utilities ----------------------------------------------------

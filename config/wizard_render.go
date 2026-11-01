@@ -9,30 +9,15 @@ import (
 )
 
 var wizardRenderers = map[wizardState]func(*wizardComponent, int) []string{
-	stateWelcome:                   (*wizardComponent).renderWelcome,
-	stateProviderType:              (*wizardComponent).renderProviderType,
-	stateProviderEndpoint:          (*wizardComponent).renderProviderEndpoint,
-	stateProviderKey:               (*wizardComponent).renderProviderKey,
-	stateProviderTest:              (*wizardComponent).renderProviderTest,
-	stateModelSelect:               (*wizardComponent).renderModelSelect,
-	stateModelSetup:                (*wizardComponent).renderModelSetup,
-	stateModelAdvanced:             (*wizardComponent).renderModelAdvanced,
-	stateWebFetchSummary:           (*wizardComponent).renderWebFetchSummary,
-	stateCompanionModel:            (*wizardComponent).renderCompanionModel,
-	stateDreamModel:                (*wizardComponent).renderDreamModel,
-	stateCompanionModelSetup:       (*wizardComponent).renderCompanionModelSetup,
-	stateCompanionProviderType:     (*wizardComponent).renderProviderType,
-	stateCompanionProviderEndpoint: (*wizardComponent).renderProviderEndpoint,
-	stateCompanionProviderKey:      (*wizardComponent).renderProviderKey,
-	stateCompanionProviderTest:     (*wizardComponent).renderProviderTest,
-	stateCompanionModelSelect:      (*wizardComponent).renderModelSelect,
-	stateCompanionModelAdvanced:    (*wizardComponent).renderModelAdvanced,
-	stateMode:                      (*wizardComponent).renderMode,
-	stateSkillMode:                 (*wizardComponent).renderSkillMode,
-	stateAdvancedOptions:           (*wizardComponent).renderAdvancedOptions,
-	statePromptPreview:             (*wizardComponent).renderPromptPreview,
-	stateWorkflowPreview:           (*wizardComponent).renderWorkflowPreview,
-	stateDone:                      (*wizardComponent).renderDone,
+	stateWelcome:          (*wizardComponent).renderWelcome,
+	stateProviderType:     (*wizardComponent).renderProviderType,
+	stateProviderEndpoint: (*wizardComponent).renderProviderEndpoint,
+	stateProviderKey:      (*wizardComponent).renderProviderKey,
+	stateProviderTest:     (*wizardComponent).renderProviderTest,
+	stateModelSelect:      (*wizardComponent).renderModelSelect,
+	stateModelSetup:       (*wizardComponent).renderModelSetup,
+	stateModelAdvanced:    (*wizardComponent).renderModelAdvanced,
+	stateDone:             (*wizardComponent).renderDone,
 }
 
 func (w *wizardComponent) Render(width int) []string {
@@ -86,7 +71,11 @@ func (w *wizardComponent) handleActionKey(data string) bool {
 		} else {
 			w.goBack()
 		}
-	case len(data) == 1 && data[0] >= '1' && data[0] <= '9':
+	case len(data) == 1 && data[0] >= '1' && data[0] <= '9' && w.inputMode == "":
+		// Quick-pick digits only apply on selection screens. While a text
+		// editor is open (endpoint / API key / model ID) digits are content:
+		// intercepting them here silently dropped every 1-9 from typed keys
+		// and endpoints (bugs.md B42).
 		w.handleNumber(data)
 	default:
 		return false
@@ -130,6 +119,12 @@ func (w *wizardComponent) Focused() bool           { return w.focused }
 func matchesKey(data, key string) bool { return data == key }
 
 // -- State transitions --------------------------------------------
+//
+// Quick-start flow (bugs.md B42): welcome → provider → (endpoint) → (key) →
+// test → model select/setup → model advanced (thinking level, default high)
+// → done. Everything else — companion, execution mode, skill mode, webfetch
+// summary, dreams, advanced options, prompt/workflow copying — applies its
+// quick-start default without a question (see saveConfig).
 
 func (w *wizardComponent) advance() bool {
 	if w.state == stateDone {
@@ -160,14 +155,6 @@ func (w *wizardComponent) advanceProvider() bool {
 		w.advanceFromKey()
 	case stateProviderTest:
 		w.advanceFromTest()
-	case stateCompanionProviderType:
-		w.advanceCompanionFromProviderType()
-	case stateCompanionProviderEndpoint:
-		w.advanceFromEndpoint()
-	case stateCompanionProviderKey:
-		w.advanceFromKey()
-	case stateCompanionProviderTest:
-		w.advanceFromTest()
 	default:
 		return false
 	}
@@ -180,10 +167,6 @@ func (w *wizardComponent) advanceModel() bool {
 		w.advanceFromModelSelect()
 	case stateModelSetup:
 		w.advanceFromModelSetup()
-	case stateCompanionModelSelect:
-		w.advanceFromModelSelect()
-	case stateCompanionModelSetup:
-		w.advanceCompanionFromModelSetup()
 	default:
 		return false
 	}
@@ -193,98 +176,44 @@ func (w *wizardComponent) advanceModel() bool {
 func (w *wizardComponent) advancePostModel() bool {
 	switch w.state {
 	case stateModelAdvanced:
-		w.state = stateWebFetchSummary
-	case stateWebFetchSummary:
-		w.state = stateDreamModel
-	case stateDreamModel:
-		w.advanceFromDreamModel()
-	case stateCompanionModelAdvanced:
-		w.state = stateMode
-	case stateCompanionModel:
-		w.advanceFromCompanionModel()
-	case stateCompanionModelSetup:
-		w.advanceFromCompanionModelSetup()
-	case stateMode:
-		w.state = stateSkillMode
-	case stateSkillMode:
-		w.state = stateAdvancedOptions
-		w.prepareAdvancedOptions()
-	case stateAdvancedOptions:
-		w.state = statePromptPreview
-		w.previewYesNo = 1
-	case statePromptPreview:
-		w.advanceFromPromptPreview()
-	case stateWorkflowPreview:
-		w.advanceFromWorkflowPreview()
+		w.state = stateDone
+		w.saveConfig()
 	default:
 		return false
 	}
 	return true
 }
 
-func (w *wizardComponent) advanceFromCompanionModel() {
-	if w.companionUseMainModel == 1 {
-		w.state = stateMode
-	} else {
-		w.state = stateCompanionProviderType
-	}
-}
-
-func (w *wizardComponent) advanceFromDreamModel() {
-	w.state = stateCompanionModel
-}
-
-func (w *wizardComponent) advanceFromCompanionModelSetup() {
-	w.companion.modelName = w.editor.Text()
-	if w.companion.modelName == "" {
-		w.companion.modelName = w.main.modelName
-	}
-	w.inputMode = ""
-	w.editor.Clear()
-	w.state = stateMode
-}
-
-// currentSlot returns the active modelSlot based on the current wizard state.
+// currentSlot returns the active modelSlot. The quick-start wizard configures
+// only the main slot; kept as a seam so a future flow can re-introduce slots
+// without touching every transition.
 func (w *wizardComponent) currentSlot() *modelSlot {
-	switch w.state {
-	case stateCompanionProviderType, stateCompanionProviderEndpoint,
-		stateCompanionProviderKey, stateCompanionProviderTest,
-		stateCompanionModelSelect, stateCompanionModelSetup,
-		stateCompanionModelAdvanced:
-		return &w.companion
-	default:
-		return &w.main
-	}
+	return &w.main
 }
 
 func (w *wizardComponent) advanceFromEndpoint() {
+	// commitTextInput is the single commit point: it copies the editor into
+	// the slot (deriving the provider identity for custom endpoints) and
+	// clears the editor. Re-reading the editor afterwards returned the
+	// already-cleared text and lost the endpoint (bugs.md B42).
 	w.commitTextInput()
-	s := w.currentSlot()
-	s.endpoint = w.editor.Text()
-	if s.selectedPresetIndex < 0 {
-		s.providerID = DeriveProviderID(s.endpoint)
-		s.providerName = deriveProviderName(s.endpoint)
-	}
 	w.editor.Clear()
-	if w.state == stateCompanionProviderEndpoint {
-		w.state = stateCompanionProviderKey
-	} else {
+	if w.state == stateProviderEndpoint {
 		w.state = stateProviderKey
+		w.startKeyInput(w.currentSlot())
+		return
 	}
-	w.startKeyInput(s)
+	w.state = stateProviderKey
+	w.startKeyInput(w.currentSlot())
 }
 
 func (w *wizardComponent) advanceFromKey() {
+	// Single commit point, as in advanceFromEndpoint: commitTextInput already
+	// stores the typed key and clears the editor; re-reading the cleared
+	// editor emptied the saved API key (bugs.md B42).
 	w.commitTextInput()
-	s := w.currentSlot()
-	s.apiKey = w.editor.Text()
-	if w.state == stateCompanionProviderKey {
-		w.state = stateCompanionProviderTest
-	} else {
-		w.state = stateProviderTest
-	}
-	w.inputMode = ""
 	w.editor.Clear()
+	w.state = stateProviderTest
 }
 
 func (w *wizardComponent) startKeyInput(s *modelSlot) {
@@ -299,14 +228,10 @@ func (w *wizardComponent) advanceFromTest() {
 	w.fetchAvailableModels(s)
 	if len(s.availableModels) > 0 {
 		s.selectedModelIdx = 0
-		if w.state == stateCompanionProviderTest {
-			w.state = stateCompanionModelSelect
-		} else {
-			w.state = stateModelSelect
-		}
-	} else {
-		w.initModelSetup("")
+		w.state = stateModelSelect
+		return
 	}
+	w.initModelSetup("")
 }
 
 func (w *wizardComponent) startEndpointInput(s *modelSlot) {
@@ -324,74 +249,17 @@ func (w *wizardComponent) advanceFromModelSelect() {
 		// Use the selected model directly; skip the manual ID/name form.
 		s.modelID = selected
 		s.modelName = selected
-		if w.state == stateCompanionModelSelect {
-			w.state = stateCompanionModelAdvanced
-		} else {
-			w.state = stateModelAdvanced
-		}
+		w.state = stateModelAdvanced
 		return
 	}
 	w.initModelSetup("")
-	if w.state == stateCompanionModelSelect || w.state == stateCompanionProviderTest {
-		w.state = stateCompanionModelSetup
-	} else {
-		w.state = stateModelSetup
-	}
 }
 
 func (w *wizardComponent) advanceFromModelSetup() {
 	w.commitEditorToField()
 	w.inputMode = ""
 	w.editor.Clear()
-	if w.state == stateCompanionModelSetup {
-		w.state = stateCompanionModelAdvanced
-	} else {
-		w.state = stateModelAdvanced
-	}
-}
-
-func (w *wizardComponent) advanceFromPromptPreview() {
-	w.copyPrompts = w.previewYesNo == 0
-	w.state = stateWorkflowPreview
-	w.previewYesNo = 1
-}
-
-func (w *wizardComponent) advanceFromWorkflowPreview() {
-	w.copyWorkflows = w.previewYesNo == 0
-	w.state = stateDone
-	w.saveConfig()
-}
-
-func (w *wizardComponent) advanceCompanionFromProviderType() {
-	presets := PresetProviders()
-	s := &w.companion
-	switch {
-	case s.selectedPresetIndex == -1:
-		w.state = stateCompanionProviderEndpoint
-		w.inputMode = ""
-		w.editor.Clear()
-		w.startEndpointInput(s)
-	case s.selectedPresetIndex >= 0 && s.selectedPresetIndex < len(presets) && presets[s.selectedPresetIndex].NeedsAPIKey:
-		w.state = stateCompanionProviderKey
-		w.inputMode = ""
-		w.editor.Clear()
-		w.startKeyInput(s)
-	default:
-		w.state = stateCompanionProviderTest
-		w.inputMode = ""
-		w.editor.Clear()
-	}
-}
-
-func (w *wizardComponent) advanceCompanionFromModelSetup() {
-	w.companion.modelName = w.editor.Text()
-	if w.companion.modelName == "" {
-		w.companion.modelName = w.main.modelName
-	}
-	w.companion.modelID = w.companion.modelName
-	w.inputMode = ""
-	w.editor.Clear()
-	w.state = stateCompanionModelAdvanced
+	w.state = stateModelAdvanced
 }
 
 func (w *wizardComponent) advanceFromProviderType() {
@@ -415,11 +283,7 @@ func (w *wizardComponent) advanceFromProviderType() {
 }
 
 func (w *wizardComponent) initModelSetup(defaultModel string) {
-	if w.state == stateCompanionProviderTest {
-		w.state = stateCompanionModelSetup
-	} else {
-		w.state = stateModelSetup
-	}
+	w.state = stateModelSetup
 	w.inputMode = "model"
 	s := w.currentSlot()
 	s.modelFieldIdx = modelFieldModelID
