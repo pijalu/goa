@@ -286,15 +286,18 @@ func (f *Footer) stripPluginSegments(s string) string {
 		return s
 	}
 	// Segments were appended as " • <text>" after the model display; remove
-	// from the first marker that introduces a plugin segment. We identify it
-	// by matching each known segment text after a " • " separator.
+	// from the first marker that introduces a plugin segment. The match runs
+	// on the RAW styled string — appendPluginSegments appended seg.Text
+	// verbatim, so its byte offset is always a clean boundary. Matching on
+	// the ANSI-stripped text instead would yield an index in stripped
+	// coordinates, and slicing the raw string there can land inside an SGR
+	// sequence, dangling a partial escape into the status bar (B45).
 	cut := len(s)
 	for _, seg := range f.data.PluginSegments {
-		text := strings.TrimSpace(ansi.Strip(seg.Text))
-		if text == "" {
+		if strings.TrimSpace(ansi.Strip(seg.Text)) == "" {
 			continue
 		}
-		idx := strings.LastIndex(ansi.Strip(s), text)
+		idx := strings.LastIndex(s, seg.Text)
 		if idx >= 0 && idx < cut {
 			cut = idx
 		}
@@ -368,6 +371,9 @@ func (f *Footer) fitStatusLineSegments(left string, leftSegments []FooterSegment
 	fits := func() bool { return visibleWidth(left)+1+visibleWidth(right) <= width }
 
 	for _, drop := range []func(){
+		// Tier 0 hints go first: the configured help hint and the model-row
+		// steering hint are the least valuable columns on a narrow terminal.
+		func() { leftSegments = dropFooterTier(leftSegments, FooterTierHelp) },
 		func() { leftSegments = dropFooterTier(leftSegments, FooterTierAmount) },
 		func() { right = f.stripProviderPrefixes(right) },
 		func() { leftSegments = dropFooterTier(leftSegments, FooterTierTokens) },

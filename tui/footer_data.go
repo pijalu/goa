@@ -99,7 +99,7 @@ type FooterSegment struct {
 // context/quota figure is never dropped. The model identity (tier 8) is
 // preserved by ellipsizing the model name before anything at tier 8 is removed.
 const (
-	FooterTierHelp     = 0 // /help (configured modeline only)
+	FooterTierHelp = 0 // /help hint and model-row steering hint — first casualty
 	FooterTierAmount   = 1 // $0.6259
 	FooterTierProvider = 2 // (opencode-go)
 	FooterTierTokens   = 3 // ↑291.6K ↓130.4K
@@ -136,6 +136,7 @@ func preserveFooterData(prev, data FooterData) FooterData {
 	data = preserveFooterGitAndMode(prev, data)
 	data = preserveFooterModels(prev, data)
 	data = preserveFooterWorkflow(prev, data)
+	data = preserveFooterModeAndProfile(prev, data)
 	data = preserveFooterPluginSegments(prev, data)
 	data = preserveFooterGoal(prev, data)
 	data = preserveFooterTeam(prev, data)
@@ -208,6 +209,23 @@ func preserveFooterGoal(prev, data FooterData) FooterData {
 func preserveFooterPluginSegments(prev, data FooterData) FooterData {
 	if data.PluginSegments == nil {
 		data.PluginSegments = prev.PluginSegments
+	}
+	return data
+}
+
+// preserveFooterModeAndProfile keeps the autonomy mode and profile label
+// across routine footer rebuilds that construct a fresh FooterData carrying
+// only the field they own (companion stream ticks, orchestration tab stats).
+// Mode/Profile have no dedicated setter: every writer passes the values it
+// computes, so an empty field always means "this caller does not know" —
+// preserving the previous value keeps the modeline's mode badge stable
+// instead of blanking it mid-stream (B45).
+func preserveFooterModeAndProfile(prev, data FooterData) FooterData {
+	if data.Mode == "" {
+		data.Mode = prev.Mode
+	}
+	if data.Profile == "" {
+		data.Profile = prev.Profile
 	}
 	return data
 }

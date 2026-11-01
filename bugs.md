@@ -28,37 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-### B45 — Configured modeline degrades ungracefully on resize
-
-**Observed behavior.** With `tui.modeline` configured (the recent template
-feature), resizing the terminal produces three defects the original two-row
-status bar does not have: (1) a routine `SetData` rebuild that omits
-`Mode`/`Profile` (partial FooterData) wipes the autonomy badge — the row
-renders `◈◈ (companion) ⬩ │` with an empty mode; (2) `stripPluginSegments`
-finds each plugin text in the ANSI-stripped string but slices the raw styled
-string at that index, cutting inside an SGR sequence and emitting a dangling
-`ESC [` that leaks color state at narrow widths; (3) the second row's steering
-hint sits on the never-dropped left side, so under width pressure the model
-identity is squeezed toward nothing while the hint survives.
-
-**Expected behavior.** The configured modeline degrades exactly like the
-original status bar: mode/profile survive routine footer rebuilds (preserved
-like git/minor-mode), plugin segments are removed without breaking escape
-sequences, the steering hint drops before the model identity is shortened, and
-every footer row (modeline, model row, agent/orchestration lines) stays within
-the terminal width at every geometry.
-
-**Fix and validation plan.**
-1. RED tests: partial-SetData badge wipe; plugin-strip mid-ANSI cut;
-   narrow-width model squeeze with steering hint; full-width sweep
-   (1–200 cols) asserting no row exceeds the terminal and the mode badge,
-   quota figure and model identity degrade in ladder order.
-2. Fix: preserve `Mode`/`Profile` in `preserveFooterData`; make plugin
-   stripping ANSI-safe (cut on raw indexes derived from the raw string);
-   tier the steering hint into the shared ladder.
-3. Validate with the tui-test filmstrip against a real PTY resize at three
-   geometries, plus the touched suites and repository quality gates.
-
 ### B43 — agent-mcp as an embedded MCP bridge library
 
 **Feature request.** Integrate `/Users/muaddib/dev/agent-mcp` as a tool so
@@ -136,6 +105,24 @@ failures produce no candidates rather than a panic or an incorrect path.
    separately. Archive this entry and commit the verified fix.
 
 ## Closed
+
+Closed 2026-11-01 — B45, the configured modeline degraded ungracefully on
+resize: a routine partial `SetData` rebuild (companion stream ticks,
+orchestration tab stats) wiped the autonomy badge because `Mode`/`Profile` had
+no preservation; `stripPluginSegments` located its cut on ANSI-stripped
+coordinates but sliced the raw styled string, dangling a partial SGR escape
+into the status bar at narrow widths; and the model row's steering hint sat
+outside the width ladder, so the model identity was ellipsized while the hint
+kept its columns. Mode/Profile are now preserved across rebuilds (still
+overridden by writers that know them), the plugin strip cuts on raw byte
+boundaries, and the steering hint joins the shared ladder as the tier-0 first
+casualty — dropped whole before the model identity is shortened. RED/GREEN
+regressions (badge wipe, ANSI cut, steering squeeze, a 1–200 column sweep
+asserting every line fits with no dangling escapes, degradation-order guard),
+a production-tree filmstrip at 46 columns across three rebuild shapes, the
+full race-enabled repository suite, vet, staticcheck, and complexity budgets
+validate the fix. See
+[`docs/archive/b45-modeline-resize.2026-11-01.md`](docs/archive/b45-modeline-resize.2026-11-01.md).
 
 Closed 2026-11-01 — B44, a manual `/compress:summarize` silently ran the
 zero-LLM fresh_window reset (dropping the conversation without summarizing)

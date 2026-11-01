@@ -58,13 +58,17 @@ func (f *Footer) modelRowActivity(activity string) string {
 // renderConfiguredFooter renders the configurable modeline above the essential
 // model row. Stats and activity belong to the modeline in this layout; the
 // second row keeps steering, model/team/workflow state, and plugin segments.
+// The steering hint sits on the model row as a tier-0 segment of the shared
+// width ladder, so under width pressure it is dropped whole — never by
+// squeezing the model identity next to it (B45).
 func (f *Footer) renderConfiguredFooter(width int, fg string, styler func(string) string) []string {
 	modeline := f.renderModeLine(width, fg, styler)
-	left2 := f.buildSteeringHint(fg)
+	leftSegments := []FooterSegment{{Tier: FooterTierHelp, Text: f.buildSteeringHint(fg)}}
+	left2 := joinFooterSegments(leftSegments)
 	availW := maxInt(width-visibleWidth(left2)-2, 0)
 	right2 := f.buildModelDisplay(fg, availW)
 	right2 = f.appendPluginSegments(right2, fg)
-	left2, right2 = f.fitStatusLineSegments(left2, nil, right2, width, fg)
+	left2, right2 = f.fitStatusLineSegments(left2, leftSegments, right2, width, fg)
 	line2 := styler(renderTwoCol(left2, right2, width, styler))
 
 	lines := []string{modeline, line2}
