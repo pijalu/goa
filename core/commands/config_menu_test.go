@@ -55,6 +55,18 @@ func newMenuTestContext(t *testing.T, cfg *config.Config) (*core.Context, *selec
 		sr.current = current
 		sr.onSel = onSelected
 	}
+	// B56: sticky pickers (toggle menus) register once and stay open; toggle
+	// handlers refresh rows in place via UpdateSelectorItems — model that by
+	// swapping sr.options on the SAME pending callback.
+	ctx.SelectOptionStickyFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+		sr.title = title
+		sr.options = options
+		sr.current = current
+		sr.onSel = onSelected
+	}
+	ctx.UpdateSelectorItemsFunc = func(items []tui.SelectorItem) {
+		sr.options = items
+	}
 	ctx.ShowInputFunc = func(prompt, current string, onSubmit func(string, bool)) {
 		ir.prompt = prompt
 		ir.current = current

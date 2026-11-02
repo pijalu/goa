@@ -68,21 +68,29 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 func wireInteractiveCallbacks(ctx *core.Context, subs *subsystems, app *App) {
 	ctx.SelectOptionFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
 		ch := subs.tuiEngine.ShowSelector(title, options, current)
-		go func() {
-			selected := <-ch
-			if onSelected != nil {
-				app.apply(func() { onSelected(selected, selected != "") })
-			}
-		}()
+		deliverSelectorEmits(app, ch, onSelected, false)
 	}
 	ctx.SelectOptionKeyedFunc = func(title string, options []tui.SelectorItem, current string, keys tui.SelectorKeymap, onSelected func(string, bool)) {
 		ch := subs.tuiEngine.ShowSelectorKeyed(title, options, current, keys)
-		go func() {
-			selected := <-ch
-			if onSelected != nil {
-				app.apply(func() { onSelected(selected, selected != "") })
+		deliverSelectorEmits(app, ch, onSelected, false)
+	}
+	// B56: sticky pickers for toggle menus — confirming a row keeps the
+	// overlay open (unless the row opts out via CloseOnSelect) so the handler
+	// can flip the value and UpdateItems in place.
+	ctx.SelectOptionStickyFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+		ch := subs.tuiEngine.ShowSelectorSticky(title, options, current)
+		deliverSelectorEmits(app, ch, onSelected, true)
+	}
+	// B56: toggle menus flip a value without re-opening the picker — the
+	// live selector's items are replaced in place (same overlay, same
+	// highlighted row), running on the command loop like every other
+	// selector mutation.
+	ctx.UpdateSelectorItemsFunc = func(items []tui.SelectorItem) {
+		app.apply(func() {
+			if sel := subs.tuiEngine.ActiveSelector(); sel != nil {
+				sel.UpdateItems(items)
 			}
-		}()
+		})
 	}
 	wireAsyncSelectCallback(ctx, subs, app)
 	// Multi-select confirm (M6 §7 step 3): same async contract as the
@@ -149,6 +157,27 @@ func wireInputCallbacks(ctx *core.Context, subs *subsystems, app *App) {
 			}
 		})
 	}
+}
+
+// deliverSelectorEmits pumps a selector's result channel into the menu
+// callback on the command loop (app.apply). Plain pickers deliver exactly
+// one emit — the value (or "" on cancel) — and stop. Sticky pickers (B56)
+// emit once per confirmation and finally emit "" when the overlay closes
+// (Escape or a CloseOnSelect row); every emit is delivered, the close emit
+// as ("", false) — the cancel contract shared with plain pickers, and the
+// call that runs the menu's back().
+func deliverSelectorEmits(app *App, ch <-chan string, onSelected func(string, bool), sticky bool) {
+	go func() {
+		for {
+			selected := <-ch
+			if onSelected != nil {
+				app.apply(func() { onSelected(selected, selected != "") })
+			}
+			if !sticky || selected == "" {
+				return
+			}
+		}
+	}()
 }
 
 // wireAsyncSelectCallback wires Context.SelectOptionAsyncFunc: it shows a

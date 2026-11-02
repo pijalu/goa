@@ -12,16 +12,13 @@ import (
 func (c *configMenu) settingBash() {
 	c.current = c.settingBash
 	cfg := c.ctx.Config
-	c.ctx.SelectOption("Bash settings:", []tui.SelectorItem{{Value: "warn_file_edits", Label: "Warn on shell file edits", Description: boolLabel(warnFileEditsOn(cfg))}}, "", func(s string, ok bool) {
-		if !ok {
+	// B56: sticky picker — Enter toggles in place, Escape closes ("", false).
+	c.ctx.SelectOptionSticky("Bash settings:", []tui.SelectorItem{{Value: "warn_file_edits", Label: "Warn on shell file edits", Description: boolLabel(warnFileEditsOn(cfg))}}, "", func(s string, ok bool) {
+		if !ok || s != "warn_file_edits" {
 			c.back()
 			return
 		}
-		if s == "warn_file_edits" {
-			c.toggleWarnFileEdits()
-			return
-		}
-		c.back()
+		c.toggleWarnFileEdits()
 	})
 }
 func (c *configMenu) toggleWarnFileEdits() {
@@ -30,16 +27,22 @@ func (c *configMenu) toggleWarnFileEdits() {
 		v = "false"
 	}
 	c.applySet("tools.bash.warn_file_edits", v)
-	c.settingBash()
+	// B56: stay in the SAME picker — refresh the flipped row in place so the
+	// screen does not rebuild and the selection never jumps.
+	c.ctx.UpdateSelectorItems([]tui.SelectorItem{{Value: "warn_file_edits", Label: "Warn on shell file edits", Description: boolLabel(warnFileEditsOn(c.ctx.Config))}})
 }
 func (c *configMenu) settingToolsMenu() {
 	c.current = c.settingToolsMenu
 	cfg := c.ctx.Config
 	items := []tui.SelectorItem{
-		{Value: "enabled_tools", Label: "Enabled/disabled tools", Description: toolsEnabledLabel(cfg)},
+		// B56: navigation row — picking it opens another picker, so it must
+		// close this sticky one (sticky pickers stay open by default).
+		{Value: "enabled_tools", Label: "Enabled/disabled tools", Description: toolsEnabledLabel(cfg), CloseOnSelect: true},
 		{Value: "tool_call_fixing", Label: "Tool call fixing", Description: boolLabel(cfg.Execution.AutoHealToolCalls)},
 	}
-	c.ctx.SelectOption("Tools settings:", items, "", func(s string, ok bool) {
+	// B56: sticky picker — the toggle row flips in place, the navigation row
+	// opens the tools picker, Escape closes.
+	c.ctx.SelectOptionSticky("Tools settings:", items, "", func(s string, ok bool) {
 		if !ok {
 			c.back()
 			return
@@ -53,14 +56,21 @@ func (c *configMenu) settingToolsMenu() {
 				v = "false"
 			}
 			c.applySet("execution.auto_heal_tool_calls", v)
-			c.settingToolsMenu()
+			// B56: stay in the SAME picker — refresh the flipped row in place.
+			c.ctx.UpdateSelectorItems([]tui.SelectorItem{
+				{Value: "enabled_tools", Label: "Enabled/disabled tools", Description: toolsEnabledLabel(c.ctx.Config), CloseOnSelect: true},
+				{Value: "tool_call_fixing", Label: "Tool call fixing", Description: boolLabel(c.ctx.Config.Execution.AutoHealToolCalls)},
+			})
+			return
 		}
 	})
 }
 
 func (c *configMenu) settingTools() {
 	c.current = c.settingTools
-	c.ctx.SelectOption("Toggle optional tools:", buildToolItems(c.ctx.Config), "", c.toolToggleHandler)
+	// B56: sticky picker — Enter flips the highlighted tool and the handler
+	// refreshes the same overlay in place; Escape closes (onSelected "").
+	c.ctx.SelectOptionSticky("Toggle optional tools:", buildToolItems(c.ctx.Config), "", c.toolToggleHandler)
 }
 func buildToolItems(c *config.Config) []tui.SelectorItem {
 	names := tools.ConfigurableTools()
@@ -96,7 +106,9 @@ func (c *configMenu) toolToggleHandler(s string, ok bool) {
 	default:
 		c.flash(fmt.Sprintf("Tool %s %s", s, onOffLabel(next)))
 	}
-	c.settingTools()
+	// B56: stay in the SAME picker — refresh the flipped row in place so the
+	// screen does not rebuild and the selection never jumps.
+	c.ctx.UpdateSelectorItems(buildToolItems(c.ctx.Config))
 }
 
 // toggleNextLabel names the state a toggle lands on (used by the MCP row).

@@ -51,8 +51,9 @@ func (m *configMenu) settingSkills() {
 // skills.sticky_off in .goa/config.yaml) so it survives sessions per project.
 func (m *configMenu) settingStickySkills() {
 	m.current = m.settingStickySkills
-	items := buildStickyToggleItems(m.ctx)
-	m.ctx.SelectOption("Sticky skills — always-on knowledge skills (toggle on/off):", items, "", func(selected string, ok bool) {
+	// B56: sticky picker — every row is an on/off toggle that flips in place;
+	// Escape closes.
+	m.ctx.SelectOptionSticky("Sticky skills — always-on knowledge skills (toggle on/off):", buildStickyToggleItems(m.ctx), "", func(selected string, ok bool) {
 		if !ok {
 			m.back()
 			return
@@ -66,7 +67,8 @@ func (m *configMenu) settingStickySkills() {
 			m.reloadSkillsAfterToggle()
 			m.flash(fmt.Sprintf("Sticky %s for %s", boolLabel(next), selected))
 		}
-		m.settingStickySkills()
+		// B56: stay in the SAME picker — refresh the flipped row in place.
+		m.ctx.UpdateSelectorItems(buildStickyToggleItems(m.ctx))
 	})
 }
 
@@ -229,18 +231,20 @@ func (m *configMenu) handleSkillsSetting(selected string) {
 // as on/off toggles, mirroring the Tools sub-menu.
 func (m *configMenu) settingSkillSource(source string) {
 	m.current = func() { m.settingSkillSource(source) }
-	items := buildSkillToggleItems(m.ctx, source)
 	title := "Embedded skills (toggle on/off):"
 	if source == "local" {
 		title = "Local skills (toggle on/off):"
 	}
-	m.ctx.SelectOption(title, items, "", func(selected string, ok bool) {
+	// B56: sticky picker — every row is an on/off toggle that flips in place;
+	// Escape closes.
+	m.ctx.SelectOptionSticky(title, buildSkillToggleItems(m.ctx, source), "", func(selected string, ok bool) {
 		if !ok {
 			m.back()
 			return
 		}
 		m.toggleSkill(selected, source)
-		m.settingSkillSource(source)
+		// B56: stay in the SAME picker — refresh the flipped row in place.
+		m.ctx.UpdateSelectorItems(buildSkillToggleItems(m.ctx, source))
 	})
 }
 

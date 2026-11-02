@@ -12,19 +12,6 @@ import (
 
 func (m *configMenu) settingCompression() {
 	m.current = m.settingCompression
-	cfg := m.ctx.Config
-	items := []tui.SelectorItem{
-		// The master switch is a first-class row: a stale higher-layer
-		// `enabled: false` once silently disabled compression with no visible
-		// surface (bugs.md 2026-08-26). Toggling flips it inline.
-		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.EnabledValue())},
-		{Value: "soft_percent", Label: "Soft ceiling %", Description: ceilingPercentLabel(cfg.ContextCompression.Thresholds.SoftPercent)},
-		{Value: "soft_method", Label: "Soft ceiling method", Description: layerMethodLabel(cfg.ContextCompression.Strategies.Soft, "micro")},
-		{Value: "hard_percent", Label: "Hard ceiling %", Description: ceilingPercentLabel(cfg.ContextCompression.Thresholds.HardPercent)},
-		{Value: "hard_method", Label: "Hard ceiling method", Description: layerMethodLabel(cfg.ContextCompression.Strategies.Hard, "summarize")},
-		{Value: "on_error", Label: "On error", Description: onErrorLabel(cfg)},
-		{Value: "advanced", Label: "Advanced…", Description: "trigger layer, cache gate, max tokens, micro, per-model"},
-	}
 	openers := map[string]func(){
 		"soft_percent": func() { m.settingCompressionCeiling("soft") },
 		"soft_method":  func() { m.settingCompressionMethod("soft") },
@@ -33,7 +20,9 @@ func (m *configMenu) settingCompression() {
 		"on_error":     m.settingCompressionOnError,
 		"advanced":     m.settingCompressionAdvanced,
 	}
-	m.ctx.SelectOption("Compression:", items, "", func(selected string, ok bool) {
+	// B56: sticky picker — the enabled row flips in place, opener rows open
+	// another picker (CloseOnSelect), Escape closes.
+	m.ctx.SelectOptionSticky("Compression:", m.compressionItems(), "", func(selected string, ok bool) {
 		if !ok {
 			m.back()
 			return
@@ -45,10 +34,30 @@ func (m *configMenu) settingCompression() {
 			return
 		}
 		if selected == "enabled" {
-			m.applySet("context_compression.enabled", toggleBoolLabel(cfg.ContextCompression.EnabledValue()))
-			m.settingCompression()
+			m.applySet("context_compression.enabled", toggleBoolLabel(m.ctx.Config.ContextCompression.EnabledValue()))
+			// B56: stay in the SAME picker — refresh the flipped row in place
+			// so the screen does not rebuild and the selection never jumps.
+			m.ctx.UpdateSelectorItems(m.compressionItems())
 		}
 	})
+}
+
+// compressionItems builds the main Compression menu rows from live config
+// (B56: rebuilt after in-place toggles so descriptions never go stale).
+func (m *configMenu) compressionItems() []tui.SelectorItem {
+	cfg := m.ctx.Config
+	return []tui.SelectorItem{
+		// The master switch is a first-class row: a stale higher-layer
+		// `enabled: false` once silently disabled compression with no visible
+		// surface (bugs.md 2026-08-26). Toggling flips it inline.
+		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.EnabledValue())},
+		{Value: "soft_percent", Label: "Soft ceiling %", Description: ceilingPercentLabel(cfg.ContextCompression.Thresholds.SoftPercent), CloseOnSelect: true},
+		{Value: "soft_method", Label: "Soft ceiling method", Description: layerMethodLabel(cfg.ContextCompression.Strategies.Soft, "micro"), CloseOnSelect: true},
+		{Value: "hard_percent", Label: "Hard ceiling %", Description: ceilingPercentLabel(cfg.ContextCompression.Thresholds.HardPercent), CloseOnSelect: true},
+		{Value: "hard_method", Label: "Hard ceiling method", Description: layerMethodLabel(cfg.ContextCompression.Strategies.Hard, "summarize"), CloseOnSelect: true},
+		{Value: "on_error", Label: "On error", Description: onErrorLabel(cfg), CloseOnSelect: true},
+		{Value: "advanced", Label: "Advanced…", Description: "trigger layer, cache gate, max tokens, micro, per-model", CloseOnSelect: true},
+	}
 }
 
 // settingCompressionCeiling is the percent picker for one proactive layer
@@ -139,22 +148,6 @@ func (m *configMenu) settingCompressionOnError() {
 // actionable (opener or inline toggle) — no derived/read-only rows.
 func (m *configMenu) settingCompressionAdvanced() {
 	m.current = m.settingCompressionAdvanced
-	cfg := m.ctx.Config
-	items := []tui.SelectorItem{
-		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.EnabledValue())},
-		{Value: "strategy", Label: "Trigger strategy", Description: layerMethodLabel(cfg.ContextCompression.Strategy, "tool_elision")},
-		{Value: "threshold", Label: "Trigger threshold", Description: compressionTriggerDisplay(cfg)},
-		{Value: "cache_gate", Label: "Cache gate (defer compression for hot cache)", Description: cacheGateLabel(cfg.ContextCompression.CacheGate)},
-		{Value: "max_tokens", Label: "Max tokens", Description: maxTokensLabel(cfg.ContextCompression.MaxTokens)},
-		{Value: "preserve_recent_turns", Label: "Preserve recent turns (selective/hybrid)", Description: preserveRecentTurnsLabel(cfg)},
-		{Value: "micro_enabled", Label: "Micro: pre-summarize step (opt-in)", Description: microEnabledLabel(cfg)},
-		{Value: "micro_min_context_ratio", Label: "Micro: min context ratio (own gate)", Description: microMinContextRatioLabel(cfg)},
-		{Value: "micro_cache_miss_threshold", Label: "Micro: cache-miss threshold (cold-cache gate)", Description: microCacheMissThresholdLabel(cfg)},
-		{Value: "micro_keep_recent_messages", Label: "Micro: keep recent messages", Description: microKeepRecentLabel(cfg)},
-		{Value: "micro_min_content_tokens", Label: "Micro: min content tokens", Description: microMinContentTokensLabel(cfg)},
-		{Value: "micro_truncated_marker", Label: "Micro: truncation marker", Description: microTruncatedMarkerLabel(cfg)},
-		{Value: "per_model", Label: "Per-model overrides", Description: perModelCompressionLabel(cfg)},
-	}
 	openers := map[string]func(){
 		"per_model":                  m.settingCompressionPerModel,
 		"strategy":                   m.settingCompressionStrategy,
@@ -167,7 +160,9 @@ func (m *configMenu) settingCompressionAdvanced() {
 		"micro_min_content_tokens":   m.settingCompressionMicroMinContent,
 		"micro_truncated_marker":     m.settingCompressionMicroMarker,
 	}
-	m.ctx.SelectOption("Compression — advanced:", items, "", func(selected string, ok bool) {
+	// B56: sticky picker — the toggle rows flip in place, opener rows open
+	// another picker (CloseOnSelect), Escape closes.
+	m.ctx.SelectOptionSticky("Compression — advanced:", m.compressionAdvancedItems(), "", func(selected string, ok bool) {
 		if !ok {
 			m.back()
 			return
@@ -178,16 +173,39 @@ func (m *configMenu) settingCompressionAdvanced() {
 		}
 		switch selected {
 		case "enabled":
-			m.applySet("context_compression.enabled", toggleBoolLabel(cfg.ContextCompression.EnabledValue()))
+			m.applySet("context_compression.enabled", toggleBoolLabel(m.ctx.Config.ContextCompression.EnabledValue()))
 		case "cache_gate":
-			m.applySet("context_compression.cache_gate", toggleCacheGateValue(cfg.ContextCompression.CacheGate))
+			m.applySet("context_compression.cache_gate", toggleCacheGateValue(m.ctx.Config.ContextCompression.CacheGate))
 		case "micro_enabled":
-			m.applySet("context_compression.micro_compaction.enabled", toggleMicroEnabledValue(cfg))
+			m.applySet("context_compression.micro_compaction.enabled", toggleMicroEnabledValue(m.ctx.Config))
 		default:
 			return // unknown row: never close the menu silently
 		}
-		m.settingCompressionAdvanced()
+		// B56: stay in the SAME picker — refresh the flipped rows in place.
+		m.ctx.UpdateSelectorItems(m.compressionAdvancedItems())
 	})
+}
+
+// compressionAdvancedItems builds the advanced Compression menu rows from
+// live config (B56: rebuilt after in-place toggles; opener rows opt out of
+// the sticky picker via CloseOnSelect).
+func (m *configMenu) compressionAdvancedItems() []tui.SelectorItem {
+	cfg := m.ctx.Config
+	return []tui.SelectorItem{
+		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.EnabledValue())},
+		{Value: "strategy", Label: "Trigger strategy", Description: layerMethodLabel(cfg.ContextCompression.Strategy, "tool_elision"), CloseOnSelect: true},
+		{Value: "threshold", Label: "Trigger threshold", Description: compressionTriggerDisplay(cfg), CloseOnSelect: true},
+		{Value: "cache_gate", Label: "Cache gate (defer compression for hot cache)", Description: cacheGateLabel(cfg.ContextCompression.CacheGate)},
+		{Value: "max_tokens", Label: "Max tokens", Description: maxTokensLabel(cfg.ContextCompression.MaxTokens), CloseOnSelect: true},
+		{Value: "preserve_recent_turns", Label: "Preserve recent turns (selective/hybrid)", Description: preserveRecentTurnsLabel(cfg), CloseOnSelect: true},
+		{Value: "micro_enabled", Label: "Micro: pre-summarize step (opt-in)", Description: microEnabledLabel(cfg)},
+		{Value: "micro_min_context_ratio", Label: "Micro: min context ratio (own gate)", Description: microMinContextRatioLabel(cfg), CloseOnSelect: true},
+		{Value: "micro_cache_miss_threshold", Label: "Micro: cache-miss threshold (cold-cache gate)", Description: microCacheMissThresholdLabel(cfg), CloseOnSelect: true},
+		{Value: "micro_keep_recent_messages", Label: "Micro: keep recent messages", Description: microKeepRecentLabel(cfg), CloseOnSelect: true},
+		{Value: "micro_min_content_tokens", Label: "Micro: min content tokens", Description: microMinContentTokensLabel(cfg), CloseOnSelect: true},
+		{Value: "micro_truncated_marker", Label: "Micro: truncation marker", Description: microTruncatedMarkerLabel(cfg), CloseOnSelect: true},
+		{Value: "per_model", Label: "Per-model overrides", Description: perModelCompressionLabel(cfg), CloseOnSelect: true},
+	}
 }
 
 // ceilingPercentLabel renders a layer ceiling: N% or the explicit disabled

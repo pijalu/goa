@@ -39,6 +39,12 @@ func setupCompressionSelectors(t *testing.T, sc *uiScenario) (core.Context, func
 	ctx.SelectOptionFunc = func(title string, opts []tui.SelectorItem, current string, cb func(string, bool)) {
 		queue = append(queue, selReq{ch: sc.engine.ShowSelector(title, opts, current), cb: cb})
 	}
+	// B56: sticky pickers (toggle menus) go through SelectOptionStickyFunc in
+	// production — replace the production delivery goroutine with the same
+	// deterministic pump (single-goroutine harness; see header comment).
+	ctx.SelectOptionStickyFunc = func(title string, opts []tui.SelectorItem, current string, cb func(string, bool)) {
+		queue = append(queue, selReq{ch: sc.engine.ShowSelectorSticky(title, opts, current), cb: cb})
+	}
 	drain := func() {
 		for len(queue) > 0 {
 			select {

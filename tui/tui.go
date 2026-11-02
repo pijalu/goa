@@ -88,6 +88,12 @@ type TUI struct {
 	overlayMu    sync.RWMutex
 	overlayStack []*overlayEntry
 
+	// activeSelector is the selector overlay currently on screen (nil when
+	// none), tracked so hosts can update its items in place — toggle menus
+	// flip a value without rebuilding the overlay (B56). Guarded by
+	// overlayMu; mutated only on the commandLoop.
+	activeSelector *Selector
+
 	// Actor model: the commandLoop is the SOLE owner
 	// of mutable state; renderLoop is the SOLE terminal outputter; they
 	// communicate via the immutable Scene snapshot on snapReq/`latest`. When the

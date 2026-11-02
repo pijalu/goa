@@ -101,6 +101,7 @@ type liveToggleHarness struct {
 	title   string
 	options []tui.SelectorItem
 	lastSel func(string, bool)
+	sticky  bool // B56: sticky pickers stay open across toggle picks
 }
 
 // newLiveToggleHarness builds the harness. cfg is the live config the menu
@@ -139,19 +140,33 @@ func newLiveToggleHarnessWithRegistry(t *testing.T, cfg *config.Config, reg *too
 		h.title = title
 		h.options = options
 		h.lastSel = onSelected
+		h.sticky = false
+	}
+	// B56: sticky pickers register once and stay pending across toggle picks —
+	// the overlay is NOT rebuilt after each flip, so the callback must not be
+	// dropped (the menu no longer re-invokes the opener).
+	ctx.SelectOptionStickyFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+		h.title = title
+		h.options = options
+		h.lastSel = onSelected
+		h.sticky = true
 	}
 	h.menu = newConfigMenu(*ctx)
 	return h
 }
 
-// select replays one menu selection on the pending selector callback.
+// select replays one menu selection on the pending selector callback. A
+// sticky picker (B56) keeps its callback pending after a confirming pick —
+// only Escape/cancel (ok=false) closes it.
 func (h *liveToggleHarness) pick(t *testing.T, value string, ok bool) {
 	t.Helper()
 	if h.lastSel == nil {
 		t.Fatalf("no selector pending: cannot select %q", value)
 	}
 	onSel := h.lastSel
-	h.lastSel = nil
+	if !h.sticky || !ok {
+		h.lastSel = nil
+	}
 	onSel(value, ok)
 }
 

@@ -39,6 +39,14 @@ type SelectorItem struct {
 	// set this to the user-meaningful terms (model name, provider name) so
 	// typing "model" or "provider" does not match every row.
 	SearchLabel string
+	// CloseOnSelect opts the row OUT of staying in a sticky selector: pressing
+	// Enter on it closes the picker like a plain selector's Enter (B56).
+	// Toggle rows in sticky menus leave it false — their Enter only emits, the
+	// handler flips the value and updates the items in place, so the screen
+	// never rebuilds and the selection never jumps. Navigation rows (rows that
+	// open a submenu) set it, and plain (non-sticky) selectors close on every
+	// Enter regardless of this flag.
+	CloseOnSelect bool
 }
 
 // SelectorKeymap configures what a Selector instance's hotkeys emit. The
@@ -98,6 +106,14 @@ type Selector struct {
 	animStop      chan struct{}
 	animItemValue string
 	focused       atomic.Bool
+
+	// sticky keeps the picker open when the user confirms a row that does
+	// not opt out via SelectorItem.CloseOnSelect: the emit still delivers
+	// the value, but done() (overlay hide + editor restore) is skipped so
+	// toggle menus can refresh the flipped row in place (B56). Cancel
+	// (Esc/CtrlC, emit "") always closes. Plain selectors (sticky=false)
+	// close on every emit — unchanged behavior.
+	sticky bool
 }
 
 // NewSelector creates a Selector. Items are sorted alphabetically by Label
@@ -185,6 +201,60 @@ func (s *Selector) SetItems(items []SelectorItem) {
 	s.items = sorted
 	s.filtered = sorted
 	s.selected = findItemIndex(sorted, s.currentValue)
+}
+
+// SelectedValue reports the value of the highlighted row ("" when the list
+// is empty). A pure read for tests and hosts.
+func (s *Selector) SelectedValue() string {
+	if len(s.filtered) == 0 || s.selected < 0 || s.selected >= len(s.filtered) {
+		return ""
+	}
+	return s.filtered[s.selected].Value
+}
+
+// Items returns a copy of the items in display order. A pure read for tests
+// and hosts.
+func (s *Selector) Items() []SelectorItem {
+	out := make([]SelectorItem, len(s.items))
+	copy(out, s.items)
+	return out
+}
+
+// UpdateItems replaces the items in place, keeping the picker on the same
+// row: the search text and filter are preserved, the highlight re-anchors to
+// the Value of the row it was on (clamping when that row vanished from the
+// filtered set), and the ✓ current-value marker is untouched. Unlike
+// SetItems (the loading swap, which re-anchors to currentValue), toggle
+// menus call this after flipping a value so the overlay is never rebuilt and
+// the selection never jumps (B56).
+func (s *Selector) UpdateItems(items []SelectorItem) {
+	anchored := s.SelectedValue()
+	sorted := sortSelectorItems(items)
+	s.items = sorted
+	s.applyFilter()
+	if idx := indexOfItemValue(s.filtered, anchored); idx >= 0 {
+		s.selected = idx
+	} else if s.selected >= len(s.filtered) {
+		s.selected = len(s.filtered) - 1
+	}
+	if s.selected < 0 {
+		s.selected = 0
+	}
+	s.startAnimationForSelection()
+}
+
+// indexOfItemValue returns the index of the item with the given value, or
+// -1 (findItemIndex cannot distinguish "first" from "not found").
+func indexOfItemValue(items []SelectorItem, value string) int {
+	if value == "" {
+		return -1
+	}
+	for i, item := range items {
+		if item.Value == value {
+			return i
+		}
+	}
+	return -1
 }
 
 func findItemIndex(items []SelectorItem, value string) int {
@@ -488,7 +558,7 @@ func (s *Selector) applyFilter() {
 }
 
 func (s *Selector) emit(value string) {
-	if s.done != nil {
+	if s.done != nil && s.closesOn(value) {
 		s.done()
 	}
 	select {
@@ -496,6 +566,22 @@ func (s *Selector) emit(value string) {
 	default:
 	}
 }
+
+// closesOn reports whether this emit should close the picker: always on
+// cancel (""), always in plain selectors, and in sticky selectors only for
+// rows that opt out via CloseOnSelect.
+func (s *Selector) closesOn(value string) bool {
+	if value == "" || !s.sticky {
+		return true
+	}
+	if len(s.filtered) == 0 || s.selected < 0 || s.selected >= len(s.filtered) {
+		return true
+	}
+	return s.filtered[s.selected].CloseOnSelect
+}
+
+// SetSticky keeps the picker open on value emits (see the sticky field).
+func (s *Selector) SetSticky(sticky bool) { s.sticky = sticky }
 
 func (s *Selector) Focused() bool { return s.focused.Load() }
 

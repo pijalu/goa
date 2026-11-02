@@ -81,6 +81,23 @@ func (t *TUI) ShowSelectorKeyed(title string, items []SelectorItem, currentValue
 	return result
 }
 
+// ShowSelectorSticky is ShowSelector for toggle-style menus (B56): confirming
+// a row keeps the picker open unless that row opts out via
+// SelectorItem.CloseOnSelect (navigation / open-another-menu rows), and Escape
+// always closes. The closed-over handler flips the value and refreshes the
+// same overlay in place (Selector.UpdateItems), so the screen never rebuilds
+// and the highlighted row never jumps.
+func (t *TUI) ShowSelectorSticky(title string, items []SelectorItem, currentValue string) <-chan string {
+	_, result := t.showSelectorSticky(title, items, currentValue)
+	return result
+}
+
+func (t *TUI) showSelectorSticky(title string, items []SelectorItem, currentValue string) (*Selector, <-chan string) {
+	sel, result := t.showSelector(title, items, currentValue)
+	sel.SetSticky(true)
+	return sel, result
+}
+
 // ShowSelectorLoading displays a selector pre-populated with a single
 // "Loading…" placeholder item and returns both the live *Selector and the
 // result channel. The caller fetches items asynchronously and pushes them via
@@ -118,10 +135,30 @@ func (t *TUI) showSelector(title string, items []SelectorItem, currentValue stri
 		Height:       h,
 	}
 	handle := t.ShowOverlay(sel, opts)
+	// Track the live selector overlay so hosts can update its items in
+	// place (B56); clear the tracking when the picker closes. Runs on the
+	// commandLoop via the overlay path.
+	t.overlayMu.Lock()
+	t.activeSelector = sel
+	t.overlayMu.Unlock()
 	sel.SetDone(func() {
+		t.overlayMu.Lock()
+		if t.activeSelector == sel {
+			t.activeSelector = nil
+		}
+		t.overlayMu.Unlock()
 		handle.Hide()
 	})
 	return sel, result
+}
+
+// ActiveSelector returns the selector overlay currently on screen (nil when
+// no selector is shown). A pure read for hosts and tests — safe from any
+// goroutine (guarded by overlayMu).
+func (t *TUI) ActiveSelector() *Selector {
+	t.overlayMu.RLock()
+	defer t.overlayMu.RUnlock()
+	return t.activeSelector
 }
 
 // ShowInput displays a single-line input prompt as an overlay.

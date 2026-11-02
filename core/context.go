@@ -177,6 +177,20 @@ type Context struct {
 	// to fetching synchronously then SelectOption.
 	SelectOptionAsyncFunc func(title string, fetch func() []tui.SelectorItem, onSelected func(selected string, ok bool))
 
+	// UpdateSelectorItemsFunc replaces the live selector overlay's items in
+	// place (same overlay, same highlighted row — B56). Optional; when nil
+	// Context.UpdateSelectorItems is a no-op (headless, tests).
+	UpdateSelectorItemsFunc func(items []tui.SelectorItem)
+
+	// SelectOptionStickyFunc is like SelectOptionFunc but opens a sticky
+	// picker (B56): confirming a row keeps the picker open unless that row
+	// opts out via SelectorItem.CloseOnSelect, so toggle handlers can flip a
+	// value and refresh the same overlay via UpdateSelectorItemsFunc instead
+	// of re-opening a fresh picker (screen rebuild + selection jump).
+	// Optional; when nil, SelectOptionSticky falls back to SelectOption
+	// (closes on confirm).
+	SelectOptionStickyFunc func(title string, options []tui.SelectorItem, current string, onSelected func(selected string, ok bool))
+
 	// ConfirmMultiFunc is an optional callback showing a multi-select confirm
 	// card (M6 §7 step 3, plugin hook review): Toggle options render as
 	// checkboxes; picking an action option delivers its ID plus the checked
@@ -523,6 +537,31 @@ func (c Context) SelectOptionAsync(title string, fetch func() []tui.SelectorItem
 	}
 	// Fallback: synchronous fetch, then a normal selector.
 	c.SelectOption(title, fetch(), "", onSelected)
+}
+
+// UpdateSelectorItems replaces the live selector overlay's items in place —
+// same overlay, same highlighted row (tui.Selector.UpdateItems). Toggle
+// handlers call it after flipping a value instead of re-opening the menu, so
+// the screen does not rebuild and the selection never jumps (B56). A no-op
+// when no host surface is wired (headless, tests) or no selector is on
+// screen.
+func (c Context) UpdateSelectorItems(items []tui.SelectorItem) {
+	if c.UpdateSelectorItemsFunc != nil {
+		c.UpdateSelectorItemsFunc(items)
+	}
+}
+
+// SelectOptionSticky opens a sticky interactive picker (B56): Enter on a row
+// keeps the picker open unless that row has CloseOnSelect set, so toggle
+// handlers can update the same overlay in place via UpdateSelectorItems.
+// Falls back to SelectOption (picker closes on confirm) when no sticky
+// callback is configured.
+func (c Context) SelectOptionSticky(title string, options []tui.SelectorItem, current string, onSelected func(selected string, ok bool)) {
+	if c.SelectOptionStickyFunc != nil {
+		c.SelectOptionStickyFunc(title, options, current, onSelected)
+		return
+	}
+	c.SelectOption(title, options, current, onSelected)
 }
 
 // ConfirmMulti shows the multi-select confirm card when a host callback is
