@@ -28,30 +28,71 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-### B54 — internal/filefind completion test is flaky under full-suite load
+### B55 — new-install defaults: mcp tool on, smartsearch off
 
-**Observed behavior.** Under the full `go test -count=1 -race -cover ./...`
-run, `TestComplete_AbsoluteOutsideRoot/fd_absolute_hits_outside_root_stay_absolute`
-(internal/filefind/filefind_test.go:266) failed once with `fd path = []`
-(the fake-fd rescue returned nothing); standalone, the package passes
-repeatedly with and without -race. The subtest drives the bounded `fd`
-rescue (250 ms timeout per B39+B49), so under heavy parallel load the
-rescue can exceed its budget and legitimately return no candidates — the
-assertion then depends on machine load, not behavior. Suspect: the test
-asserts a timing-sensitive rescue path without a load-independent
-contract.
+**Observed behavior.** New-install tool defaults need verification after
+B46/B51 reshaped the toggle surfaces: the `mcp` bridge tool must ship
+enabled ("on") on a fresh install (its default-ON with opt-out promise,
+`tools.enabled.mcp`), while `smartsearch` must not be registered by
+default ("off") — the default set stays the agreed minimum
+(bash/edit/write/read, goals, todos, webfetch, mcp).
 
-**Expected behavior.** The subtest either passes deterministically under
-any load (e.g. assert the fallback/dedup contract rather than rescue
-success, or make the fake fd respond within a load-proof budget) or skips
-explicitly when the rescue path is not reachable.
+**Expected behavior.** A fresh install (no home/project config) registers
+`mcp` and does not register `smartsearch`; the embedded default.yaml,
+Default flags and the default-mirror pinning test all agree; `/config` →
+Tools shows mcp on and smartsearch absent/off.
 
 **Fix and validation plan.**
-1. Reproduce: run the full race suite under artificial load
-   (`stress -c 8` or equivalent) until the flake recurs; capture the
-   failure rate.
-2. Fix the test contract (not the production timeout): assert what B49
-   actually pinned — absolute prefixes stay absolute — from the shallow
-   path, or retry the rescue once on empty before failing.
-3. Validate: full race suite three consecutive times under load, zero
-   flakes. Archive, close, commit.
+1. Ground truth (verified 2026-11-02): tools/registry.go:240 `mcp` Default:
+   true, :237 `smartsearch` Default: false; config/configs/default.yaml:352
+   `mcp: true`; config/defaults_test.go:144 pins smartsearch off; the mirror
+   test (config/tools_default_mirror_test.go) handles smartsearch via its
+   own `tools.smartsearch.enabled` gate. What is NOT pinned end-to-end: a
+   fresh-sandboxed-home boot registering mcp and NOT registering
+   smartsearch.
+2. Add the fresh-install pinning test (sandboxed HOME, no project config):
+   assert the registered tool set contains mcp, excludes smartsearch; keep
+   the existing yaml/Default/mirror pins green.
+3. If any layer drifts, fix that layer (default.yaml pin + Default flag);
+   expected outcome: no production change.
+4. Validate: the new app-boot test, touched config/app suites, then vet,
+   staticcheck, gocognit, gocyclo, race suite separately. Archive, close,
+   commit.
+
+### B56 — toggle menu values must not rerender the whole screen
+
+**Observed behavior.** In the tool config menu (and every other
+"toggle"-style menu value, e.g. on/off entries), flipping a value
+rerenders the complete screen and moves the selection back — an annoying
+jump that loses the cursor position on every toggle.
+
+**Expected behavior.** Toggling an on/off value updates only that value's
+cell (the selected row's text on↔off), keeps the selector on the same
+entry, and produces no full-screen repaint, scroll reset or cursor move.
+
+**Fix and validation plan.**
+1. Root cause (verified 2026-11-02): every toggle handler ends with a
+   full menu re-open — e.g. core/commands/config_tools.go:99
+   `toolToggleHandler` → `c.settingTools()` → a NEW
+   `ctx.SelectOption(...)` overlay, so selection resets to the top and
+   the screen repaints. Same shape in the other config toggle menus
+   (skills, compression, …).
+2. Fix design: update in place instead of re-opening —
+   a. tui Selector gains an in-place items update (replace item
+      labels/descriptions by Value, selection index preserved; no
+      overlay rebuild), exposed on the command context
+      (e.g. `ctx.UpdateSelectorItems`);
+   b. toggle handlers call the update primitive for the flipped row and
+      stay in the SAME selector (no re-invoke, no re-centering); only
+      error/restart-required paths may flash without touching selection;
+   c. apply to every toggle-kind menu value (tools, skills,
+      compression, and any other bool row driven by SelectOption).
+3. RED first: a live-engine test toggling a row twice asserts the
+   selector instance is preserved (same overlay, cursor unchanged) —
+   fails today because a new overlay is built; plus a tui unit test for
+   the in-place update primitive (selection kept by Value, unknown
+   Value keeps cursor).
+4. Validate: filmstrip before/after (no full-screen wipe, no cursor
+   jump on toggle), toggle regressions for each menu kind, touched
+   tui/core suites + gates separately, interactive-shell check.
+   Archive, close, commit.

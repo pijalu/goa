@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // seedIssue8Tree creates a tree mirroring Issue 8: an exact plan.md among
@@ -266,9 +267,12 @@ func TestComplete_AbsoluteOutsideRoot(t *testing.T) {
 	t.Run("fd absolute hits outside root stay absolute", func(t *testing.T) {
 		// Drive fd past the shallow pass: no /etc entry matches "zzz", so
 		// the fd rescue answers; the absolute hit outside root stays
-		// absolute after normalization.
+		// absolute after normalization. The rescue budget is extended
+		// (B54): under the full race suite even spawning /bin/sh can
+		// exceed the 250 ms interactive budget, so the assertion must
+		// depend on the normalization contract, not on machine load.
 		fakeFD(t, "hosts", 0)
-		got := New(root).WithFD(true).Complete("/etc/zzz")
+		got := New(root).WithFD(true).WithTimeout(5 * time.Second).Complete("/etc/zzz")
 		if !containsPath(got, "/etc/hosts") {
 			t.Errorf("fd path = %v, want /etc/hosts kept absolute", paths(got))
 		}

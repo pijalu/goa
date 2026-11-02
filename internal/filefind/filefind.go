@@ -54,8 +54,9 @@ func Available() bool { return fdAvailable }
 
 // Search is a completion query bound to a root directory.
 type Search struct {
-	root  string
-	useFD bool
+	root   string
+	useFD  bool
+	budget time.Duration // fd rescue wall-clock cap (fdTimeout when unset)
 }
 
 // New binds a search to root; completed paths that fall under root are made
@@ -66,6 +67,13 @@ func New(root string) *Search { return &Search{root: root, useFD: true} }
 // the os.ReadDir fallback (tests, hosts without subprocess support) by
 // passing false; when fd is simply not installed the fallback runs anyway.
 func (s *Search) WithFD(use bool) *Search { s.useFD = use; return s }
+
+// WithTimeout overrides the fd rescue wall-clock cap. The default
+// (fdTimeout) is a production policy: completion is interactive, so a slow
+// fd on a huge tree must never hold a keystroke-triggered result hostage
+// (B49). Tests extend the budget (B54) so asserting the rescue's result
+// never races process-spawn latency under full-suite load.
+func (s *Search) WithTimeout(d time.Duration) *Search { s.budget = d; return s }
 
 // Complete returns ranked candidates for pathPrefix under the search root,
 // applying the rules shared by every file completer:
@@ -181,8 +189,13 @@ func (s *Search) fdCandidates(searchDir, query string) []Entry {
 		return nil
 	}
 	// B49: bound the rescue search with a wall-clock cap so a slow fd on a
-	// huge tree cannot hold the completion hostage.
-	ctx, cancel := context.WithTimeout(context.Background(), fdTimeout)
+	// huge tree cannot hold the completion hostage (B54: tests may extend
+	// the budget so the assertion cannot race spawn latency).
+	budget := s.budget
+	if budget <= 0 {
+		budget = fdTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	results, err := fdSearch(ctx, searchDir, query, maxResults)
 	if err != nil || len(results) == 0 {
