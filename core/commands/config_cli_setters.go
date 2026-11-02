@@ -604,7 +604,37 @@ func setConfigField(cfg *config.Config, path []string, value string) error {
 	if providerID, field, ok := parseProviderRetryKey(path); ok {
 		return setProviderRetryField(cfg, providerID, field, value)
 	}
+	// Generic tool-toggle keys (B51): tools.enabled.<tool> routes through
+	// setToolEnabled so /config set covers EVERY configurable tool — including
+	// the inverted ask_user_question flag and the schedule/session families —
+	// without the setter map growing one entry per tool forever.
+	if err, handled := setToolsEnabledKey(cfg, path, value); handled {
+		return err
+	}
 	return fmt.Errorf("unknown config key: %s", key)
+}
+
+// setToolsEnabledKey handles tools.enabled.<name> and
+// tools.smartsearch.enabled for configurable tool names. handled is false when
+// the key is some other shape (callers fall through to the unknown-key error).
+func setToolsEnabledKey(cfg *config.Config, path []string, value string) (error, bool) {
+	v, err := strconv.ParseBool(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("tool enabled flag must be true or false, got %q", value), true
+	}
+	if len(path) == 3 && path[0] == "tools" && path[1] == "enabled" {
+		name := path[2]
+		if isConfigurableTool(name) {
+			setToolEnabled(cfg, name, v)
+			return nil, true
+		}
+		return fmt.Errorf("unknown configurable tool: %s", name), true
+	}
+	if len(path) == 3 && path[0] == "tools" && path[1] == "smartsearch" && path[2] == "enabled" {
+		setToolEnabled(cfg, "smartsearch", v)
+		return nil, true
+	}
+	return nil, false
 }
 
 // parsePerModelCompressionKey splits a context_compression.per_model.<modelID>.<field>

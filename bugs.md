@@ -84,7 +84,137 @@ it) stay exactly as they are.
 4. Gates separately + full race suite; archive to docs/archive; close and
    commit.
 
+### B52 — Review startup context size for efficiency
+
+**Observed behavior.** No current measurement exists of what the very
+first provider request actually carries: system prompt sections, eager
+tool schemas (vs deferred), skills catalog, embedded docs, project
+context files, mode overlays. Prior work (P1 deferred tool loading,
+docs/plans/context-usage-tool-skills-review.md) cut tool-schema weight,
+but the remaining startup budget has never been audited end to end, so
+waste (duplicate guidance, over-eager schemas, verbose sections) is
+invisible and grows silently with every feature.
+
+**Expected behavior.** A measured, reviewed startup context: a breakdown
+(bytes/tokens per component) of the first request, a list of the top
+reducers, and the cheap wins applied — without losing required behavior
+(deferred tools stay discoverable, skills stay visible, prompts stay
+embedded via `//go:embed`).
+
+**Fix and validation plan.**
+1. Instrument/measure: capture the actual first-request payload (system
+   prompt text, tool schema list with per-tool byte counts, skills
+   catalog, docs) — a debug dump command or test helper that prints the
+   breakdown.
+2. Review each component against its purpose; flag duplicates, stale
+   sections, and over-verbose text. Cross-check eager tool set against
+   the deferred marker set — anything eager that is rarely needed in the
+   first turn is a candidate for deferral.
+3. Apply the top reducers (rewording, deferral, catalog trimming) one at
+   a time with before/after byte counts.
+4. Validate: breakdown test pinning the budget (fail when startup
+   context grows beyond a threshold without an explicit update), full
+   gates separately, one real session confirming nothing lost (tools
+   discoverable, skills listed). Archive, close, commit.
+
+### B53 — Markdown table rows repainted at different widths leave scrollback artifacts
+
+**Observed behavior.** When a markdown table is taller than the viewport
+(or streams over a terminal width change), parts of the SAME table end up
+painted at different column widths: the scrolled-off (already-in-terminal-
+scrollback) rows keep the old geometry while the visible rows are
+repainted at the new one — separators and cell columns misalign row over
+row, exactly like the reported sample (consecutive `├──┼──┤` borders of
+differing widths inside one table, cells wrapping at different points).
+Cause: the TUI paints into the native terminal; rows that scroll offscreen
+are frozen in scrollback and can never be repainted. On resize,
+`assistantMessage.renderFrame` recreates the incremental renderer and
+repaints at the new width — but only the on-screen lines actually reach
+the terminal; everything above stays at the old geometry. Any width
+change mid-table (user resize, tmux pane, font change) therefore splits
+the table visually.
+
+**Expected behavior.** A table must never present mixed geometry: either
+its lines are stable across width changes (same column widths wherever
+they are painted), or the whole transcript is re-emitted after a width
+change so no stale-geometry rows remain above the viewport.
+
+**Fix and validation plan — options to review.**
+- Option A (preferred, cheap): pin the table render width for the
+  session. `MDStreamRenderer` computes table column widths from
+  `min(widths seen this session)` (or a fixed table budget), so a repaint
+  at any later width produces byte-identical rows — scrollback stays
+  consistent by construction. Tables stay at the smallest width seen;
+  prose still reflows freely.
+- Option B (complete, heavier): transcript re-emit on resize — keep the
+  virtual line buffer for the whole session and, on width change, wipe +
+  re-emit the transcript (the mechanism the web UI already uses; see
+  closed webui B2). Correct but costs a full repaint and depends on
+  scrollback behavior.
+- Option C: repaint-on-scroll (alternate screen / viewport-owned
+  scrollback) — biggest change, only worth it with Option B.
+Plan:
+1. RED: render a tall table at width W1, paint, change width to W2,
+   re-render — assert table rows are identical (fails today with A's
+   semantics missing); plus a streaming test that a mid-stream width
+   change never mixes widths inside one table.
+2. Implement A behind a small policy hook (session-tracked min width for
+   table geometry); keep prose reflow untouched.
+3. Measure/prototype B only if A proves insufficient in real use; document
+   the trade-off in the bug notes.
+4. Validate: filmstrip/interactive-shell check of an actual resize during
+   a long streamed table (scroll up: no mixed widths), touched suites +
+   gates separately. Archive, close, commit.
+
+### B54 — internal/filefind completion test is flaky under full-suite load
+
+**Observed behavior.** Under the full `go test -count=1 -race -cover ./...`
+run, `TestComplete_AbsoluteOutsideRoot/fd_absolute_hits_outside_root_stay_absolute`
+(internal/filefind/filefind_test.go:266) failed once with `fd path = []`
+(the fake-fd rescue returned nothing); standalone, the package passes
+repeatedly with and without -race. The subtest drives the bounded `fd`
+rescue (250 ms timeout per B39+B49), so under heavy parallel load the
+rescue can exceed its budget and legitimately return no candidates — the
+assertion then depends on machine load, not behavior. Suspect: the test
+asserts a timing-sensitive rescue path without a load-independent
+contract.
+
+**Expected behavior.** The subtest either passes deterministically under
+any load (e.g. assert the fallback/dedup contract rather than rescue
+success, or make the fake fd respond within a load-proof budget) or skips
+explicitly when the rescue path is not reachable.
+
+**Fix and validation plan.**
+1. Reproduce: run the full race suite under artificial load
+   (`stress -c 8` or equivalent) until the flake recurs; capture the
+   failure rate.
+2. Fix the test contract (not the production timeout): assert what B49
+   actually pinned — absolute prefixes stay absolute — from the shallow
+   path, or retry the rescue once on empty before failing.
+3. Validate: full race suite three consecutive times under load, zero
+   flakes. Archive, close, commit.
+
 ## Closed
+
+Closed 2026-11-01 — B51, the agent-mcp `mcp` tool was invisible in /config
+and unseen by the agent (home pin `tools.enabled.mcp: false` had NO
+re-enable surface: not in ConfigurableTools, no runtime builder, no
+config-setter key), and the audit widened it: schedule/session families
+missing from all three toggle surfaces, no family lifecycle at all, and a
+hardcoded `tools.enabled.goal`-only setter. The fix adds `Members []string`
+family metadata with a family-aware ApplyToolToggle (enable registers every
+member live + one agent push, worst outcome wins; disable unregisters all),
+runtime builders for mcp/schedule_*/session_* (scheduleStore wired into
+subsystems), a generic `tools.enabled.<name>` setter + derived completions,
+Default flags re-mirrored to the shipped default.yaml (mcp/python/run_code/
+terminals/todo_list were stale pre-B46 values) under a new total mirror
+test, and the model-facing docs sweep: 13 missing docs/TOOLS.md sections
+added, `goa_command`/`terminal`/`read_media` stale names fixed, the mcp
+section now teaches the full autonomous connect→discover→use workflow, and
+new pinning tests fail when any registerable tool lacks its TOOLS.md
+section. RED observed on all six fronts; touched suites, the goal
+verifyCommand and all gates pass separately. See
+[`docs/archive/b51-mcp-tool-config-surfaces.2026-11-01.md`](docs/archive/b51-mcp-tool-config-surfaces.2026-11-01.md).
 
 Closed 2026-11-01 — B39+B49, `@` path completion reran a filesystem search
 synchronously on every keystroke on the UI goroutine, and the engine ran the

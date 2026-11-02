@@ -214,6 +214,12 @@ type subsystems struct {
 	// Background task manager shared by the bg_exec tool and the status panel.
 	bgMgr *background.Manager
 
+	// scheduleStore persists schedule jobs; retained so /tools:schedule:on can
+	// rebuild the schedule_create/delete/list family at runtime (B51) — the
+	// store itself is always built at boot and schedules fire regardless of
+	// the tool gate.
+	scheduleStore tools.ScheduleStore
+
 	// lspMgr runs gopls for Go diagnostics; closed on shutdown to avoid leaks.
 	lspMgr *lsp.Manager
 	// mcpManager owns MCP server connections and their registered tools;

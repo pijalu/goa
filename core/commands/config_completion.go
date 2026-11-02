@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/tools"
 )
 
 func configSubcommandCompletions(prefix string) []core.ArgCompletion {
@@ -140,7 +141,6 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"multi_agent.enabled", "true | false"},
 		{"multi_agent.companion_model", "model id"},
 		{"multi_agent.companion_provider", "provider id"},
-		{"tools.enabled.goal", "enable goal tools (default true)"},
 		{"tools.bash.enable_complexity_analysis", "true | false"},
 		{"tools.bash.warn_file_edits", "true | false (default true)"},
 		{"tools.bash.jail", "true | false"},
@@ -166,6 +166,34 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		if prefix == "" || strings.HasPrefix(k.value, prefix) {
 			comps = append(comps, core.ArgCompletion{Value: k.value, Description: k.description})
 		}
+	}
+	// Tool toggle keys are DERIVED from the configurable-tool list (B51): one
+	// entry per tool, always in sync with what /tools and the factory accept.
+	comps = append(comps, toolEnabledKeyCompletions(prefix)...)
+	return comps
+}
+
+// toolEnabledKeyCompletions returns the tools.enabled.<tool> completions for
+// every configurable tool plus tools.smartsearch.enabled, with the current
+// enabled state in the description when known.
+func toolEnabledKeyCompletions(prefix string) []core.ArgCompletion {
+	var comps []core.ArgCompletion
+	add := func(value, desc string) {
+		if prefix == "" || strings.HasPrefix(value, prefix) {
+			comps = append(comps, core.ArgCompletion{Value: value, Description: desc})
+		}
+	}
+	add("tools.smartsearch.enabled", "true | false (BM25 search; restart to apply)")
+	for _, t := range tools.ConfigurableTools() {
+		defaultWording := "default false"
+		if t.Default {
+			defaultWording = "default true"
+		}
+		desc := t.Name + " — " + defaultWording + "; true | false"
+		if len(t.Members) > 0 {
+			desc += " [family: " + strings.Join(t.Members, ", ") + "]"
+		}
+		add("tools.enabled."+t.Name, desc)
 	}
 	return comps
 }

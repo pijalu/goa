@@ -87,6 +87,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		agentStreams:      newAgentStreamRegistry(),
 		registry:          registry,
 		bgMgr:             base.bgMgr,
+		scheduleStore:     base.scheduleStore,
 		lspMgr:            base.lspMgr,
 		mcpManager:        base.mcpManager,
 	}

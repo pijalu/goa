@@ -424,16 +424,18 @@ func TestConfigurableTools_IncludesPython(t *testing.T) {
 		t.Errorf("ConfigurableToolNames missing %q: %v", "python", names)
 	}
 
+	// B46 minimal default set ships python OFF; enable with /tools or
+	// tools.enabled.python: true.
 	for _, tool := range ConfigurableTools() {
-		if tool.Name == "python" && !tool.Default {
-			t.Errorf("python should default to enabled, got Default=%v", tool.Default)
+		if tool.Name == "python" && tool.Default {
+			t.Errorf("python should ship disabled by default (B46 minimal set), got Default=%v", tool.Default)
 		}
 	}
 }
 
 // TestConfigurableTools_IncludesRunCode ensures the run_code code-mode tool
-// (gap TL7) is runtime-toggleable and opt-out (default enabled), mirroring
-// python.
+// (gap TL7) is runtime-toggleable. B46's minimal default set ships it OFF
+// (enable via /tools or tools.enabled.run_code: true).
 func TestConfigurableTools_IncludesRunCode(t *testing.T) {
 	names := ConfigurableToolNames()
 	found := false
@@ -448,8 +450,8 @@ func TestConfigurableTools_IncludesRunCode(t *testing.T) {
 	}
 
 	for _, tool := range ConfigurableTools() {
-		if tool.Name == "run_code" && !tool.Default {
-			t.Errorf("run_code should default to enabled, got Default=%v", tool.Default)
+		if tool.Name == "run_code" && tool.Default {
+			t.Errorf("run_code should ship disabled by default (B46 minimal set), got Default=%v", tool.Default)
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/tools"
 )
 
 // ToolToggleOutcome reports what applying a tool enable/disable did at runtime.
@@ -91,16 +92,16 @@ func ApplyToolToggle(ctx core.Context, name string, enabled bool) (ToolToggleOut
 		}
 		// Reconcile the enable direction only: "the config says on" must imply
 		// "the registry holds it", which is exactly the broken invariant.
-		return enableRuntimeTool(ctx, name), nil
+		return reconcileFamilyTools(ctx, name, true), nil
 	}
 	setToolEnabled(ctx.Config, name, enabled)
 	if err := persistToolToggle(ctx, name, enabled); err != nil {
 		return ToolToggleUnchanged, err
 	}
 	if enabled {
-		return enableRuntimeTool(ctx, name), nil
+		return reconcileFamilyTools(ctx, name, true), nil
 	}
-	disableRuntimeTool(ctx, name)
+	disableFamilyTools(ctx, name)
 	return ToolToggleApplied, nil
 }
 
@@ -145,6 +146,50 @@ func enableRuntimeTool(ctx core.Context, name string) ToolToggleOutcome {
 	// notice) — no separate injection here.
 	refreshToolRegistry(ctx)
 	return ToolToggleApplied
+}
+
+// familyToolWorst returns the worst of two toggle outcomes so a family enable
+// reports restart-required when ANY member could not be built — a partial
+// family enabled silently would leave the model calling a member whose
+// siblings are missing (bugs.md B51).
+func familyToolWorst(a, b ToolToggleOutcome) ToolToggleOutcome {
+	if a == ToolToggleRestartRequired || b == ToolToggleRestartRequired {
+		return ToolToggleRestartRequired
+	}
+	return ToolToggleApplied
+}
+
+// reconcileFamilyTools enables every member of the configurable tool `name`
+// (single tools are their own single-member family). Each member is built
+// through the factory and registered unless already live; the pushed agent
+// set is refreshed once after the whole family.
+func reconcileFamilyTools(ctx core.Context, name string, enabled bool) ToolToggleOutcome {
+	members, ok := tools.FamilyMembers(name)
+	if !ok {
+		// Not configurable: report honestly rather than pretend success.
+		return ToolToggleRestartRequired
+	}
+	outcome := ToolToggleApplied
+	for _, member := range members {
+		outcome = familyToolWorst(outcome, enableRuntimeTool(ctx, member))
+	}
+	if enabled {
+		refreshToolRegistry(ctx)
+	}
+	return outcome
+}
+
+// disableFamilyTools unregisters every member of the configurable tool
+// `name` and pushes the reduced set once. ToolTeardown fires per member so
+// host teardown hooks see every removed tool.
+func disableFamilyTools(ctx core.Context, name string) {
+	members, ok := tools.FamilyMembers(name)
+	if !ok {
+		return
+	}
+	for _, member := range members {
+		disableRuntimeTool(ctx, member)
+	}
 }
 
 // disableRuntimeTool unregisters the tool, pushes the new set to the running

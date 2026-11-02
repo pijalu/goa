@@ -526,7 +526,7 @@ func listTools(out core.OutputWriter, reg core.ToolRegistry) error {
 	writeStr(out, ansi.RepeatHorizontal(40)+"\n\n")
 
 	if reg == nil {
-		knownTools := []string{"read", "write", "edit", "search", "bash", "python", "run_code", "ssh_bash", "bg_exec", "memento", "goa_command", "run_skill"}
+		knownTools := []string{"read", "write", "edit", "search", "bash", "python", "run_code", "ssh_bash", "bg_exec", "memento", "goa", "run_skill"}
 		for _, t := range knownTools {
 			writeFmt(out, "  %-20s (use /tools %s for details)\n", t, t)
 		}

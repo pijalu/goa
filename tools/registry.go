@@ -181,7 +181,32 @@ func (r *ToolRegistry) AllDocumented() []DocumentedTool {
 type ConfigurableTool struct {
 	Name        string
 	Description string
-	Default     bool // default enabled state (true = opt-out, false = opt-in)
+	Default     bool     // default enabled state (true = opt-out, false = opt-in)
+	Members     []string // family members gated by this one flag; nil = single tool
+}
+
+// MembersOrSelf returns the member tool names for a configurable tool: the tool
+// itself for single tools, the family member list for gated families
+// (schedule → schedule_create/delete/list, session → session_search/
+// session_event_read). Unknown names return the name unchanged so callers
+// fail loud downstream instead of silently no-oping.
+func (c ConfigurableTool) MembersOrSelf() []string {
+	if len(c.Members) == 0 {
+		return []string{c.Name}
+	}
+	return c.Members
+}
+
+// FamilyMembers maps a configurable tool name to its member tool names using
+// ConfigurableTools metadata; ok is false for names that are not
+// configurable (the toggle surfaces reject those before reaching here).
+func FamilyMembers(name string) ([]string, bool) {
+	for _, t := range ConfigurableTools() {
+		if t.Name == name {
+			return t.MembersOrSelf(), true
+		}
+	}
+	return nil, false
 }
 
 // ConfigurableTools returns every runtime-toggleable tool with a short
@@ -200,18 +225,26 @@ func ConfigurableTools() []ConfigurableTool {
 		{Name: "goa", Description: "Run Goa slash commands from the model", Default: false},
 		{Name: "verify", Description: "Run the test suite, report pass/fail", Default: false},
 		{Name: "ask_user_question", Description: "Ask the user a question", Default: true},
-		{Name: "python", Description: "Execute Python code with gpython", Default: true},
-		{Name: "run_code", Description: "Python program with multi-tool dispatch (code-mode)", Default: true},
+		{Name: "python", Description: "Execute Python code with gpython", Default: false},
+		{Name: "run_code", Description: "Python program with multi-tool dispatch (code-mode)", Default: false},
 		{Name: "bg_exec", Description: "Background process execution", Default: false},
 		{Name: "delegate_to", Description: "Delegate tasks to sub-agents", Default: false},
 		{Name: "goal", Description: "Goal tracking", Default: true},
 		{Name: "lsp", Description: "LSP code navigation", Default: false},
 		{Name: "memento", Description: "Persistent memory files", Default: false},
-		{Name: "terminals", Description: "Persistent terminal sessions", Default: true},
+		{Name: "terminals", Description: "Persistent terminal sessions", Default: false},
 		{Name: "request_review", Description: "Request companion review", Default: false},
 		{Name: "smartsearch", Description: "BM25 code search (needs restart)", Default: false},
 		{Name: "ssh_bash", Description: "Remote SSH command execution", Default: false},
-		{Name: "todo_list", Description: "Session todo list (goal-linked when a goal is active)", Default: false},
+		{Name: "todo_list", Description: "Session todo list (goal-linked when a goal is active)", Default: true},
+		{Name: "mcp", Description: "Drive MCP servers via the agent-mcp daemon (connect, discover, call, resources, prompts)", Default: true},
+		// schedule/session are gated FAMILIES: one flag toggles every member
+		// (Members), so /config and /tools can never leave a partial family
+		// behind (bugs.md B51).
+		{Name: "schedule", Description: "Persistent reminders: schedule_create/schedule_delete/schedule_list", Default: false,
+			Members: []string{"schedule_create", "schedule_delete", "schedule_list"}},
+		{Name: "session", Description: "Read-only recall of prior sessions: session_search/session_event_read", Default: false,
+			Members: []string{"session_search", "session_event_read"}},
 		{Name: "webfetch", Description: "URL content fetching", Default: true},
 	}
 }

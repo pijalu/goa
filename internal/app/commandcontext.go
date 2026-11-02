@@ -263,10 +263,28 @@ func runtimeToolBuilders(subs *subsystems) map[string]func() (agentic.Tool, bool
 			}
 			return subs.goaTool, true
 		},
-		"terminals":      func() (agentic.Tool, bool) { return makeTerminalsTool(subs) },
-		"webfetch":       func() (agentic.Tool, bool) { return makeWebFetchToolWithSummarizer(subs) },
-		"goal":           func() (agentic.Tool, bool) { return makeGoalToolRuntime(subs) },
-		"lsp":            func() (agentic.Tool, bool) { return makeLSPToolRuntime(subs) },
+		"terminals": func() (agentic.Tool, bool) { return makeTerminalsTool(subs) },
+		"webfetch":  func() (agentic.Tool, bool) { return makeWebFetchToolWithSummarizer(subs) },
+		"goal":      func() (agentic.Tool, bool) { return makeGoalToolRuntime(subs) },
+		"lsp":       func() (agentic.Tool, bool) { return makeLSPToolRuntime(subs) },
+		"mcp":       always(func() agentic.Tool { return &tools.AgentMCPTool{} }),
+		// schedule/session family members (B51): one flag gates them, the
+		// family lifecycle builds/unregisters them member by member.
+		"schedule_create": always(func() agentic.Tool {
+			return &tools.ScheduleCreateTool{Store: subs.scheduleStore}
+		}),
+		"schedule_delete": always(func() agentic.Tool {
+			return &tools.ScheduleDeleteTool{Store: subs.scheduleStore}
+		}),
+		"schedule_list": always(func() agentic.Tool {
+			return &tools.ScheduleListTool{Store: subs.scheduleStore}
+		}),
+		"session_search": always(func() agentic.Tool {
+			return &tools.SessionSearchTool{Store: subs.sessionStore}
+		}),
+		"session_event_read": always(func() agentic.Tool {
+			return &tools.SessionEventReadTool{Store: subs.sessionStore}
+		}),
 		"request_review": func() (agentic.Tool, bool) { return makeAgentDrivenTool(subs, "request_review") },
 		"delegate_to":    func() (agentic.Tool, bool) { return makeAgentDrivenTool(subs, "delegate_to") },
 		"todo_list": func() (agentic.Tool, bool) {

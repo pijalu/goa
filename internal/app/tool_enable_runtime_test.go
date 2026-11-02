@@ -299,7 +299,7 @@ func TestApplyToolToggle_EveryConfigurableToolRegistersOrSaysRestart(t *testing.
 
 	restartNames := map[string]bool{}
 	for _, ct := range tools.ConfigurableTools() {
-		checkConfigurableToolToggle(t, ctx, subs.toolRegistry, am, ct.Name, restartNames)
+		checkConfigurableToolToggle(t, ctx, subs.toolRegistry, am, ct, restartNames)
 	}
 
 	if !restartNames["smartsearch"] {
@@ -314,37 +314,58 @@ func TestApplyToolToggle_EveryConfigurableToolRegistersOrSaysRestart(t *testing.
 
 // checkConfigurableToolToggle applies one enable through the shared primitive
 // and asserts the outcome matches the registry + the pushed agent tool set:
-// either the tool is registered (and pushed), or the caller has explicit
-// restart wording — never a silent no-op.
-func checkConfigurableToolToggle(t *testing.T, ctx core.Context, reg *tools.ToolRegistry, am *core.AgentManager, name string, restartNames map[string]bool) {
+// either every member of the configurable entry is registered (and pushed), or
+// the caller has explicit restart wording — never a silent no-op. Family
+// entries (schedule, session) register their member tools; the family name
+// itself is never a registry key.
+func checkConfigurableToolToggle(t *testing.T, ctx core.Context, reg *tools.ToolRegistry, am *core.AgentManager, ct tools.ConfigurableTool, restartNames map[string]bool) {
 	t.Helper()
-	outcome, err := commands.ApplyToolToggle(ctx, name, true)
+	outcome, err := commands.ApplyToolToggle(ctx, ct.Name, true)
 	if err != nil {
-		t.Errorf("ApplyToolToggle(%s, true): %v", name, err)
+		t.Errorf("ApplyToolToggle(%s, true): %v", ct.Name, err)
 		return
 	}
-	registered, isRegistered := reg.Get(name)
 	if outcome == commands.ToolToggleRestartRequired {
-		restartNames[name] = true
-		if isRegistered {
-			t.Errorf("%s: reported restart required but IS registered", name)
-		}
-		// The caller must have a message that says so — a restart-required
-		// outcome without wording would be the silent no-op again.
-		if msg := commands.ToolToggleMessage(name, true, outcome); !strings.Contains(strings.ToLower(msg), "restart") {
-			t.Errorf("%s: restart-required outcome renders as %q (no restart claim)", name, msg)
-		}
+		checkRestartRequiredToggle(t, reg, ct, restartNames, outcome)
 		return
 	}
-	if !isRegistered {
-		t.Errorf("%s: reported success but is not registered (silent no-op)", name)
-		return
+	checkSuccessfulToggle(t, reg, am, ct)
+}
+
+// checkRestartRequiredToggle asserts a restart-required outcome: no member is
+// registered and the caller has explicit restart wording — a restart-required
+// outcome without wording would be the silent no-op again.
+func checkRestartRequiredToggle(t *testing.T, reg *tools.ToolRegistry, ct tools.ConfigurableTool, restartNames map[string]bool, outcome commands.ToolToggleOutcome) {
+	t.Helper()
+	restartNames[ct.Name] = true
+	for _, member := range ct.MembersOrSelf() {
+		if _, isRegistered := reg.Get(member); isRegistered {
+			t.Errorf("%s: reported restart required but member %s IS registered", ct.Name, member)
+		}
 	}
-	if got := registered.Schema().Name; got != name {
-		t.Errorf("%s: registered tool has schema name %q", name, got)
+	if msg := commands.ToolToggleMessage(ct.Name, true, outcome); !strings.Contains(strings.ToLower(msg), "restart") {
+		t.Errorf("%s: restart-required outcome renders as %q (no restart claim)", ct.Name, msg)
 	}
-	if !toolNamesContain(agentToolNamesOf(am), name) {
-		t.Errorf("%s: registered but not pushed to the running agent", name)
+}
+
+// checkSuccessfulToggle asserts every member of the configurable entry is
+// registered under its own name and pushed to the running agent — a family
+// name itself is never a registry key.
+func checkSuccessfulToggle(t *testing.T, reg *tools.ToolRegistry, am *core.AgentManager, ct tools.ConfigurableTool) {
+	t.Helper()
+	pushed := agentToolNamesOf(am)
+	for _, member := range ct.MembersOrSelf() {
+		registered, isRegistered := reg.Get(member)
+		if !isRegistered {
+			t.Errorf("%s: reported success but member %s is not registered (silent no-op)", ct.Name, member)
+			continue
+		}
+		if got := registered.Schema().Name; got != member {
+			t.Errorf("%s: member %s registered with schema name %q", ct.Name, member, got)
+		}
+		if !toolNamesContain(pushed, member) {
+			t.Errorf("%s: member %s registered but not pushed to the running agent", ct.Name, member)
+		}
 	}
 }
 

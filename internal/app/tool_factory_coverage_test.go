@@ -78,19 +78,24 @@ func TestMakeToolFactory_BuildsEveryConfigurableTool(t *testing.T) {
 	factory := makeToolFactory(subs)
 
 	for _, ct := range tools.ConfigurableTools() {
-		tool, ok := factory(ct.Name)
-		if !ok {
-			if !restartOnlyTools[ct.Name] {
-				t.Errorf("factory cannot build %q and it is not documented as restart-only: enabling it at runtime would silently do nothing", ct.Name)
+		// Family entries are gated names, not tools: the factory builds each
+		// MEMBER (and the coverage must hold for every member) — the family
+		// lifecycle calls the factory per member (bugs.md B51).
+		for _, name := range ct.MembersOrSelf() {
+			tool, ok := factory(name)
+			if !ok {
+				if !restartOnlyTools[ct.Name] {
+					t.Errorf("factory cannot build %q and it is not documented as restart-only: enabling it at runtime would silently do nothing", name)
+				}
+				continue
 			}
-			continue
-		}
-		if tool == nil {
-			t.Errorf("factory reported success for %q but returned a nil tool", ct.Name)
-			continue
-		}
-		if got := tool.Schema().Name; got != ct.Name {
-			t.Errorf("factory(%q) built a tool whose schema name is %q", ct.Name, got)
+			if tool == nil {
+				t.Errorf("factory reported success for %q but returned a nil tool", name)
+				continue
+			}
+			if got := tool.Schema().Name; got != name {
+				t.Errorf("factory(%q) built a tool whose schema name is %q", name, got)
+			}
 		}
 	}
 

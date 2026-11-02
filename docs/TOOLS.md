@@ -326,6 +326,30 @@ stays registered and executable once loaded.
 }
 ```
 
+### `run_code` — Python program with multi-tool dispatch (code-mode)
+
+Executes a Python program that can call other tools from inside the code
+(`dispatch("tool_name", {"param": ...})`), sharing the same guarded
+permission/jail path as direct calls. Best for looping over candidates,
+fan-out/fan-in patterns, and parsing intermediate results without shipping
+each step through the model. Like `python`, it runs in the embedded gpython
+interpreter.
+
+**Deferred:** loads on demand via `tool_search select:run_code`.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `code` | string | Python program; use `dispatch(tool, args)` for sub-calls (required) |
+| `timeout` | number | Timeout in seconds (default: 60, max: 300) |
+
+**Example:**
+```json
+{
+  "code": "for i in range(3):\n    r = dispatch('search', {'pattern': f'v{i}', 'glob': '*.go'})\n    print(len(r))"
+}
+```
+
 ### `ssh_bash` — Execute commands on remote hosts
 
 Runs shell commands on SSH hosts using the system `ssh` binary.
@@ -389,19 +413,20 @@ are injected into the system prompt.
 }
 ```
 
-### `goa_command` — Execute Goa commands from LLM
+### `goa` — Execute Goa slash commands from the model
 
-Allows the LLM to invoke Goa commands programmatically.
+Runs any Goa slash command (e.g. `/help`, `/mode`, `/model`, `/config`,
+`/skills`) programmatically, as if the user had typed it.
 
 **Parameters:**
 | Field | Type | Description |
 |-------|------|-------------|
-| `command` | string | Command string (e.g., `mode confirm`) (required) |
+| `command_string` | string | Full command string, e.g. `/mode confirm` (required) |
 
 **Example:**
 ```json
 {
-  "command": "mode confirm"
+  "command_string": "/mode confirm"
 }
 ```
 
@@ -489,12 +514,14 @@ current task into visible steps; use goals for autonomous multi-turn work.
 Enabled via `tools.enabled.todo_list` (default on); toggle at runtime with
 `/tools:todo_list:on|off`.
 
-### `terminal` — Sandboxed shell execution
+### `terminals` — Sandboxed shell execution
 
 Executes shell commands in a hardened sandbox environment with process group
 isolation, credential stripping, and a command-position blocklist. Unlike
-the `bash` tool, `terminal` runs in a per-session sandbox directory with
-repointed HOME/TMPDIR and stricter security defaults.
+the `bash` tool, `terminals` runs in a per-session sandbox directory with
+repointed HOME/TMPDIR and stricter security defaults. Sessions persist
+across calls (stateful shell), so `cd`, exports and background jobs survive
+between invocations.
 
 **Parameters:**
 | Field | Type | Description |
@@ -508,7 +535,7 @@ repointed HOME/TMPDIR and stricter security defaults.
 - Credential stripping from child environment
 - Process group isolation and timeout enforcement
 
-### `read_media` — Read media files for multimodal models
+### `read_media_file` — Read media files for multimodal models
 
 Reads image and video files and returns base64-encoded content for vision-
 and multimodal-capable models. Only available when the active model supports
@@ -646,15 +673,158 @@ loads on demand via `tool_search select:mcp`.
 **Actions:** `list_servers`, `list_tools`, `call_tool`, `list_resources`,
 `read_resource`, `list_prompts`, `get_prompt`, `config_add`, `shutdown`.
 
-**Self-service connect:** `config_add` upserts a stdio (`command`/`argv`)
-or remote (`url`, optional `transport`/`headers`) server into the agent-mcp
-config without manual editing — the result names the next step (verify with
-`list_tools`, then `call_tool`). The daemon picks up the new entry on its
-next client call; no restart.
+**Autonomous connect-and-use workflow (no user, no restart):**
+1. **Connect** — `config_add` upserts a stdio (`command`/`argv`) or remote
+   (`url`, optional `transport`/`headers`) server into the agent-mcp config
+   by name, e.g. `{"action":"config_add","name":"docs","command":"npx",
+   "argv":["-y","@modelcontextprotocol/server-docs"]}`. The result names the
+   next step.
+2. **Discover** — `list_servers` answers from the config; `list_tools` with
+   `server` lists what the server offers (paginated via `cursor`; `search`
+   filters by name/description).
+3. **Use** — `call_tool` (`server`, `tool`, `args` object) invokes a tool;
+   `read_resource` (`server`, `uri`) reads a resource; `get_prompt`
+   (`server`, `prompt`, `args`) renders a prompt template.
+
+The first daemon-backed call auto-starts the daemon; it picks up new config
+entries on its next client call. `/docs mcp` has the full action reference.
 
 **Errors:** `invalid_params`, `mcp_error` (unreachable server, tool-reported
 failures), `internal_error`. Unknown server/tool names are parameter
 mistakes — run `list_servers` / `list_tools` first.
+
+### `tool_search` — Search and load deferred tools
+
+The deferred-tool loader: heavyweight/opt-in tool schemas are withheld from
+the per-request prompt and replaced by a compact name-only catalog embedded
+in `tool_search`'s own description. Call it to discover deferred tools and
+pull their full schemas into context before the first call.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `query` | string | Tool name or keyword. `select:webfetch,memento` loads exact tools; plain keywords match names/descriptions (discovery only) (required) |
+
+Loaded schemas stay available for the rest of the session. A call to a
+deferred tool that has not been loaded yet returns a redirect to
+`tool_search select:<name>` rather than failing.
+
+### `run_skill` — Execute a skill
+
+Runs a loaded skill with a task. Available skills are listed in the system
+prompt with their category — read knowledge skills via `/skills <name>`
+(or the `read` tool) and act on them; action skills are executed through
+this tool.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `skill_name` | string | Name of the skill to execute (required) |
+| `task` | string | Task description for the skill to accomplish (can be null for knowledge skills) |
+
+### `goal` — Autonomous goal lifecycle
+
+Single-action-parameter tool that manages autonomous goals: one ACTIVE goal
+pursued across turns plus an ordered queue. The framework surfaces the
+active goal every turn and auto-starts the next queued goal on completion;
+the stall watchdog challenges turns without measurable progress.
+
+**Actions:** `create`, `update` (`active`/`complete`/`paused`/`blocked`),
+`get`, `list`, `cancel`, `reorder`, `postpone`, `promote`, `set_budget`,
+`add_todo`, `update_todo`.
+
+**Key parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | string | The goal operation (required) |
+| `objective` | string | create: what to achieve |
+| `completionCriterion` | string | create: verifiable end state — completion is enforced against it |
+| `verifyCommand` | string | create: shell check run after completion; exit 0 = pass |
+| `todos` / `add_todo` | — | Ordered sub-tasks linked to the goal (`todoTitle`, `todoId`, `todoStatus`) |
+| `goalId` | string | Target goal: id, name, `current` (active), `all` |
+
+`tools.enabled.goal` gates ONLY autonomous `create`; every other action
+works whenever a goal exists. See `goa://GOALS` for the full lifecycle.
+
+### `delegate_to` — Delegate a task to a sub-agent
+
+Hands a task to a specific agent-driven role (coder, companion, planner)
+when companion/orchestrator mode is enabled (`/companion:on`). Each
+delegation gets a per-role id (`dlg-<role>-<NN>`) for attribution.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `agent` | string | Role to delegate to: `coder` \| `companion` \| `planner` (required) |
+| `task` | string | Task description for the sub-agent (required) |
+
+### `request_review` — Request a companion code review
+
+Sends code or an implementation to the companion agent for review in the
+background; the review stream is attributable to its delegation id.
+Requires agent-driven companion mode.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `content` | string | The code or implementation to review (required) |
+
+### `schedule_create` — Create a session reminder
+
+Creates one persistent reminder delivered on the next turn after its target
+passes (session-local: survives across turns, not across sessions).
+Supply a non-empty `prompt` and EXACTLY ONE selector.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `prompt` | string | Reminder content presented when due (required) |
+| `after_seconds` | integer | One-shot delay in seconds |
+| `at` | string | Absolute target: strict RFC 3339 instant, or local date/time object with explicit IANA `time_zone` |
+| `every_seconds` | integer | Fixed-rate recurrence interval (creation-aligned, skips missed occurrences) |
+
+### `schedule_delete` — Delete a session reminder
+
+Deletes one active reminder by the exact id returned by `schedule_create`
+or `schedule_list`. Unknown or already-finished ids return `deleted: false`
+instead of an error.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Exact session-local schedule id (required) |
+
+### `schedule_list` — List session reminders
+
+Lists every active reminder in the current session in creation order, with
+its exact id, UTC target, scheduled/overdue state, and delivery mode. Takes
+no parameters.
+
+### `session_search` — Search prior sessions
+
+Full-text search over persisted sessions. Returns the strongest matching
+event per session with a snippet and the event's sequence number for
+`session_event_read`. Read-only: never modifies sessions.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `query` | string | Full-text query, case-insensitive, all terms must match (required) |
+| `session_ids` | string[] | Optional session ids to restrict the search to |
+| `max_results` | integer | Maximum sessions to return (default 10, hard cap 50) |
+
+### `session_event_read` — Read one session event
+
+Reads one full event plus optional neighboring event summaries from a
+session. Omit `session_id` to read the current session. Read-only.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `seq` | integer | Target event sequence number (1-based line in the session file) (required) |
+| `session_id` | string | Target session id; omit for the current session |
+| `before` | integer | Preceding raw events to summarize (default 0, max 20) |
+| `after` | integer | Following raw events to summarize (default 0, max 20) |
 
 ### `agent` — Spawn a sub-agent
 
