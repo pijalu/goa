@@ -94,15 +94,23 @@ func (r *MDStreamRenderer) renderTable(header []string, separator []string, rows
 	}
 
 	numCols := tableColCount(header, rows)
+	// Effective geometry width: the session pin (B53) keeps table columns
+	// stable across terminal width changes; fall back to the render width.
+	eff := r.width
+	if r.tablePin != nil {
+		if pin := r.tablePin.pinnedWidth(); pin > 0 && pin < eff {
+			eff = pin
+		}
+	}
 	borderOverhead := 3*numCols + 1
-	availableForCells := r.width - borderOverhead
+	availableForCells := eff - borderOverhead
 	if availableForCells < numCols {
 		return r.renderTableFallback(header, rows)
 	}
 
 	naturalWidths, minWordWidths := tableNaturalWidths(header, rows, numCols)
 	minColumnWidths := tableMinWidths(minWordWidths, numCols, availableForCells)
-	columnWidths := tableFinalWidths(naturalWidths, minColumnWidths, numCols, borderOverhead, availableForCells, r.width)
+	columnWidths := tableFinalWidths(naturalWidths, minColumnWidths, numCols, borderOverhead, availableForCells, eff)
 
 	dim := ansi.Faint
 	bold := ansi.Bold

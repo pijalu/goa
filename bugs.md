@@ -108,6 +108,27 @@ Plan:
    a long streamed table (scroll up: no mixed widths), touched suites +
    gates separately. Archive, close, commit.
 
+**Resolution (Option A, implemented).** Session-pinned table geometry:
+`sessionTablePin` (tui/markdown_table_session.go) tracks the narrowest
+transcript content width observed this session; `MDStreamRenderer.tablePin`
+consults it in `renderTable`, so column widths are computed at that pinned
+width and a repaint at any later (wider) width is byte-identical. Prose
+reflow untouched; only table geometry is pinned. Wired for transcript
+message renderers (assistantMessage incremental renderer + agentMessage);
+panels/widgets keep unpinned renderers (ephemeral, fully repainted).
+Tests: `tui/markdown_table_pin_test.go` (RED→GREEN: repaint identity at
+W1→W2, mid-stream width change homogeneous + pinned, policy unit) and
+`internal/app/b53_table_resize_test.go` (filmstrip: 30-row table streamed
+at 72, real mid-table resize to 140, every frame — before and after —
+paints the same pinned geometry; verified to FAIL with the pin wiring
+disabled).
+Known trade-off (inherent to immutable native scrollback): after a terminal
+SHRINK the session min drops, so tables painted afterwards use the new,
+narrower pin while rows already in scrollback keep the older geometry.
+Within any single paint and across grows/repaints the geometry is stable;
+full shrink-consistency remains Option B (transcript re-emit) if ever
+needed in practice.
+
 ### B54 — internal/filefind completion test is flaky under full-suite load
 
 **Observed behavior.** Under the full `go test -count=1 -race -cover ./...`

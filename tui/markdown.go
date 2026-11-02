@@ -22,6 +22,11 @@ import (
 type MDStreamRenderer struct {
 	width int
 	theme *Theme
+
+	// tablePin, when set, pins table geometry to a session-stable width
+	// (bugs.md B53 Option A) so repaints at other terminal widths keep table
+	// rows byte-identical. Nil = use width (no pinning).
+	tablePin tableWidthPolicy
 }
 
 // NewMDStreamRenderer creates a new markdown renderer.

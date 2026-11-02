@@ -136,10 +136,14 @@ func (m *assistantMessage) renderFrame(width int) []string {
 	// Render at width-2, then prepend " " (left) and padToWidth fills to width
 	// (1 right space via padToWidth since " " + wrapped = width-1).
 	contentW := width - 2
+	// B53: track the session's narrowest transcript width; tables pin their
+	// geometry to it so scrollback rows stay consistent across resizes.
+	theSessionTablePin.observe(contentW)
 	// Use the persistent incremental renderer so a growing streamed message
 	// only re-parses the open tail; recreate it if the width changed.
 	if m.incr == nil || m.incrWidth != contentW {
 		m.incr = NewIncrementalMDRenderer(contentW, TheTheme)
+		m.incr.r.tablePin = &theSessionTablePin
 		m.incrWidth = contentW
 	}
 	rendered := m.incr.Render(m.text)
@@ -206,6 +210,9 @@ func (m *agentMessage) Render(width int) []string {
 		prefix = ""
 	}
 	renderer := NewMDStreamRenderer(contentW, TheTheme)
+	// B53: same session table pin as assistant messages.
+	theSessionTablePin.observe(contentW)
+	renderer.tablePin = &theSessionTablePin
 	rendered := renderer.Render(m.text)
 	var lines []string
 	for _, line := range rendered {
