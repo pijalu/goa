@@ -28,37 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-### B55 — new-install defaults: mcp tool on, smartsearch off
-
-**Observed behavior.** New-install tool defaults need verification after
-B46/B51 reshaped the toggle surfaces: the `mcp` bridge tool must ship
-enabled ("on") on a fresh install (its default-ON with opt-out promise,
-`tools.enabled.mcp`), while `smartsearch` must not be registered by
-default ("off") — the default set stays the agreed minimum
-(bash/edit/write/read, goals, todos, webfetch, mcp).
-
-**Expected behavior.** A fresh install (no home/project config) registers
-`mcp` and does not register `smartsearch`; the embedded default.yaml,
-Default flags and the default-mirror pinning test all agree; `/config` →
-Tools shows mcp on and smartsearch absent/off.
-
-**Fix and validation plan.**
-1. Ground truth (verified 2026-11-02): tools/registry.go:240 `mcp` Default:
-   true, :237 `smartsearch` Default: false; config/configs/default.yaml:352
-   `mcp: true`; config/defaults_test.go:144 pins smartsearch off; the mirror
-   test (config/tools_default_mirror_test.go) handles smartsearch via its
-   own `tools.smartsearch.enabled` gate. What is NOT pinned end-to-end: a
-   fresh-sandboxed-home boot registering mcp and NOT registering
-   smartsearch.
-2. Add the fresh-install pinning test (sandboxed HOME, no project config):
-   assert the registered tool set contains mcp, excludes smartsearch; keep
-   the existing yaml/Default/mirror pins green.
-3. If any layer drifts, fix that layer (default.yaml pin + Default flag);
-   expected outcome: no production change.
-4. Validate: the new app-boot test, touched config/app suites, then vet,
-   staticcheck, gocognit, gocyclo, race suite separately. Archive, close,
-   commit.
-
 ### B56 — toggle menu values must not rerender the whole screen
 
 **Observed behavior.** In the tool config menu (and every other
