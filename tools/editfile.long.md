@@ -50,6 +50,24 @@ Batch edits (preferred when making several changes to the same file):
   Never assume line numbers in a later edit account for an earlier edit's
   inserted or deleted lines.
 
+Multi-file batch (one call edits many files — bugs.md B40):
+  {"files": [{"path": "a.go", "edits": [{"old_string": "old", "new_string": "new"}]},
+             {"path": "b.go", "edits": [{"old_string": "old", "new_string": "new"}]}]}
+  {"glob": "internal/foo/*.go", "edits": [{"old_string": "OldSym", "new_string": "NewSym"}]}
+  'files' lists explicit per-file targets; 'glob' applies the top-level 'edits'
+  to every matching regular file (shell patterns '*' '?' '[..]', project-root
+  relative, sorted; '**' is NOT supported — list paths explicitly for deeper
+  scope). Zero glob matches fail loudly (glob_no_match): a batch that would
+  touch nothing never reports success. Semantics per file mirror the single-file
+  batch (in order, atomic); ACROSS files the call is all-or-nothing: every file
+  is applied in memory first, and only if ALL succeed is anything written. A
+  non-matching pattern in any file is a hard failure naming that file — never a
+  silent skip — and the error lists a per-path result (ok / fail / skip). The
+  stale_line_numbers guard applies per file. Success reports one result block
+  (summary + diff) per file. Duplicate paths apply once and are reported as
+  skips. 'files', 'glob', 'path' and the single-file 'edits' batch are mutually
+  exclusive; nesting multi-file forms inside edit entries is rejected.
+
 Legacy operations: replace_lines, replace_pattern, insert_after, insert_before, delete_lines
 Indent modes: as-is (default for insert_after/insert_before/replace_lines), preserve, normalize
   By default caller content lands byte-for-byte: padding an insertion to the target

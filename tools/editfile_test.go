@@ -22,11 +22,14 @@ func TestEditFileTool_Schema_HasRequiredFields(t *testing.T) {
 		t.Fatal("schema.Schema should not be nil")
 	}
 	props := schema.Schema["properties"].(map[string]any)
-	for _, field := range []string{"path", "old_string", "new_string", "operation", "start_line", "end_line", "pattern", "new_content", "indent_mode"} {
+	for _, field := range []string{"path", "files", "glob", "old_string", "new_string", "operation", "start_line", "end_line", "pattern", "new_content", "indent_mode"} {
 		if _, ok := props[field]; !ok {
 			t.Errorf("schema missing required field: %s", field)
 		}
 	}
+	// 'path' is no longer globally required: the multi-file forms (files/glob,
+	// bugs.md B40) carry their targets per-entry or via expansion. Exactly one
+	// top-level form is enforced at execution time (resolveBatchForm).
 	reqFields := make(map[string]bool)
 	switch req := schema.Schema["required"].(type) {
 	case []string:
@@ -38,10 +41,8 @@ func TestEditFileTool_Schema_HasRequiredFields(t *testing.T) {
 			reqFields[r.(string)] = true
 		}
 	}
-	for _, field := range []string{"path"} {
-		if !reqFields[field] {
-			t.Errorf("schema required missing field: %s", field)
-		}
+	if reqFields["path"] {
+		t.Errorf("schema must not globally require 'path': the multi-file forms omit it")
 	}
 }
 

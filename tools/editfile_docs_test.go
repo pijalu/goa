@@ -34,6 +34,11 @@ func TestEditFileTool_DocsDocumentBehaviorChanges(t *testing.T) {
 		{"F6 literal replacement", `"$1"-style group references are NOT expanded`},
 		{"F6 preserves prefix/suffix", "prefix and suffix"},
 		{"F6 invalid regex literal", "literal string"},
+		{"B40 files form", "Multi-file batch"},
+		{"B40 glob scope", "'glob' applies the top-level 'edits'"},
+		{"B40 no silent skip", "never a\n  silent skip"},
+		{"B40 glob no match", "glob_no_match"},
+		{"B40 cross-file atomicity", "only if ALL succeed is anything written"},
 	}
 	for _, c := range cases {
 		if !strings.Contains(long, c.text) {

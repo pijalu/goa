@@ -82,7 +82,7 @@ type EditFileTool struct {
 func (t *EditFileTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "edit",
-		Description: "Edit files by search/replace.",
+		Description: "Edit files: search/replace.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -104,15 +104,15 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"start_line": map[string]any{
 					"type":        "integer",
-					"description": "start line (1-indexed) for line ops",
+					"description": "start line (1-idx)",
 				},
 				"end_line": map[string]any{
 					"type":        "integer",
-					"description": "end line (1-indexed) for line ops",
+					"description": "end line (1-idx)",
 				},
 				"pattern": map[string]any{
 					"type":        "string",
-					"description": "regex for pattern-based ops (invalid regex is matched literally)",
+					"description": "regex for pattern ops (invalid regex is matched literally)",
 				},
 				"pattern_flags": map[string]any{
 					"type":        "string",
@@ -120,20 +120,20 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"occurrence": map[string]any{
 					"type":        "integer",
-					"description": "replace_pattern: Nth matching line to substitute (default: 1)",
+					"description": "Nth matching line (default 1)",
 				},
 				"new_content": map[string]any{
 					"type":        "string",
-					"description": "replacement content for line ops; \"\" is valid and inserts one empty line",
+					"description": "replacement content for line ops; \"\" is valid (one empty line)",
 				},
 				"indent_mode": map[string]any{
 					"type":        "string",
-					"description": "default: as-is for replace_lines/insert_after/insert_before, preserve otherwise",
+					"description": "as-is for replace_lines/insert_after/insert_before, preserve otherwise",
 					"enum":        []string{"preserve", "normalize", "as-is"},
 				},
 				"edits": map[string]any{
 					"type":        "array",
-					"description": "Batch of edits to the same file, applied in order, atomically (all or nothing); each element mirrors single-edit fields and sees earlier results. Line-addressed edits (replace_lines, delete_lines, insert_* with start_line) must not follow an edit that changes the line count: the whole batch is rejected with stale_line_numbers — split it into two calls and re-harvest line numbers in between.",
+					"description": "Batch to ONE file: in order, atomic; elements mirror single-edit fields. Line-addressed after line-count-changing edits = stale_line_numbers; split+re-harvest.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -151,20 +151,32 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 							"pattern":       map[string]any{"type": "string"},
 							"pattern_flags": map[string]any{"type": "string"},
 							"occurrence":    map[string]any{"type": "integer"},
-							"new_content": map[string]any{
-								"type":        "string",
-								"description": "replacement content; \"\" is valid (one empty line)",
-							},
+							"new_content":   map[string]any{"type": "string"},
 							"indent_mode": map[string]any{
-								"type":        "string",
-								"description": "as-is default for line/insert ops",
-								"enum":        []string{"preserve", "normalize", "as-is"},
+								"type": "string",
+								"enum": []string{"preserve", "normalize", "as-is"},
 							},
 						},
 					},
 				},
+				"files": map[string]any{
+					"type":        "array",
+					"description": "Multi-file: {path, edits} per element; all-or-nothing across files, per-path results. Exclusive with path/glob.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"path":  map[string]any{"type": "string"},
+							"edits": map[string]any{"type": "array"},
+						},
+						"required": []string{"path", "edits"},
+					},
+				},
+				"glob": map[string]any{
+					"type":        "string",
+					"description": "Glob scope (no '**'): top-level 'edits' apply to every match; zero matches hard-fail (glob_no_match).",
+				},
 			},
-			"required": []string{"path"},
+			"required": []string{},
 		},
 	}
 }
@@ -187,6 +199,11 @@ type editFileParams struct {
 	NewContent   string           `json:"new_content"`
 	IndentMode   string           `json:"indent_mode"`
 	Edits        []editFileParams `json:"edits"`
+	// Multi-file batch form (bugs.md B40): either explicit per-file targets
+	// or a glob scope sharing the top-level edits. Mutually exclusive with
+	// each other, with "path" and with the single-file "edits" batch.
+	Files []editFileTarget `json:"files"`
+	Glob  string           `json:"glob"`
 
 	// NewContentSet records whether the caller SENT "new_content", as opposed
 	// to sending it empty or omitting it. It is not serialized: the wire
@@ -239,6 +256,13 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 			HintText: "Ensure your input is valid JSON with the required fields.",
 		}
 	}
+	// Multi-file batch form (bugs.md B40) takes precedence over the
+	// single-file shapes: "files" targets or a "glob" scope, applied
+	// all-or-nothing across files with per-path results.
+	if out, isMulti, err := t.executeMultiFileForm(p); isMulti {
+		return out, err
+	}
+
 	// Models commonly nest "path" inside every edits[] element instead of
 	// repeating it top-level (session 1789212854, export
 	// goa-export-20260912-135102: two batches failed with missing_path while
@@ -366,7 +390,6 @@ func (t *EditFileTool) executeMulti(resolvedPath, originalPath string, p editFil
 		return "", err
 	}
 
-	lines := originalLines
 	// Pre-flight drift guard (Issue 2): absolute line numbers harvested before
 	// the batch go stale the moment an earlier entry changes the line count.
 	// Rejecting here — before the apply loop and the single write — keeps the
@@ -374,18 +397,11 @@ func (t *EditFileTool) executeMulti(resolvedPath, originalPath string, p editFil
 	if err := checkBatchLineDrift(p.Edits); err != nil {
 		return "", err
 	}
-	var matchTypes []MatchType
-	for i, e := range p.Edits {
-		newLines, mt, opErr := t.applySingleEdit(lines, e)
-		if opErr != nil {
-			// lines still holds the content at the point of failure; the
-			// wrapper uses it for the line-match diagnostic.
-			return "", t.wrapMultiEditError(opErr, p.Path, i, len(p.Edits), e, lines)
-		}
-		lines = newLines
-		if mt != "" {
-			matchTypes = append(matchTypes, mt)
-		}
+	lines, matchTypes, failIdx, applyErr := t.applyBatchToLines(originalLines, p.Edits)
+	if applyErr != nil {
+		// lines still holds the content at the point of failure; the
+		// wrapper uses it for the line-match diagnostic.
+		return "", t.wrapMultiEditError(applyErr, p.Path, failIdx, len(p.Edits), p.Edits[failIdx], lines)
 	}
 
 	// Preserve the file's trailing newline: splitLines drops the final empty
@@ -657,6 +673,27 @@ func (t *EditFileTool) Access(input string) ToolAccess {
 	if err := json.Unmarshal([]byte(input), &p); err != nil {
 		return ToolAccess{}
 	}
+	// Multi-file forms declare every target; a glob is expanded eagerly so
+	// concurrent reads/writes on the matched files serialize correctly. (The
+	// result only feeds the scheduler's conflict detection — expansion is a
+	// read-only scan.) A pattern that cannot expand keeps the pattern itself
+	// as the declared path.
+	if len(p.Files) > 0 || p.Glob != "" {
+		paths := make([]string, 0, len(p.Files))
+		for _, f := range p.Files {
+			if f.Path != "" {
+				paths = append(paths, f.Path)
+			}
+		}
+		if p.Glob != "" {
+			if expanded, err := t.expandEditGlobPattern(p.Glob); err == nil {
+				paths = append(paths, expanded...)
+			} else {
+				paths = append(paths, p.Glob)
+			}
+		}
+		return ToolAccess{WritePaths: paths}
+	}
 	path := p.Path
 	if path == "" {
 		path = batchEntryPath(p.Edits)
@@ -700,6 +737,8 @@ func (t *EditFileTool) Examples() []string {
 		`{"path": "auth.go", "old_string": "func oldName()", "new_string": "func newName()"}`,
 		`{"path": "src/main.go", "operation": "replace_lines", "start_line": 5, "end_line": 8, "new_content": "func main() {\n\tlog.Println(\"start\")\n}"}`,
 		`{"path": "src/main.go", "edits": [{"old_string": "import \"fmt\"", "new_string": "import (\n\t\"fmt\"\n\t\"log\"\n)"}, {"old_string": "fmt.Println(\"hi\")", "new_string": "log.Println(\"hi\")"}]}`,
+		`{"files": [{"path": "a.go", "edits": [{"old_string": "oldName", "new_string": "newName"}]}, {"path": "b.go", "edits": [{"old_string": "oldName", "new_string": "newName"}]}]}`,
+		`{"glob": "internal/foo/*.go", "edits": [{"old_string": "OldSymbol", "new_string": "NewSymbol"}]}`,
 	}
 }
 

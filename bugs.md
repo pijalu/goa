@@ -28,38 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-### B40 — Editing a file takes a shell/python3 detour for repeated small replacements
-
-**Observed behavior.** When a task needs several small, independent
-search/replace edits in one file (or the same replacement applied across a few
-files), the agent reaches for `python3 - <<'PY' ... PY` heredocs or `sed -i`
-instead of the `edit` tool. The workaround is slower, bypasses the tool's
-`not_found` / `occurrence` / stale-line diagnostics, silently no-ops when the
-pattern drifts by a whitespace character, and the host posts a warning that the
-file was modified outside the tool — so the transcript ends up with a mix of
-tracked and untracked file writes and an easy-to-miss silent failure.
-
-**Expected behavior.** Bulk and repeated edits stay inside one tool call: a
-single `edit` batch already applies many edits to the same file atomically and
-in order, and it reports per-edit failures instead of no-ops. The ergonomic gap
-is the multi-file case ("apply this replacement to every file in the list") and
-the "replace this symbol everywhere in the package" case, both of which
-currently degrade to a shell loop.
-
-**Fix and validation plan.**
-1. Reproduce the two shapes: (a) N edits in one file where one pattern has
-drifted whitespace, (b) the same replacement across M files.
-2. Add a batch/multi-file edit form (paths list + edits per path, or a glob
-   scope) that keeps today's all-or-nothing per-file semantics and reports a
-   per-path result.
-3. Make a non-matching pattern a hard, visible failure in every form rather than
-   a silent skip, and keep the stale-line guard for line-addressed edits.
-4. Validate with unit tests for mixed match/no-match batches and for partial
-   multi-file failure, then a real session that performs a multi-file rename
-   through the tool only (no shell fallback); run the touched suites and the
-   repository quality gates separately.
-
-
 ### B54 — internal/filefind completion test is flaky under full-suite load
 
 **Observed behavior.** Under the full `go test -count=1 -race -cover ./...`
@@ -89,6 +57,20 @@ explicitly when the rescue path is not reachable.
    flakes. Archive, close, commit.
 
 ## Closed
+
+Closed 2026-11-09 — B40, repeated small replacements across several files
+detoured through shell loops and python heredocs because the `edit` tool only
+batched edits for ONE file. The edit tool now takes a multi-file batch —
+`files: [{path, edits}]` for explicit targets or `glob` + top-level `edits`
+for package-wide scopes — applied all-or-nothing across files with per-path
+results: non-matching patterns hard-fail naming the file (never a silent
+skip), the stale-line guard applies per file, zero-match globs fail loudly,
+and success reports a summary plus diff per file. Renderer shows per-file diff
+sections; schema/docs updated and kept under the schema byte ceilings. Unit
+tests cover mixed match/no-match batches, partial multi-file failure,
+glob-no-match, dedupe and form conflicts; the race-enabled touched suites,
+vet, gocognit/gocyclo and staticcheck validate the fix. See
+[`docs/archive/b40-edit-multifile-batch.2026-11-09.md`](docs/archive/b40-edit-multifile-batch.2026-11-09.md).
 
 Closed 2026-11-08 — B50, the embedded skills allowlist default shipped
 `[telegram, thoughtfull]`, imposing the opinionated thoughtfull thinking
