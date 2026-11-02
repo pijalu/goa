@@ -59,39 +59,6 @@ drifted whitespace, (b) the same replacement across M files.
    through the tool only (no shell fallback); run the touched suites and the
    repository quality gates separately.
 
-### B52 — Review startup context size for efficiency
-
-**Observed behavior.** No current measurement exists of what the very
-first provider request actually carries: system prompt sections, eager
-tool schemas (vs deferred), skills catalog, embedded docs, project
-context files, mode overlays. Prior work (P1 deferred tool loading,
-docs/plans/context-usage-tool-skills-review.md) cut tool-schema weight,
-but the remaining startup budget has never been audited end to end, so
-waste (duplicate guidance, over-eager schemas, verbose sections) is
-invisible and grows silently with every feature.
-
-**Expected behavior.** A measured, reviewed startup context: a breakdown
-(bytes/tokens per component) of the first request, a list of the top
-reducers, and the cheap wins applied — without losing required behavior
-(deferred tools stay discoverable, skills stay visible, prompts stay
-embedded via `//go:embed`).
-
-**Fix and validation plan.**
-1. Instrument/measure: capture the actual first-request payload (system
-   prompt text, tool schema list with per-tool byte counts, skills
-   catalog, docs) — a debug dump command or test helper that prints the
-   breakdown.
-2. Review each component against its purpose; flag duplicates, stale
-   sections, and over-verbose text. Cross-check eager tool set against
-   the deferred marker set — anything eager that is rarely needed in the
-   first turn is a candidate for deferral.
-3. Apply the top reducers (rewording, deferral, catalog trimming) one at
-   a time with before/after byte counts.
-4. Validate: breakdown test pinning the budget (fail when startup
-   context grows beyond a threshold without an explicit update), full
-   gates separately, one real session confirming nothing lost (tools
-   discoverable, skills listed). Archive, close, commit.
-
 ### B53 — Markdown table rows repainted at different widths leave scrollback artifacts
 
 **Observed behavior.** When a markdown table is taller than the viewport

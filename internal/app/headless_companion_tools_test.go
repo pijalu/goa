@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,8 +24,9 @@ type toolCaptureProvider struct {
 	api   provider.Api
 	event []provider.AssistantMessageEvent
 
-	mu    sync.Mutex
-	tools []string
+	mu     sync.Mutex
+	tools  []string
+	prompt string
 }
 
 func (p *toolCaptureProvider) API() provider.Api { return p.api }
@@ -35,6 +37,7 @@ func (p *toolCaptureProvider) Stream(_ provider.Model, ctx provider.Context, _ p
 		for _, t := range ctx.Tools {
 			p.tools = append(p.tools, t.Name)
 		}
+		p.prompt = ctx.SystemPrompt
 	}
 	p.mu.Unlock()
 	result := provider.NewAssistantMessageEventStream(64)
@@ -58,6 +61,38 @@ func (p *toolCaptureProvider) advertised() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.tools...)
+}
+
+// systemPrompt returns the system prompt of the first streaming request.
+func (p *toolCaptureProvider) systemPrompt() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.prompt
+}
+
+// assertVisibleToModel pins that the model can reach the tool: its schema
+// ships with the request, or (P1 deferred loading) the tool is named in the
+// prompt's <deferred_tools> listing so tool_search can load it on demand.
+func assertVisibleToModel(t *testing.T, p *toolCaptureProvider, want ...string) {
+	t.Helper()
+	tools := p.advertised()
+	set := map[string]bool{}
+	for _, name := range tools {
+		set[name] = true
+	}
+	prompt := p.systemPrompt()
+	deferredStart := strings.Index(prompt, "<deferred_tools>")
+	deferredEnd := strings.Index(prompt, "</deferred_tools>")
+	deferredListing := ""
+	if deferredStart >= 0 && deferredEnd > deferredStart {
+		deferredListing = prompt[deferredStart:deferredEnd]
+	}
+	for _, w := range want {
+		if set[w] || strings.Contains(deferredListing, "- "+w+":") {
+			continue
+		}
+		t.Errorf("tool %q invisible to the model: neither advertised (%v) nor listed in <deferred_tools>", w, tools)
+	}
 }
 
 const companionSeedState = `{"mode_state":{"major":"coder","autonomy":"yolo"},` +
@@ -125,19 +160,6 @@ func directCfg(p *toolCaptureProvider) *config.Config {
 	}
 }
 
-func assertAdvertised(t *testing.T, tools []string, want ...string) {
-	t.Helper()
-	set := map[string]bool{}
-	for _, name := range tools {
-		set[name] = true
-	}
-	for _, w := range want {
-		if !set[w] {
-			t.Errorf("tool %q not advertised to the model (advertised=%v)", w, tools)
-		}
-	}
-}
-
 func assertNotAdvertised(t *testing.T, tools []string, unwanted ...string) {
 	t.Helper()
 	for _, name := range tools {
@@ -159,7 +181,8 @@ func TestHeadless_ConfigEnabledAdvertisesAgentDrivenTools(t *testing.T) {
 	cfg := directCfg(p)
 	cfg.Tools.Enabled.RequestReview = true
 	cfg.Tools.Enabled.DelegateTo = true
-	assertAdvertised(t, runHeadlessCapture(t, dir, p, cfg), "request_review", "delegate_to")
+	runHeadlessCapture(t, dir, p, cfg)
+	assertVisibleToModel(t, p, "request_review", "delegate_to")
 }
 
 // TestHeadless_CompanionOverridesStaleConfigFalse pins the precedence: a
@@ -169,7 +192,8 @@ func TestHeadless_ConfigEnabledAdvertisesAgentDrivenTools(t *testing.T) {
 func TestHeadless_CompanionOverridesStaleConfigFalse(t *testing.T) {
 	dir, p := setupCaptureProject(t, companionSeedState)
 	cfg := directCfg(p)
-	assertAdvertised(t, runHeadlessCapture(t, dir, p, cfg), "request_review", "delegate_to")
+	runHeadlessCapture(t, dir, p, cfg)
+	assertVisibleToModel(t, p, "request_review", "delegate_to")
 }
 
 // TestHeadless_NoCompanionRespectsConfigFalse pins the inverse: without

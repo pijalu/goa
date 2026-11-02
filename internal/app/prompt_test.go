@@ -696,10 +696,10 @@ func TestRenderDeferredToolsSection(t *testing.T) {
 
 // Below the activation threshold (or without a loader) nothing is advertised.
 func TestRenderDeferredToolsSection_InactiveDeferral(t *testing.T) {
+	// One deferred-eligible tool is below DeferralThreshold (2): no section.
 	small := []agentic.Tool{
 		&sectionLoaderProbe{},
 		&deferredSectionProbe{name: "alpha", desc: "d"},
-		&deferredSectionProbe{name: "bravo", desc: "d"},
 	}
 	if got := renderDeferredToolsSection(small); got != "" {
 		t.Errorf("deferral below threshold must render no section, got:\n%s", got)

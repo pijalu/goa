@@ -65,12 +65,24 @@ func deferralProbeTools() []Tool {
 		&probeEagerTool{name: "write"},
 		&probeLoader{},
 	}
-	// DeferralThreshold deferred tools (all named d0..d7) so the count is ≥
+	// DeferralThreshold deferred tools (d0..d{threshold-1}) so the count is ≥
 	// threshold.
 	for i := 0; i < DeferralThreshold; i++ {
-		tools = append(tools, &probeDeferredTool{name: "d" + string(rune('0'+i))})
+		tools = append(tools, &probeDeferredTool{name: fmt.Sprintf("d%d", i)})
 	}
 	return tools
+}
+
+// deferredProbeNames lists the deferred probe names deferralProbeTools
+// registers, in registry order (d0..d{threshold-1}). Tests index into this
+// instead of hardcoding names, so the suite stays valid if
+// DeferralThreshold changes.
+func deferredProbeNames() []string {
+	names := make([]string, DeferralThreshold)
+	for i := range names {
+		names[i] = fmt.Sprintf("d%d", i)
+	}
+	return names
 }
 
 // deferralProbeRegistry builds a registry from deferralProbeTools().
@@ -118,7 +130,7 @@ func TestDeferralPartitionEagerBlock(t *testing.T) {
 	reg := deferralProbeRegistry()
 	schemas := reg.Schemas()
 
-	// 2 eager + loader; the 8 deferred tools are withheld.
+	// 2 eager + loader; the deferred tools are withheld.
 	if len(schemas) != 3 {
 		t.Fatalf("partitioned view has %d schemas, want 3 (2 eager + loader); names=%v",
 			len(schemas), schemaNames(schemas))
@@ -140,7 +152,7 @@ func TestDeferralInactiveBelowThreshold(t *testing.T) {
 		&probeLoader{},
 	}
 	for i := 0; i < DeferralThreshold-1; i++ {
-		tools = append(tools, &probeDeferredTool{name: "d" + string(rune('0'+i))})
+		tools = append(tools, &probeDeferredTool{name: fmt.Sprintf("d%d", i)})
 	}
 	reg := NewToolRegistry(tools)
 	if len(reg.Schemas()) != len(tools) {
@@ -154,7 +166,7 @@ func TestDeferralInactiveBelowThreshold(t *testing.T) {
 func TestDeferralInactiveWithoutLoader(t *testing.T) {
 	tools := []Tool{}
 	for i := 0; i < DeferralThreshold; i++ {
-		tools = append(tools, &probeDeferredTool{name: "d" + string(rune('0'+i))})
+		tools = append(tools, &probeDeferredTool{name: fmt.Sprintf("d%d", i)})
 	}
 	reg := NewToolRegistry(tools)
 	if len(reg.Schemas()) != len(tools) {
@@ -171,9 +183,13 @@ func TestDeferralLoadAppendsTail(t *testing.T) {
 	reg := deferralProbeRegistry()
 	before := marshalSchemas(reg.Schemas())
 
-	loaded := reg.LoadDeferred([]string{"d3", "d0"})
+	// Load two deferred tools out of registry order; both exist regardless of
+	// the threshold value.
+	names := deferredProbeNames()
+	firstLoad, secondLoad := names[len(names)-1], names[0]
+	loaded := reg.LoadDeferred([]string{firstLoad, secondLoad})
 	if len(loaded) != 2 {
-		t.Fatalf("LoadDeferred returned %v, want [d3 d0]", loaded)
+		t.Fatalf("LoadDeferred returned %v, want [%s %s]", loaded, firstLoad, secondLoad)
 	}
 
 	after := reg.Schemas()
@@ -193,20 +209,21 @@ func TestDeferralLoadAppendsTail(t *testing.T) {
 		}
 		tailNames = append(tailNames, after[i].Name)
 	}
-	if tailNames[0] != "d3" || tailNames[1] != "d0" {
-		t.Errorf("tail order = %v, want [d3 d0] (load order)", tailNames)
+	if tailNames[0] != firstLoad || tailNames[1] != secondLoad {
+		t.Errorf("tail order = %v, want [%s %s] (load order)", tailNames, firstLoad, secondLoad)
 	}
 }
 
 // Loading the same tool twice is idempotent: no duplicate tail entry.
 func TestDeferralLoadIdempotent(t *testing.T) {
 	reg := deferralProbeRegistry()
-	reg.LoadDeferred([]string{"d1"})
-	second := reg.LoadDeferred([]string{"d1"})
+	name := deferredProbeNames()[1]
+	reg.LoadDeferred([]string{name})
+	second := reg.LoadDeferred([]string{name})
 	if len(second) != 0 {
-		t.Errorf("second load of d1 returned %v, want none", second)
+		t.Errorf("second load of %s returned %v, want none", name, second)
 	}
-	if len(reg.Schemas()) != 4 { // 2 eager + loader + d1
+	if len(reg.Schemas()) != 4 { // 2 eager + loader + one deferred
 		t.Errorf("after idempotent load: %d schemas, want 4", len(reg.Schemas()))
 	}
 }
@@ -229,9 +246,10 @@ func TestDeferralLoadIgnoresNonDeferred(t *testing.T) {
 // redirect hint; eager/unknown/loaded tools report false.
 func TestDeferralStatus(t *testing.T) {
 	reg := deferralProbeRegistry()
+	name := deferredProbeNames()[0]
 
-	if loader, unloaded := reg.DeferredStatus("d0"); !unloaded || loader != "tool_search" {
-		t.Errorf("DeferredStatus(d0) = (%q, %v), want (tool_search, true)", loader, unloaded)
+	if loader, unloaded := reg.DeferredStatus(name); !unloaded || loader != "tool_search" {
+		t.Errorf("DeferredStatus(%s) = (%q, %v), want (tool_search, true)", name, loader, unloaded)
 	}
 	if _, unloaded := reg.DeferredStatus("read"); unloaded {
 		t.Error("DeferredStatus(read) unloaded = true, want false (eager)")
@@ -240,9 +258,9 @@ func TestDeferralStatus(t *testing.T) {
 		t.Error("DeferredStatus(nope) unloaded = true, want false (unknown)")
 	}
 
-	reg.LoadDeferred([]string{"d0"})
-	if _, unloaded := reg.DeferredStatus("d0"); unloaded {
-		t.Error("DeferredStatus(d0) after load = unloaded, want false")
+	reg.LoadDeferred([]string{name})
+	if _, unloaded := reg.DeferredStatus(name); unloaded {
+		t.Errorf("DeferredStatus(%s) after load = unloaded, want false", name)
 	}
 }
 
@@ -277,24 +295,25 @@ func newDeferralProbeAgent(tools []Tool) *Agent {
 func TestAgentSetTools_PreservesDeferredLoadedTail(t *testing.T) {
 	agent := newDeferralProbeAgent(deferralProbeTools())
 
-	if _, unloaded := agent.reg.DeferredStatus("d0"); !unloaded {
-		t.Fatal("precondition: d0 should start deferred and unloaded")
+	first, last := deferredProbeNames()[0], deferredProbeNames()[len(deferredProbeNames())-1]
+	if _, unloaded := agent.reg.DeferredStatus(first); !unloaded {
+		t.Fatalf("precondition: %s should start deferred and unloaded", first)
 	}
-	if got := agent.reg.LoadDeferred([]string{"d0", "d5"}); !reflect.DeepEqual(got, []string{"d0", "d5"}) {
-		t.Fatalf("LoadDeferred = %v, want [d0 d5]", got)
+	if got := agent.reg.LoadDeferred([]string{first, last}); !reflect.DeepEqual(got, []string{first, last}) {
+		t.Fatalf("LoadDeferred = %v, want [%s %s]", got, first, last)
 	}
 	before := marshalSchemas(agent.reg.Schemas())
 
 	// The same set pushed at runtime (toggle, MCP reconnect, …).
 	agent.SetTools(deferralProbeTools())
 
-	for _, name := range []string{"d0", "d5"} {
+	for _, name := range []string{first, last} {
 		if _, unloaded := agent.reg.DeferredStatus(name); unloaded {
 			t.Errorf("DeferredStatus(%q) unloaded = true after SetTools; the loaded-tail was discarded", name)
 		}
 	}
-	if got := agent.reg.LoadedDeferred(); !reflect.DeepEqual(got, []string{"d0", "d5"}) {
-		t.Errorf("LoadedDeferred() = %v, want [d0 d5] (load order preserved)", got)
+	if got := agent.reg.LoadedDeferred(); !reflect.DeepEqual(got, []string{first, last}) {
+		t.Errorf("LoadedDeferred() = %v, want [%s %s] (load order preserved)", got, first, last)
 	}
 
 	// Cache stability: the request payload must be byte-identical across the
@@ -348,34 +367,37 @@ func TestAgentSetTools_NilRegistryTailSnapshotIsSafe(t *testing.T) {
 // A tool that was genuinely removed is not resurrected by the tail replay:
 // LoadDeferred skips names that are unknown or no longer deferred.
 func TestAgentSetTools_DoesNotResurrectRemovedTool(t *testing.T) {
+	removed := deferredProbeNames()[0]
+	replacement := "dz"
 	agent := newDeferralProbeAgent(deferralProbeTools())
-	agent.reg.LoadDeferred([]string{"d3"})
-	if _, unloaded := agent.reg.DeferredStatus("d3"); unloaded {
-		t.Fatal("precondition: d3 should be loaded")
+	agent.reg.LoadDeferred([]string{removed})
+	if _, unloaded := agent.reg.DeferredStatus(removed); unloaded {
+		t.Fatalf("precondition: %s should be loaded", removed)
 	}
 
-	// Drop d3, keep the deferred count at the threshold with d8.
+	// Drop the loaded tool, keep the deferred count at the threshold with a
+	// brand-new deferred tool.
 	next := deferralProbeTools()
 	for i, tool := range next {
-		if tool.Schema().Name == "d3" {
-			next[i] = &probeDeferredTool{name: "d8"}
+		if tool.Schema().Name == removed {
+			next[i] = &probeDeferredTool{name: replacement}
 		}
 	}
 	agent.SetTools(next)
 
-	if _, ok := agent.reg.Get("d3"); ok {
-		t.Error("d3 is still resolvable after being removed from the tool set")
+	if _, ok := agent.reg.Get(removed); ok {
+		t.Errorf("%s is still resolvable after being removed from the tool set", removed)
 	}
 	if got := agent.reg.LoadedDeferred(); len(got) != 0 {
-		t.Errorf("LoadedDeferred() = %v, want empty (d3 no longer exists)", got)
+		t.Errorf("LoadedDeferred() = %v, want empty (%s no longer exists)", got, removed)
 	}
 	for _, s := range agent.reg.Schemas() {
-		if s.Name == "d3" {
-			t.Error("removed tool d3 still ships a schema")
+		if s.Name == removed {
+			t.Errorf("removed tool %s still ships a schema", removed)
 		}
 	}
-	if _, unloaded := agent.reg.DeferredStatus("d8"); !unloaded {
-		t.Error("precondition: the new tool d8 should be deferred and unloaded")
+	if _, unloaded := agent.reg.DeferredStatus(replacement); !unloaded {
+		t.Errorf("precondition: the new tool %s should be deferred and unloaded", replacement)
 	}
 }
 

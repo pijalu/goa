@@ -13,7 +13,14 @@ import (
 // DeferralThreshold is the minimum number of deferred-eligible tools required
 // for deferral to activate. Below it, the indirection cost (the tool_search
 // loader + catalog) is not worth the bytes saved by withholding schemas.
-const DeferralThreshold = 8
+// 2 (was 8 until B52, 2026-08-26): the B46 minimal default tool set leaves
+// only mcp + webfetch deferred-eligible, so an 8-tool threshold kept deferral
+// permanently dormant and shipped both schemas eagerly on every request —
+// ~2.6KB of per-request payload the deferred design already meant to
+// withhold (the embedded default config even documents mcp as deferred).
+// At 2 the catalog overhead (~0.5KB, bounded by catalogBudget) is paid only
+// when at least two schemas are actually withheld.
+const DeferralThreshold = 2
 
 // PartitionDeferred splits a tool set into its deferred-tool loader name and
 // the alpha-sorted deferred-eligible tool names. It applies exactly the same

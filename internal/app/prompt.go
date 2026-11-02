@@ -39,64 +39,88 @@ import (
 // fraction of the model's context window, leaving room for tools and the
 // conversation. Context is expensive for every model, so the budget is kept as
 // small as possible regardless of how large the context window is.
-func buildSystemPrompt(subs *subsystems) string {
-	var parts []string
+type systemPromptSection struct {
+	name string // stable component id used by the startup-context breakdown
+	text string
+}
 
-	ctxWindow := modelContextWindow(subs)
-	budget := systemPromptBudget(ctxWindow)
+// buildSystemPromptSections returns the named system-prompt sections in
+// assembly order (pre-budget). buildSystemPrompt assembles them; the startup
+// context breakdown (startup_context.go) reports each component separately.
+func buildSystemPromptSections(subs *subsystems) []systemPromptSection {
+	var parts []systemPromptSection
+
+	add := func(name, text string) {
+		if text != "" {
+			parts = append(parts, systemPromptSection{name: name, text: text})
+		}
+	}
 
 	// 1. Mode system prompt (base) — read from agent runtime state, not config
-	if body := modeSystemPrompt(subs); body != "" {
-		parts = append(parts, body)
-	}
+	add("mode-prompt", modeSystemPrompt(subs))
 
 	// 1a. Tool usage principles — global guidance shared by all modes.
-	if toolUsage := buildToolUsageSection(); toolUsage != "" {
-		parts = append(parts, toolUsage)
-	}
+	add("tool-usage", buildToolUsageSection())
 
 	// 2. AGENTS.md context files
 	if len(subs.contextFiles) > 0 {
-		parts = append(parts, renderContextFiles(subs.contextFiles))
+		add("project-context", renderContextFiles(subs.contextFiles))
 	}
 
 	// 3. Long-term memory summaries — low priority because memories can be
 	// read on demand.
-	if memSection := buildMemorySection(subs); memSection != "" {
-		parts = append(parts, memSection)
-	}
+	add("memory", buildMemorySection(subs))
 
 	// 4. Available skills (all skills listed regardless of inline vs sub-agent)
-	if rendered := availableSkillsSection(subs); rendered != "" {
-		parts = append(parts, rendered)
-	}
+	add("skills-catalog", availableSkillsSection(subs))
 
 	// 5. Self-documentation links (single source of truth — generated from embedded docs)
-	if selfDoc := buildSelfDocSection(); selfDoc != "" {
-		parts = append(parts, selfDoc)
-	}
+	add("self-doc", buildSelfDocSection())
 
 	// 6. MCP server instructions — how to use each connected MCP server's
 	// tools (from the server handshake), mirroring OpenCode's
 	// <mcp_instructions> block.
-	if mcpSection := buildMCPInstructionsSection(subs); mcpSection != "" {
-		parts = append(parts, mcpSection)
-	}
+	add("mcp-instructions", buildMCPInstructionsSection(subs))
 
 	// 7. Deferred tools listing — name + short description for every tool the
 	// agent registry withholds behind tool_search, so the model knows these
 	// exist and can pull details/schemas on demand (bugs.md 2026-08-26).
 	// Appended LAST on purpose: applySystemPromptBudget drops trailing
 	// sections first, and this listing is the lowest-priority context.
-	if deferredSection := deferredToolsSection(subs); deferredSection != "" {
-		parts = append(parts, deferredSection)
-	}
+	add("deferred-tools", deferredToolsSection(subs))
 
-	prompt := strings.Join(parts, "\n\n")
-	if budget > 0 && len(prompt) > budget {
-		prompt = applySystemPromptBudget(parts, budget)
-	}
+	return parts
+}
+
+func buildSystemPrompt(subs *subsystems) string {
+	ctxWindow := modelContextWindow(subs)
+	budget := systemPromptBudget(ctxWindow)
+	prompt, _ := assembleSystemPrompt(buildSystemPromptSections(subs), budget)
 	return prompt
+}
+
+// assembleSystemPrompt joins the sections into the final prompt and applies
+// the context-window budget, returning the final prompt text plus the
+// surviving section texts in order (low-priority sections dropped or
+// truncated first — see applySystemPromptBudget).
+func assembleSystemPrompt(sections []systemPromptSection, budget int) (string, []string) {
+	texts := make([]string, len(sections))
+	for i, s := range sections {
+		texts[i] = s.text
+	}
+	prompt := strings.Join(texts, "\n\n")
+	if budget > 0 && len(prompt) > budget {
+		// Mirrors applySystemPromptBudget's drop-last-until-fit policy, tracked
+		// per section so the breakdown can report what was actually sent.
+		for len(texts) > 1 && len(strings.Join(texts, "\n\n")) > budget {
+			texts = texts[:len(texts)-1]
+		}
+		if len(texts) == 1 && len(texts[0]) > budget {
+			texts[0] = truncateToBudget(texts[0], budget)
+		}
+		prompt = strings.Join(texts, "\n\n")
+	}
+	return prompt, texts
 }
 
 // buildMCPInstructionsSection renders connected MCP servers' usage
