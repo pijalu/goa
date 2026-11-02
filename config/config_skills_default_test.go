@@ -12,9 +12,10 @@ import (
 
 // TestDefaultConfig_ShippedSkillsEnabledByDefault pins the shipped skill
 // policy: the embedded default config lists exactly the shipped-on sticky
-// knowledge skills (telegram, thoughtfull) in skills.enabled, so both apply
-// out of the box while every other embedded skill stays default-off (opt-in
-// via skills.embedded_enabled).
+// knowledge skill (telegram) in skills.enabled, so it applies out of the box
+// while every other embedded skill stays default-off (opt-in via
+// skills.embedded_enabled) — thoughtfull is deliberately opt-in (bugs.md
+// B50): opinionated thinking guidance must not be imposed on new installs.
 func TestDefaultConfig_ShippedSkillsEnabledByDefault(t *testing.T) {
 	yamlText, err := DefaultConfigYAML()
 	if err != nil {
@@ -24,7 +25,7 @@ func TestDefaultConfig_ShippedSkillsEnabledByDefault(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(yamlText), &cfg); err != nil {
 		t.Fatalf("unmarshal embedded default: %v", err)
 	}
-	wantEnabled := []string{"telegram", "thoughtfull"}
+	wantEnabled := []string{"telegram"}
 	if len(cfg.Skills.Enabled) != len(wantEnabled) {
 		t.Errorf("embedded default skills.enabled = %v, want %v", cfg.Skills.Enabled, wantEnabled)
 	}
@@ -46,7 +47,7 @@ func TestDefaultConfig_ShippedSkillsEnabledByDefault(t *testing.T) {
 }
 
 // TestCascade_SkillsEnabledFromDefaults verifies a defaults-only cascade
-// carries the shipped skills.enabled default (telegram, thoughtfull) AND the
+// carries the shipped skills.enabled default (telegram) AND the
 // default-provided provenance flag, so the registry wiring can apply it
 // embedded-scoped.
 func TestCascade_SkillsEnabledFromDefaults(t *testing.T) {
@@ -56,7 +57,7 @@ func TestCascade_SkillsEnabledFromDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	wantEnabled := []string{"telegram", "thoughtfull"}
+	wantEnabled := []string{"telegram"}
 	if len(cfg.Skills.Enabled) != len(wantEnabled) {
 		t.Errorf("shipped cascade skills.enabled = %v, want %v", cfg.Skills.Enabled, wantEnabled)
 	}
@@ -107,7 +108,7 @@ func TestCascade_HomeSkillsDisablePinsTelegramOff(t *testing.T) {
 	if len(cfg.Skills.Disabled) != 1 || cfg.Skills.Disabled[0] != "telegram" {
 		t.Errorf("home skills.disabled = %v, want [telegram]", cfg.Skills.Disabled)
 	}
-	wantEnabled := []string{"telegram", "thoughtfull"}
+	wantEnabled := []string{"telegram"}
 	if len(cfg.Skills.Enabled) != len(wantEnabled) {
 		t.Errorf("shipped default enabled list must survive, got %v", cfg.Skills.Enabled)
 	}

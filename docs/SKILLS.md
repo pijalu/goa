@@ -91,7 +91,7 @@ A `knowledge` skill is typically also `inline: true` (its body is submitted as a
 
 | Location | Priority | Description |
 |----------|----------|-------------|
-| Embedded (compiled-in) | Highest | Built-in skills (refactor, test-gen, document, review, explain, commit-msg, debug, telegram) |
+| Embedded (compiled-in) | Highest | Built-in skills (refactor, test-gen, document, review, explain, commit-msg, debug, telegram, thoughtfull) |
 | `~/.goa/skills/` | Medium | User/global skills |
 | `.goa/skills/` | Lowest | Project-specific skills |
 
@@ -109,6 +109,7 @@ Later sources override earlier ones when names collide.
 | `commit-msg` | Sub-agent | Action | Generate commit messages |
 | `debug` | Sub-agent | Action | Debug code issues |
 | `telegram` | Inline | Knowledge | Telegraphic thinking style |
+| `thoughtfull` | Inline | Knowledge | Thinking discipline — validate premises, commit to one approach, treat checked results as settled; opt-in (off by default, enable via `/config` → Skills → Embedded or `skills.embedded_enabled`) |
 
 ## Skill Registry
 

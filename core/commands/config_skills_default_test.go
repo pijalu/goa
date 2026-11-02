@@ -16,11 +16,11 @@ import (
 )
 
 // shippedDefaultSkillsCfg builds the in-memory skills config exactly as a
-// defaults-only cascade load produces it: the shipped [telegram thoughtfull]
-// list flagged as default-provided.
+// defaults-only cascade load produces it: the shipped [telegram] list
+// flagged as default-provided (thoughtfull is opt-in, bugs.md B50).
 func shippedDefaultSkillsCfg() *config.Config {
 	return &config.Config{Skills: config.SkillsConfig{
-		Enabled:             []string{"telegram", "thoughtfull"},
+		Enabled:             []string{"telegram"},
 		EnabledFromDefaults: true,
 	}}
 }
@@ -51,8 +51,8 @@ func TestSkillEnabledIn_DefaultProvidedAllowlistIsEmbeddedScoped(t *testing.T) {
 	if !skillEnabledIn(cfg, "telegram", "embedded", reg) {
 		t.Error("telegram must be on under the shipped default")
 	}
-	if !skillEnabledIn(cfg, "thoughtfull", "embedded", reg) {
-		t.Error("thoughtfull must be on under the shipped default")
+	if skillEnabledIn(cfg, "thoughtfull", "embedded", reg) {
+		t.Error("thoughtfull must stay opt-in (bugs.md B50), not shipped-on")
 	}
 	if skillEnabledIn(cfg, "refactor", "embedded", reg) {
 		t.Error("refactor must stay default-off")
@@ -187,8 +187,8 @@ func TestPersistSkillToggle_DefaultListNeverPinned(t *testing.T) {
 
 // TestConfigMenu_SkillsShippedDefaultsOn is the menu-level regression
 // for the shipped default: with a defaults-only cascade load, the Skills
-// sub-menu reports exactly the shipped-on skills (telegram, thoughtfull) on
-// and every other embedded skill off.
+// sub-menu reports exactly the shipped-on skill (telegram) on
+// and every other embedded skill (thoughtfull included) off.
 func TestConfigMenu_SkillsShippedDefaultsOn(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -217,7 +217,7 @@ func TestConfigMenu_SkillsShippedDefaultsOn(t *testing.T) {
 	sr.onSel("skills", true)
 
 	total := len(skills.EmbeddedSkillNames(skills.EmbeddedSkillsFS))
-	wantLabel := fmt.Sprintf("2/%d on", total)
+	wantLabel := fmt.Sprintf("1/%d on", total)
 	for _, item := range sr.options {
 		if item.Value == "embedded" && item.Description != wantLabel {
 			t.Errorf("embedded source description = %q, want %q", item.Description, wantLabel)
@@ -233,18 +233,18 @@ func TestConfigMenu_SkillsShippedDefaultsOn(t *testing.T) {
 }
 
 // assertShippedDefaultEmbedStates checks the per-skill states read in the
-// embedded sub-menu: only telegram and thoughtfull ship on, everything else
-// embedded reads off.
+// embedded sub-menu: only telegram ships on, everything else embedded
+// (thoughtfull included) reads off.
 func assertShippedDefaultEmbedStates(t *testing.T, seen map[string]string) {
 	t.Helper()
-	for _, name := range []string{"telegram", "thoughtfull"} {
+	for _, name := range []string{"telegram"} {
 		if seen[name] != "on" {
 			t.Errorf("%s must read on under the shipped default, got %q", name, seen[name])
 		}
 	}
 	for name, desc := range seen {
-		if name != "telegram" && name != "thoughtfull" && desc != "off" {
-			t.Errorf("embedded skill %s = %q, want off (only telegram and thoughtfull ship on)", name, desc)
+		if name != "telegram" && desc != "off" {
+			t.Errorf("embedded skill %s = %q, want off (only telegram ships on; thoughtfull is opt-in per bugs.md B50)", name, desc)
 		}
 	}
 }

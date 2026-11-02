@@ -225,8 +225,8 @@ func TestReloadSkills_PicksUpEmbeddedEnabled(t *testing.T) {
 
 // subsystemsWithShippedDefaultSkills builds subsystems over a defaults-only
 // cascade (isolated home) and pins the shipped skill policy as test
-// preconditions: skills.enabled [telegram thoughtfull] flagged
-// default-provided, both loaded, review (and every other embedded skill) off.
+// preconditions: skills.enabled [telegram] flagged default-provided,
+// loaded, thoughtfull and every other embedded skill off (bugs.md B50).
 func subsystemsWithShippedDefaultSkills(t *testing.T) *subsystems {
 	t.Helper()
 	home := t.TempDir()
@@ -248,7 +248,7 @@ func subsystemsWithShippedDefaultSkills(t *testing.T) *subsystems {
 	if len(cfg.Skills.EmbeddedEnabled) != 0 {
 		t.Fatalf("precondition: no embedded opt-ins, got %v", cfg.Skills.EmbeddedEnabled)
 	}
-	wantEnabled := []string{"telegram", "thoughtfull"}
+	wantEnabled := []string{"telegram"}
 	if !cfg.Skills.EnabledFromDefaults || len(cfg.Skills.Enabled) != len(wantEnabled) {
 		t.Fatalf("precondition: shipped default must carry skills.enabled %v (default-only), got %v", wantEnabled, cfg.Skills.Enabled)
 	}

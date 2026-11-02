@@ -59,31 +59,6 @@ drifted whitespace, (b) the same replacement across M files.
    through the tool only (no shell fallback); run the touched suites and the
    repository quality gates separately.
 
-### B50 — thoughtfull ships default-on; new installs should keep only telegram
-
-**Observed behavior.** The embedded skills allowlist default
-(`skills.enabled` in `config/configs/default.yaml`) ships
-`[telegram, thoughtfull]` — both sticky knowledge skills apply on a fresh
-install with no config edit. thoughtfull (thinking discipline) is opinionated
-workflow guidance that a default install should not impose.
-
-**Expected behavior.** The shipped default list keeps only `telegram`:
-thoughtfull becomes opt-in via `/config` → Skills → Embedded or
-`skills.embedded_enabled` (or an explicit `skills.enabled` pin). Existing
-home configs that pin `skills.enabled` are untouched; the default-provided
-gate semantics (default list applies embedded-scoped, explicit pins replace
-it) stay exactly as they are.
-
-**Fix and validation plan.**
-1. RED: update `config/config_skills_default_test.go` — embedded default
-   `skills.enabled` = `[telegram]` only, shipped-cascade assertion likewise.
-2. Flip the `skills.enabled` default in `config/configs/default.yaml` and
-   update its comment (telegram stays ON out of the box; thoughtfull opt-in).
-3. Documentation sweep: any doc claiming both skills ship on by default
-   (docs/SKILLS.md, embedded skill docs, skills tests) updated to match.
-4. Gates separately + full race suite; archive to docs/archive; close and
-   commit.
-
 ### B52 — Review startup context size for efficiency
 
 **Observed behavior.** No current measurement exists of what the very
@@ -195,6 +170,18 @@ explicitly when the rescue path is not reachable.
    flakes. Archive, close, commit.
 
 ## Closed
+
+Closed 2026-11-08 — B50, the embedded skills allowlist default shipped
+`[telegram, thoughtfull]`, imposing the opinionated thoughtfull thinking
+discipline on fresh installs. The shipped default is now `[telegram]` only
+(config/configs/default.yaml); thoughtfull is opt-in via `/config` → Skills
+→ Embedded or `skills.embedded_enabled`. Gate semantics unchanged: the
+default-provided list still applies embedded-scoped and explicit
+`skills.enabled` pins still replace it, so existing home configs are
+untouched. RED-then-green pinning tests in config, core/commands, and
+internal/app; docs/CONFIGURATION.md already carried the telegram-only
+allowlist and docs/SKILLS.md gained the missing opt-in thoughtfull row. See
+[`docs/archive/b50-thoughtfull-opt-in.2026-11-08.md`](docs/archive/b50-thoughtfull-opt-in.2026-11-08.md).
 
 Closed 2026-11-01 — B51, the agent-mcp `mcp` tool was invisible in /config
 and unseen by the agent (home pin `tools.enabled.mcp: false` had NO
