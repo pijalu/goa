@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -50,6 +51,24 @@ func newMCPFixtureServer(t *testing.T) (*mcp.Server, *mcp.InMemoryTransport) {
 		func(_ context.Context, _ *mcp.CallToolRequest, in mcpFixtureArgs) (*mcp.CallToolResult, any, error) {
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: in.Text}},
+			}, nil, nil
+		})
+	// doubled mirrors the shape spec-compliant servers send: the structured
+	// payload serialized as text plus the parsed structuredContent. The
+	// shaped payload the tool returns must carry the body once.
+	mcp.AddTool(server, &mcp.Tool{Name: "doubled", Description: "returns a mirrored structured payload"},
+		func(_ context.Context, _ *mcp.CallToolRequest, _ mcpFixtureArgs) (*mcp.CallToolResult, any, error) {
+			body := map[string]any{
+				"normalized_result": map[string]any{"pseudocode": strings.Repeat("ldr x0, [x1]; ", 700)},
+				"analysis_profile":  map[string]any{"provider": map[string]any{"id": "fixture"}},
+			}
+			raw, err := json.Marshal(body)
+			if err != nil {
+				return nil, nil, err
+			}
+			return &mcp.CallToolResult{
+				Content:           []mcp.Content{&mcp.TextContent{Text: string(raw)}},
+				StructuredContent: body,
 			}, nil, nil
 		})
 	server.AddResource(&mcp.Resource{URI: "mem://hello", Name: "hello"},
@@ -177,5 +196,46 @@ func TestAgentMCPLiveToolErrorClass(t *testing.T) {
 	var te *internal.ToolError
 	if !errors.As(err, &te) || te.Type != "mcp_error" {
 		t.Fatalf("error = %v, want mcp_error", err)
+	}
+}
+
+// TestAgentMCPLiveMirroredPayloadOnce is the byte-count assertion for the
+// doubled-payload bug: a server that mirrors its structured payload as text
+// content must reach the tool output once, in both the default and the raw
+// pass, with the raw pass keeping every structured field intact.
+func TestAgentMCPLiveMirroredPayloadOnce(t *testing.T) {
+	tool := newLiveAgentMCPTool(t)
+
+	out, err := tool.Execute(`{"action":"call_tool","server":"alpha","tool":"doubled","args":{"text":"x"}}`)
+	if err != nil {
+		t.Fatalf("call_tool doubled: %v", err)
+	}
+	// One copy is ~9.8 KB of pseudocode plus envelope; the pre-fix doubled
+	// output was ~2.0x the payload. Allow generous overhead but never two.
+	if got := len(out); got > 2*9800 {
+		t.Errorf("output is %d bytes; the mirrored copy survived", got)
+	}
+	if strings.Count(out, "ldr x0, [x1]") < 700 {
+		t.Errorf("output lost the structured payload body")
+	}
+	if strings.Count(out, `"structuredContent"`) != 1 {
+		t.Errorf("output carries the payload %d times, want once: %d bytes", strings.Count(out, `"structuredContent"`), len(out))
+	}
+	if strings.Contains(out, `"content"`) {
+		t.Errorf("output kept the mirrored content copy: %.200s", out)
+	}
+
+	rawOut, err := tool.Execute(`{"action":"call_tool","server":"alpha","tool":"doubled","args":{"text":"x"},"raw":true}`)
+	if err != nil {
+		t.Fatalf("call_tool doubled raw: %v", err)
+	}
+	if strings.Count(rawOut, "ldr x0, [x1]") < 700 {
+		t.Errorf("raw output lost the structured payload body")
+	}
+	if strings.Contains(rawOut, `"content"`) {
+		t.Errorf("raw output kept the mirrored content copy: %.200s", rawOut)
+	}
+	if !strings.Contains(rawOut, "analysis_profile") {
+		t.Errorf("raw output lost the server's own structured fields: %.200s", rawOut)
 	}
 }
