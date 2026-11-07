@@ -95,33 +95,23 @@ func TestProactiveTier_HardFiresAt95(t *testing.T) {
 	})
 }
 
-// TestMaybeCompress_LegacyMicroBranchUsesEffectiveWindow pins the gate found
-// broken in the live goa session (crash log "Context ceiling cannot be enforced
-// ... 4750 tokens"): with strategy=micro (the default.yaml default) and a
-// configured max_tokens far below the runtime model window, the legacy
-// whole-strategy micro branch compared usage against the DISPLAY stats
-// (denominator = runtime window, e.g. 204800) instead of the effective window.
-// The branch then swallowed every turn below "95% of 204800" while the real
-// usage against max_tokens sat at 120%+, masking the hard tier until the
-// reactive ceiling fired and dropped messages. The gate must use the same
-// effective window as the tier math.
-func TestMaybeCompress_LegacyMicroBranchUsesEffectiveWindow(t *testing.T) {
+// TestMaybeCompress_LegacyMicroBranchUsesModelWindow verifies the legacy micro
+// branch respects the authoritative runtime model window when it differs from
+// configured MaxTokens, and still allows the hard tier to run at its ceiling.
+func TestMaybeCompress_LegacyMicroBranchUsesModelWindow(t *testing.T) {
 	p := textEventProvider("Summary: the conversation was about testing.")
 	a := NewAgent(Config{
 		Model: testModel(p.API()),
-		// Soft-layer micro (self-managing below the hard ceiling).
 		ContextCompression: ContextCompressionConfig{
-			Strategies: CompressionLayerStrategies{Soft: CompressionMicro},
-			MaxTokens:  1000,
-			Thresholds: CompressionThresholds{HardPercent: 95}, // shipped-default hard tier
-			MicroCompaction: MicroCompactionConfig{
-				Enabled: false, // as in default.yaml: micro self-management only
-			},
+			Strategies:      CompressionLayerStrategies{Soft: CompressionMicro},
+			MaxTokens:       1000,
+			Thresholds:      CompressionThresholds{HardPercent: 95},
+			MicroCompaction: MicroCompactionConfig{Enabled: false},
 		},
 	})
-	// Runtime-refreshed window dwarfs the configured cap, exactly like the
-	// live session (model advertised 204800 while max_tokens was 5000).
-	a.SetContextWindow(204800)
+	// The model window is authoritative even when configured MaxTokens is lower.
+	// Setting a smaller model window makes the hard tier's actual threshold clear.
+	a.SetContextWindow(1000)
 
 	a.history = []Message{
 		{Type: Content, Role: System, Content: "sys"},

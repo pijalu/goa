@@ -27,3 +27,29 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
+
+## Goal verifier timeout may be lower than package suite runtime
+
+**Observed:** Goal `verifyCommand` for compression fix was `go test ./internal/agentic -count=1 -timeout 30s`. It reproducibly timed out during unrelated package tests, while identical suite passed with a 120s timeout. User authorized model to update verifier timeout, maximum 600 seconds; goal metadata did not expose an update action, and repeated completion attempts reran unchanged 30s command.
+
+**Expected:** Model can update an existing active goal’s `verifyCommand` timeout within user-authorized bounds, preserving command and scope; completion verifier then uses the updated value.
+
+**Fix plan:** Add supported goal-update operation or allow `verifyCommand` replacement via existing goal update. Validate timeout bounds (user maximum 600s), update only verifier command, and confirm verifier executes the updated command. Avoid altering or skipping unrelated tests to fit too-short timeout.
+
+## Compression limit precedence and hard-tier/status mismatch — fixed
+
+**Root cause:** Compression limit resolver preferred configured `MaxTokens` over known model capacity; status-bar independently displayed model capacity. Hard-tier gates correctly used conservative estimated usage, but status-bar percentage and some logs used projected occupancy, obscuring the hard-tier decision.
+
+**Fix:** Known model context window (runtime-refreshed first, then model metadata) is now authoritative across compression and status-bar. Explicit compression `MaxTokens` is fallback only when model capacity is unknown. Status-bar percentage and hard-tier checks/logs report conservative estimated occupancy; the soft-tier gate remains provider-projected to preserve its cache behavior.
+
+**Regression coverage:** Model-window precedence over larger/smaller configured limits; hard-tier triggers when estimate reaches hard ceiling despite lower projected usage; soft tier remains projection-based.
+
+**Validation:** Focused agentic tests passed; `go test ./internal/agentic -count=1 -race -cover -timeout 120s` passed (86.3%); `go test ./... -count=1 -timeout 120s`, `go vet ./...`, and `staticcheck ./...` passed. Complexity checks report pre-existing unrelated warnings in app/provider/core/config.
+
+## Auto-retry after provider silence menu value mismatch
+
+**Observed:** Provider settings menu shows `Auto-retry after provider silence 90 (warn at 80)`, but editing the setting shows `120`. Related displayed settings: active provider retry cap `2m`, stream idle timeout `2m`, maximum retries `15 retries, 90 (warn at 80) stall retry`, and stall warning after provider silence `80`.
+
+**Expected:** Menu and edit view show the same effective auto-retry-after-silence value. Determine intended default/configured value and make both views consistent; retain warning threshold `80` if applicable.
+
+**Fix plan:** Trace default/config resolution and both settings render/edit paths. Add a regression test asserting consistency between displayed value and edit initial value; run focused tests and required checks.

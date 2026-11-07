@@ -85,8 +85,8 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 	switch tier {
 	case tierHard:
 		if a.cfg.Logger != nil {
-			a.cfg.Logger.Log(Info, "Hard-layer context compression: %d%% usage (%d / %d tokens)",
-				stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
+			a.cfg.Logger.Log(Info, "Hard-layer context compression: estimated usage %d%% (%d / %d tokens)",
+				effective.EstimatedTokens*100/maxTokens, effective.EstimatedTokens, maxTokens)
 		}
 		return a.compressAndReportWith(ctx, rt.hardStrategy)
 	case tierSoft:

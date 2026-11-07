@@ -154,15 +154,15 @@ func TestEffectiveMaxTokens_UsesModelContextWindow(t *testing.T) {
 	}
 }
 
-func TestEffectiveMaxTokens_PrefersCompressionConfig(t *testing.T) {
+func TestEffectiveMaxTokens_ModelWindowAuthoritativeOverCompressionConfig(t *testing.T) {
 	a := &Agent{
 		cfg: Config{
 			Model:              provider.Model{ContextWindow: 1000000},
 			ContextCompression: ContextCompressionConfig{MaxTokens: 8192},
 		},
 	}
-	if got := a.effectiveMaxTokens(); got != 8192 {
-		t.Errorf("effectiveMaxTokens() = %d, want 8192", got)
+	if got := a.effectiveMaxTokens(); got != 1000000 {
+		t.Errorf("effectiveMaxTokens() = %d, want model window 1000000", got)
 	}
 }
 

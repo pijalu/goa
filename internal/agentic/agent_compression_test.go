@@ -64,10 +64,8 @@ func TestContextStats(t *testing.T) {
 	}
 }
 
-// TestContextStats_UsesModelWindowWhenLarger verifies that when the model's
-// advertised context window is larger than the configured compression limit,
-// the displayed total reflects the actual model capacity. The compression
-// threshold (MaxTokens) still drives proactive compression elsewhere.
+// TestContextStats_UsesModelWindowWhenLarger verifies model capacity is authoritative
+// over a smaller configured compression limit for both display and compression.
 func TestContextStats_UsesModelWindowWhenLarger(t *testing.T) {
 	agent := NewAgent(Config{
 		SystemPrompt: "You are helpful.",
@@ -94,7 +92,7 @@ func TestContextStats_UsesModelWindowWhenLarger(t *testing.T) {
 // when the configured MaxTokens exceeds the model window, the displayed total
 // still reflects the actual model capacity. The model cannot hold more than
 // its advertised context window, so the UI should show that limit.
-func TestContextStats_RespectsModelWindowWhenExplicitMaxExceedsIt(t *testing.T) {
+func TestContextStats_ModelWindowAuthoritativeWhenExplicitMaxExceedsIt(t *testing.T) {
 	agent := NewAgent(Config{
 		SystemPrompt: "You are helpful.",
 		Model:        provider.Model{ContextWindow: 8192},
@@ -111,7 +109,7 @@ func TestContextStats_RespectsModelWindowWhenExplicitMaxExceedsIt(t *testing.T) 
 		t.Errorf("MaxTokens = %d, want 8192 (model window)", stats.MaxTokens)
 	}
 	if !stats.AutoMax {
-		t.Error("AutoMax should be true when display total comes from model metadata")
+		t.Error("AutoMax should be true when model metadata supplies the authoritative limit")
 	}
 }
 

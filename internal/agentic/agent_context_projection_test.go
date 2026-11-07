@@ -10,11 +10,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// P20 / CX8 acceptance tests: token-meter projection. The projected figure
-// anchors on the last provider-reported usage and reprices surface deltas
-// (chars/token heuristic), so it reacts the moment a large tool result lands —
-// before the next request — while the conservative estimate may still report
-// the pre-delta surface.
+// Projection anchors to provider usage for soft maintenance; status and hard-ceiling safety use conservative estimated occupancy.
 
 func TestProjectedTokens_AnchorsOnProviderUsage(t *testing.T) {
 	a := NewAgent(Config{Model: provider.Model{ContextWindow: 1000000}})
@@ -32,7 +28,7 @@ func TestProjectedTokens_AnchorsOnProviderUsage(t *testing.T) {
 		t.Errorf("EstimatedTokens = %d, want 900000", stats.EstimatedTokens)
 	}
 	if stats.UsagePercent != 90 {
-		t.Errorf("UsagePercent = %d, want 90 (occupancy reads the projection)", stats.UsagePercent)
+		t.Errorf("UsagePercent = %d, want 90 (status uses conservative estimate)", stats.UsagePercent)
 	}
 }
 
@@ -145,13 +141,13 @@ func TestProactiveCompaction_SoftReadsProjection(t *testing.T) {
 
 	stats := a.ContextStats()
 	if stats.EstimatedTokens < 50000 {
-		t.Fatalf("setup: heuristic estimate (%d) must exceed the 50%% trigger (50000) to prove the trigger is not reading it", stats.EstimatedTokens)
+		t.Fatalf("setup: estimate (%d) must exceed soft ceiling", stats.EstimatedTokens)
 	}
 	if stats.ProjectedTokens >= 50000 {
-		t.Fatalf("setup: projection (%d) must sit below the 50%% trigger (50000)", stats.ProjectedTokens)
+		t.Fatalf("setup: projection (%d) must stay below soft ceiling", stats.ProjectedTokens)
 	}
-	if stats.UsagePercent >= 50 {
-		t.Fatalf("setup: UsagePercent = %d, want < 50 (projection-based)", stats.UsagePercent)
+	if stats.UsagePercent != stats.EstimatedTokens*100/stats.MaxTokens {
+		t.Fatalf("status UsagePercent = %d, want conservative estimated occupancy", stats.UsagePercent)
 	}
 
 	rt := a.cfg.ContextCompression.resolveThresholds()
@@ -185,6 +181,35 @@ func TestProactiveCompaction_SoftFiresAboveProjectedCeiling(t *testing.T) {
 // with the projection below the soft ceiling but the stale estimate above it,
 // no compression must fire (the per-round proactive gate reads the projection).
 // Uses the SOFT layer (tool_elision) now that the trigger layer is removed.
+func TestMaybeCompress_HardUsesConservativeEstimate(t *testing.T) {
+	a := NewAgent(Config{
+		Model: testModel(provider.ApiOpenAICompletions),
+		ContextCompression: ContextCompressionConfig{
+			MaxTokens:  100000,
+			Strategies: CompressionLayerStrategies{Hard: CompressionSelective},
+			Thresholds: CompressionThresholds{HardPercent: 95},
+		},
+	})
+	a.SetHistory([]Message{{Type: Content, Role: User, Content: strings.Repeat("漢", 96000)}})
+	recordTestUsage(a, &provider.Usage{InputTokens: 10000})
+	stats := a.ContextStats()
+	if stats.ProjectedTokens >= stats.MaxTokens*95/100 || stats.EstimatedTokens < stats.MaxTokens*95/100 {
+		t.Fatalf("bad setup: projected=%d estimated=%d max=%d", stats.ProjectedTokens, stats.EstimatedTokens, stats.MaxTokens)
+	}
+	a.mu.Lock()
+	before := len(a.history)
+	a.mu.Unlock()
+	if err := a.maybeCompress(context.Background()); err != nil {
+		t.Fatalf("maybeCompress: %v", err)
+	}
+	a.mu.Lock()
+	after := len(a.history)
+	a.mu.Unlock()
+	if after >= before {
+		t.Fatal("hard tier did not compress when conservative estimate crossed ceiling")
+	}
+}
+
 func TestMaybeCompress_SoftReadsProjection(t *testing.T) {
 	a := NewAgent(Config{
 		Model: testModel(provider.ApiOpenAICompletions),
