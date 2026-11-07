@@ -254,8 +254,25 @@ func (cl *CascadeLoader) loadCascade(useLayers bool, rep *LoadReport) (*Config, 
 		return nil, fmt.Errorf("registry: %w", err)
 	}
 
+	if err := cl.normalize(cfg); err != nil {
+		return nil, err
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// normalize applies every in-memory transformation the cascade performs on a
+// merged config: env interpolation, env/CLI overrides, legacy migrations and
+// the dangling-reference sanitizers. The saver's default baseline runs the SAME
+// pipeline (see defaultSaveDocument), so derived values — mode.defaults.coder
+// from a legacy execution.mode, for instance — are recognised as defaults and
+// never persisted as if the user had chosen them.
+func (cl *CascadeLoader) normalize(cfg *Config) error {
 	if err := cl.interpolateEnv(cfg); err != nil {
-		return nil, fmt.Errorf("env interpolation: %w", err)
+		return fmt.Errorf("env interpolation: %w", err)
 	}
 	cl.applyEnvOverrides(cfg)
 	cl.applyCLIOverrides(cfg)
@@ -296,10 +313,7 @@ func (cl *CascadeLoader) loadCascade(useLayers bool, rep *LoadReport) (*Config, 
 	// time, so heal instead of failing validation and refusing to start.
 	cfg.sanitizeDanglingModelRefs()
 
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	return cfg, nil
+	return nil
 }
 
 func (cl *CascadeLoader) loadDefaults() (*Config, error) {
@@ -444,9 +458,13 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 	// poison (bugs.md 2026-09-26).
 	sanitizeBareStallDurations(&saveCfg.Execution, cl.HomeConfigPath())
 
-	data, err := yaml.Marshal(saveCfg)
+	// Only real user choices are persisted: values equal to the shipped
+	// defaults are pruned so a later default change still reaches this install
+	// (bugs.md: mcp tool pinned off by an old snapshot). See
+	// loader_save_prune.go.
+	data, err := cl.marshalConfigDelta(saveCfg)
 	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+		return err
 	}
 
 	prev, hadPrev := existingConfigBytes(cl.HomeConfigPath())
