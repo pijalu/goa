@@ -7,6 +7,7 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -179,10 +180,11 @@ func TestRetrySettingsMenu_ShowsStallTiming(t *testing.T) {
 	if !ok {
 		t.Fatalf("retry settings menu is missing the retry-window entry: %+v", sr.options)
 	}
-	// The window shown is the EVENT stall the agent retries on (3/4 of the 2m
-	// byte budget = 90s), with the configured lead inside it.
-	if windowDesc != "90 (warn at 80)" {
-		t.Errorf("retry-window description = %q, want \"90 (warn at 80)\"", windowDesc)
+	// The window row shows the CONFIGURED byte-idle budget — the exact value its
+	// prompt prefills — not the derived event stall (3/4 of 2m = 90s) and not a
+	// grouped "warn at" summary.
+	if windowDesc != "120" {
+		t.Errorf("retry-window description = %q, want \"120\"", windowDesc)
 	}
 	warnDesc, ok := descriptions["stall_warn"]
 	if !ok {
@@ -233,11 +235,13 @@ func TestRetrySettingsMenu_DerivesWarningWhenUnset(t *testing.T) {
 			windowDesc = item.Description
 		}
 	}
-	if windowDesc != "90 (warn at 60)" {
-		t.Errorf("derived window description = %q, want \"90 (warn at 60)\"", windowDesc)
+	if windowDesc != "120" {
+		t.Errorf("window description = %q, want \"120\" (the configured budget, one value)", windowDesc)
 	}
-	if warnDesc != "60 (derived: 2/3 of 90)" {
-		t.Errorf("derived warning description = %q, want \"60 (derived: 2/3 of 90)\"", warnDesc)
+	// The unset lead shows the value the agent derives, as a bare number: the
+	// derivation rule lives in the prompt title, not the menu row.
+	if warnDesc != "60" {
+		t.Errorf("derived warning description = %q, want \"60\"", warnDesc)
 	}
 }
 
@@ -343,8 +347,8 @@ func TestConfigKeyCompletions_StallTiming(t *testing.T) {
 func TestRetrySettingsRootLabel_ShowsStallRetry(t *testing.T) {
 	ctx, _, _ := stallTimingContext(t)
 	label := retrySettingsLabel(ctx.Config)
-	if label != "5 retries, 90 (warn at 80) stall retry" {
-		t.Errorf("retrySettingsLabel = %q, want the stall timing in plain seconds", label)
+	if label != "5 retries, 120s silence budget" {
+		t.Errorf("retrySettingsLabel = %q, want the retry count and the silence budget", label)
 	}
 }
 
@@ -359,7 +363,7 @@ func TestRetrySettingsMenu_Labels(t *testing.T) {
 		labels[item.Value] = item.Label
 	}
 	for value, want := range map[string]string{
-		"stall_timeout": "Auto-retry after provider silence",
+		"stall_timeout": "Provider silence budget before retry",
 		"stall_warn":    "Stall warning after provider silence",
 	} {
 		if labels[value] != want {
@@ -368,6 +372,40 @@ func TestRetrySettingsMenu_Labels(t *testing.T) {
 	}
 	if _, ok := labels["provider_idle"]; !ok {
 		t.Error("provider idle timeout entry must stay in the retry settings menu")
+	}
+}
+
+// TestRetrySettingsMenu_OneValuePerLine is the regression guard for the grouped
+// row (bugs.md: "Maximum retries 15 retries, 90 (warn at 80) stall retry"): every
+// sub-menu row carries exactly ONE value — the one its own prompt edits — and no
+// row repeats another row's value or carries a parenthetical summary.
+func TestRetrySettingsMenu_OneValuePerLine(t *testing.T) {
+	ctx, sr, ir := stallTimingContext(t)
+
+	menu := newConfigMenu(*ctx)
+	menu.settingRetrySettings()
+
+	descriptions := map[string]string{}
+	for _, item := range sr.options {
+		descriptions[item.Value] = item.Description
+	}
+	for value, desc := range descriptions {
+		if strings.Contains(desc, ",") || strings.Contains(desc, "(") {
+			t.Errorf("%s description %q groups several values; one row = one setting", value, desc)
+		}
+	}
+
+	// The displayed value must be the value the prompt offers for editing.
+	for value, promptValue := range map[string]string{
+		"retries":       strconv.Itoa(ctx.Config.Execution.Retries),
+		"stall_timeout": formatStallSeconds(configuredActivityTimeout(ctx.Config)),
+		"stall_warn":    activityWarnAfterLabel(ctx.Config),
+	} {
+		sr.onSel(value, true)
+		if ir.current != promptValue {
+			t.Errorf("%s: menu shows %q but the prompt edits %q", value, descriptions[value], ir.current)
+		}
+		ir.onSub("", false) // cancel: value unchanged
 	}
 }
 

@@ -45,11 +45,3 @@ per item with a short title, the observed behavior, and the expected behavior.
 **Regression coverage:** Model-window precedence over larger/smaller configured limits; hard-tier triggers when estimate reaches hard ceiling despite lower projected usage; soft tier remains projection-based.
 
 **Validation:** Focused agentic tests passed; `go test ./internal/agentic -count=1 -race -cover -timeout 120s` passed (86.3%); `go test ./... -count=1 -timeout 120s`, `go vet ./...`, and `staticcheck ./...` passed. Complexity checks report pre-existing unrelated warnings in app/provider/core/config.
-
-## Auto-retry after provider silence menu value mismatch
-
-**Observed:** Provider settings menu shows `Auto-retry after provider silence 90 (warn at 80)`, but editing the setting shows `120`. Related displayed settings: active provider retry cap `2m`, stream idle timeout `2m`, maximum retries `15 retries, 90 (warn at 80) stall retry`, and stall warning after provider silence `80`.
-
-**Expected:** Menu and edit view show the same effective auto-retry-after-silence value. Determine intended default/configured value and make both views consistent; retain warning threshold `80` if applicable.
-
-**Fix plan:** Trace default/config resolution and both settings render/edit paths. Add a regression test asserting consistency between displayed value and edit initial value; run focused tests and required checks.
