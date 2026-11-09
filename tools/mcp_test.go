@@ -196,6 +196,23 @@ func TestAgentMCPShutdown(t *testing.T) {
 	}
 }
 
+func TestAgentMCPDefaultBackendUsesGoaDaemonLauncher(t *testing.T) {
+	var got client.Options
+	tool := &AgentMCPTool{NewBackend: func(o client.Options) (AgentMCPBackend, error) {
+		got = o
+		return &fakeBackend{}, nil
+	}}
+	if _, err := tool.ensureBackend(); err != nil {
+		t.Fatal(err)
+	}
+	if got.SpawnDaemon == nil {
+		t.Fatal("default backend SpawnDaemon = nil; Goa would inherit agent-mcp's incompatible server-start argv")
+	}
+	if got.AutoStartNotice == nil || !strings.Contains(got.AutoStartNotice("addr"), "embedded daemon") {
+		t.Fatal("default backend must use host-neutral embedded daemon notice")
+	}
+}
+
 func TestAgentMCPNoticeAppendedToResult(t *testing.T) {
 	be := &fakeBackend{do: func(r client.Request) (any, error) {
 		return map[string]any{"servers": []any{}}, nil

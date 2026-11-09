@@ -94,7 +94,10 @@ The agent itself can install and drive servers mid-session through the
 built-in `mcp` tool (enabled by default, opt out with
 `tools.enabled.mcp: false`): its `config_add` action upserts a stdio or
 remote server into the agent-mcp config without manual editing, then the
-agent verifies with `list_tools` and calls it — no restart, no TUI. See
+agent verifies with `list_tools` and calls it — no restart, no TUI. The
+agent-mcp client/server library is compiled into Goa, and the shared daemon
+re-executes Goa on auto-start, so no `agent-mcp` executable install is needed.
+See
 `/tools mcp` inside goa (or docs/TOOLS.md § mcp) for the action surface.
 
 ## Troubleshooting

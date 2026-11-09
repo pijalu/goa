@@ -2,6 +2,9 @@ module github.com/pijalu/goa
 
 go 1.25.0
 
+// Use the sibling agent-mcp library during its embedder API development.
+replace github.com/pijalu/agent-mcp => ../agent-mcp
+
 require (
 	github.com/alecthomas/chroma/v2 v2.2.0
 	github.com/creack/pty v1.1.24

@@ -664,9 +664,11 @@ See `docs/tools/webfetch.md` for full configuration reference.
 
 ### `mcp` — Drive MCP servers (agent-mcp)
 
-Drives MCP servers through the shared agent-mcp daemon — discovery, tool
-calls, resources, and prompts stay warm across goa runs and are shared with
-other agent-mcp clients. **Enabled by default** (opt out with
+Drives MCP servers through the agent-mcp library compiled into goa and its
+shared daemon — discovery, tool calls, resources, and prompts stay warm across
+goa runs and are shared with other agent-mcp clients. Goa auto-starts the
+daemon itself; no `agent-mcp` executable installation is required. **Enabled
+by default** (opt out with
 `tools.enabled.mcp: false`); like other deferred tools the full schema
 loads on demand via `tool_search select:mcp`.
 

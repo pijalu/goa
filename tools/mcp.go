@@ -283,6 +283,14 @@ func (t *AgentMCPTool) tagResult(body string) string {
 // injected — feeds daemon notices into results.
 func (t *AgentMCPTool) ensureBackend() (AgentMCPBackend, error) {
 	t.once.Do(func() {
+		if t.Options.SpawnDaemon == nil {
+			t.Options.SpawnDaemon = func(o client.Options) (client.DaemonChild, error) {
+				return client.SpawnDaemonWithCommand(o, "", "mcp", "daemon")
+			}
+		}
+		if t.Options.AutoStartNotice == nil {
+			t.Options.AutoStartNotice = client.EmbeddedAutoStartNotice
+		}
 		newBackend := t.NewBackend
 		if newBackend == nil {
 			newBackend = func(o client.Options) (AgentMCPBackend, error) {
@@ -328,7 +336,7 @@ func (t *AgentMCPTool) toolError(err error) error {
 		hint = "Fix the parameters: server, tool, uri, and prompt are required per action; config_add needs name plus command or url."
 	case errors.Is(err, client.ErrInternal):
 		kind = "internal_error"
-		hint = "The agent-mcp daemon or client failed unexpectedly; retry or use the agent-mcp CLI to diagnose."
+		hint = "Goa's embedded MCP daemon or client failed unexpectedly; retry, check the daemon config, or use list_servers to diagnose."
 	}
 	return &internal.ToolError{
 		Tool: "mcp", Type: kind,

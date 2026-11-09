@@ -5,6 +5,8 @@
 package app
 
 import (
+	"os"
+
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands"
@@ -29,6 +31,14 @@ func runMCPCLI(args []string) bool {
 	if rest[0] == "help" || rest[0] == "--help" || rest[0] == "-h" {
 		// One source for the mcp help text: the same unit the manual prints.
 		exitWithHelp("mcp")
+	}
+	if rest[0] == "daemon" {
+		// The daemon has its own agent-mcp TOML config and must not load Goa
+		// YAML, initialize a native MCP manager, or enter any agent/UI mode.
+		if err := runAgentMCPDaemon(rest[1:], os.Stderr); err != nil {
+			fatalExitf("goa mcp daemon: %v\n", err)
+		}
+		return true
 	}
 
 	projectDir := MustGetwd()
@@ -65,6 +75,7 @@ Usage:
   goa mcp enable|disable [--global] <name>            Toggle a server (persisted)
   goa mcp reconnect <name>                            Drop and reconnect
   goa mcp debug <name>                                One-shot connect + tool count
+  goa mcp daemon [--listen host:port] [--config path] Run the embedded shared MCP daemon
 
 Scope: servers are saved to the project .goa/config.yaml by default;
 --global (-g) saves to ~/.goa/config.yaml so the server is available

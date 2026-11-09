@@ -1,14 +1,15 @@
 # mcp
 
 Drive MCP (Model Context Protocol) servers through the [agent-mcp](https://github.com/pijalu/agent-mcp)
-client library. All operations run against the shared agent-mcp daemon, so
-sessions and MCP child processes stay warm across goa runs and are shared
-with any other agent-mcp client (CLI, other agents).
+client library, which is compiled into goa. All operations run against the
+shared daemon, so sessions and MCP child processes stay warm across goa runs
+and are shared with other agent-mcp clients. Goa auto-starts the daemon
+itself; installing the `agent-mcp` executable is not required.
 
 ## When to use
 
-- The project relies on MCP servers managed by agent-mcp (`agent-mcp config add ...`,
-  or self-register one with `config_add` — see "Connecting a server automatically").
+- The project relies on MCP servers in the agent-mcp TOML config (self-register
+  one with `config_add` — see "Connecting a server automatically").
 - You need an MCP tool call, resource, or prompt that goa's native MCP
   integration (`internal/mcp`) does not expose as a `mcp__server__tool`.
 - You need to discover what an MCP server offers before calling it.

@@ -14,8 +14,9 @@ temperature: 0.2
 ## Driving MCP servers with mcp
 
 Prerequisites: the `mcp` tool is enabled by default (`tools.enabled.mcp: false`
-turns it off); it talks to the shared agent-mcp daemon, auto-starting it on
-first use.
+turns it off); it uses goa's built-in agent-mcp library and auto-starts the
+shared daemon through goa itself on first use. No agent-mcp executable install
+is needed.
 
 1. **Discover before calling.** `{"action":"list_servers"}` answers from config (never
    spawns anything). Then `{"action":"list_tools","server":"<name>"}`; use `search` to
