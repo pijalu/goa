@@ -2,9 +2,6 @@ module github.com/pijalu/goa
 
 go 1.25.0
 
-// Use the sibling agent-mcp library during its embedder API development.
-replace github.com/pijalu/agent-mcp => ../agent-mcp
-
 require (
 	github.com/alecthomas/chroma/v2 v2.2.0
 	github.com/creack/pty v1.1.24
@@ -14,7 +11,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-runewidth v0.0.24
 	github.com/mattn/go-sqlite3 v1.14.45
-	github.com/pijalu/agent-mcp v0.1.2
+	github.com/pijalu/agent-mcp v0.1.3-0.20261109215102-ca9a03fd0e58
 	github.com/rivo/uniseg v0.4.7
 	github.com/stretchr/testify v1.11.1
 	github.com/xeipuuv/gojsonschema v1.2.0

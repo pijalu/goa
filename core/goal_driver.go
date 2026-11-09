@@ -240,43 +240,55 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 	}()
 
 	for {
-		// Hard-stop check before launching another turn: without this, a Stop
-		// landing between turns would still start one more continuation.
-		if err := ctx.Err(); err != nil {
+		continued, err := d.driveOneTurn(ctx)
+		if err != nil {
 			return err
 		}
-		active := d.Mode.GetActiveGoal()
-		if active == nil {
-			d.syncTeamOverlay(nil)
+		if !continued {
 			return nil
 		}
-		// Apply/remove the goal-scoped team overlay to match the active goal
-		// (TEAMS.md §5.2). Done once per goal before the first turn.
-		d.syncTeamOverlay(active)
-		if active.Budget.OverBudget {
-			reason := "A configured budget was reached"
-			d.Mode.MarkBlocked(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorSystem)
-			return nil
-		}
-
-		d.Mode.IncrementTurn()
-
-		err := d.runTurn(ctx, active)
-		if err != nil {
-			return d.handleTurnError(err)
-		}
-
-		current := d.Mode.GetActiveGoal()
-		if current == nil {
-			return nil
-		}
-		if current.Budget.OverBudget {
-			reason := "A configured budget was reached"
-			d.Mode.MarkBlocked(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorSystem)
-			return nil
-		}
-		d.checkStall(current)
 	}
+}
+
+// driveOneTurn performs one continuation iteration. Its boolean result reports
+// whether Drive should start another turn.
+func (d *GoalDriver) driveOneTurn(ctx context.Context) (bool, error) {
+	// Hard-stop check before launching another turn: without this, a Stop
+	// landing between turns would still start one more continuation.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	active := d.Mode.GetActiveGoal()
+	if active == nil {
+		d.syncTeamOverlay(nil)
+		return false, nil
+	}
+	// Apply/remove the goal-scoped team overlay to match the active goal
+	// (TEAMS.md §5.2). Done once per goal before the first turn.
+	d.syncTeamOverlay(active)
+	if active.Budget.OverBudget {
+		reason := "A configured budget was reached"
+		d.Mode.MarkBlocked(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorSystem)
+		return false, nil
+	}
+
+	d.Mode.IncrementTurn()
+
+	if err := d.runTurn(ctx, active); err != nil {
+		return false, d.handleTurnError(err)
+	}
+
+	current := d.Mode.GetActiveGoal()
+	if current == nil {
+		return false, nil
+	}
+	if current.Budget.OverBudget {
+		reason := "A configured budget was reached"
+		d.Mode.MarkBlocked(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorSystem)
+		return false, nil
+	}
+	d.checkStall(current)
+	return true, nil
 }
 
 // syncTeamOverlay keeps the goal-scoped team overlay aligned to the active goal

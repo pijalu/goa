@@ -43,13 +43,7 @@ func TestB53_Filmstrip_ResizeDuringStreamedTable_NoMixedGeometry(t *testing.T) {
 		Type: agentic.EventContent, Role: agentic.Assistant,
 		State: agentic.StateContent, Text: text, IsDelta: true,
 	})
-	for i := 0; i < 15; i++ {
-		text += row(i)
-		sc.apply(&agentic.OutputEvent{
-			Type: agentic.EventContent, Role: agentic.Assistant,
-			State: agentic.StateContent, Text: row(i), IsDelta: true,
-		})
-	}
+	streamB53TableRows(sc, row, 0, 15)
 
 	preSeps := frameTableSeparators(sc.engine.AgentFrame())
 	if len(preSeps) == 0 {
@@ -63,14 +57,23 @@ func TestB53_Filmstrip_ResizeDuringStreamedTable_NoMixedGeometry(t *testing.T) {
 	sc.term.w = 140
 
 	// Keep streaming the second half at the new width.
-	for i := 15; i < 30; i++ {
+	streamB53TableRows(sc, row, 15, 30)
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	assertB53PinnedTableGeometry(t, sc, preSeps[0])
+}
+
+func streamB53TableRows(sc *uiScenario, row func(int) string, start, end int) {
+	for i := start; i < end; i++ {
 		sc.apply(&agentic.OutputEvent{
 			Type: agentic.EventContent, Role: agentic.Assistant,
 			State: agentic.StateContent, Text: row(i), IsDelta: true,
 		})
 	}
-	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+}
 
+func assertB53PinnedTableGeometry(t *testing.T, sc *uiScenario, pinned string) {
+	t.Helper()
 	final := sc.engine.AgentFrame()
 	if final.Width != 140 {
 		t.Fatalf("expected terminal width 140 after resize, got %d", final.Width)
@@ -83,28 +86,36 @@ func TestB53_Filmstrip_ResizeDuringStreamedTable_NoMixedGeometry(t *testing.T) {
 		t.Fatal("no table separators visible after resize")
 	}
 	for i, s := range postSeps {
-		if s != preSeps[0] {
+		if s != pinned {
 			t.Fatalf("mixed geometry after mid-stream resize: post-resize row-separator %d\n%q\n!= pinned pre-resize geometry\n%q",
-				i, s, preSeps[0])
+				i, s, pinned)
 		}
 	}
 
+	assertB53VisibleTableGeometry(t, final, pinned)
+	assertB53FilmstripGeometry(t, sc.filmstrip(), pinned)
+}
+
+func assertB53VisibleTableGeometry(t *testing.T, final tui.AgentFrame, pinned string) {
+	t.Helper()
 	// The whole visible table must be homogeneous: data lines share the
 	// separator width (no rows at the old/new width mix).
 	for _, l := range final.Visible {
 		s := strings.TrimRight(l, " ")
-		if strings.HasPrefix(s, "│") && ansi.Width(s) != ansi.Width(preSeps[0]) {
+		if strings.HasPrefix(s, "│") && ansi.Width(s) != ansi.Width(pinned) {
 			t.Fatalf("table data line width %d differs from separator geometry %d: %q",
-				ansi.Width(s), ansi.Width(preSeps[0]), s)
+				ansi.Width(s), ansi.Width(pinned), s)
 		}
 	}
+}
 
+func assertB53FilmstripGeometry(t *testing.T, film *tui.Filmstrip, pinned string) {
+	t.Helper()
 	// No post-resize frame may ever contain a separator at a width other
 	// than the pinned one — check every captured filmstrip frame after the
 	// resize step.
-	frames := sc.filmstrip().Frames()
 	resizeSeen := false
-	for _, f := range frames {
+	for _, f := range film.Frames() {
 		if f.Frame.Width == 140 {
 			resizeSeen = true
 		}
@@ -112,9 +123,9 @@ func TestB53_Filmstrip_ResizeDuringStreamedTable_NoMixedGeometry(t *testing.T) {
 			continue
 		}
 		for _, s := range frameTableSeparatorsFrom(f.Frame.Visible) {
-			if s != preSeps[0] {
+			if s != pinned {
 				t.Fatalf("filmstrip frame %q (post-resize) shows foreign table geometry:\n%q\n!= %q",
-					f.Label, s, preSeps[0])
+					f.Label, s, pinned)
 			}
 		}
 	}

@@ -36,15 +36,7 @@ func TestDeviceMid_PersistsAndStable(t *testing.T) {
 	if first == "" {
 		t.Fatal("DeviceMid() returned empty in a writable home")
 	}
-	if len(first) != 64 {
-		t.Errorf("DeviceMid length = %d, want 64 hex chars", len(first))
-	}
-	for i := 0; i < len(first); i++ {
-		c := first[i]
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			t.Fatalf("DeviceMid %q is not lowercase hex", first)
-		}
-	}
+	assertLowerHexDeviceMid(t, first)
 	if got := DeviceMid(); got != first {
 		t.Errorf("DeviceMid not stable: %q then %q", first, got)
 	}
@@ -64,6 +56,19 @@ func TestDeviceMid_PersistsAndStable(t *testing.T) {
 	defer func() { SetDeviceMidDir(dir) }()
 	if second := DeviceMid(); second == "" || second == first {
 		t.Errorf("fresh dir produced %q, want a new distinct identity", second)
+	}
+}
+
+func assertLowerHexDeviceMid(t *testing.T, id string) {
+	t.Helper()
+	if len(id) != 64 {
+		t.Errorf("DeviceMid length = %d, want 64 hex chars", len(id))
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			t.Fatalf("DeviceMid %q is not lowercase hex", id)
+		}
 	}
 }
 
