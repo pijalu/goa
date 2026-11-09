@@ -61,6 +61,15 @@ func TestAgentMCPEmbeddedDaemonWithoutExecutable(t *testing.T) {
 	assertMCPOutputContains(t, out, `"shutdown": true`)
 	out = executeMCPForTest(t, tool, `{"action":"shutdown"}`)
 	assertMCPOutputContains(t, out, `"shutdown": false`)
+
+	// The long-lived tool must recover after its cached daemon transport dies.
+	// Reconnect happens before invocation, then auto-starts a fresh daemon.
+	out = executeMCPForTest(t, tool, `{"action":"list_tools","server":"chrome","limit":0}`)
+	assertMCPOutputContains(t, out, "echo", "embedded daemon")
+	out = executeMCPForTest(t, tool, `{"action":"call_tool","server":"chrome","tool":"echo","args":{"text":"reconnected-goa"}}`)
+	assertMCPOutputContains(t, out, "reconnected-goa")
+	out = executeMCPForTest(t, tool, `{"action":"shutdown"}`)
+	assertMCPOutputContains(t, out, `"shutdown": true`)
 }
 
 func buildGoaForMCP(t *testing.T) string {
