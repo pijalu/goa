@@ -65,11 +65,11 @@ execution:
   # may need a higher value or 0 (disabled) to avoid mid-task interruption.
   # 0 = disabled, default: 15.
   max_consecutive_tool_rounds: 15
-  # Local models (LM Studio, Ollama, etc.) sometimes emit tool calls as XML
-  # markup inside content or reasoning streams instead of native tool_calls.
-  # Auto-heal extracts and executes these malformed calls so the turn keeps
-  # progressing.
-  auto_heal_tool_calls: false
+  # Tool call fixing ships ON: auto-healing malformed XML tool calls keeps
+  # turns progressing everywhere (local models need it; remote models simply
+  # never emit malformed calls, so it stays a no-op for them). Turn it off
+  # with `execution.auto_heal_tool_calls: false` or /config → Tools.
+  auto_heal_tool_calls: true
   # Loop auto-resume: when a loop detector (thinking or tool) interrupts the
   # turn, optionally send a follow-up message to resume the agent instead of
   # staying stopped. Off by default. The resume message is configurable.
@@ -341,8 +341,14 @@ tools:
     agent: false
     agent_swarm: false
     goa: false
-    lsp: false
-    todo_list: true
+    # lsp: ON by default so the model gets precise code navigation out of the
+    # box whenever a language server is available for the file; disable with
+    # tools.enabled.lsp: false (also silences all background server spawns).
+    lsp: true
+    # todo_list: OFF by default — goal todos (goal add_todo/update_todo) cover
+    # tracking while a goal is active; enable the standalone session list with
+    # tools.enabled.todo_list: true or /tools.
+    todo_list: false
     # mcp (drive MCP servers via the agent-mcp daemon): ON by default (B46
     # minimal-set + search availability). The tool is deferred — the model
     # discovers it via tool search — talks to the shared agent-mcp daemon

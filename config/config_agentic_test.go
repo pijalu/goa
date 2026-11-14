@@ -537,12 +537,12 @@ func TestAgentToolsDefaultEnabled(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(yamlText), &cfg); err != nil {
 		t.Fatalf("Unmarshal embedded default failed: %v", err)
 	}
-	for _, name := range []string{"webfetch", "mcp", "goal", "todo_list"} {
+	for _, name := range []string{"webfetch", "mcp", "goal", "lsp"} {
 		if !cfg.Tools.Enabled.GetEnabled(name) {
-			t.Errorf("embedded default should enable %s (B46 minimal set)", name)
+			t.Errorf("embedded default should enable %s (default tool set)", name)
 		}
 	}
-	for _, name := range []string{"terminals", "python", "run_code", "agent", "agent_swarm", "goa", "lsp", "verify", "delegate_to", "request_review", "bg_exec", "schedule", "session"} {
+	for _, name := range []string{"terminals", "python", "run_code", "agent", "agent_swarm", "goa", "todo_list", "verify", "delegate_to", "request_review", "bg_exec", "schedule", "session"} {
 		if cfg.Tools.Enabled.GetEnabled(name) {
 			t.Errorf("embedded default should disable %s (opt-in per B46 minimal set)", name)
 		}

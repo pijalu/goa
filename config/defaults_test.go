@@ -26,9 +26,10 @@ func TestDefaultConfigYAML(t *testing.T) {
 	}
 }
 
-// TestDefaultConfig_AutoHealToolCalls verifies the embedded default keeps
-// auto-heal OFF (adopted tuned default): auto-healing malformed XML tool
-// calls is only wanted for local models that need it.
+// TestDefaultConfig_AutoHealToolCalls verifies the embedded default ships
+// tool call fixing ON: auto-healing malformed XML tool calls keeps turns
+// progressing everywhere (local models need it; remote models never emit
+// malformed calls, so it is a no-op for them).
 func TestDefaultConfig_AutoHealToolCalls(t *testing.T) {
 	// Isolate from the developer's real ~/.goa/config.yaml: this test asserts
 	// the SHIPPED default, and home pins are legitimate overrides (they flow
@@ -41,8 +42,8 @@ func TestDefaultConfig_AutoHealToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if cfg.Execution.AutoHealToolCalls {
-		t.Errorf("Execution.AutoHealToolCalls = true, want false")
+	if !cfg.Execution.AutoHealToolCalls {
+		t.Errorf("Execution.AutoHealToolCalls = false, want true")
 	}
 }
 
@@ -104,11 +105,12 @@ func TestDefaultConfig_BashShell(t *testing.T) {
 	}
 }
 
-// TestDefaultConfig_MinimalToolSet pins the B46 minimal default tool set:
-// ON by default — bash/edit/write/read (ungated core), goal, todo_list,
+// TestDefaultConfig_MinimalToolSet pins the default tool set:
+// ON by default — bash/edit/write/read (ungated core), goal, lsp,
 // webfetch (stays), mcp. OFF by default — python, terminals, run_code,
-// verify, schedule, session, and the other opt-in tools. smartsearch is
-// gated separately (tools.smartsearch.enabled) and also ships off.
+// verify, todo_list, schedule, session, and the other opt-in tools.
+// smartsearch is gated separately (tools.smartsearch.enabled) and also
+// ships off.
 func TestDefaultConfig_MinimalToolSet(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	loader := NewCascadeLoader(t.TempDir(), "", nil)
@@ -118,7 +120,7 @@ func TestDefaultConfig_MinimalToolSet(t *testing.T) {
 	}
 	on := map[string]bool{
 		"goal":     cfg.Tools.Enabled.Goal,
-		"todo":     cfg.Tools.Enabled.Todo,
+		"lsp":      cfg.Tools.Enabled.LSP,
 		"webfetch": cfg.Tools.Enabled.WebFetch,
 		"mcp":      cfg.Tools.Enabled.AgentMCP,
 	}
@@ -132,6 +134,7 @@ func TestDefaultConfig_MinimalToolSet(t *testing.T) {
 		"terminals": cfg.Tools.Enabled.Terminals,
 		"run_code":  cfg.Tools.Enabled.RunCode,
 		"verify":    cfg.Tools.Enabled.Verify,
+		"todo":      cfg.Tools.Enabled.Todo,
 		"schedule":  cfg.Tools.Enabled.Schedule,
 		"session":   cfg.Tools.Enabled.Session,
 	}

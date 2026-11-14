@@ -5,6 +5,8 @@
 package commands
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pijalu/goa/config"
@@ -22,13 +24,23 @@ func TestConfigMenu_ToolCallFixingSavedAndAppliedLive(t *testing.T) {
 	proj := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	// Seed an explicit OFF pin: the shipped default is ON, and the toggle
+	// test semantics are "flip OFF→ON, persist, apply live".
+	goaDir := filepath.Join(proj, ".goa")
+	if err := os.MkdirAll(goaDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(goaDir, "config.yaml"),
+		[]byte("execution:\n  auto_heal_tool_calls: false\n"), 0o644); err != nil {
+		t.Fatalf("seed project config: %v", err)
+	}
 	cl := config.NewCascadeLoader(proj, "", nil)
 	cfg, err := cl.Load()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if cfg.Execution.AutoHealToolCalls {
-		t.Fatal("precondition: auto_heal_tool_calls should default false")
+		t.Fatal("precondition: auto_heal_tool_calls should be pinned false")
 	}
 
 	ctx, sr, _, events := newMenuTestContext(t, cfg)

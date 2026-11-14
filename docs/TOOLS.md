@@ -511,7 +511,8 @@ current task into visible steps; use goals for autonomous multi-turn work.
   A goal completed with open todos reminds the model of them so unfinished
   work is not silently dropped.
 
-Enabled via `tools.enabled.todo_list` (default on); toggle at runtime with
+Enabled via `tools.enabled.todo_list` (default off — goal todos cover
+tracking while a goal is active); toggle at runtime with
 `/tools:todo_list:on|off`.
 
 ### `terminals` — Sandboxed shell execution
@@ -618,10 +619,10 @@ for the server (bounded by the turn context / 3-minute handshake cap).
 ```yaml
 tools:
   enabled:
-    lsp: true        # master switch for the WHOLE LSP integration
-                     # (navigation tool + edit/write/read linking + server
-                     # spawns). Off means off — no background servers.
-                     # Toggle live at runtime: /tools:lsp:on | /tools:lsp:off
+    lsp: true        # master switch for the WHOLE LSP integration (default on;
+                     # opt-out). Covers the navigation tool + edit/write/read
+                     # linking + server spawns. Off means off — no background
+                     # servers. Toggle live at runtime: /tools:lsp:on | :off
 lsp:                 # optional schema-level tuning (OpenCode parity)
   disable_download: false   # only use servers already installed
   servers:

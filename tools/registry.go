@@ -230,13 +230,13 @@ func ConfigurableTools() []ConfigurableTool {
 		{Name: "bg_exec", Description: "Background process execution", Default: false},
 		{Name: "delegate_to", Description: "Delegate tasks to sub-agents", Default: false},
 		{Name: "goal", Description: "Goal tracking", Default: true},
-		{Name: "lsp", Description: "LSP code navigation", Default: false},
+		{Name: "lsp", Description: "LSP code navigation", Default: true},
 		{Name: "memento", Description: "Persistent memory files", Default: false},
 		{Name: "terminals", Description: "Persistent terminal sessions", Default: false},
 		{Name: "request_review", Description: "Request companion review", Default: false},
 		{Name: "smartsearch", Description: "BM25 code search (needs restart)", Default: false},
 		{Name: "ssh_bash", Description: "Remote SSH command execution", Default: false},
-		{Name: "todo_list", Description: "Session todo list (goal-linked when a goal is active)", Default: true},
+		{Name: "todo_list", Description: "Session todo list (goal-linked when a goal is active)", Default: false},
 		{Name: "mcp", Description: "Drive MCP servers via the agent-mcp daemon (connect, discover, call, resources, prompts)", Default: true},
 		// schedule/session are gated FAMILIES: one flag toggles every member
 		// (Members), so /config and /tools can never leave a partial family

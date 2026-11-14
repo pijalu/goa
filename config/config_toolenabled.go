@@ -43,10 +43,10 @@ type ToolEnabledConfig struct {
 	// or the project has no language server.
 	LSP bool `yaml:"lsp"`
 	// Todo controls the standalone `todo_list` tool ("todo should be
-	// available outside of goal"). Opt-OUT: defaults to true (set in the
-	// embedded default config) so the model can track work items without an
-	// active goal; when a goal is active the tool is linked to the goal's own
-	// todo list.
+	// available outside of goal"). Opt-IN: defaults to false (the embedded
+	// default config ships it off — goal todos cover tracking while a goal is
+	// active); enable with `tools.enabled.todo_list: true` or /tools. When a
+	// goal is active the tool is linked to the goal's own todo list.
 	Todo bool `yaml:"todo_list"`
 	// ClarifyDisabled, when true, removes the ask_user_question tool from the
 	// model's toolset. It is an inverted flag: the default (false/unset) leaves

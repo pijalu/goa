@@ -39,7 +39,7 @@ runtime paths.
 | `execution.max_tool_error_streak` | `4` | Consecutive failing calls of the SAME tool (any args) tolerated before one guard message tells the model to change approach. Resets on success or tool switch. |
 | `execution.max_consecutive_tool_rounds` | `15` | Tool-only LLM rounds with no visible text/thinking before a forced-answer nudge is injected. `0` = disabled (thinking-heavy models may need this). |
 | `execution.max_stream_rounds` | `0` (unlimited) | Hard cap on LLM stream rounds per turn. The turn loop is otherwise convergence-driven — there is deliberately no hidden default. |
-| `execution.auto_heal_tool_calls` | `false` | Extract/execute XML-markup tool calls emitted inside content streams by some local models. |
+| `execution.auto_heal_tool_calls` | `true` | Tool call fixing: extract/execute XML-markup tool calls emitted inside content streams (some local models). Disable with `/config` → Tools or the config key. |
 
 ## Loop & stream guards
 

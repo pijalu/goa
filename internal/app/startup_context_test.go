@@ -40,8 +40,9 @@ func newStartupContextSubsystems(t *testing.T) *subsystems {
 	subs.cfg = cfg
 
 	// Runtime tool registration (registerTools) + the always-on extras the
-	// app registers outside registerTools (subsystems.go): goal, todo_list
-	// (default-on), webfetch (default-on), and the run_skill runner.
+	// app registers outside registerTools (subsystems.go): goal, webfetch
+	// (default-on), lsp (default-on), and the run_skill runner. todo_list
+	// ships OFF by default.
 	reg := tools.NewToolRegistry()
 	registerTools(reg, nil, nil, dir, cfg, nil, false)
 	subs.toolRegistry = reg

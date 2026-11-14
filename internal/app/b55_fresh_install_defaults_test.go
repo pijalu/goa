@@ -39,25 +39,32 @@ func freshInstallRegistry(t *testing.T, cfg *config.Config) *tools.ToolRegistry 
 }
 
 // TestFreshInstall_FlagsPinsDefaultOnAndOff pins layer 1: the fresh config
-// itself carries the default pins (mcp default-ON per B46, smartsearch off,
-// the rest of the default-ON set intact).
+// itself carries the default pins (mcp default-ON per B46, lsp default-ON,
+// smartsearch off, todo_list default-OFF, the rest of the default-ON set
+// intact).
 func TestFreshInstall_FlagsPinsDefaultOnAndOff(t *testing.T) {
 	cfg := freshInstallConfig(t)
 
 	if !cfg.Tools.Enabled.AgentMCP {
 		t.Error("fresh install tools.enabled.mcp = false, want true (B46 default-ON)")
 	}
+	if !cfg.Tools.Enabled.LSP {
+		t.Error("fresh install tools.enabled.lsp = false, want true (default-ON)")
+	}
 	if cfg.Tools.SmartSearch.Enabled {
 		t.Error("fresh install tools.smartsearch.enabled = true, want false (minimal default set)")
 	}
-	if !cfg.Tools.Enabled.WebFetch || !cfg.Tools.Enabled.Todo || !cfg.Tools.Enabled.Goal {
-		t.Error("fresh install lost the default-ON webfetch/todo_list/goal flags")
+	if !cfg.Tools.Enabled.WebFetch || !cfg.Tools.Enabled.Goal {
+		t.Error("fresh install lost the default-ON webfetch/goal flags")
+	}
+	if cfg.Tools.Enabled.Todo {
+		t.Error("fresh install tools.enabled.todo_list = true, want false (default-OFF)")
 	}
 }
 
 // TestFreshInstall_RegistryHasMCPOnlyDefaults pins layer 2: the boot
-// registration path over the fresh config registers mcp and webfetch, and
-// none of the tools that ship off by default.
+// registration path over the fresh config registers mcp, webfetch and lsp,
+// and none of the tools that ship off by default.
 func TestFreshInstall_RegistryHasMCPOnlyDefaults(t *testing.T) {
 	cfg := freshInstallConfig(t)
 	reg := freshInstallRegistry(t, cfg)
@@ -68,9 +75,12 @@ func TestFreshInstall_RegistryHasMCPOnlyDefaults(t *testing.T) {
 	if _, ok := reg.Get("webfetch"); !ok {
 		t.Error("fresh install did not register webfetch (default-ON)")
 	}
+	if _, ok := reg.Get("lsp"); !ok {
+		t.Error("fresh install did not register lsp (default-ON)")
+	}
 	for _, absent := range []string{
 		"smartsearch", "python", "run_code", "terminals", "verify",
-		"bg_exec", "ssh_bash", "memento", "lsp", "session_search",
+		"bg_exec", "ssh_bash", "memento", "todo_list", "session_search",
 		"session_event_read", "schedule_create", "agent",
 	} {
 		if _, ok := reg.Get(absent); ok {

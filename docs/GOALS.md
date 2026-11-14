@@ -195,7 +195,7 @@ Use **goals** for work that must run autonomously across turns; use **todos** to
 
 ### Where todos live
 
-- **`todo_list` tool (standalone; `tools.enabled.todo_list`, default on).** A single tool with `action` parameters — `add`, `update`, `complete`, `remove`, `list`, `clear` — available with **no goal active**. The session list is a conversation scratchpad.
+- **`todo_list` tool (standalone; `tools.enabled.todo_list`, default off).** A single tool with `action` parameters — `add`, `update`, `complete`, `remove`, `list`, `clear` — available with **no goal active**. The session list is a conversation scratchpad.
 - **Goal-linked todos (goal tool `add_todo` / `update_todo`, or the same `todo_list` tool while a goal is active).** The linkage rules:
   - *Blank at goal start* — a new goal begins with an empty list; session items never leak into it.
   - *Contained by the goal* — items added during the goal belong to it. They never escape: when the goal ends (complete, cancel, replace) its todos end with it, and the session list resurfaces unchanged. `remove`/`clear` are refused while goal-linked (mark items `done` instead).
