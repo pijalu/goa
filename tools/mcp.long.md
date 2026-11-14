@@ -44,6 +44,19 @@ You do not need to know the config layout — `config_add` is the whole flow:
 The daemon picks up the new entry on its next client call — no restart, no
 manual TOML editing.
 
+## Binary content (screenshots, audio, resource blobs)
+
+MCP results carrying binary content never arrive as base64 text: images are
+saved to a temp file and attached to the result as native images for vision
+models (text-only models see an omission notice), and every other binary
+(audio, video, PDF, octet-stream, resource `blob`) is saved and replaced in
+the JSON by a short marker naming the file:
+
+    [binary: image/png → /tmp/goa-mcp-binaries-…/part-01.png (212.0 KiB)]
+
+Read artifacts back with `read_media` (images/video) or the shell; files are
+removed when goa closes the tool.
+
 ## Filtering and shaping
 
 `search` filters discovery lists across name/title/description/URI.

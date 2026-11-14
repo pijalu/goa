@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,10 @@ type AgentMCPTool struct {
 	// NewBackend builds the backend; nil means a real client.Client from
 	// Options. Tests inject fakes here.
 	NewBackend func(client.Options) (AgentMCPBackend, error)
+	// ExtractDir holds files decoded from MCP binary content (images and
+	// other artifacts); empty means a lazily-created temp dir removed on
+	// Close. Tests point it at t.TempDir() to inspect extracted files.
+	ExtractDir string
 
 	once    sync.Once
 	be      AgentMCPBackend
@@ -72,6 +77,12 @@ type AgentMCPTool struct {
 
 	mu     sync.Mutex
 	notice strings.Builder
+	// extractor lazily decodes binary MCP content; extractDir is its
+	// resolved root and ownsExtractDir records whether the tool created
+	// (and thus removes) the whole dir.
+	extractor      *binaryExtractor
+	extractDir     string
+	ownsExtractDir bool
 }
 
 // Schema returns the tool schema for the mcp tool.
@@ -151,11 +162,22 @@ var agentMCPDispatch = map[string]client.Op{
 	"get_prompt":     client.OpGetPrompt,
 }
 
-// Execute runs the requested agent-mcp action.
+// Execute runs the requested agent-mcp action (string-only fallback; the
+// agent loop prefers ExecuteContextWithResult).
 func (t *AgentMCPTool) Execute(input string) (string, error) {
+	res, err := t.ExecuteContextWithResult(context.Background(), input)
+	return res.Output, err
+}
+
+// ExecuteContextWithResult runs the requested agent-mcp action with the
+// caller's context (Stop()/cancellation propagate) and as a ToolResult:
+// binary MCP content is decoded to files — images attach via Images for the
+// vision pipeline, everything else becomes an inline artifact marker, so no
+// base64 ever crosses the tool boundary.
+func (t *AgentMCPTool) ExecuteContextWithResult(ctx context.Context, input string) (agentic.ToolResult, error) {
 	var p agentMCPParams
 	if err := json.Unmarshal([]byte(input), &p); err != nil {
-		return "", &internal.ToolError{
+		return agentic.ToolResult{}, &internal.ToolError{
 			Tool: "mcp", Type: "invalid_input",
 			Detail:   fmt.Sprintf("Cannot parse parameters: %v", err),
 			HintText: "Ensure your input is valid JSON with the required fields.",
@@ -163,9 +185,8 @@ func (t *AgentMCPTool) Execute(input string) (string, error) {
 	}
 	be, err := t.ensureBackend()
 	if err != nil {
-		return "", t.toolError(err)
+		return agentic.ToolResult{}, t.toolError(err)
 	}
-	ctx := context.Background()
 	if op, ok := agentMCPDispatch[p.Action]; ok {
 		return t.run(ctx, be, t.request(p, op))
 	}
@@ -173,13 +194,15 @@ func (t *AgentMCPTool) Execute(input string) (string, error) {
 	case "list_servers":
 		return t.run(ctx, be, client.Request{Op: client.OpListServers, Search: p.Search, Limit: p.Limit, Raw: p.Raw})
 	case "config_add":
-		return t.configAdd(be, p)
+		out, err := t.configAdd(be, p)
+		return agentic.ToolResult{Output: out}, err
 	case "shutdown":
-		return t.shutdown(ctx, be)
+		out, err := t.shutdown(ctx, be)
+		return agentic.ToolResult{Output: out}, err
 	case "":
-		return "", t.badAction("Missing action")
+		return agentic.ToolResult{}, t.badAction("Missing action")
 	}
-	return "", t.badAction(fmt.Sprintf("Unknown action: %s", p.Action))
+	return agentic.ToolResult{}, t.badAction(fmt.Sprintf("Unknown action: %s", p.Action))
 }
 
 // badAction reports an unknown or missing action.
@@ -208,21 +231,72 @@ func (t *AgentMCPTool) request(p agentMCPParams, op client.Op) client.Request {
 	}
 }
 
-// run executes one library request and renders the shaped payload as JSON.
-func (t *AgentMCPTool) run(ctx context.Context, be AgentMCPBackend, r client.Request) (string, error) {
+// run executes one library request and renders the shaped payload as JSON,
+// with binary content extracted to files first.
+func (t *AgentMCPTool) run(ctx context.Context, be AgentMCPBackend, r client.Request) (agentic.ToolResult, error) {
 	result, err := be.Do(ctx, r)
 	if err != nil {
-		return "", t.toolError(err)
+		return agentic.ToolResult{}, t.toolError(err)
 	}
+	images := imagePaths(t.extractBinaries(result))
 	body, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		return "", &internal.ToolError{
+		return agentic.ToolResult{}, &internal.ToolError{
 			Tool: "mcp", Type: "invalid_input",
 			Detail:   fmt.Sprintf("Cannot encode result: %v", err),
 			HintText: "Retry with the raw flag if the payload contains non-JSON data.",
 		}
 	}
-	return t.tagResult(string(body)), nil
+	return agentic.ToolResult{Output: t.tagResult(string(body)), Images: images}, nil
+}
+
+// extractBinaries rewrites binary content parts of result into files under
+// the tool's extract dir, replacing each with a short marker. Extraction
+// failures degrade to markers, never to a failed call.
+func (t *AgentMCPTool) extractBinaries(result any) []extractedBinary {
+	if result == nil {
+		return nil
+	}
+	x := t.ensureExtractor()
+	if x == nil {
+		return nil
+	}
+	return x.extract(result)
+}
+
+// ensureExtractor lazily resolves the extract dir (the injected ExtractDir or
+// a fresh temp dir the tool owns) and returns the long-lived extractor that
+// accumulates every artifact for Close() to clean up.
+func (t *AgentMCPTool) ensureExtractor() *binaryExtractor {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.extractor != nil {
+		return t.extractor
+	}
+	dir := t.ExtractDir
+	t.ownsExtractDir = dir == ""
+	if t.ownsExtractDir {
+		created, err := os.MkdirTemp("", "goa-mcp-binaries-*")
+		if err != nil {
+			return nil
+		}
+		dir = created
+	}
+	t.extractDir = dir
+	t.extractor = newBinaryExtractor(dir)
+	return t.extractor
+}
+
+// imagePaths returns the file paths of extracted binaries that qualify as
+// images; the vision pipeline reads them by path.
+func imagePaths(binaries []extractedBinary) []string {
+	var paths []string
+	for _, b := range binaries {
+		if b.IsImage && b.Path != "" {
+			paths = append(paths, b.Path)
+		}
+	}
+	return paths
 }
 
 // configAdd upserts one server entry in the agent-mcp config and returns an
@@ -316,9 +390,23 @@ func (w *agentMCPNotice) Write(p []byte) (int, error) {
 	return w.t.notice.Write(p)
 }
 
-// Close tears down the backend's sessions/connections. Safe to call even
-// when the backend never initialized; also safe to call more than once.
+// Close tears down the backend's sessions/connections and removes extracted
+// binary artifacts (the whole temp dir when the tool created it, individual
+// files when the dir was injected). Safe to call even when the backend never
+// initialized; also safe to call more than once.
 func (t *AgentMCPTool) Close() error {
+	t.mu.Lock()
+	extractor, dir, owns := t.extractor, t.extractDir, t.ownsExtractDir
+	t.mu.Unlock()
+	if extractor != nil && dir != "" {
+		if owns {
+			os.RemoveAll(dir)
+		} else {
+			for _, f := range extractor.files {
+				os.Remove(f)
+			}
+		}
+	}
 	be, err := t.ensureBackend()
 	if err != nil {
 		return err
