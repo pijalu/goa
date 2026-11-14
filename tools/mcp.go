@@ -77,10 +77,10 @@ type AgentMCPTool struct {
 
 	mu     sync.Mutex
 	notice strings.Builder
-	// extractor lazily decodes binary MCP content; extractDir is its
-	// resolved root and ownsExtractDir records whether the tool created
-	// (and thus removes) the whole dir.
-	extractor      *binaryExtractor
+	// binaries lazily persists binary MCP content via the client library's
+	// file policy; extractDir is its resolved root and ownsExtractDir
+	// records whether the tool created (and thus removes) the whole dir.
+	binaries       *artifactStore
 	extractDir     string
 	ownsExtractDir bool
 }
@@ -251,27 +251,27 @@ func (t *AgentMCPTool) run(ctx context.Context, be AgentMCPBackend, r client.Req
 }
 
 // extractBinaries rewrites binary content parts of result into files under
-// the tool's extract dir, replacing each with a short marker. Extraction
-// failures degrade to markers, never to a failed call.
+// the tool's extract dir, replacing each with a short marker; the walk and
+// markers come from the agent-mcp client library's file policy.
 func (t *AgentMCPTool) extractBinaries(result any) []extractedBinary {
 	if result == nil {
 		return nil
 	}
-	x := t.ensureExtractor()
-	if x == nil {
+	store := t.ensureBinaries()
+	if store == nil {
 		return nil
 	}
-	return x.extract(result)
+	return store.extract(result)
 }
 
-// ensureExtractor lazily resolves the extract dir (the injected ExtractDir or
-// a fresh temp dir the tool owns) and returns the long-lived extractor that
-// accumulates every artifact for Close() to clean up.
-func (t *AgentMCPTool) ensureExtractor() *binaryExtractor {
+// ensureBinaries lazily resolves the extract dir (the injected ExtractDir or
+// a fresh temp dir the tool owns) and returns the long-lived store whose
+// files Close() cleans up.
+func (t *AgentMCPTool) ensureBinaries() *artifactStore {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.extractor != nil {
-		return t.extractor
+	if t.binaries != nil {
+		return t.binaries
 	}
 	dir := t.ExtractDir
 	t.ownsExtractDir = dir == ""
@@ -283,8 +283,8 @@ func (t *AgentMCPTool) ensureExtractor() *binaryExtractor {
 		dir = created
 	}
 	t.extractDir = dir
-	t.extractor = newBinaryExtractor(dir)
-	return t.extractor
+	t.binaries = &artifactStore{dir: dir}
+	return t.binaries
 }
 
 // imagePaths returns the file paths of extracted binaries that qualify as
@@ -396,13 +396,13 @@ func (w *agentMCPNotice) Write(p []byte) (int, error) {
 // initialized; also safe to call more than once.
 func (t *AgentMCPTool) Close() error {
 	t.mu.Lock()
-	extractor, dir, owns := t.extractor, t.extractDir, t.ownsExtractDir
+	store, dir, owns := t.binaries, t.extractDir, t.ownsExtractDir
 	t.mu.Unlock()
-	if extractor != nil && dir != "" {
+	if store != nil && dir != "" {
 		if owns {
 			os.RemoveAll(dir)
 		} else {
-			for _, f := range extractor.files {
+			for _, f := range store.files {
 				os.Remove(f)
 			}
 		}

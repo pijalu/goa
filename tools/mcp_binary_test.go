@@ -248,20 +248,6 @@ func TestAgentMCPCloseRemovesExtractedArtifacts(t *testing.T) {
 	})
 }
 
-// TestHumanSize covers the marker size rendering.
-func TestHumanSize(t *testing.T) {
-	cases := []struct {
-		in   int
-		want string
-	}{
-		{512, "512 B"},
-		{1024, "1.0 KiB"},
-		{217088, "212.0 KiB"},
-		{1572864, "1.5 MiB"},
-	}
-	for _, tc := range cases {
-		if got := humanSize(tc.in); got != tc.want {
-			t.Errorf("humanSize(%d) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
+// TestHumanSize covered the marker size rendering; that function now lives
+// in the agent-mcp client library (client.HumanSize, with its own tests), so
+// goa has no duplicate to test.
