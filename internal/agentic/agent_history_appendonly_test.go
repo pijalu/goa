@@ -29,7 +29,7 @@ type msgKind int
 const (
 	kindOther  msgKind = iota // user prompt / plain assistant text (append-once)
 	kindCall                  // assistant message carrying tool_call blocks
-	kindNote                  // assistant elision note (elided form of a call)
+	kindNote                  // user compression metadata (elided form of a call)
 	kindResult                // tool result message
 )
 
@@ -44,8 +44,8 @@ func classify(m provider.Message) (kind msgKind, callID, toolName string, result
 		}
 	}
 	for _, b := range m.Content {
-		if b.Type == provider.ContentBlockText &&
-			strings.HasPrefix(b.Text, "[earlier call") && strings.HasSuffix(b.Text, " elided]") {
+		if m.Role == provider.RoleUser && b.Type == provider.ContentBlockText &&
+			strings.HasPrefix(b.Text, "[goa-system] Compression metadata:") {
 			return kindNote, "", "", false
 		}
 	}
@@ -151,6 +151,21 @@ func TestAgent_HistoryAppendOnlyExceptElision(t *testing.T) {
 	}
 }
 
+func TestAlignAppendOnlyElisionPreservesAssistantContent(t *testing.T) {
+	original := Message{
+		Type: Content, Role: Assistant, Content: "Mode: fix — preserve the reviewed content.",
+		ToolCalls: []ToolCallInfo{{ID: "call_1", Type: "function", Name: "bash", Arguments: `{"command":"make"}`}},
+	}
+	prev := migrateMessages([]Message{original, {Type: Content, Role: ToolRole, Content: "ok", ToolCallID: "call_1"}})
+	original.ToolCalls[0].Arguments = elidedToolCallArguments
+	next := migrateMessages([]Message{original, {Type: Content, Role: ToolRole, Content: elidedToolResultContent, ToolCallID: "call_1"}})
+
+	advance, elided := alignOneMessage(t, "content-carrying call", 0, 0, prev[0], next, map[string]bool{}, map[string]bool{})
+	if !elided || advance != 2 {
+		t.Fatalf("content-carrying elision consumed %d messages (elided=%v), want metadata + preserved assistant", advance, elided)
+	}
+}
+
 // alignAppendOnly walks one prev/next request pair left-to-right, reporting
 // every append-only violation via t.Error and marking elisions in the shared
 // maps. It returns whether this pair contained any elision. Remaining next
@@ -191,6 +206,9 @@ func alignOneMessage(t *testing.T, round string, i, j int, pm provider.Message, 
 		return 1, false // unchanged, in order
 	}
 	if adv, el, ok := elideCall(t, round, pm, nm, pk, nk, pTool, pCallID, elidedCalls); ok {
+		if j+1 < len(next) && assistantContentPreservedAfterElision(pm, next[j+1]) {
+			adv = 2
+		}
 		return adv, el
 	}
 	if adv, el, ok := elideResult(t, round, pk, nk, pCallID, pResElided, nm, elidedResults); ok {
@@ -214,6 +232,20 @@ func elideCall(t *testing.T, round string, pm, nm provider.Message, pk, nk msgKi
 	}
 	elidedCalls[pCallID] = true
 	return 1, true, true
+}
+
+func assistantContentPreservedAfterElision(prev, candidate provider.Message) bool {
+	if candidate.Role != provider.RoleAssistant {
+		return false
+	}
+	content := make([]provider.ContentBlock, 0, len(prev.Content))
+	for _, block := range prev.Content {
+		if block.Type != provider.ContentBlockToolCall {
+			content = append(content, block)
+		}
+	}
+	prev.Content = content
+	return equalWire(prev, candidate)
 }
 
 // elideResult handles a tool result body elided in place (exactly once).

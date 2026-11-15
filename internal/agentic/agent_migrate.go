@@ -14,18 +14,16 @@ func migrateMessage(m Message) provider.Message {
 	blocks := []provider.ContentBlock{}
 	// For assistant messages that issued tool calls, OpenAI-compatible APIs
 	// require the tool_call blocks to appear before the text content block.
-	var elidedNames []string
 	if m.Role == Assistant && len(m.ToolCalls) > 0 {
 		for _, tc := range m.ToolCalls {
 			// Elided calls are NOT serialized as tool_call blocks: the
 			// in-history marker is not valid JSON (strict providers 400 the
 			// request, breaking /compress:summarize) and a live-looking call
 			// exemplar teaches the model to imitate the placeholder as its
-			// own call arguments. They become a plain-text note instead, and
-			// migrateMessages drops their matching tool results so call/result
+			// own call arguments. They become user-role metadata in
+			// migrateMessages, which drops their matching tool results so call/result
 			// pairing stays consistent.
 			if tc.Arguments == elidedToolCallArguments {
-				elidedNames = append(elidedNames, tc.Name)
 				continue
 			}
 			blocks = append(blocks, provider.ContentBlock{
@@ -37,14 +35,6 @@ func migrateMessage(m Message) provider.Message {
 		}
 	}
 	text := m.Content
-	if len(elidedNames) > 0 {
-		note := elidedToolCallNote(elidedNames)
-		if text == "" {
-			text = note
-		} else {
-			text += "\n" + note
-		}
-	}
 	if m.Role == ToolRole {
 		blocks = append(blocks, provider.ContentBlock{
 			Type:       provider.ContentBlockToolResult,
@@ -89,9 +79,52 @@ func migrateMessages(msgs []Message) []provider.Message {
 		if m.Role == ToolRole && m.ToolCallID != "" && !live[m.ToolCallID] {
 			continue
 		}
-		result = append(result, migrateMessage(m))
+		names := elidedToolCallNames(m)
+		if len(names) > 0 {
+			// Metadata precedes the assistant message so a mixed elided/live
+			// batch keeps its live assistant call directly adjacent to results.
+			// User role is portable across providers and, unlike assistant
+			// content, does not teach the model to reproduce compression notes.
+			result = append(result, provider.NewUserMessage(elidedToolCallMetadata(names)))
+		}
+		pm := migrateMessage(m)
+		if len(names) > 0 && !providerMessageHasContent(pm) {
+			continue
+		}
+		result = append(result, pm)
 	}
 	return result
+}
+
+func elidedToolCallNames(m Message) []string {
+	if m.Role != Assistant {
+		return nil
+	}
+	var names []string
+	for _, tc := range m.ToolCalls {
+		if tc.Arguments == elidedToolCallArguments {
+			names = append(names, tc.Name)
+		}
+	}
+	return names
+}
+
+func providerMessageHasContent(m provider.Message) bool {
+	for _, block := range m.Content {
+		switch block.Type {
+		case provider.ContentBlockText:
+			if block.Text != "" {
+				return true
+			}
+		case provider.ContentBlockThinking:
+			if block.Thinking != "" {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // liveToolCallIDs returns the set of tool-call IDs that will be serialized as
@@ -118,15 +151,11 @@ func liveToolCallIDs(msgs []Message) map[string]bool {
 	return ids
 }
 
-// elidedToolCallNote renders the plain-text placeholder that replaces elided
-// tool-call blocks in provider-bound assistant messages. The note keeps the
-// tool name visible so the model retains the fact that the call happened
-// without an invocable exemplar to imitate.
-func elidedToolCallNote(names []string) string {
-	if len(names) == 1 {
-		return fmt.Sprintf("[earlier call to %s elided]", names[0])
-	}
-	return fmt.Sprintf("[earlier calls to %s elided]", strings.Join(names, ", "))
+// elidedToolCallMetadata records omitted tool activity outside assistant
+// output. Keeping this metadata out of assistant messages prevents compressed
+// history from becoming an exemplar the model echoes in its next response.
+func elidedToolCallMetadata(names []string) string {
+	return fmt.Sprintf("[goa-system] Compression metadata: earlier tool calls and results omitted (tools: %s). Internal context metadata; do not reproduce in responses.", strings.Join(names, ", "))
 }
 
 // countElidedToolCalls reports how many assistant tool calls in the snapshot

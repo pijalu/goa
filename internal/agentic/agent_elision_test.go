@@ -6,6 +6,7 @@ package agentic
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"strings"
@@ -14,6 +15,20 @@ import (
 
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
+
+func assertNoAssistantElisionMetadata(t *testing.T, msgs []provider.Message) {
+	t.Helper()
+	for _, m := range msgs {
+		if m.Role != provider.RoleAssistant {
+			continue
+		}
+		for _, block := range m.Content {
+			if strings.Contains(block.Text, "Compression metadata:") || strings.Contains(block.Text, "[earlier call") {
+				t.Errorf("compression metadata leaked into assistant content: %q", block.Text)
+			}
+		}
+	}
+}
 
 func TestBuildProviderHistoryElidedCallsBecomeNotes(t *testing.T) {
 	agent := newElisionAgent()
@@ -29,11 +44,12 @@ func TestBuildProviderHistoryElidedCallsBecomeNotes(t *testing.T) {
 	assertToolPairingConsistent(t, msgs)
 
 	text := payloadTexts(msgs)
-	for _, want := range []string{"[earlier call to bash elided]", "[earlier call to edit elided]"} {
+	for _, want := range []string{"tools: bash", "tools: edit"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("provider-bound history missing note %q; payload:\n%s", want, text)
+			t.Errorf("provider-bound history missing metadata %q; payload:\n%s", want, text)
 		}
 	}
+	assertNoAssistantElisionMetadata(t, msgs)
 	// The straddle case: call_2's result was NOT elided in history, but its
 	// call was — the result must be dropped, not shipped as an orphan.
 	assertNoToolResultsFor(t, msgs, "call_1", "call_2")
@@ -48,6 +64,108 @@ func TestMigrateMessagesElidedArgumentsValidJSON(t *testing.T) {
 	agent.compressToolElision(false)
 
 	assertToolPairingConsistent(t, migrateMessages(agent.GetHistory()))
+}
+
+func TestMigrateMessagesElisionMetadataIsNotAssistantContent(t *testing.T) {
+	const original = "Mode: fix — build, install, and commit the reviewed changes."
+	msgs := []Message{
+		{
+			Type: Content, Role: Assistant, Content: original,
+			ToolCalls: []ToolCallInfo{
+				{ID: "e1", Type: "function", Name: "bash", Arguments: elidedToolCallArguments},
+				{ID: "e2", Type: "function", Name: "read", Arguments: elidedToolCallArguments},
+			},
+		},
+		{Type: Content, Role: ToolRole, Content: elidedToolResultContent, ToolCallID: "e1"},
+		{Type: Content, Role: ToolRole, Content: elidedToolResultContent, ToolCallID: "e2"},
+	}
+
+	out := migrateMessages(msgs)
+	assertToolPairingConsistent(t, out)
+	if len(out) != 2 {
+		t.Fatalf("expected user metadata followed by preserved assistant content, got %d messages: %#v", len(out), out)
+	}
+	if out[0].Role != provider.RoleUser {
+		t.Fatalf("compression metadata role = %q, want user", out[0].Role)
+	}
+	metadata := payloadTexts(out[:1])
+	if !strings.Contains(metadata, "bash, read") || !strings.Contains(metadata, "do not reproduce") {
+		t.Errorf("compression metadata missing tool names or non-reproduction instruction: %q", metadata)
+	}
+	if out[1].Role != provider.RoleAssistant || payloadTexts(out[1:]) != original+"\n" {
+		t.Errorf("assistant content changed during elision: %#v", out[1])
+	}
+	if strings.Contains(payloadTexts(out), "[earlier calls to bash, read elided]") {
+		t.Fatal("legacy assistant-style elision marker survived migration")
+	}
+}
+
+func TestMigrateMessagesMixedElisionPreservesLiveToolAdjacency(t *testing.T) {
+	msgs := []Message{
+		{
+			Type: Content, Role: Assistant, Content: "Working",
+			ToolCalls: []ToolCallInfo{
+				{ID: "elided", Type: "function", Name: "bash", Arguments: elidedToolCallArguments},
+				{ID: "live", Type: "function", Name: "read", Arguments: `{"path":"README.md"}`},
+			},
+		},
+		{Type: Content, Role: ToolRole, Content: elidedToolResultContent, ToolCallID: "elided"},
+		{Type: Content, Role: ToolRole, Content: "contents", ToolCallID: "live"},
+	}
+
+	out := migrateMessages(msgs)
+	assertToolPairingConsistent(t, out)
+	if len(out) != 3 {
+		t.Fatalf("expected metadata, live call, live result; got %d messages: %#v", len(out), out)
+	}
+	if out[0].Role != provider.RoleUser || out[1].Role != provider.RoleAssistant || out[2].Role != provider.RoleToolResult {
+		t.Fatalf("metadata must precede the live assistant/result pair: %#v", out)
+	}
+	if got := extractTextFromBlocks(out[1].Content); got != "Working" {
+		t.Errorf("assistant content = %q, want original content only", got)
+	}
+	if out[2].Content[0].ToolCallID != "live" {
+		t.Errorf("live result adjacency damaged: %#v", out[2])
+	}
+}
+
+func TestToolElisionReducesProviderBoundContext(t *testing.T) {
+	agent := newElisionAgent()
+	history := []Message{
+		{Type: Content, Role: System, Content: "You are helpful."},
+		{Type: Content, Role: User, Content: "inspect"},
+		{Type: Content, Role: Assistant, Content: "first", ToolCalls: []ToolCallInfo{{ID: "1", Name: "bash", Arguments: `{"command":"` + strings.Repeat("x", 4000) + `"}`}}},
+		{Type: Content, Role: ToolRole, Content: strings.Repeat("large tool output\n", 500), ToolCallID: "1"},
+		{Type: Content, Role: User, Content: "inspect again"},
+		{Type: Content, Role: Assistant, Content: "second", ToolCalls: []ToolCallInfo{{ID: "2", Name: "read", Arguments: `{"path":"` + strings.Repeat("y", 4000) + `"}`}}},
+		{Type: Content, Role: ToolRole, Content: strings.Repeat("more tool output\n", 500), ToolCallID: "2"},
+		{Type: Content, Role: User, Content: "finish"},
+		{Type: Content, Role: Assistant, Content: "done"},
+	}
+	agent.SetHistory(history)
+	beforeWire, err := json.Marshal(agent.buildProviderHistory())
+	if err != nil {
+		t.Fatalf("marshal pre-elision history: %v", err)
+	}
+	beforeTokens := estimateTokensFromHistory(agent.GetHistory())
+
+	result := agent.compressToolElision(false)
+	if result.freedTokens <= 0 {
+		t.Fatalf("elision reported no freed tokens: %+v", result)
+	}
+
+	afterWire, err := json.Marshal(agent.buildProviderHistory())
+	if err != nil {
+		t.Fatalf("marshal post-elision history: %v", err)
+	}
+	afterTokens := estimateTokensFromHistory(agent.GetHistory())
+	if afterTokens >= beforeTokens {
+		t.Errorf("elision did not reduce estimated context tokens: %d -> %d", beforeTokens, afterTokens)
+	}
+	if len(afterWire)*2 >= len(beforeWire) {
+		t.Errorf("elision did not at least halve provider-bound payload: %d -> %d bytes", len(beforeWire), len(afterWire))
+	}
+	t.Logf("tool_elision context: tokens %d -> %d; provider payload %d -> %d bytes", beforeTokens, afterTokens, len(beforeWire), len(afterWire))
 }
 
 // TestMigrateMessagesDropsElidedPairs covers parallel tool calls: one
@@ -77,9 +195,13 @@ func TestMigrateMessagesDropsElidedPairs(t *testing.T) {
 	assertToolPairingConsistent(t, out)
 
 	text := payloadTexts(out)
-	if !strings.Contains(text, "[earlier calls to bash, edit elided]") {
-		t.Errorf("missing plural elision note; payload:\n%s", text)
+	if !strings.Contains(text, "tools: bash, edit") {
+		t.Errorf("missing plural elision metadata; payload:\n%s", text)
 	}
+	if out[0].Role != provider.RoleUser {
+		t.Errorf("elision metadata role = %q, want user", out[0].Role)
+	}
+	assertNoAssistantElisionMetadata(t, out)
 	liveFound, liveResultFound := false, false
 	for _, m := range out {
 		for _, b := range m.Content {
@@ -154,9 +276,10 @@ func TestSummarizeHistoryWithElidedPairs(t *testing.T) {
 		t.Fatalf("expected 1 summarize request, got %d", len(ctxs))
 	}
 	assertToolPairingConsistent(t, ctxs[0].Messages)
-	if !strings.Contains(payloadTexts(ctxs[0].Messages), "[earlier call to bash elided]") {
-		t.Error("summarize request missing the elision note for elided calls")
+	if !strings.Contains(payloadTexts(ctxs[0].Messages), "tools: bash") {
+		t.Error("summarize request missing the elision metadata for elided calls")
 	}
+	assertNoAssistantElisionMetadata(t, ctxs[0].Messages)
 }
 
 // --- Provider prefix-cache bust loop:(CM:13) regression tests ---
