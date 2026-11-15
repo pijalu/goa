@@ -207,6 +207,7 @@ func (a *Agent) indexStreamingToolCall(contentIndex int, ptc *partialToolCall) {
 // multi-line tool-call markup that spans multiple deltas is suppressed until
 // the whole block is closed and stripped.
 func containsToolXMLTag(text string) bool {
+	text = normalizeDSMLMarkup(text)
 	for _, tag := range []string{
 		"<tool_call>", "</tool_call>",
 		"<function=", "</function>",

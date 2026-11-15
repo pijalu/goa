@@ -305,14 +305,12 @@ func TestParseToolCalls_DSMLRecoveredUnconditionally(t *testing.T) {
 	if args["action"] != "create" {
 		t.Errorf("action = %v, want create", args["action"])
 	}
-	obj, _ := args["objectives"].(string)
-	if !strings.Contains(obj, "P6.FTS-REST") || !strings.Contains(obj, "P6.JSON") {
-		t.Errorf("objectives mangled: %q", obj)
+	obj, ok := args["objectives"].([]any)
+	if !ok || len(obj) != 2 {
+		t.Fatalf("objectives should be a 2-element JSON array, got %#v", args["objectives"])
 	}
-	// The JSON array value must survive verbatim (string="false").
-	var arr []string
-	if err := json.Unmarshal([]byte(obj), &arr); err != nil || len(arr) != 2 {
-		t.Errorf("objectives should be a 2-element JSON array, got %q (err %v)", obj, err)
+	if obj[0] != "P6.FTS-REST — snippet, ranking" || obj[1] != "P6.JSON — JSON1 functions" {
+		t.Errorf("objectives mangled: %#v", obj)
 	}
 }
 
@@ -406,8 +404,8 @@ func TestParseDSMLToolCalls_WhitespaceDialect(t *testing.T) {
 	if args["action"] != "create" {
 		t.Errorf("action = %v, want create", args["action"])
 	}
-	if args["freshContext"] != "false" {
-		t.Errorf("freshContext = %v, want false", args["freshContext"])
+	if args["freshContext"] != false {
+		t.Errorf("freshContext = %#v, want false", args["freshContext"])
 	}
 	if obj, _ := args["objective"].(string); !strings.Contains(obj, "Stall timing") || !strings.Contains(obj, "continues here.") {
 		t.Errorf("multi-line objective mangled: %q", obj)
@@ -455,5 +453,40 @@ func TestClosedInvokeCallNames_WhitespaceDialect(t *testing.T) {
 	open := `<｜｜DSML｜｜ invoke name="goal"><｜｜DSML｜｜ parameter name="action">create</｜｜DSML｜｜ parameter>`
 	if names := closedInvokeCallNames(open, func(string) bool { return true }); len(names) != 0 {
 		t.Errorf("unterminated block must not be reported: %v", names)
+	}
+}
+
+// exportSingleBarDSML reproduces goa-export-20261115-105553 byte for byte in
+// its delimiter shape: DeepSeek emitted one U+FF5C on each side of DSML and
+// used the plural wrapper "calls". The older fixtures used two U+FF5C bars.
+const exportSingleBarDSML = `<｜DSML｜ calls>
+<｜DSML｜ invoke name="goal">
+<｜DSML｜ parameter name="action" string="true">create</｜DSML｜ parameter>
+<｜DSML｜ parameter name="objectives" string="false">["UX-08 implementation: execute work packages WP01–WP15 in dependency order"]</｜DSML｜ parameter>
+<｜DSML｜ parameter name="verifyCommand" string="true">bash scripts/check-docs.sh && npx vitest run --reporter=dot</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls>`
+
+func TestParseDSMLToolCalls_SingleBarExportDialect(t *testing.T) {
+	calls := parseDSMLToolCallsFromText(exportSingleBarDSML, 0, true)
+	if len(calls) != 1 || calls[0].name != "goal" {
+		t.Fatalf("single-bar export call not recovered: %+v", calls)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(calls[0].arguments), &args); err != nil {
+		t.Fatalf("arguments not valid JSON: %v (%q)", err, calls[0].arguments)
+	}
+	if args["action"] != "create" {
+		t.Errorf("action = %v, want create", args["action"])
+	}
+	objectives, ok := args["objectives"].([]any)
+	if !ok || len(objectives) != 1 || objectives[0] != "UX-08 implementation: execute work packages WP01–WP15 in dependency order" {
+		t.Errorf("objectives = %#v, want one-element array", args["objectives"])
+	}
+	if got := args["verifyCommand"]; got != "bash scripts/check-docs.sh && npx vitest run --reporter=dot" {
+		t.Errorf("verifyCommand = %q", got)
+	}
+	if stripped := stripToolMarkup(exportSingleBarDSML, true); strings.Contains(stripped, "DSML") {
+		t.Errorf("single-bar DSML markup not stripped: %q", stripped)
 	}
 }

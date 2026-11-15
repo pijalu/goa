@@ -466,6 +466,44 @@ func TestAutoHeal_WhitespaceDSMLRecoveredWithAutoHealOn(t *testing.T) {
 	}
 }
 
+func TestAutoHeal_SingleBarDSMLExportRecovered(t *testing.T) {
+	p := registerTestProvider("dsml-single-bar-export", []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"goal\">\n"},
+		{Type: provider.EventTextDelta, Delta: "<｜DSML｜ parameter name=\"action\" string=\"true\">create</｜DSML｜ parameter>\n"},
+		{Type: provider.EventTextDelta, Delta: "<｜DSML｜ parameter name=\"objectives\" string=\"false\">[\"Implement WP02\"]</｜DSML｜ parameter>\n"},
+		{Type: provider.EventTextDelta, Delta: "</｜DSML｜ invoke>\n</｜DSML｜ calls>"},
+	})
+
+	called := false
+	tool := &autoHealMockTool{
+		name: "goal",
+		exec: func(input string) (string, error) {
+			called = true
+			if input != `{"action":"create","objectives":["Implement WP02"]}` {
+				t.Errorf("unexpected input: %q", input)
+			}
+			return "created", nil
+		},
+	}
+	agent := NewAgent(Config{
+		Model:             testModel(p.api),
+		SystemPrompt:      "test",
+		Tools:             []Tool{tool},
+		AutoHealToolCalls: true,
+	})
+
+	out, err := agent.RunAndCollect(context.Background(), "create it")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !called {
+		t.Fatal("single-bar DSML export call was dropped")
+	}
+	if strings.Contains(out, "DSML") || strings.Contains(out, "invoke name") {
+		t.Errorf("tool markup leaked into user-visible output: %q", out)
+	}
+}
+
 // newReportTestAgent builds an agent with one registered tool and a content
 // buffer holding the given text, for direct reportUnrecoveredTextToolCall
 // tests (the heal path itself is covered by the end-to-end tests above).

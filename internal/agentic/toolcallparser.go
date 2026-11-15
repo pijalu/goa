@@ -33,7 +33,7 @@ var (
 	// additionally normalizes the text up front (normalizeDSMLMarkup) so
 	// detection, parsing and stripping cannot disagree — see the comment there.
 	dsmlInvokeRE = regexp.MustCompile(`<｜｜DSML｜｜\s*invoke\s+name="([^"]+)"\s*>`)
-	dsmlParamRE  = regexp.MustCompile(`<｜｜DSML｜｜\s*parameter\s+name="([^"]+)"(?:\s+string="(?:true|false)")?\s*>`)
+	dsmlParamRE  = regexp.MustCompile(`<｜｜DSML｜｜\s*parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>`)
 	// dsmlInvokeCloseRE terminates one invoke block (whitespace-tolerant).
 	dsmlInvokeCloseRE = regexp.MustCompile(`</｜｜DSML｜｜\s*invoke>`)
 	dsmlParamClose    = "</｜｜DSML｜｜parameter>"
@@ -42,8 +42,12 @@ var (
 
 	// dsmlDelimiterWSRE matches the DSML delimiter with arbitrary whitespace
 	// inside or after it, in both the opening and the closing spelling, so a
-	// single normalization pass makes every downstream pattern match.
-	dsmlDelimiterWSRE = regexp.MustCompile(`<(/?) *｜｜ *DSML *｜｜ *`)
+	// single normalization pass makes every downstream pattern match. DeepSeek
+	// emits either one or two U+FF5C bars on each side; normalize both forms.
+	dsmlDelimiterWSRE = regexp.MustCompile(`<(/?) *｜+ *DSML *｜+ *`)
+	// dsmlCallsWrapperRE normalizes the observed "calls" alias to the
+	// canonical "tool_calls" wrapper so stripping removes the whole block.
+	dsmlCallsWrapperRE = regexp.MustCompile(`<(/?)｜｜DSML｜｜\s*calls>`)
 
 	// Anthropic-legacy tool-use dialect: <invoke name="fn">…</invoke> wrapping
 	// <parameter name="k">value</parameter> entries. Models trained on the
@@ -110,11 +114,13 @@ func normalizeDSMLMarkup(text string) string {
 	if !strings.Contains(text, "DSML") {
 		return text
 	}
-	return dsmlDelimiterWSRE.ReplaceAllString(text, "<$1｜｜DSML｜｜")
+	text = dsmlDelimiterWSRE.ReplaceAllString(text, "<$1｜｜DSML｜｜")
+	return dsmlCallsWrapperRE.ReplaceAllString(text, "<$1｜｜DSML｜｜tool_calls>")
 }
 
 // hasToolSignal reports whether text contains any tool-call XML signal.
 func hasToolSignal(text string) bool {
+	text = normalizeDSMLMarkup(text)
 	for _, s := range toolXMLSignals {
 		if strings.Contains(text, s) {
 			return true
@@ -324,9 +330,8 @@ func (sc *toolCallScanner) nextDSMLCall() (parsedToolCall, bool) {
 }
 
 // parseDSMLParameters folds the DSML parameter entries of one invoke body into
-// a JSON argument object. The optional string="true|false" attribute only marks
-// whether the value is a quoted string; values are passed through verbatim (the
-// receiving tool decodes JSON arrays/objects itself).
+// a JSON argument object. string="false" marks a raw JSON value and preserves
+// its array/object/boolean/number type; string="true" or no attribute is text.
 func parseDSMLParameters(body string) (string, bool) {
 	matches := dsmlParamRE.FindAllStringSubmatchIndex(body, -1)
 	if len(matches) == 0 {
@@ -336,7 +341,7 @@ func parseDSMLParameters(body string) (string, bool) {
 		}
 		return "{}", true
 	}
-	args := make(map[string]string, len(matches))
+	args := make(map[string]any, len(matches))
 	for i, pm := range matches {
 		key := body[pm[2]:pm[3]]
 		valStart := pm[1]
@@ -346,8 +351,16 @@ func parseDSMLParameters(body string) (string, bool) {
 		}
 		val := strings.TrimSpace(body[valStart:valEnd])
 		val = strings.TrimSuffix(val, dsmlParamClose)
-		val = dsmlParamCloseRE.ReplaceAllString(val, "")
-		args[key] = strings.TrimSpace(val)
+		val = strings.TrimSpace(dsmlParamCloseRE.ReplaceAllString(val, ""))
+		if len(pm) >= 6 && pm[4] >= 0 && body[pm[4]:pm[5]] == "false" {
+			var decoded any
+			if err := json.Unmarshal([]byte(val), &decoded); err != nil {
+				return "", false
+			}
+			args[key] = decoded
+			continue
+		}
+		args[key] = val
 	}
 	b, _ := json.Marshal(args)
 	return string(b), true
