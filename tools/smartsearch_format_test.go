@@ -164,6 +164,7 @@ func formatByteIdenticalScenarios(src, outside string) []formatScenario {
 // tool projection, query, rebuild flag and index-dir visibility, asserting the
 // produced bytes never drifted.
 func TestSmartSearchFormatResults_ByteIdentical(t *testing.T) {
+	setStripANSIForTest(t, false) // golden fixtures encode the legacy visible-escape form
 	dir := t.TempDir()
 	outside := t.TempDir()
 	src := filepath.Join(dir, "main.go")

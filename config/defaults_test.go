@@ -250,3 +250,37 @@ func TestDefaultConfig_PythonToolEnabled(t *testing.T) {
 		t.Errorf("Tools.Enabled.PythonEnabled = true, want false (minimal-set default)")
 	}
 }
+
+// TestDefaultConfig_StripANSI pins the default for ANSI cleanup: untrusted
+// tool output must have escape sequences removed unless the user opts out.
+func TestDefaultConfig_StripANSI(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	loader := NewCascadeLoader(t.TempDir(), "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.Tools.StripANSIEnabled() {
+		t.Error("Tools.StripANSIEnabled() = false, want true by default")
+	}
+	if cfg.Tools.StripANSI == nil || !*cfg.Tools.StripANSI {
+		t.Errorf("Tools.StripANSI = %v, want explicit true from embedded default", cfg.Tools.StripANSI)
+	}
+}
+
+// TestCascadeStripANSIDisable verifies a user config can opt out of ANSI
+// stripping and that the higher cascade layer wins.
+func TestCascadeStripANSIDisable(t *testing.T) {
+	homeDir, projectDir, cleanup := setupTestConfig(t)
+	defer cleanup()
+	t.Setenv("HOME", homeDir)
+	writeConfig(t, homeDir+"/.goa/config.yaml", "tools:\n  strip_ansi: false\n")
+
+	cfg, err := NewCascadeLoader(projectDir, "", nil).Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Tools.StripANSIEnabled() {
+		t.Error("Tools.StripANSIEnabled() = true, want false from home config")
+	}
+}

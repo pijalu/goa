@@ -365,6 +365,7 @@ func TestPythonTool_TruncateOutput(t *testing.T) {
 // TestPythonTool_Execute_SanitizesControlBytes: script output is untrusted —
 // raw ESC bytes must become visible text before reaching the model/TUI.
 func TestPythonTool_Execute_SanitizesControlBytes(t *testing.T) {
+	setStripANSIForTest(t, false)
 	tool := &PythonTool{}
 	out, err := tool.Execute(`{"code": "print('\\x1b[2Kwiped')"}`)
 	if err != nil {

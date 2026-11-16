@@ -185,11 +185,11 @@ func formatReport(r verify.Report) string {
 		b.WriteString("\n--- stdout ---\n")
 		// Sanitize: command output is untrusted — raw ESC bytes must never
 		// reach the model context or the TUI renderer.
-		b.WriteString(ansi.Sanitize(r.Stdout))
+		b.WriteString(ansi.Clean(r.Stdout))
 	}
 	if r.Stderr != "" {
 		b.WriteString("\n--- stderr ---\n")
-		b.WriteString(ansi.Sanitize(r.Stderr))
+		b.WriteString(ansi.Clean(r.Stderr))
 	}
 	return b.String()
 }

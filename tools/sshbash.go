@@ -150,9 +150,9 @@ func (t *SSHBashTool) ExecuteContext(ctx context.Context, input string) (string,
 	fmt.Fprintf(&buf, "Exit: %d\n", exitCode(result.err))
 	fmt.Fprintf(&buf, "Duration: %.2fs\n", duration.Seconds())
 	if len(result.output) > 0 {
-		// Sanitize: remote command output is untrusted — raw ESC bytes must
+		// Clean: remote command output is untrusted — raw ESC bytes must
 		// never reach the model context or the TUI renderer.
-		fmt.Fprintf(&buf, "Output:\n%s\n", ansi.Sanitize(string(result.output)))
+		fmt.Fprintf(&buf, "Output:\n%s\n", ansi.Clean(string(result.output)))
 	}
 
 	return buf.String(), nil

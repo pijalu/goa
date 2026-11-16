@@ -39,6 +39,7 @@ func (c *configMenu) settingToolsMenu() {
 		// close this sticky one (sticky pickers stay open by default).
 		{Value: "enabled_tools", Label: "Enabled/disabled tools", Description: toolsEnabledLabel(cfg), CloseOnSelect: true},
 		{Value: "tool_call_fixing", Label: "Tool call fixing", Description: boolLabel(cfg.Execution.AutoHealToolCalls)},
+		{Value: "strip_ansi", Label: "Strip ANSI from tool output", Description: boolLabel(cfg.Tools.StripANSIEnabled())},
 	}
 	// B56: sticky picker — the toggle row flips in place, the navigation row
 	// opens the tools picker, Escape closes.
@@ -56,13 +57,28 @@ func (c *configMenu) settingToolsMenu() {
 				v = "false"
 			}
 			c.applySet("execution.auto_heal_tool_calls", v)
-			// B56: stay in the SAME picker — refresh the flipped row in place.
-			c.ctx.UpdateSelectorItems([]tui.SelectorItem{
-				{Value: "enabled_tools", Label: "Enabled/disabled tools", Description: toolsEnabledLabel(c.ctx.Config), CloseOnSelect: true},
-				{Value: "tool_call_fixing", Label: "Tool call fixing", Description: boolLabel(c.ctx.Config.Execution.AutoHealToolCalls)},
-			})
+			refreshToolSettingsItems(c)
+			return
+		case "strip_ansi":
+			v := "true"
+			if cfg.Tools.StripANSIEnabled() {
+				v = "false"
+			}
+			c.applySet("tools.strip_ansi", v)
+			refreshToolSettingsItems(c)
 			return
 		}
+	})
+}
+
+// refreshToolSettingsItems updates the sticky Tools picker in place so the
+// toggled row shows its new value without rebuilding the overlay.
+func refreshToolSettingsItems(c *configMenu) {
+	cfg := c.ctx.Config
+	c.ctx.UpdateSelectorItems([]tui.SelectorItem{
+		{Value: "enabled_tools", Label: "Enabled/disabled tools", Description: toolsEnabledLabel(cfg), CloseOnSelect: true},
+		{Value: "tool_call_fixing", Label: "Tool call fixing", Description: boolLabel(cfg.Execution.AutoHealToolCalls)},
+		{Value: "strip_ansi", Label: "Strip ANSI from tool output", Description: boolLabel(cfg.Tools.StripANSIEnabled())},
 	})
 }
 

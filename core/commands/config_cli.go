@@ -11,6 +11,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 func handleConfigAdd(ctx core.Context, args []string) error {
@@ -431,15 +432,7 @@ func syncLoopDetectorConfig(ctx core.Context, key string) bool {
 }
 
 func syncRuntimeConfig(ctx core.Context, key, value string) error {
-	// Loop-detector overrides sync straight to the detector; they do not
-	// require a running agent, so handle them before the AgentManager guard.
-	if syncLoopDetectorConfig(ctx, key) {
-		return nil
-	}
-	// Goal-limit keys sync straight to the goal subsystem; they also do not
-	// require a running agent.
-	if key == "goals.default_turn_budget" || key == "goals.stall_turns" || key == "goals.verify_timeout" {
-		syncGoalLimits(ctx)
+	if syncRuntimeConfigWithoutAgent(ctx, key) {
 		return nil
 	}
 	if ctx.AgentManager == nil {
@@ -472,6 +465,29 @@ func syncRuntimeConfig(ctx core.Context, key, value string) error {
 		}
 	}
 	return nil
+}
+
+// syncRuntimeConfigWithoutAgent applies config keys whose runtime effect does
+// not depend on a running agent. It reports whether key was handled.
+func syncRuntimeConfigWithoutAgent(ctx core.Context, key string) bool {
+	// ANSI cleanup is a process-wide gate used by every untrusted-output
+	// producer, so it can be applied without a running agent.
+	if key == "tools.strip_ansi" {
+		ansi.SetStripANSI(ctx.Config.Tools.StripANSIEnabled())
+		return true
+	}
+	// Loop-detector overrides sync straight to the detector; they do not
+	// require a running agent, so handle them before the AgentManager guard.
+	if syncLoopDetectorConfig(ctx, key) {
+		return true
+	}
+	// Goal-limit keys sync straight to the goal subsystem; they also do not
+	// require a running agent.
+	if key == "goals.default_turn_budget" || key == "goals.stall_turns" || key == "goals.verify_timeout" {
+		syncGoalLimits(ctx)
+		return true
+	}
+	return false
 }
 
 func persistConfigValue(ctx core.Context, key string, path []string, value string) error {
@@ -634,6 +650,7 @@ func handleConfigReload(ctx core.Context) error {
 		return nil
 	}
 	*ctx.Config = *fresh
+	ansi.SetStripANSI(ctx.Config.Tools.StripANSIEnabled())
 	writeStr(ctx, "Config reloaded from all cascade layers.\n")
 	return nil
 }

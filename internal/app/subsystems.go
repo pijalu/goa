@@ -298,6 +298,7 @@ func (s *subsystems) applyReloadedConfig(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
+	applyANSIOutputConfig(cfg)
 	if s.providerMgr != nil {
 		s.providerMgr.SetConfig(cfg)
 	}

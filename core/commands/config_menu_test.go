@@ -146,7 +146,7 @@ func TestConfigMenu_ToolsSubmenuAndToolCallFixing(t *testing.T) {
 	if sr.title != "Tools settings:" {
 		t.Fatalf("title = %q, want Tools settings:", sr.title)
 	}
-	if len(sr.options) != 2 || sr.options[0].Value != "enabled_tools" || sr.options[1].Value != "tool_call_fixing" {
+	if len(sr.options) != 3 || sr.options[0].Value != "enabled_tools" || sr.options[1].Value != "tool_call_fixing" || sr.options[2].Value != "strip_ansi" {
 		t.Fatalf("unexpected tools submenu options: %+v", sr.options)
 	}
 	if sr.options[1].Description != "off" {

@@ -13,6 +13,7 @@ import (
 	"github.com/pijalu/goa/core"
 	internal "github.com/pijalu/goa/internal"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // End-to-end regression for bugs.md "/config tool-call fixing is not saved /
@@ -85,5 +86,34 @@ func TestConfigMenu_ToolCallFixingSavedAndAppliedLive(t *testing.T) {
 	}
 	if !ctx.AgentManager.CurrentAgent().AutoHealEnabled() {
 		t.Fatal("running session did not pick up the tool-call fixing change")
+	}
+}
+
+// TestConfigSet_StripANSIUpdatesRuntime verifies /config:set tools.strip_ansi
+// persists the choice and immediately flips the process-wide ANSI gate used
+// by untrusted tool-output producers.
+func TestConfigSet_StripANSIUpdatesRuntime(t *testing.T) {
+	prev := ansi.StripANSIEnabled()
+	t.Cleanup(func() { ansi.SetStripANSI(prev) })
+	cfg := &config.Config{}
+	ctx, _, _, _ := newMenuTestContext(t, cfg)
+	ansi.SetStripANSI(true)
+
+	if err := applyConfigSet(*ctx, "tools.strip_ansi", "false"); err != nil {
+		t.Fatalf("applyConfigSet: %v", err)
+	}
+	if cfg.Tools.StripANSIEnabled() {
+		t.Error("in-memory config still has strip_ansi enabled")
+	}
+	if ansi.StripANSIEnabled() {
+		t.Error("runtime ANSI gate still enabled after /config:set false")
+	}
+
+	reloaded, err := ctx.ConfigSaver.(*config.CascadeLoader).Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Tools.StripANSIEnabled() {
+		t.Error("/config:set tools.strip_ansi=false did not survive reload")
 	}
 }

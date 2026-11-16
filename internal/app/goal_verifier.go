@@ -89,7 +89,7 @@ func (v *execCommandVerifier) Verify(ctx context.Context, command string) goal.V
 	}
 	out, err := cmd.CombinedOutput()
 	outcome.DurationMs = time.Since(start).Milliseconds()
-	output := ansi.Sanitize(string(out))
+	output := ansi.Clean(string(out))
 	if len(output) > goalVerifyOutputCap {
 		output = output[:goalVerifyOutputCap] + "\n[... output truncated ...]"
 	}

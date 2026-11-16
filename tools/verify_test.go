@@ -155,6 +155,7 @@ func TestNewFrameworkRunner_RoutesByFramework(t *testing.T) {
 // TestVerifyTool_Execute_SanitizesControlBytes: test-runner output is
 // untrusted — raw ESC bytes in stdout/stderr must become visible text.
 func TestVerifyTool_Execute_SanitizesControlBytes(t *testing.T) {
+	setStripANSIForTest(t, false)
 	tool := &VerifyTool{
 		ProjectDir: t.TempDir(),
 		Runner: &staticRunner{report: verify.Report{

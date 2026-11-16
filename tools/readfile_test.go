@@ -591,6 +591,7 @@ func TestReadFile_SanitizesControlBytes(t *testing.T) {
 	if err := os.WriteFile(path, []byte(payload), 0644); err != nil {
 		t.Fatal(err)
 	}
+	setStripANSIForTest(t, false)
 	tool := &ReadFileTool{}
 	out, err := tool.Execute(`{"path":"` + path + `"}`)
 	if err != nil {

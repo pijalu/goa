@@ -607,7 +607,7 @@ func printSearchContext(buf *bytes.Buffer, lines []string, startNum int) {
 // sanitizeSearchLine strips ANSI escapes, trims, and rune-safely truncates
 // a single result line for display.
 func sanitizeSearchLine(s string) string {
-	content := ansi.Sanitize(strings.TrimSpace(s))
+	content := ansi.Clean(strings.TrimSpace(s))
 	if ansi.Width(content) > 120 {
 		content = ansi.Truncate(content, 120) + "…"
 	}

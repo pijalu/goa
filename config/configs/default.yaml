@@ -251,6 +251,10 @@ skills:
     - telegram
 
 tools:
+  # Remove ANSI escape sequences from untrusted tool output (child processes,
+  # file contents) before it reaches goa's model context and TUI. Set false
+  # to keep the legacy visible `\e[...]` rendering instead.
+  strip_ansi: true
   # max_inline_bytes caps the model-facing size of any single plain-text tool
   # result (spill policy, gap CX2). A result over the cap is saved verbatim to
   # ~/.goa/spill/<session>/ and replaced by a bounded head/tail preview plus a

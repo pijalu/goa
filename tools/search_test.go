@@ -548,6 +548,7 @@ func TestSearchTool_Execute_EscapesControlBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	setStripANSIForTest(t, false)
 	tool := &SearchTool{Threads: 2, MaxResults: 50}
 	result, err := tool.Execute(`{"pattern": "main", "path": "` + dir + `"}`)
 	if err != nil {

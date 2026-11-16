@@ -259,6 +259,10 @@ type SkillsConfig struct {
 
 // ToolsConfig holds tool-specific sub-configurations.
 type ToolsConfig struct {
+	// StripANSI controls removal of ANSI escape sequences from untrusted
+	// tool output. nil = enabled (default); set false to keep the legacy
+	// visible `\e[...]` rendering. The embedded default sets true.
+	StripANSI   *bool                `yaml:"strip_ansi,omitempty"`
 	Bash        BashConfig           `yaml:"bash"`
 	Terminal    TerminalConfig       `yaml:"terminal"`
 	SSH         SSHConfig            `yaml:"ssh"`
@@ -276,6 +280,12 @@ type ToolsConfig struct {
 	// to ~/.goa/spill/<session>/ and replaced by a budgeted head/tail preview
 	// plus a locator notice. Zero (the default) disables the policy entirely.
 	MaxInlineBytes int `yaml:"max_inline_bytes"`
+}
+
+// StripANSIEnabled reports whether untrusted tool output has ANSI escape
+// sequences removed instead of being rendered as visible `\e[...]` text.
+func (t ToolsConfig) StripANSIEnabled() bool {
+	return t.StripANSI == nil || *t.StripANSI
 }
 
 // SmartSearchConfig controls the smartsearch tool.

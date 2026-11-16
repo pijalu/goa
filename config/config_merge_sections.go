@@ -166,6 +166,9 @@ func mergeSearchConfig(dst, src *SearchConfig) {
 }
 
 func mergeToolsBashAndSearch(dst, src *Config) {
+	if src.Tools.StripANSI != nil {
+		dst.Tools.StripANSI = src.Tools.StripANSI
+	}
 	mergeBashConfig(&dst.Tools.Bash, &src.Tools.Bash)
 	if src.Tools.SSH.Hosts != nil {
 		dst.Tools.SSH.Hosts = src.Tools.SSH.Hosts

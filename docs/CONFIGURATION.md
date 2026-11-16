@@ -188,6 +188,8 @@ skills:
 
 # ── Tools ──────────────────────────────────────────────────────────
 tools:
+  strip_ansi: true                 # Remove ANSI escapes from untrusted tool output
+                                   # (default on). false keeps visible `\e[...]`.
   max_inline_bytes: 0            # Spill policy: cap on model-facing tool-result bytes
                                  # (0=disabled). Over-cap plain-text results are saved
                                  # verbatim to ~/.goa/spill/<session>/ and replaced by a

@@ -6,7 +6,23 @@ import (
 	"unicode/utf8"
 )
 
-func TestBashTool_Execute_SanitizesControlBytes(t *testing.T) {
+func TestBashTool_Execute_StripsANSIByDefault(t *testing.T) {
+	setStripANSIForTest(t, true)
+	tool := &BashTool{}
+	out, err := tool.Execute(`{"command":"printf '\\033[2Kdone\\033[0m\\n'"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if strings.Contains(out, "\x1b") || strings.Contains(out, `\e[`) {
+		t.Errorf("ANSI escape leaked into tool output: %q", out)
+	}
+	if !strings.Contains(out, "done") {
+		t.Errorf("expected command text to survive ANSI stripping, got: %q", out)
+	}
+}
+
+func TestBashTool_Execute_SanitizesControlBytesWhenStripDisabled(t *testing.T) {
+	setStripANSIForTest(t, false)
 	tool := &BashTool{}
 	out, err := tool.Execute(`{"command":"printf '\\033[2Kdone\\033[0m\\n'"}`)
 	if err != nil {

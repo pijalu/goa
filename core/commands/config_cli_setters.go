@@ -99,6 +99,7 @@ var configSetters = map[string]configSetter{
 	"execution.loop_auto_resume_max":             setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopAutoResumeMax }),
 	"execution.disable_tool_budget":              setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
 	"skills.execution_mode":                      setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
+	"tools.strip_ansi":                           setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Tools.StripANSI }),
 	"tools.bash.enable_complexity_analysis":      setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),
 	"tools.bash.warn_file_edits":                 setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Tools.Bash.WarnFileEdits }),
 	"tools.bash.jail":                            setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.Jail }),

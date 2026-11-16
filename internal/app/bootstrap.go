@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // RuntimeOptions holds CLI flags that control runtime behavior, including
@@ -564,6 +565,7 @@ func LoadConfig(loader *config.CascadeLoader, projectDir string) (*config.Config
 	if err != nil || cfg == nil {
 		fatalExitf("Config error: %v\n", err)
 	}
+	applyANSIOutputConfig(cfg)
 	if rep.UsedDefaults {
 		// Non-TUI modes only see stderr; the TUI additionally surfaces this
 		// through announceConfigIssues in the chat.
@@ -597,6 +599,15 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 	if err != nil {
 		fatalExitf("Reload config error: %v\n", err)
 	}
+	applyANSIOutputConfig(cfg)
 	// The wizard just wrote a valid configuration — nothing left to report.
 	return cfg, &config.LoadReport{}
+}
+
+// applyANSIOutputConfig syncs the process-wide ANSI cleanup gate from the
+// loaded config so untrusted tool output is filtered before any tool runs.
+func applyANSIOutputConfig(cfg *config.Config) {
+	if cfg != nil {
+		ansi.SetStripANSI(cfg.Tools.StripANSIEnabled())
+	}
 }

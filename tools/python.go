@@ -337,9 +337,9 @@ func (t *PythonTool) truncateOutput(output string) string {
 		maxBytes = DefaultMaxBytes
 	}
 	res := TruncateTail(output, maxLines, maxBytes)
-	// Sanitize: script output is untrusted — raw ESC bytes reaching the TUI
+	// Clean: script output is untrusted — raw ESC bytes reaching the TUI
 	// renderer would be executed by the terminal.
-	content := ansi.Sanitize(res.Content)
+	content := ansi.Clean(res.Content)
 	if res.Truncated {
 		path, saveErr := SaveTruncatedOutput(output)
 		if saveErr == nil {

@@ -332,12 +332,12 @@ func (t *ReadFileTool) renderFile(path string, data []byte, p readFileParams) st
 
 // renderReadLines renders the selected content lines, optionally with line
 // numbers, without the header or footer. File content is untrusted: lines are
-// sanitized so raw ESC bytes become visible text instead of being executed by
-// the terminal when the read result renders (or echoed by the model).
+// cleaned so raw ESC bytes never execute in the terminal when the read result
+// renders (or echoed by the model).
 func renderReadLines(selected []string, startLine int, showNumbers bool) string {
 	var buf bytes.Buffer
 	for i, line := range selected {
-		line = ansi.Sanitize(line)
+		line = ansi.Clean(line)
 		if showNumbers {
 			fmt.Fprintf(&buf, "%6d  %s\n", startLine+i, line)
 		} else {

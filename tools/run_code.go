@@ -474,7 +474,7 @@ func (t *RunCodeTool) truncateOutput(output string) string {
 		maxBytes = DefaultMaxBytes
 	}
 	res := TruncateTail(output, maxLines, maxBytes)
-	content := ansi.Sanitize(res.Content)
+	content := ansi.Clean(res.Content)
 	if res.Truncated {
 		path, saveErr := SaveTruncatedOutput(output)
 		if saveErr == nil {

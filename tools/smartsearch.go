@@ -562,11 +562,11 @@ func (t *SmartSearchTool) formatStructured(results []bm25.SearchResult, matches 
 	for _, r := range results {
 		var ev strings.Builder
 		for _, line := range matches[r.Path] {
-			fmt.Fprintf(&ev, "%d: %s\n", line.Num, ansi.Sanitize(line.Text))
+			fmt.Fprintf(&ev, "%d: %s\n", line.Num, ansi.Clean(line.Text))
 		}
 		evidence := strings.TrimSuffix(ev.String(), "\n")
 		if evidence == "" {
-			evidence = ansi.Sanitize(r.Content)
+			evidence = ansi.Clean(r.Content)
 		}
 		out.Results = append(out.Results, structuredResult{ID: r.ID, Path: r.Path, Score: r.Score, Coverage: r.Coverage, Confidence: r.Confidence, Language: r.Language, Kind: r.Kind, Symbol: r.Symbol, StartLine: r.StartLine, EndLine: r.EndLine, Evidence: limitTokens(evidence, maxTokens)})
 	}
@@ -631,7 +631,7 @@ func (t *SmartSearchTool) formatOneResult(i int, r bm25.SearchResult, lineMatche
 // formatMatchLine renders one matching source line, sanitised and truncated
 // to at most 140 display columns.
 func formatMatchLine(m smartLineMatch) string {
-	content := ansi.Sanitize(strings.TrimSpace(m.Text))
+	content := ansi.Clean(strings.TrimSpace(m.Text))
 	if ansi.Width(content) > 140 {
 		content = ansi.Truncate(content, 140) + "…"
 	}
