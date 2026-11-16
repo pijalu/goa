@@ -119,17 +119,6 @@ func goalOnOffLabel(v bool) string {
 	return "disabled"
 }
 
-// notifyQueueChanged pushes a fresh goal snapshot to the footer/bubble after
-// a durable-queue mutation. Queue operations emit no goal lifecycle events on
-// their own, so without this the footer's ◈ count (1 active + queued) stays
-// stale until the next active-goal event. The published update carries no
-// Change, so no chat marker is emitted.
-func (c *GoalCommand) notifyQueueChanged() {
-	if c.Mode != nil {
-		c.Mode.NotifyGoalChanged()
-	}
-}
-
 // queueNext inserts a goal at the FRONT of the durable queue (/goal:next and
 // /goal:next:first): it is promoted NEXT, right after the active goal
 // completes. fresh is the resolved context mode — stored with the goal so

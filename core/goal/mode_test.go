@@ -181,10 +181,12 @@ func TestMarkComplete_ClearEventCarriesNoChange(t *testing.T) {
 	}
 }
 
-// NotifyGoalChanged re-publishes the current snapshot with no Change so
-// consumers that derive display state from an external store (the goal queue)
-// refresh on a mutation that emits no lifecycle event of its own. The event
-// must carry the live snapshot AND a nil change (no chat marker).
+// NotifyGoalChanged re-publishes the current snapshot as a refresh-only event
+// so consumers that derive display state from an external store (the goal
+// queue) refresh on a mutation that emits no lifecycle event of its own. The
+// event must carry the live snapshot AND a GoalChangeRefresh change — never a
+// nil change, because a nil change on a nil snapshot is the completion-clear
+// shape hosts answer by promoting the next queued goal.
 func TestNotifyGoalChanged_PublishesSnapshotNoChange(t *testing.T) {
 	pub := &clearCapturePublisher{}
 	mode := NewGoalMode(&testStore{}, pub, nil, nil)
@@ -200,13 +202,14 @@ func TestNotifyGoalChanged_PublishesSnapshotNoChange(t *testing.T) {
 	if last == nil || last.Objective != "first" {
 		t.Errorf("NotifyGoalChanged snapshot = %+v, want the active goal", last)
 	}
-	if ch := pub.changes[len(pub.changes)-1]; ch != nil {
-		t.Errorf("NotifyGoalChanged change = %+v, want nil (no chat marker)", ch)
+	if ch := pub.changes[len(pub.changes)-1]; ch == nil || ch.Kind != GoalChangeRefresh {
+		t.Errorf("NotifyGoalChanged change = %+v, want kind %q (refresh-only)", ch, GoalChangeRefresh)
 	}
 }
 
-// With no active goal, NotifyGoalChanged still publishes — a nil snapshot so
-// consumers clear goal display state (e.g. after the queue is emptied).
+// With no active goal, NotifyGoalChanged still publishes — a nil snapshot
+// tagged as a refresh, so consumers clear goal display state (e.g. after the
+// queue is emptied) without promoting anything.
 func TestNotifyGoalChanged_NoGoalPublishesNil(t *testing.T) {
 	pub := &clearCapturePublisher{}
 	mode := NewGoalMode(&testStore{}, pub, nil, nil)
@@ -218,6 +221,9 @@ func TestNotifyGoalChanged_NoGoalPublishesNil(t *testing.T) {
 	}
 	if pub.snaps[0] != nil {
 		t.Errorf("NotifyGoalChanged with no goal published %+v, want nil snapshot", pub.snaps[0])
+	}
+	if ch := pub.changes[0]; ch == nil || ch.Kind != GoalChangeRefresh {
+		t.Errorf("NotifyGoalChanged change = %+v, want kind %q (refresh-only, never a clear)", ch, GoalChangeRefresh)
 	}
 }
 

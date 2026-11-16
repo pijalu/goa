@@ -59,7 +59,7 @@ func TestHandleGoalUpdate_ClearResetsFooter(t *testing.T) {
 func newTestGoalManager() *core.GoalManager {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	mgr := core.NewGoalManagerWithMode("", mode)
-	mgr.Queue = core.NewGoalQueueStore("")
+	mgr.SetQueue(core.NewGoalQueueStore(""))
 	return mgr
 }
 
@@ -127,7 +127,7 @@ func TestHandleGoalUpdate_CountsGoals(t *testing.T) {
 	footer := tui.NewFooter()
 	chat := tui.NewChatViewport()
 	mgr := newTestGoalManager()
-	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	mgr.SetQueue(core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json")))
 	if _, err := mgr.Queue.Append("queued one"); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}

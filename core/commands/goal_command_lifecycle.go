@@ -173,9 +173,10 @@ func (c *GoalCommand) cancel(ctx core.Context) error {
 }
 
 // cancelAll implements /goal:cancel:all: discard the current goal AND clear
-// every queued goal. The queue is cleared FIRST: queue operations emit no
-// goal events, so the clear event's successor promotion (async, on the
-// event-forwarder goroutine) then finds an empty queue and stays a no-op.
+// every queued goal. The queue is cleared FIRST: a queue mutation emits only a
+// refresh event (GoalChangeRefresh), so the clear event's successor promotion
+// (async, on the event-forwarder goroutine) then finds an empty queue and
+// stays a no-op.
 func (c *GoalCommand) cancelAll(ctx core.Context) error {
 	if err := c.rejectIfManaged("cancel"); err != nil {
 		return err
@@ -187,7 +188,6 @@ func (c *GoalCommand) cancelAll(ctx core.Context) error {
 			return err
 		}
 		cleared = len(goals)
-		c.notifyQueueChanged()
 	}
 	if c.Mode.GetGoal().Goal == nil {
 		if cleared == 0 {

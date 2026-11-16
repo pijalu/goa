@@ -28,11 +28,38 @@ type queuedGoalsFile struct {
 type GoalQueueStore struct {
 	path string
 	mu   sync.Mutex
+	// onChange, when set, is invoked after EVERY successful mutation, with the
+	// store lock already released. It is the single notification point for
+	// queue changes, so no mutator (tool, command, promotion flow) can forget
+	// to tell the UI — the bug behind a ◈ footer count frozen at 1 while the
+	// queue kept growing.
+	//
+	// Set but never mutated concurrently: call SetOnChange before the store is
+	// shared, and read onChange outside s.mu (a listener takes the goal mode
+	// lock, so calling it under s.mu would invert the lock order against
+	// CreateGoal, which holds the mode lock and reads the queue for name
+	// uniqueness).
+	onChange func()
 }
 
 // NewGoalQueueStore creates a queue store backed by the given path.
 func NewGoalQueueStore(path string) *GoalQueueStore {
 	return &GoalQueueStore{path: path}
+}
+
+// SetOnChange wires the change hook invoked after every successful queue
+// mutation. Call it once, during construction: the hook runs on the mutating
+// goroutine, after the store lock is released, and may read the queue back.
+func (s *GoalQueueStore) SetOnChange(fn func()) { s.onChange = fn }
+
+// notifyChanged runs a completed mutation's result through the change hook: a
+// successful mutation notifies listeners, a failed one does not (nothing
+// changed on disk).
+func (s *GoalQueueStore) notifyChanged(err error) {
+	if err != nil || s.onChange == nil {
+		return
+	}
+	s.onChange()
 }
 
 // Read returns the current queued goals in order.
@@ -105,14 +132,18 @@ func (s *GoalQueueStore) Append(objective string) ([]goal.UpcomingGoal, error) {
 // done-condition and can be set to run on a clean context when promoted
 // (goal queue + per-goal clean-context flag).
 func (s *GoalQueueStore) AppendGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error) {
-	return s.insertGoal(input, false)
+	goals, err := s.insertGoal(input, false)
+	s.notifyChanged(err)
+	return goals, err
 }
 
 // PrependGoal enqueues a goal at the FRONT of the queue, so it is promoted
 // next. Used by the auto-unblock flow (an investigation goal must run before
 // the blocked goal it unblocks) and by the model's push-in-front create.
 func (s *GoalQueueStore) PrependGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error) {
-	return s.insertGoal(input, true)
+	goals, err := s.insertGoal(input, true)
+	s.notifyChanged(err)
+	return goals, err
 }
 
 // insertGoal is the shared enqueue path; front=true inserts at position 0.
@@ -161,6 +192,13 @@ func (s *GoalQueueStore) insertGoal(input goal.UpcomingGoalInput, front bool) ([
 
 // Update replaces the objective of the goal with the given ID.
 func (s *GoalQueueStore) Update(id, objective string) ([]goal.UpcomingGoal, error) {
+	goals, err := s.update(id, objective)
+	s.notifyChanged(err)
+	return goals, err
+}
+
+// update is the mutating half of Update (lock, write, unlock).
+func (s *GoalQueueStore) update(id, objective string) ([]goal.UpcomingGoal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -188,6 +226,13 @@ func (s *GoalQueueStore) Update(id, objective string) ([]goal.UpcomingGoal, erro
 
 // Remove removes the goal with the given ID from the queue.
 func (s *GoalQueueStore) Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingGoal, error) {
+	goals, removed, err := s.remove(id)
+	s.notifyChanged(err)
+	return goals, removed, err
+}
+
+// remove is the mutating half of Remove (lock, write, unlock).
+func (s *GoalQueueStore) remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingGoal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -221,10 +266,17 @@ func (s *GoalQueueStore) Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingG
 
 // Clear removes every queued goal and returns them in queue order. Used by
 // the cancel-all flows (/goal:cancel:all and the goal tool's cancel "all").
-// Queue operations emit no goal events, so clearing before cancelling the
-// active goal guarantees the clear event's successor promotion finds an
-// empty queue and stays a no-op.
+// Clearing before cancelling the active goal guarantees the clear event's
+// successor promotion finds an empty queue and stays a no-op; the refresh
+// event Clear emits carries no promotion meaning.
 func (s *GoalQueueStore) Clear() ([]goal.UpcomingGoal, error) {
+	goals, err := s.clear()
+	s.notifyChanged(err)
+	return goals, err
+}
+
+// clear is the mutating half of Clear (lock, write, unlock).
+func (s *GoalQueueStore) clear() ([]goal.UpcomingGoal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -243,6 +295,13 @@ func (s *GoalQueueStore) Clear() ([]goal.UpcomingGoal, error) {
 
 // Move shifts a goal up or down by one position.
 func (s *GoalQueueStore) Move(id string, direction string) ([]goal.UpcomingGoal, error) {
+	goals, err := s.move(id, direction)
+	s.notifyChanged(err)
+	return goals, err
+}
+
+// move is the mutating half of Move (lock, write, unlock).
+func (s *GoalQueueStore) move(id string, direction string) ([]goal.UpcomingGoal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -284,6 +343,13 @@ func (s *GoalQueueStore) Move(id string, direction string) ([]goal.UpcomingGoal,
 
 // Restore puts a goal back into the queue at the front.
 func (s *GoalQueueStore) Restore(item goal.UpcomingGoal) ([]goal.UpcomingGoal, error) {
+	goals, err := s.restore(item)
+	s.notifyChanged(err)
+	return goals, err
+}
+
+// restore is the mutating half of Restore (lock, write, unlock).
+func (s *GoalQueueStore) restore(item goal.UpcomingGoal) ([]goal.UpcomingGoal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -302,6 +368,13 @@ func (s *GoalQueueStore) Restore(item goal.UpcomingGoal) ([]goal.UpcomingGoal, e
 // The mapping is 1-indexed positions ("1B,2C,3A" means position 1 gets item B).
 // The items are referenced by their letter index (A=first, B=second, ...).
 func (s *GoalQueueStore) ReorderByMapping(mapping string) ([]goal.UpcomingGoal, error) {
+	goals, err := s.reorderByMapping(mapping)
+	s.notifyChanged(err)
+	return goals, err
+}
+
+// reorderByMapping is the mutating half of ReorderByMapping.
+func (s *GoalQueueStore) reorderByMapping(mapping string) ([]goal.UpcomingGoal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

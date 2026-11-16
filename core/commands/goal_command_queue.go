@@ -24,7 +24,6 @@ func (c *GoalCommand) queueNext(ctx core.Context, objective string, fresh bool) 
 	} else {
 		writeFmt(ctx, "Queued goal to run next (queue: %d) [%s]: %s\n", len(goals), name, objective)
 	}
-	c.notifyQueueChanged()
 	c.noteResumeWhenNoActiveGoal(ctx)
 	return nil
 }
@@ -46,7 +45,6 @@ func (c *GoalCommand) queueLast(ctx core.Context, objective string, fresh bool) 
 	} else {
 		writeFmt(ctx, "Queued goal #%d [%s]: %s\n", len(goals), name, objective)
 	}
-	c.notifyQueueChanged()
 	c.noteResumeWhenNoActiveGoal(ctx)
 	return nil
 }

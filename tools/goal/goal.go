@@ -83,9 +83,10 @@ type GoalQueue interface {
 	// Used by the auto-unblock flow and the model's push-in-front create.
 	PrependGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error)
 	Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingGoal, error)
-	// Clear removes every queued goal (cancel "all"). Queue operations emit
-	// no goal events, so clearing before cancelling the active goal keeps
-	// the clear event's successor promotion a no-op.
+	// Clear removes every queued goal (cancel "all"). A queue mutation emits a
+	// refresh event only (no lifecycle transition), so clearing before
+	// cancelling the active goal keeps the clear event's successor promotion a
+	// no-op.
 	Clear() ([]goal.UpcomingGoal, error)
 	Move(id, direction string) ([]goal.UpcomingGoal, error)
 	// Restore puts a removed goal back at the front of the queue. Used to
@@ -546,7 +547,7 @@ func (t *GoalTool) handleCancel(args goalArgs) (agentic.ToolResult, error) {
 }
 
 // cancelActive cancels the ACTIVE goal. With wipeQueue the queued goals are
-// removed first: queue operations emit no goal events, so the clear event's
+// removed first: a queue mutation emits only a refresh event, so the clear
 // successor promotion then finds an empty queue and stays a no-op (the same
 // ordering /goal:cancel:all uses).
 func (t *GoalTool) cancelActive(wipeQueue bool) (agentic.ToolResult, error) {

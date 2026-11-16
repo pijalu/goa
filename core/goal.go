@@ -127,6 +127,7 @@ func NewGoalManager(dir string, deps ...GoalDependencies) *GoalManager {
 		Queue: queue,
 		dir:   goalsDir,
 	}
+	m.wireQueueNotifications()
 	// Best-effort replay at construction so existing callers keep working; the
 	// error is captured/surfaced below rather than silently swallowed.
 	m.replayErr = mode.Replay()
@@ -162,11 +163,40 @@ func (m *GoalManager) ReplayError() error {
 func NewGoalManagerWithMode(dir string, mode *goal.GoalMode) *GoalManager {
 	goalsDir := filepath.Join(dir, goalsSubdir)
 	queue := NewGoalQueueStore(filepath.Join(goalsDir, "upcoming-goals.json"))
-	return &GoalManager{
+	m := &GoalManager{
 		Mode:  mode,
 		Queue: queue,
 		dir:   goalsDir,
 	}
+	m.wireQueueNotifications()
+	return m
+}
+
+// SetQueue replaces the queue store (tests, alternate storage) and re-wires the
+// change hook, so a swapped queue still refreshes the goal UI on mutation.
+// Prefer this over assigning Queue directly: an unwired store silently freezes
+// the footer's ◈ count at its last value.
+func (m *GoalManager) SetQueue(q *GoalQueueStore) {
+	m.Queue = q
+	m.wireQueueNotifications()
+}
+
+// wireQueueNotifications connects the queue store's change hook to the goal
+// mode's refresh publisher. Every queue mutation — enqueue from the goal tool
+// or a /goal command, removal, reorder, clear, promotion, retention cleanup —
+// then publishes a GoalChangeRefresh event, which is what keeps the footer's
+// ◈ count (1 active + queued) in step with the durable queue. Wired here, once,
+// so no individual mutator can forget it (the reason the count used to freeze
+// at 1 while the queue kept growing).
+func (m *GoalManager) wireQueueNotifications() {
+	if m.Queue == nil {
+		return
+	}
+	m.Queue.SetOnChange(func() {
+		if m.Mode != nil {
+			m.Mode.NotifyGoalChanged()
+		}
+	})
 }
 
 // CreateGoal creates a new goal with the given objective.

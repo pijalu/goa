@@ -744,23 +744,31 @@ func (m *GoalMode) GetGoal() GoalToolResult {
 	return GoalToolResult{Goal: &snap}
 }
 
-// NotifyGoalChanged re-publishes the current goal snapshot with no Change —
-// a snapshot-only refresh for consumers that derive display state from data
+// NotifyGoalChanged re-publishes the current goal snapshot as a REFRESH-ONLY
+// event (GoalChangeRefresh) for consumers that derive display state from data
 // outside the goal's own lifecycle. The goal queue is one such store: adding,
 // removing, reordering or clearing queued goals changes the footer's ◈ count
 // (1 active + queued) without touching the active goal, so no lifecycle event
-// fires on its own. Commands that mutate the queue call this to push a fresh
-// snapshot (and with it the recomputed queue count) to the footer and goal
-// bubble. A nil Change means no chat marker is emitted.
+// fires on its own. *core.GoalQueueStore calls this from a single hook after
+// every successful mutation, so no queue mutator can forget it.
+//
+// The change kind is GoalChangeRefresh, not nil: a nil change on a nil
+// snapshot is the completion-clear shape, which hosts answer by promoting the
+// next queued goal. A refresh must never start a goal, so it is tagged
+// explicitly.
 func (m *GoalMode) NotifyGoalChanged() {
+	// Snapshot under the lock, publish OUTSIDE it: the refresh event is emitted
+	// from a store hook that runs on any goroutine, and a listener that touches
+	// the mode (or a host with a synchronous publisher) would self-deadlock on
+	// the non-reentrant RWMutex if the emit happened while holding it.
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	var snap *GoalSnapshot
 	if m.state != nil {
 		s := m.toSnapshot(m.state)
 		snap = &s
 	}
-	m.emitGoalUpdated(snap, nil)
+	m.mu.RUnlock()
+	m.emitGoalUpdated(snap, &GoalChange{Kind: GoalChangeRefresh})
 }
 
 // GetActiveGoal returns the snapshot only when status is active.

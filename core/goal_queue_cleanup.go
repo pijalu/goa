@@ -13,6 +13,13 @@ import (
 // CleanupExpired removes queued goals whose UpdatedAt is older than retentionDays.
 // A retentionDays value of 0 or negative means "keep forever".
 func (s *GoalQueueStore) CleanupExpired(retentionDays int) (int, error) {
+	removed, err := s.cleanupExpired(retentionDays)
+	s.notifyChanged(err)
+	return removed, err
+}
+
+// cleanupExpired is the mutating half of CleanupExpired.
+func (s *GoalQueueStore) cleanupExpired(retentionDays int) (int, error) {
 	if retentionDays <= 0 {
 		return 0, nil
 	}

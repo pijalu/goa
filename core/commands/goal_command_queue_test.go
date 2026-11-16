@@ -79,26 +79,32 @@ func testContext() core.Context {
 	}
 }
 
-// queuePublishRecorder captures goal publish events so a test can assert that
-// a durable-queue mutation re-published the goal snapshot (the footer ◈ count
+// queuePublishRecorder captures goal publish events so a test can assert that a
+// durable-queue mutation re-published the goal snapshot (the footer ◈ count
 // depends on it — queue ops emit no lifecycle event of their own).
 type queuePublishRecorder struct {
 	snaps   int
 	changes int
+	kinds   []goal.GoalChangeKind
 }
 
 func (p *queuePublishRecorder) Publish(snap *goal.GoalSnapshot, change *goal.GoalChange) {
 	p.snaps++
 	if change != nil {
 		p.changes++
+		p.kinds = append(p.kinds, change.Kind)
 	}
 }
 
+// Queue mutations reach the UI through the GoalQueueStore change hook (wired by
+// GoalManager), not through per-command notify calls: a mutator that has to
+// remember to notify is exactly how the ◈ count got stuck at 1.
 func TestGoalCommand_QueueOpsPublishRefresh(t *testing.T) {
 	pub := &queuePublishRecorder{}
 	mode := goal.NewGoalMode(nil, pub, nil, nil)
-	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
-	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	mgr := core.NewGoalManagerWithMode("", mode)
+	mgr.SetQueue(core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json")))
+	cmd := &GoalCommand{Mode: mgr.Mode, Queue: mgr.Queue}
 	ctx := testContext()
 
 	if err := cmd.Run(ctx, []string{"seed-active"}); err != nil {
@@ -112,8 +118,8 @@ func TestGoalCommand_QueueOpsPublishRefresh(t *testing.T) {
 	if pub.snaps != base+1 {
 		t.Errorf("queue insert published %d snaps (base %d), want exactly one refresh", pub.snaps, base)
 	}
-	if pub.changes != 0 {
-		t.Errorf("queue insert published %d changes, want 0 (no chat marker)", pub.changes)
+	if got := pub.kinds[len(pub.kinds)-1]; got != goal.GoalChangeRefresh {
+		t.Errorf("queue insert published change kind %q, want %q (refresh only, no chat marker)", got, goal.GoalChangeRefresh)
 	}
 }
 

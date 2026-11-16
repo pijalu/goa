@@ -171,6 +171,16 @@ const (
 	// runtime/framework clears (postpone, unblock, orchestrator) keep the
 	// start-the-next-goal behavior.
 	GoalChangeClear GoalChangeKind = "clear"
+	// GoalChangeRefresh marks a REFRESH-ONLY event: the goal state did not
+	// change, but display state derived from a store OUTSIDE the goal mode did
+	// — the durable goal queue, whose depth drives the footer's ◈ count. The
+	// event carries the live snapshot (possibly nil) and no lifecycle meaning:
+	// consumers must re-read derived state and MUST NOT treat it as a
+	// transition (no chat marker, no successor promotion, no pause bookkeeping).
+	// It exists because a queue mutation (enqueue/remove/reorder/promote) has
+	// no goal lifecycle event of its own, so without this signal the ◈ count
+	// stayed frozen at the last lifecycle event.
+	GoalChangeRefresh GoalChangeKind = "refresh"
 )
 
 // GoalChange describes what changed on a goal.updated event.

@@ -122,6 +122,17 @@ func (a *App) handleGoalUpdate(update *event.GoalUpdate) {
 
 	a.updateGoalFooter(update)
 
+	// A REFRESH event (GoalChangeRefresh) only re-reads display state derived
+	// from the goal queue: the state transition it would otherwise imply never
+	// happened, so it must not emit a chat marker, stash completion evidence or
+	// promote a queued successor. Promoting here would auto-START a goal on a
+	// mere queue mutation (removing an entry, or queueing one while no goal is
+	// active), which is exactly what the "queued goals stay parked until
+	// resumed" contract forbids.
+	if isGoalRefresh(update) {
+		return
+	}
+
 	if update.Change != nil {
 		switch update.Change.Kind {
 		case goal.GoalChangeLifecycle:
@@ -227,6 +238,13 @@ func countPendingGoalTodos(todos []goal.GoalTodoItem) int {
 		}
 	}
 	return pending
+}
+
+// isGoalRefresh reports whether the update is a display-only refresh: the goal
+// state itself did not change, only a store the UI derives from (the durable
+// goal queue). Such events re-read the footer/bubble and stop there.
+func isGoalRefresh(update *event.GoalUpdate) bool {
+	return update != nil && update.Change != nil && update.Change.Kind == goal.GoalChangeRefresh
 }
 
 // cancelClearPausesPromotion reports whether the clear event comes from an

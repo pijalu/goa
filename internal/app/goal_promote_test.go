@@ -62,7 +62,7 @@ func (r *promoteRecordingRunner) runs() []string {
 func TestHandleGoalUpdate_ClearPromotesQueuedGoalAndStartsDriver(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	mgr := core.NewGoalManagerWithMode("", mode)
-	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	mgr.SetQueue(core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json")))
 	if _, err := mgr.Queue.AppendGoal(goal.UpcomingGoalInput{Objective: "queued objective"}); err != nil {
 		t.Fatalf("append queued goal: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestHandleGoalUpdate_CompletionStashesTerminalReason(t *testing.T) {
 func TestPromoteNextQueuedGoal_InheritsTerminalReason(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	mgr := core.NewGoalManagerWithMode("", mode)
-	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	mgr.SetQueue(core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json")))
 	if _, err := mgr.Queue.AppendGoal(goal.UpcomingGoalInput{Objective: "queued objective"}); err != nil {
 		t.Fatalf("append queued goal: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestPromoteNextQueuedGoal_InheritsTerminalReason(t *testing.T) {
 func TestPromoteNextQueuedGoal_StoredHandoverWins(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	mgr := core.NewGoalManagerWithMode("", mode)
-	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	mgr.SetQueue(core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json")))
 	explicit := "explicit handover from creator"
 	if _, err := mgr.Queue.AppendGoal(goal.UpcomingGoalInput{Objective: "queued objective", Handoff: &explicit}); err != nil {
 		t.Fatalf("append queued goal: %v", err)
@@ -223,7 +223,7 @@ func newCancelPolicyTestApp(t *testing.T) (*App, *goal.GoalMode, *promoteRecordi
 	t.Helper()
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	mgr := core.NewGoalManagerWithMode("", mode)
-	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	mgr.SetQueue(core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json")))
 	if _, err := mgr.Queue.AppendGoal(goal.UpcomingGoalInput{Objective: "queued objective"}); err != nil {
 		t.Fatalf("append queued goal: %v", err)
 	}

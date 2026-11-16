@@ -143,7 +143,6 @@ func (c *GoalCommand) moveManagerGoal(ctx core.Context, id, direction string) {
 		_ = c.showQueueManagerAt(ctx, "")
 		return
 	}
-	c.notifyQueueChanged()
 	_ = c.showQueueManagerAt(ctx, id)
 }
 
@@ -175,7 +174,6 @@ func (c *GoalCommand) confirmDeleteManagerGoal(ctx core.Context, id string) {
 		if _, _, err := c.Queue.Remove(id); err != nil {
 			ctx.Flash(err.Error())
 		} else {
-			c.notifyQueueChanged()
 			ctx.Flash("Goal deleted.")
 		}
 		_ = c.showQueueManagerAt(ctx, "")
@@ -257,7 +255,6 @@ func (c *GoalCommand) applyEditedObjective(ctx core.Context, id, current, value 
 		ctx.Flash(err.Error())
 		return
 	}
-	c.notifyQueueChanged()
 	ctx.Flash("Goal updated.")
 }
 
@@ -266,7 +263,6 @@ func (c *GoalCommand) reorderQueue(ctx core.Context, mapping string) error {
 	if err != nil {
 		return err
 	}
-	c.notifyQueueChanged()
 	writeStr(ctx, "Queue reordered:\n")
 	for i, g := range goals {
 		name := g.Name
