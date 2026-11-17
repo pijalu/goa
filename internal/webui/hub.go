@@ -114,13 +114,10 @@ func (h *Hub) Attach(c Client, plane Plane) (detach func(), mode AttachMode) {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			// Close outside the hub lock, but before removing the attachment:
-			// Clients()==0 must never expose a socket that is still open while
-			// its close is waiting to be scheduled or flushing a farewell.
-			_ = c.Close()
 			h.mu.Lock()
 			delete(h.clients, c)
 			h.mu.Unlock()
+			_ = c.Close()
 		})
 	}, mode
 }

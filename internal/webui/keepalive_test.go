@@ -96,6 +96,13 @@ func TestKeepalive_DropsClientThatNeverPongs(t *testing.T) {
 	ka := Keepalive{PingInterval: 20 * time.Millisecond, ReadTimeout: 5 * time.Second}
 	conn, srv := dialKeepaliveServer(t, ka)
 
+	// Dial returns when the upgrade response arrives, which can be before the
+	// server goroutine attaches the client. Wait for that attachment: an initial
+	// zero means "not attached yet", not "dropped". Without this barrier the
+	// read below starts immediately, answers every ping, and keeps the client
+	// alive until its own deadline expires.
+	waitFor(t, func() bool { return srv.hub.Clients() == 1 })
+
 	// Deliberately never read: gorilla only answers a ping from its read pump,
 	// so a client that never reads never pongs.
 	waitFor(t, func() bool { return srv.hub.Clients() == 0 })
