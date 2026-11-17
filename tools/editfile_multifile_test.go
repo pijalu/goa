@@ -74,7 +74,7 @@ func TestEditFileTool_MultiFile_FilesForm_AppliesToAll(t *testing.T) {
 	}
 }
 
-func TestEditFileTool_MultiFile_PartialFailure_WritesNothing(t *testing.T) {
+func TestEditFileTool_MultiFile_Atomic_PartialFailure_WritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFiles(t, dir, map[string]string{
 		"good.go":  "package g\n\nfunc oldName() {}\n",
@@ -82,7 +82,7 @@ func TestEditFileTool_MultiFile_PartialFailure_WritesNothing(t *testing.T) {
 	})
 
 	tool := &EditFileTool{ProjectDir: dir, AllowFuzz: true}
-	input := fmt.Sprintf(`{"files": [`+
+	input := fmt.Sprintf(`{"atomic": true, "files": [`+
 		`{"path": %q, "edits": [{"old_string": "oldName", "new_string": "newName"}]},`+
 		`{"path": %q, "edits": [{"old_string": "oldName", "new_string": "newName"}]}]}`,
 		abs(dir, "good.go"), abs(dir, "drift.go"))
@@ -108,7 +108,7 @@ func TestEditFileTool_MultiFile_PartialFailure_WritesNothing(t *testing.T) {
 	}
 }
 
-func TestEditFileTool_MultiFile_MixedMatchNoMatch_HardFails(t *testing.T) {
+func TestEditFileTool_MultiFile_Atomic_MixedMatchNoMatch_HardFails(t *testing.T) {
 	dir := t.TempDir()
 	// The pattern matches in a.go but not in b.go: a silent skip would edit
 	// only a.go and report success.
@@ -118,7 +118,7 @@ func TestEditFileTool_MultiFile_MixedMatchNoMatch_HardFails(t *testing.T) {
 	})
 
 	tool := &EditFileTool{ProjectDir: dir, AllowFuzz: true}
-	input := fmt.Sprintf(`{"files": [`+
+	input := fmt.Sprintf(`{"atomic": true, "files": [`+
 		`{"path": %q, "edits": [{"old_string": "x := 1", "new_string": "x := 10"}]},`+
 		`{"path": %q, "edits": [{"old_string": "x := 1", "new_string": "x := 10"}]}]}`,
 		abs(dir, "a.go"), abs(dir, "b.go"))
@@ -205,7 +205,7 @@ func TestEditFileTool_MultiFile_GlobMatchesOnlyRegularFiles(t *testing.T) {
 	}
 }
 
-func TestEditFileTool_MultiFile_StaleLineGuard_PerFile(t *testing.T) {
+func TestEditFileTool_MultiFile_Atomic_StaleLineGuard_PerFile(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFiles(t, dir, map[string]string{
 		"a.go": "l1\nl2\nl3\n",
@@ -215,7 +215,7 @@ func TestEditFileTool_MultiFile_StaleLineGuard_PerFile(t *testing.T) {
 	tool := &EditFileTool{ProjectDir: dir, AllowFuzz: true}
 	// b.go: delete_lines shifts lines; replace_lines with absolute numbers
 	// after it is the stale-coordinate corruption the guard exists to stop.
-	input := fmt.Sprintf(`{"files": [`+
+	input := fmt.Sprintf(`{"atomic": true, "files": [`+
 		`{"path": %q, "edits": [{"old_string": "l1", "new_string": "L1"}]},`+
 		`{"path": %q, "edits": [{"operation": "delete_lines", "start_line": 1, "end_line": 1}, {"operation": "replace_lines", "start_line": 2, "end_line": 2, "new_content": "M2"}]}]}`,
 		abs(dir, "a.go"), abs(dir, "b.go"))

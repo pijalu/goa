@@ -22,7 +22,7 @@ func TestEditFileTool_Schema_HasRequiredFields(t *testing.T) {
 		t.Fatal("schema.Schema should not be nil")
 	}
 	props := schema.Schema["properties"].(map[string]any)
-	for _, field := range []string{"path", "files", "glob", "old_string", "new_string", "operation", "start_line", "end_line", "pattern", "new_content", "indent_mode"} {
+	for _, field := range []string{"path", "files", "glob", "old_string", "new_string", "operation", "start_line", "end_line", "pattern", "occurrence", "replace_all", "atomic", "new_content", "indent_mode"} {
 		if _, ok := props[field]; !ok {
 			t.Errorf("schema missing required field: %s", field)
 		}
@@ -64,7 +64,7 @@ func TestEditFileTool_Schema_OperationHasValidValues(t *testing.T) {
 	}
 	// Operation no longer has an enum restriction — the LLM can use all operations.
 	// Just verify it exists and lists the expected operations.
-	expected := map[string]bool{"replace": true, "replace_lines": true, "replace_pattern": true, "insert_after": true, "insert_before": true, "delete_lines": true}
+	expected := map[string]bool{"replace": true, "replace_lines": true, "replace_pattern": true, "insert_after": true, "insert_before": true, "delete_lines": true, "delete": true}
 	if len(enum) != len(expected) {
 		t.Errorf("expected %d operations, got %d", len(expected), len(enum))
 	}

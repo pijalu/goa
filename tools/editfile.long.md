@@ -14,20 +14,48 @@ Primary usage — search/replace (recommended):
   lines in the file. Tier 4 (exact substring) applies only to a SINGLE-line old_string
   that is a byte-exact substring of a longer file line — it locates text inside a line,
   e.g. a fragment of a long JSON/log/config line, without touching the rest of that
-  line. Its anchor must occur exactly once in the whole file: zero occurrences is
-  not_found, two or more is ambiguous_match, and the file is left untouched.
+  line. With no selection option, its anchor must occur exactly once in the whole file:
+  zero occurrences is not_found, two or more is ambiguous_match with the match count,
+  and the file is left untouched.
   new_string must be non-empty: an empty replacement is rejected instead of
-  silently deleting the matched block. To remove lines deliberately, use
-  operation 'delete_lines' with start_line/end_line.
+  silently deleting the matched block. Use operation 'delete' for drift-safe
+  string-keyed deletion, or 'delete_lines' for an exact line range.
 
 Operation alias:
   {"path": "file.go", "operation": "replace", "old_string": "text to find", "new_string": "replacement text"}
   This is identical to the search/replace form above.
 
+Match selection for replace and delete:
+  {"path": "file.go", "old_string": "token", "new_string": "name", "occurrence": 2}
+  {"path": "file.go", "old_string": "token", "new_string": "name", "replace_all": true}
+  With neither option, replace/delete requires one unique match. occurrence:N selects
+  the Nth match (1-based); replace_all:true selects every match. The two options are
+  mutually exclusive. Matches are leftmost and NON-OVERLAPPING: for old_string "aa"
+  in "aaa", only the first "aa" is selected. All selected replacements are computed
+  against the original content and spliced once, so replacement text is never matched
+  recursively. occurrence_not_found reports the available match count and requested N.
+  Matching still uses the tiers above: the first tier with any matches supplies the
+  candidates; ambiguous_match reports that tier's non-overlapping match count.
+
+Explicit string-keyed deletion (composes safely in content-anchored batches):
+  {"path": "file.go", "operation": "delete", "old_string": "text to remove"}
+  {"path": "file.go", "operation": "delete", "old_string": "obsolete", "replace_all": true}
+  delete requires non-empty old_string and rejects new_string/new_content. A whole-line
+  match removes its line; a substring match removes only the matched bytes. occurrence
+  and replace_all work exactly as for replace. Because delete re-anchors by content, it
+  may precede later content edits in the same batch without stale line numbers.
+
+Results contain a compact success summary and unified diff with up to 3 unchanged
+context lines on each side. Distant changes are separate bounded hunks; unchanged
+content between hunks is never reprinted. Output therefore scales with changed lines
+plus bounded context, not total file size. This applies to single edits, batches,
+replace_all, and every successful file in a multi-file call.
+
 Batch edits (preferred when making several changes to the same file):
   {"path": "file.go", "edits": [
     {"old_string": "first text", "new_string": "first replacement"},
     {"operation": "insert_after", "pattern": "func main()", "new_content": "\tlog.Println(\"hi\")"},
+    {"operation": "delete", "old_string": "obsolete text"},
     {"old_string": "another block", "new_string": "revised block"}
   ]}
   All edits apply in order against the same file and are written atomically:
@@ -35,7 +63,7 @@ Batch edits (preferred when making several changes to the same file):
   nothing is written.
   A batch targets exactly one file. If the top-level "path" is omitted it is
   taken from the edits entries; entry paths that disagree are rejected.
-  Content edits (old_string/new_string) and pattern-addressed inserts
+  Content edits (old_string/new_string, delete) and pattern-addressed inserts
   ("pattern" without start_line) re-resolve against the current content before
   every edit, so they stay valid anywhere in a batch. Absolute line numbers do
   not: they were harvested BEFORE the call, so a line-addressed edit
@@ -43,12 +71,12 @@ Batch edits (preferred when making several changes to the same file):
   may not follow an edit that adds or removes lines. Such a batch is rejected
   up-front with stale_line_numbers and nothing is written. Combine the two
   kinds with two calls instead:
-    1. line-shifting edits (delete_lines / insert_* / replace_lines that change
+    1. line-shifting edits (delete / delete_lines / insert_* / replace_lines that change
        the line count), then
     2. re-harvest line numbers (grep -n or read), then
     3. line-addressed edits with the fresh numbers.
   Never assume line numbers in a later edit account for an earlier edit's
-  inserted or deleted lines.
+  inserted or deleted lines. Content-anchored edits can remain in the same batch.
 
 Multi-file batch (one call edits many files — bugs.md B40):
   {"files": [{"path": "a.go", "edits": [{"old_string": "old", "new_string": "new"}]},
@@ -59,14 +87,30 @@ Multi-file batch (one call edits many files — bugs.md B40):
   relative, sorted; '**' is NOT supported — list paths explicitly for deeper
   scope). Zero glob matches fail loudly (glob_no_match): a batch that would
   touch nothing never reports success. Semantics per file mirror the single-file
-  batch (in order, atomic); ACROSS files the call is all-or-nothing: every file
-  is applied in memory first, and only if ALL succeed is anything written. A
-  non-matching pattern in any file is a hard failure naming that file — never a
-  silent skip — and the error lists a per-path result (ok / fail / skip). The
-  stale_line_numbers guard applies per file. Success reports one result block
-  (summary + diff) per file. Duplicate paths apply once and are reported as
-  skips. 'files', 'glob', 'path' and the single-file 'edits' batch are mutually
-  exclusive; nesting multi-file forms inside edit entries is rejected.
+  batch (in order, atomic). The stale_line_numbers guard applies per file.
+
+  DEFAULT across files: independent and non-atomic. Every file is preflighted;
+  every valid file is written even if another file fails validation or writing.
+  Any failure returns an overall error with per-path ok/fail/skip outcomes and
+  identifies which files were written. Successful files stay persisted: fix and
+  retry only failed paths rather than blindly repeating the whole batch. A
+  non-matching pattern is a hard failure naming that file — never a
+  silent skip. Successful result blocks (summary + bounded diff) accompany the
+  aggregate error. Duplicate paths apply once and are reported as skips.
+
+  OPTIONAL atomic:true:
+  {"atomic": true, "files": [{"path": "a.go", "edits": [{"old_string": "old", "new_string": "new"}]},
+                             {"path": "b.go", "edits": [{"old_string": "old", "new_string": "new"}]}]}
+  Every file is validated and edited in memory first; only if ALL succeed is anything written.
+  If any write or read-back verification fails, every attempted file (including the
+  failing file) is restored from its exact original bytes in reverse order. The error
+  reports rolled-back, not-written, and failed paths. A rollback failure is surfaced
+  as rollback_failed with the affected path; it is never hidden. atomic is valid only
+  on top-level files/glob forms and is rejected on single-file calls, which are already
+  atomic.
+
+  'files', 'glob', 'path' and the single-file 'edits' batch are mutually exclusive;
+  nesting files/glob/atomic inside edit entries is rejected.
 
 Legacy operations: replace_lines, replace_pattern, insert_after, insert_before, delete_lines
 Indent modes: as-is (default for insert_after/insert_before/replace_lines), preserve, normalize
@@ -84,7 +128,8 @@ replace_pattern (single-line pattern):
   "$1"-style group references are NOT expanded — pass the exact replacement text. An
   invalid pattern is treated as a literal string (uniform fallback), and pattern_flags
   "i" matches case-insensitively. A pattern containing a real newline is matched as a
-  multi-line fuzzy block instead (occurrence must be 1).
+  multi-line fuzzy block instead (occurrence must be 1). replace_all is for
+  old_string-based replace/delete, not replace_pattern.
   Errors: pattern_not_found (no line matches); occurrence_not_found (the pattern matched
   fewer lines than "occurrence" requested — nothing is written); no_change (pattern and
   replacement produce an identical line — nothing is written); missing_pattern.
@@ -98,32 +143,37 @@ Troubleshooting search/replace errors:
     includes correct indentation and blank lines. For a single-line old_string, tier 4
     already searched for a byte-exact substring of every line — a not_found therefore
     means that exact text (including internal spaces) occurs nowhere in the file, so
-    suspect a typo or a whitespace difference rather than a matching bug. For deletions
-    or large multi-line changes, use operation: 'delete_lines' or 'replace_lines' with
-    line numbers.
-  • ambiguous_match: the old_string matches more than one location (for a single-line
-    anchor, tier 4 also counts every byte-exact occurrence in the file). Add more
-    surrounding context to make it unique, or switch to 'replace_lines' with line numbers.
+    suspect a typo or a whitespace difference rather than a matching bug. Prefer
+    operation 'delete' for string-keyed deletion; use delete_lines/replace_lines only
+    when exact line coordinates are intentional.
+  • ambiguous_match: old_string matches more than one location; the error includes the
+    non-overlapping match count. Add surrounding context, select occurrence:N, or opt
+    into replace_all:true. For a single-line anchor, tier 4 counts byte-exact occurrences
+    throughout the file.
   • stale_line_numbers: a batch contains a line-addressed edit (replace_lines,
     delete_lines, insert_after/insert_before with start_line) AFTER an edit that changes
     the line count. Pre-harvested line numbers would target stale positions, so the whole
     batch is rejected and nothing is written. Split it into two calls: apply the
     line-shifting edits first, re-harvest line numbers (grep -n or read), then apply the
     line-addressed edits with the fresh numbers.
-  • occurrence_not_found: replace_pattern's 'occurrence' is larger than the number of
-    matching lines. Lower it, or read the file to confirm the pattern still matches; the
-    file is untouched.
+  • occurrence_not_found: occurrence is larger than the available string matches (or
+    replace_pattern matching lines). The error reports the count and requested N; the
+    file is untouched. Use a valid N or replace_all:true for string operations.
   • no_change: the edit would leave the file byte-identical (e.g. replace_pattern whose
     replacement equals the matched text, or old_string equal to new_string); nothing is
     written.
   • write_verify_failed: the write reported success but the read-back differs — an
     external process modified the file concurrently. Check for other writers, then retry.
+    In atomic multi-file mode, attempted writes are rolled back before this is returned.
+  • rollback_failed: an atomic multi-file write failed and at least one original file
+    could not be restored. The error names the rollback failure; inspect those exact
+    paths before retrying. Other validation/write failures do not hide rollback errors.
   • invalid_range: start_line/end_line are out of bounds. Use 'read' to confirm the file
     length before editing.
   • missing_parameter: when using operation: 'replace', both old_string and new_string
     are required, and new_string must be non-empty — an empty replacement would delete
-    the matched block, so it is refused (all-or-nothing). Provide the replacement text,
-    or use 'delete_lines' for deliberate removal.
+    the matched block, so it is refused (all-or-nothing). Provide replacement text or
+    use operation 'delete' with old_string for deliberate removal.
   • missing_parameter: operation 'replace_pattern' requires 'new_content' (or
     'new_string') with the replacement text; without it the edit fails up-front and the
     file is untouched.

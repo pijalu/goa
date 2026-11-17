@@ -24,7 +24,7 @@ import (
 //     replacement never inserted, tool reported success);
 //   - replace_pattern required no content at all, so every matched line was
 //     replaced by an empty insertion ("0 lines affected" while deleting).
-// Deliberate deletion belongs to delete_lines, never to an empty replace.
+// Deliberate deletion belongs to operation delete (or delete_lines), never to an empty replace.
 
 const allOrNothingFixture = "package main\n\nfunc alpha() {}\nfunc beta() {}\n"
 

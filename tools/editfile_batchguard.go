@@ -75,7 +75,7 @@ func usesAbsoluteLines(e editFileParams) bool {
 // error is the one the caller sees.
 func mayShiftLines(e editFileParams) bool {
 	switch effectiveOperation(e) {
-	case OpInsertAfter, OpInsertBefore, OpDeleteLines:
+	case OpInsertAfter, OpInsertBefore, OpDeleteLines, OpDelete:
 		return true
 	case OpReplaceLines:
 		return replaceLinesShifts(e)

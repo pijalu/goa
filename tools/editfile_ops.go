@@ -33,7 +33,7 @@ func (t *EditFileTool) runOp(lines []string, op EditOperation, p editParams) ([]
 	default:
 		return nil, 0, &internal.ToolError{Tool: "edit", Type: "unknown_operation",
 			Detail:   fmt.Sprintf("Unknown operation: %s", op),
-			HintText: "Use one of: replace, replace_lines, replace_pattern, insert_after, insert_before, delete_lines"}
+			HintText: "Use one of: replace, delete, replace_lines, replace_pattern, insert_after, insert_before, delete_lines"}
 	}
 }
 

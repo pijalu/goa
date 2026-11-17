@@ -50,10 +50,17 @@ func (r *EditFileRenderer) RenderCall(args map[string]any, ctx tuirender.RenderC
 		if len(files) > 1 {
 			title += rMuted(fmt.Sprintf(" (+%d more files)", len(files)-1))
 		}
+		if editAtomic(args) {
+			title += rMuted(" (atomic)")
+		}
 		return title
 	}
 	if glob := stringArg(args, "glob"); glob != "" {
-		return rToolTitle("edit") + " " + rAccent("glob:"+glob)
+		title := rToolTitle("edit") + " " + rAccent("glob:"+glob)
+		if editAtomic(args) {
+			title += rMuted(" (atomic)")
+		}
+		return title
 	}
 	path, count := editTargetPath(args)
 	if path == "" {
@@ -89,17 +96,26 @@ func editTargetFiles(args map[string]any) []string {
 // forms: the file count for 'files', the pattern plus edit count for 'glob'.
 // Empty result: the call is not a multi-file form.
 func (r *EditFileRenderer) renderPartialMultiFile(args map[string]any) string {
+	mode := ""
+	if editAtomic(args) {
+		mode = " — atomic"
+	}
 	if files := editTargetFiles(args); len(files) > 0 {
-		return rMuted(fmt.Sprintf("  %d files", len(files)))
+		return rMuted(fmt.Sprintf("  %d files%s", len(files), mode))
 	}
 	glob := stringArg(args, "glob")
 	if glob == "" {
 		return ""
 	}
 	if edits, ok := args["edits"].([]any); ok && len(edits) > 0 {
-		return rMuted(fmt.Sprintf("  glob:%s — %d edits", glob, len(edits)))
+		return rMuted(fmt.Sprintf("  glob:%s — %d edits%s", glob, len(edits), mode))
 	}
-	return rMuted("  glob:" + glob)
+	return rMuted("  glob:" + glob + mode)
+}
+
+func editAtomic(args map[string]any) bool {
+	atomic, _ := args["atomic"].(bool)
+	return atomic
 }
 
 // editTargetPath resolves the file an edit targets: top-level "path" first,

@@ -47,8 +47,11 @@ type EditResult struct {
 	// MatchType reports which strategy located the text to replace.
 	MatchType MatchType
 
-	// StartLine and EndLine are the 1-indexed, inclusive line numbers of the
-	// region that was replaced in the *original* file content.
+	// MatchCount is the number of non-overlapping matches replaced or deleted.
+	MatchCount int
+
+	// StartLine and EndLine bracket the first through last selected match in
+	// the original file. MatchCount > 1 may cover separated diff hunks.
 	StartLine int
 	EndLine   int
 }
@@ -91,122 +94,7 @@ const diffContextLines = 3
 // need to worry about whether their replacement text should end with a
 // newline character.
 func fuzzyEdit(file, oldStr, newStr string, allowFuzz bool) (*EditResult, error) {
-	if oldStr == "" {
-		return nil, ErrEmptyOldStr
-	}
-
-	// Normalize CRLF -> LF for comparison purposes; we restore CRLF in the
-	// output at the end if the original file used it.
-	useCRLF := strings.Contains(file, "\r\n")
-
-	normFile := strings.ReplaceAll(file, "\r\n", "\n")
-	normOld := strings.ReplaceAll(oldStr, "\r\n", "\n")
-	normNew := strings.ReplaceAll(newStr, "\r\n", "\n")
-
-	// A single trailing newline is treated as a line-block delimiter, not as
-	// a request to match/insert an extra empty line.
-	normOld = strings.TrimSuffix(normOld, "\n")
-	normNew = strings.TrimSuffix(normNew, "\n")
-
-	fileLines := strings.Split(normFile, "\n")
-	oldLines := strings.Split(normOld, "\n")
-	newLines := strings.Split(normNew, "\n")
-
-	// Build strategy list based on allowFuzz setting
-	type strategy struct {
-		matchType MatchType
-		normalize func(string) string
-		reindent  bool
-	}
-	strategies := []strategy{
-		{MatchExact, exactNormalize, false},
-	}
-	if allowFuzz {
-		strategies = append(strategies,
-			strategy{MatchTrailingWhitespace, trailingWhitespaceNormalize, false},
-			strategy{MatchFuzzy, fuzzyNormalize, true},
-		)
-	}
-
-	for _, strat := range strategies {
-		matches := findMatches(fileLines, oldLines, strat.normalize)
-		switch len(matches) {
-		case 0:
-			continue // try the next, fuzzier strategy
-		case 1:
-			start := matches[0]
-			end := start + len(oldLines)
-
-			replacement := newLines
-			if strat.reindent {
-				replacement = reindentReplacement(fileLines, oldLines, newLines, start)
-			}
-
-			if linesEqual(fileLines[start:end], replacement) {
-				return nil, ErrNoChange
-			}
-
-			return buildEditResult(fileLines, start, end, replacement, strat.matchType, useCRLF), nil
-		default:
-			return nil, fmt.Errorf("%w: found %d possible matches for the given text", ErrAmbiguous, len(matches))
-		}
-	}
-
-	// Final tier: a single-line old text that is a byte-exact substring of a
-	// longer file line. Whole-line matching can never locate such an anchor, so
-	// this runs only after every strategy above returned zero matches: no
-	// previously-successful input changes code path or result. It is an exact
-	// (not fuzzy) comparison, so it applies in exact-only mode too.
-	if len(oldLines) == 1 {
-		return substringEdit(fileLines, normFile, normOld, normNew, useCRLF)
-	}
-
-	return nil, ErrNotFound
-}
-
-// substringEdit locates a single-line normOld as a byte-exact substring of a
-// longer line in normFile and splices normNew in at the matching byte offset.
-//
-// Precondition: normOld contains no '\n' (the caller guarantees this by only
-// invoking it when the old text is a single line) and is non-empty.
-//
-// A unique match is required: zero occurrences yields ErrNotFound and more
-// than one yields ErrAmbiguous, matching the semantics of the whole-line
-// tiers. An anchor whose replacement is byte-identical yields ErrNoChange.
-//
-// The result is assembled with the same helper as the other tiers, so the diff
-// format and CRLF restoration behave identically. A multi-line normNew simply
-// expands the single matched line into several.
-func substringEdit(fileLines []string, normFile, normOld, normNew string, useCRLF bool) (*EditResult, error) {
-	// An empty anchor makes Count/Index meaningless (strings.Count of "" is
-	// len+1). The caller never sends one, but stay defensive.
-	if normOld == "" {
-		return nil, ErrNotFound
-	}
-
-	switch count := strings.Count(normFile, normOld); {
-	case count == 0:
-		return nil, ErrNotFound
-	case count > 1:
-		return nil, fmt.Errorf("%w: found %d possible matches for the given text", ErrAmbiguous, count)
-	}
-
-	if normNew == normOld {
-		return nil, ErrNoChange
-	}
-
-	idx := strings.Index(normFile, normOld)
-	start := strings.Count(normFile[:idx], "\n") // 0-indexed line holding the match
-	end := start + 1
-
-	// Splice at the byte offset, then slice out only the changed lines. Every
-	// byte before `start` is untouched and everything after the original line
-	// is untouched, so re-splitting the tail is enough to describe the change.
-	replaced := normFile[:idx] + normNew + normFile[idx+len(normOld):]
-	newFileLines := strings.Split(replaced, "\n")
-	replLines := newFileLines[start : len(newFileLines)-(len(fileLines)-end)]
-
-	return buildEditResult(fileLines, start, end, replLines, MatchExactSubstring, useCRLF), nil
+	return fuzzyEditSelected(file, oldStr, newStr, allowFuzz, editSelection{})
 }
 
 // blockMatch describes how oldStr's lines align with the current file

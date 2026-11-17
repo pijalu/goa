@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,18 +15,17 @@ import (
 	"github.com/pijalu/goa/internal"
 )
 
-// editFileTarget is one file in the multi-file batch form ("files" array):
-// its path plus the edits to apply to it. The edits mirror the top-level
-// "edits" items and carry the same per-file guarantees: applied in order,
-// atomic within the file, stale-line guard enforced.
+// editFileTarget is one independently validated multi-file target. A malformed
+// entry stays in the list with validationErr so valid siblings can still run in
+// the default non-atomic mode and atomic mode can report a complete preflight.
 type editFileTarget struct {
-	Path  string           `json:"path"`
-	Edits []editFileParams `json:"edits"`
+	Path          string           `json:"path"`
+	Edits         []editFileParams `json:"edits"`
+	validationErr error            `json:"-"`
 }
 
-// batchFileStatus is one per-path line in a multi-file result or failure
-// report. state is "ok", "fail" or "skip"; detail explains skip/fail; err is
-// the typed ToolError behind a fail (drives the aggregate error's type).
+// batchFileStatus is one per-path result. state is ok, fail, or skip; detail
+// distinguishes validated, written, and rolled-back successes explicitly.
 type batchFileStatus struct {
 	display string
 	state   string
@@ -33,23 +33,13 @@ type batchFileStatus struct {
 	err     *internal.ToolError
 }
 
-// resolveBatchForm validates the multi-file top-level shape and returns the
-// per-file targets. Exactly one form is allowed:
-//
-//	{"files": [{"path": ..., "edits": [...]}]}   — explicit per-file targets
-//	{"glob": "pkg/*.go", "edits": [...]}         — same edits for every match
-//
-// Both are mutually exclusive with each other, with the single-file "path",
-// and with the flat top-level "edits" (which belongs to the single-file batch
-// form). An empty/missing path inside a files entry, or an entry without
-// edits, is rejected up-front — before any file is read or written.
 func (t *EditFileTool) resolveBatchForm(p editFileParams) ([]editFileTarget, error) {
 	switch {
 	case len(p.Files) > 0:
 		if err := checkBatchExclusivity(p, true); err != nil {
 			return nil, err
 		}
-		return validateFilesForm(p.Files)
+		return validateFilesForm(p.Files), nil
 	case p.Glob != "":
 		if err := checkBatchExclusivity(p, false); err != nil {
 			return nil, err
@@ -59,9 +49,6 @@ func (t *EditFileTool) resolveBatchForm(p editFileParams) ([]editFileTarget, err
 	return nil, nil
 }
 
-// checkBatchExclusivity rejects forbidden top-level field combinations. The
-// files form must not carry path/glob/edits; the glob form must not carry
-// path/files and requires top-level edits.
 func checkBatchExclusivity(p editFileParams, filesForm bool) error {
 	if p.Path != "" {
 		return errConflictingEditForm("'path' and the multi-file forms are mutually exclusive: 'files' carries its own per-entry paths, 'glob' expands to its own file set")
@@ -86,31 +73,34 @@ func checkBatchExclusivity(p editFileParams, filesForm bool) error {
 	return nil
 }
 
-// validateFilesForm checks each files[] entry: path and edits are required and
-// entries must not nest multi-file forms.
-func validateFilesForm(files []editFileTarget) ([]editFileTarget, error) {
+// validateFilesForm converts entry-local shape errors into per-file failures.
+// Only top-level form conflicts are global; one malformed files[] entry must
+// not prevent valid siblings from being written in non-atomic mode.
+func validateFilesForm(files []editFileTarget) []editFileTarget {
 	targets := make([]editFileTarget, 0, len(files))
 	for i, f := range files {
+		where := fmt.Sprintf("files[%d]", i)
 		if f.Path == "" {
-			return nil, &internal.ToolError{Tool: "edit", Type: "missing_path",
-				Detail:   fmt.Sprintf("files[%d] is missing 'path'", i),
+			f.Path = where
+			f.validationErr = &internal.ToolError{Tool: "edit", Type: "missing_path",
+				Detail:   where + " is missing 'path'",
 				HintText: "Every 'files' entry must carry the file it edits in its 'path' field."}
+		} else {
+			where = fmt.Sprintf("%s (%s)", where, f.Path)
 		}
-		if len(f.Edits) == 0 {
-			return nil, &internal.ToolError{Tool: "edit", Type: "missing_parameter",
-				Detail:   fmt.Sprintf("files[%d] (%s) is missing 'edits'", i, f.Path),
+		if len(f.Edits) == 0 && f.validationErr == nil {
+			f.validationErr = &internal.ToolError{Tool: "edit", Type: "missing_parameter",
+				Detail:   where + " is missing 'edits'",
 				HintText: "Every 'files' entry needs an 'edits' array; an entry without edits would silently do nothing."}
 		}
-		if err := checkNoNestedBatch(f.Edits, fmt.Sprintf("files[%d] (%s)", i, f.Path)); err != nil {
-			return nil, err
+		if err := checkNoNestedBatch(f.Edits, where); err != nil && f.validationErr == nil {
+			f.validationErr = err
 		}
 		targets = append(targets, f)
 	}
-	return targets, nil
+	return targets
 }
 
-// targetsFromGlob expands the pattern into one target per matching file, all
-// sharing the caller's edits.
 func (t *EditFileTool) targetsFromGlob(pattern string, edits []editFileParams) ([]editFileTarget, error) {
 	if err := checkNoNestedBatch(edits, "top-level 'edits'"); err != nil {
 		return nil, err
@@ -126,33 +116,23 @@ func (t *EditFileTool) targetsFromGlob(pattern string, edits []editFileParams) (
 	return targets, nil
 }
 
-// checkNoNestedBatch rejects "files"/"glob" inside a batch edit entry: nested
-// multi-file forms are not supported and would otherwise be silently ignored.
 func checkNoNestedBatch(edits []editFileParams, where string) error {
 	for i, e := range edits {
-		if len(e.Files) > 0 || e.Glob != "" {
+		if len(e.Files) > 0 || e.Glob != "" || e.Atomic != nil {
 			return &internal.ToolError{Tool: "edit", Type: "invalid_input",
-				Detail:   fmt.Sprintf("%s: edits[%d] carries a nested 'files'/'glob' — nesting multi-file forms is not supported", where, i),
-				HintText: "Flatten the call: one edit call per multi-file batch, with the files listed in the top-level 'files' or selected by 'glob'."}
+				Detail:   fmt.Sprintf("%s: edits[%d] carries a nested multi-file field ('files'/'glob'/'atomic')", where, i),
+				HintText: "Keep files/glob/atomic at the top level; edits[] contains only operations for its owning file."}
 		}
 	}
 	return nil
 }
 
-// errConflictingEditForm reports mutually exclusive top-level fields.
 func errConflictingEditForm(detail string) *internal.ToolError {
 	return &internal.ToolError{Tool: "edit", Type: "invalid_input",
 		Detail:   detail,
-		HintText: "Single file: 'path' (+ optional 'edits'). Multiple files: 'files' [{path, edits}] or 'glob' + top-level 'edits'."}
+		HintText: "Single file: 'path' (+ optional 'edits'). Multiple files: 'files' [{path, edits}] or 'glob' + top-level 'edits'; optional top-level 'atomic'."}
 }
 
-// expandEditGlobPattern expands a glob pattern against the project directory
-// and returns matching regular files, sorted, duplicates removed. Relative
-// patterns resolve against the project directory; absolute patterns are used
-// as-is. Zero matches is a hard failure (glob_no_match): a rename batch that
-// touches nothing must surface, not silently succeed. Shell-style single-star
-// patterns only — "**" is not supported; list such paths explicitly via
-// 'files'.
 func (t *EditFileTool) expandEditGlobPattern(pattern string) ([]string, error) {
 	pat := pattern
 	if !filepath.IsAbs(pat) {
@@ -166,15 +146,16 @@ func (t *EditFileTool) expandEditGlobPattern(pattern string) ([]string, error) {
 	}
 	seen := make(map[string]struct{}, len(matches))
 	files := make([]string, 0, len(matches))
-	for _, m := range matches {
-		if fi, statErr := os.Stat(m); statErr != nil || !fi.Mode().IsRegular() {
+	for _, match := range matches {
+		info, statErr := os.Stat(match)
+		if statErr != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		if _, dup := seen[m]; dup {
+		if _, duplicate := seen[match]; duplicate {
 			continue
 		}
-		seen[m] = struct{}{}
-		files = append(files, m)
+		seen[match] = struct{}{}
+		files = append(files, match)
 	}
 	if len(files) == 0 {
 		return nil, &internal.ToolError{Tool: "edit", Type: "glob_no_match",
@@ -185,9 +166,6 @@ func (t *EditFileTool) expandEditGlobPattern(pattern string) ([]string, error) {
 	return files, nil
 }
 
-// projectRoot returns the directory relative glob patterns resolve against.
-// EditFileTool.ProjectDir is always set for registered tools; the "."
-// fallback keeps the method total for bare test constructs.
 func (t *EditFileTool) projectRoot() string {
 	if t.ProjectDir != "" {
 		return t.ProjectDir
@@ -195,8 +173,6 @@ func (t *EditFileTool) projectRoot() string {
 	return "."
 }
 
-// displayPathFor renders a file path the way the tool reports paths: as given
-// for explicit targets, relative to the project root for glob matches.
 func (t *EditFileTool) displayPathFor(resolvedPath, originalPath string) string {
 	if originalPath != "" {
 		return originalPath
@@ -207,9 +183,6 @@ func (t *EditFileTool) displayPathFor(resolvedPath, originalPath string) string 
 	return resolvedPath
 }
 
-// executeMultiFileForm routes the multi-file forms ("files"/"glob").
-// isMulti is false when the input is a single-file call, so the caller falls
-// through to the single-file paths.
 func (t *EditFileTool) executeMultiFileForm(p editFileParams) (out string, isMulti bool, err error) {
 	if len(p.Files) == 0 && p.Glob == "" {
 		return "", false, nil
@@ -218,214 +191,290 @@ func (t *EditFileTool) executeMultiFileForm(p editFileParams) (out string, isMul
 	if err != nil {
 		return "", true, err
 	}
-	out, err = t.executeBatchFiles(targets)
+	atomic := p.Atomic != nil && *p.Atomic
+	out, err = t.executeBatchFiles(targets, atomic)
 	return out, true, err
 }
 
-// executeBatchFiles applies the multi-file batch: every file is read and its
-// edits applied IN MEMORY first; only when every file applies cleanly is any
-// file written. A failure in any file is a hard failure of the whole call —
-// nothing is written, and the error lists a per-path result (ok / fail /
-// skip) so no silent skip can hide a drifted file.
-func (t *EditFileTool) executeBatchFiles(targets []editFileTarget) (string, error) {
-	var (
-		works    []*batchFileWork
-		statuses []batchFileStatus
-		failed   bool
-	)
-	// Phase 1 — resolve, read, drift-check and apply every file in memory.
-	for _, tgt := range targets {
-		w, st := t.prepareBatchFileWork(tgt, works)
-		statuses = append(statuses, st)
-		if st.state == "fail" {
+// executeBatchFiles always preflights every target. Atomic mode stops before
+// writing on any validation failure; default mode writes every valid target and
+// reports both successful and failed paths in the aggregate result.
+func (t *EditFileTool) executeBatchFiles(targets []editFileTarget, atomic bool) (string, error) {
+	works := make([]*batchFileWork, 0, len(targets))
+	statuses := make([]batchFileStatus, 0, len(targets))
+	failed := false
+	for _, target := range targets {
+		work, status := t.prepareBatchFileWork(target, works)
+		statuses = append(statuses, status)
+		if status.state == "fail" {
 			failed = true
 			continue
 		}
-		if st.state == "skip" {
+		if status.state == "skip" {
 			continue
 		}
-		works = append(works, w)
+		work.statusIndex = len(statuses) - 1
+		works = append(works, work)
 	}
-
-	// Phase 2 — all-or-nothing: any Phase 1 failure means nothing is written.
-	if failed {
-		return "", t.batchFilesError(statuses, nil)
+	if atomic && failed {
+		for _, work := range works {
+			statuses[work.statusIndex].detail = "validated; not written"
+		}
+		return "", t.batchFilesError(statuses, nil, true, false, nil)
 	}
-	return t.writeBatchFileResults(works, statuses)
+	return t.writeBatchFileResults(works, statuses, atomic, failed)
 }
 
-// batchFileWork holds one target's in-memory edit state between the apply
-// phase and the write phase of a multi-file batch.
+// batchFileWork retains exact original bytes for atomic rollback in addition
+// to normalized line state used to apply and render edits.
 type batchFileWork struct {
-	target     editFileTarget
-	resolved   string
-	original   string
-	targetPath string // post fuzzy-fallback read path
-	fuzzyNote  string
-	trailingNL bool
-	originalLn []string
-	lines      []string
-	matchTypes []MatchType
+	target        editFileTarget
+	resolved      string
+	targetPath    string
+	fuzzyNote     string
+	trailingNL    bool
+	originalLn    []string
+	lines         []string
+	matchTypes    []MatchType
+	originalBytes []byte
+	originalMode  os.FileMode
+	statusIndex   int
 }
 
-// prepareBatchFileWork resolves, reads, drift-checks and applies one target
-// fully in memory. It returns the work item (nil when the file failed or is a
-// duplicate skip) and its per-path status. accepted holds the already-prepared
-// work items, used to resolve targets that name the same file twice.
-func (t *EditFileTool) prepareBatchFileWork(tgt editFileTarget, accepted []*batchFileWork) (*batchFileWork, batchFileStatus) {
-	fail := func(display, detail string, err *internal.ToolError) (*batchFileWork, batchFileStatus) {
-		return nil, batchFileStatus{display: display, state: "fail", detail: detail, err: err}
+func (t *EditFileTool) prepareBatchFileWork(target editFileTarget, accepted []*batchFileWork) (*batchFileWork, batchFileStatus) {
+	fail := func(display string, err error) (*batchFileWork, batchFileStatus) {
+		return nil, batchFileStatus{display: display, state: "fail", detail: toolErrSummary(err), err: toolErrOf(err)}
 	}
-	resolved, original, err := ResolveFileToolPath(t.WorktreeMgr, tgt.Path)
+	if target.validationErr != nil {
+		return fail(target.Path, target.validationErr)
+	}
+	resolved, original, err := ResolveFileToolPath(t.WorktreeMgr, target.Path)
 	if err != nil {
-		return fail(tgt.Path, toolErrSummary(err), toolErrOf(err))
+		return fail(target.Path, err)
 	}
 	display := t.displayPathFor(resolved, original)
-	for _, w := range accepted {
-		if w.resolved == resolved {
-			return nil, batchFileStatus{display: display, state: "skip",
-				detail: fmt.Sprintf("same file as %s — edits apply once", w.target.Path)}
+	for _, work := range accepted {
+		if work.resolved == resolved {
+			return nil, batchFileStatus{display: display, state: "skip", detail: fmt.Sprintf("same file as %s — edits apply once", work.target.Path)}
 		}
 	}
-	w := &batchFileWork{target: tgt, resolved: resolved, original: original}
-	w.originalLn, w.targetPath, w.fuzzyNote, w.trailingNL, err = t.readLines(resolved, original)
+	work := &batchFileWork{target: target, resolved: resolved}
+	source, err := t.readEditSource(resolved, original)
 	if err != nil {
-		return fail(display, toolErrSummary(err), toolErrOf(err))
+		return fail(display, err)
 	}
-	if err := checkBatchLineDrift(tgt.Edits); err != nil {
-		return fail(display, toolErrSummary(err), toolErrOf(err))
+	work.originalLn = splitLines(string(source.data))
+	work.targetPath = source.targetPath
+	work.fuzzyNote = source.fuzzyNote
+	work.trailingNL = strings.HasSuffix(string(source.data), "\n")
+	if err := work.captureOriginal(source.data); err != nil {
+		return fail(display, err)
 	}
-	lines, matchTypes, failIdx, applyErr := t.applyBatchToLines(w.originalLn, tgt.Edits)
+	if err := checkBatchLineDrift(target.Edits); err != nil {
+		return fail(display, err)
+	}
+	lines, matchTypes, failIndex, applyErr := t.applyBatchToLines(work.originalLn, target.Edits)
 	if applyErr != nil {
-		wrapped := t.wrapMultiEditError(applyErr, display, failIdx, len(tgt.Edits), tgt.Edits[failIdx], lines)
-		te := wrapped.(*internal.ToolError)
-		return fail(display, te.Detail, te)
+		wrapped := t.wrapMultiEditError(applyErr, display, failIndex, len(target.Edits), target.Edits[failIndex], lines)
+		return fail(display, wrapped)
 	}
-	w.lines = lines
-	w.matchTypes = matchTypes
-	return w, batchFileStatus{display: display, state: "ok", detail: fmt.Sprintf("%d edits", len(tgt.Edits))}
+	work.lines = lines
+	work.matchTypes = matchTypes
+	return work, batchFileStatus{display: display, state: "ok", detail: fmt.Sprintf("%d edits validated", len(target.Edits))}
 }
 
-// writeBatchFileResults persists every prepared file (Phase 3) and composes
-// the success result: a batch header, skip/fuzzy notes, then one per-file
-// block (summary + net diff) per target.
-func (t *EditFileTool) writeBatchFileResults(works []*batchFileWork, statuses []batchFileStatus) (string, error) {
-	var (
-		blocks  []string
-		notes   []string
-		written []string
-	)
-	for _, w := range works {
-		output := strings.Join(w.lines, "\n")
-		if w.trailingNL && output != "" && !strings.HasSuffix(output, "\n") {
-			output += "\n"
-		}
-		diagBlock, writeErr := t.writeEditResult(w.targetPath, w.target.Path, output)
+func (w *batchFileWork) captureOriginal(data []byte) error {
+	info, err := os.Stat(w.targetPath)
+	if err != nil {
+		return &internal.ToolError{Tool: "edit", Type: "read_error", Detail: fmt.Sprintf("Cannot stat %s: %v", w.target.Path, err)}
+	}
+	w.originalBytes = data
+	w.originalMode = info.Mode()
+	return nil
+}
+
+func (w *batchFileWork) output() string {
+	output := strings.Join(w.lines, "\n")
+	if w.trailingNL && output != "" && !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+	return output
+}
+
+func (t *EditFileTool) writeBatchFileResults(works []*batchFileWork, statuses []batchFileStatus, atomic, failed bool) (string, error) {
+	blocks := make([]string, 0, len(works))
+	var notes, written []string
+	for i, work := range works {
+		diagBlock, writeErr := t.writeEditResult(work.targetPath, work.target.Path, work.output())
 		if writeErr != nil {
-			// A write failure leaves earlier files already persisted; say so.
-			statuses = append(statuses, batchFileStatus{display: w.target.Path, state: "fail",
-				detail: toolErrSummary(writeErr), err: toolErrOf(writeErr)})
-			return "", t.batchFilesError(statuses, written)
+			failed = true
+			status := &statuses[work.statusIndex]
+			status.state = "fail"
+			status.detail = toolErrSummary(writeErr)
+			status.err = toolErrOf(writeErr)
+			if atomic {
+				return t.rollbackAtomicBatch(works[:i+1], works[i+1:], statuses)
+			}
+			continue
 		}
-		written = append(written, w.target.Path)
-		if w.fuzzyNote != "" {
-			notes = append(notes, w.fuzzyNote)
+		written = append(written, work.target.Path)
+		statuses[work.statusIndex].detail = fmt.Sprintf("%d edits written", len(work.target.Edits))
+		if work.fuzzyNote != "" {
+			notes = append(notes, work.fuzzyNote)
 		}
-		blocks = append(blocks, formatMultiEditResult(w.target.Path, len(w.target.Edits), w.matchTypes,
-			resolvedPathNote(w.targetPath, w.target.Path), generateUnifiedDiff(w.originalLn, w.lines), "", diagBlock))
+		blocks = append(blocks, formatMultiEditResult(work.target.Path, len(work.target.Edits), work.matchTypes,
+			resolvedPathNote(work.targetPath, work.target.Path), generateUnifiedDiff(work.originalLn, work.lines), "", diagBlock))
 	}
-	return formatBatchFilesResult(len(works), statuses, notes, blocks), nil
+	out := formatBatchFilesResult(len(blocks), statuses, notes, blocks)
+	if failed {
+		return out, t.batchFilesError(statuses, written, false, false, nil)
+	}
+	return out, nil
 }
 
-// formatBatchFilesResult renders the multi-file success message: the header
-// (file count), the skip notes (a skipped duplicate must never be silent) and
-// one result block per file.
+func (t *EditFileTool) rollbackAtomicBatch(attempted, pending []*batchFileWork, statuses []batchFileStatus) (string, error) {
+	rollbackFailures := t.restoreBatchFiles(attempted, statuses)
+	for _, work := range pending {
+		statuses[work.statusIndex].detail = "validated; not written"
+	}
+	return "", t.batchFilesError(statuses, nil, true, true, rollbackFailures)
+}
+
+// restoreBatchFiles restores attempted writes in reverse order, including the
+// failing write (which may have changed bytes before read-back verification
+// failed). Per-file statuses and notifiers reflect the actual rollback result.
+func (t *EditFileTool) restoreBatchFiles(attempted []*batchFileWork, statuses []batchFileStatus) []string {
+	var failures []string
+	for i := len(attempted) - 1; i >= 0; i-- {
+		work := attempted[i]
+		status := &statuses[work.statusIndex]
+		if err := t.writeVerified(work.targetPath, work.originalBytes, work.originalMode); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", work.target.Path, err))
+			if status.state == "fail" {
+				status.detail += "; rollback_failed: " + err.Error()
+			} else {
+				status.detail = "rollback_failed: " + err.Error()
+			}
+			status.state = "fail"
+			status.err = &internal.ToolError{Tool: "edit", Type: "rollback_failed", Detail: err.Error()}
+			continue
+		}
+		if status.state == "ok" {
+			status.detail = "rolled back after write failure"
+		} else {
+			status.detail += "; original bytes restored (rolled back)"
+		}
+		if t.FileChangeNotifier != nil {
+			t.FileChangeNotifier(work.targetPath)
+		}
+		_ = t.notifyLSP(context.Background(), work.targetPath)
+	}
+	return failures
+}
+
 func formatBatchFilesResult(fileCount int, statuses []batchFileStatus, notes, blocks []string) string {
 	header := fmt.Sprintf("[edit: %d files] batch applied", fileCount)
-	for _, s := range statuses {
-		if s.state == "skip" {
-			notes = append(notes, "Note: "+s.display+" skipped — "+s.detail)
+	for _, status := range statuses {
+		if status.state == "skip" {
+			notes = append(notes, "Note: "+status.display+" skipped — "+status.detail)
 		}
 	}
 	if len(notes) > 0 {
 		header += "\n" + strings.Join(notes, "\n")
 	}
+	if len(blocks) == 0 {
+		return header
+	}
 	return header + "\n" + strings.Join(blocks, "\n")
 }
 
-// batchFilesError builds the aggregate hard failure for a multi-file batch:
-// the per-path result lines (ok / fail / skip) plus the written-files note
-// when a write failed mid-way. The first failing typed error's type and hint
-// carry over so callers that dispatch on ToolError.Type keep their behavior
-// (loop guardrails, retry logic).
-func (t *EditFileTool) batchFilesError(statuses []batchFileStatus, written []string) error {
+func (t *EditFileTool) batchFilesError(statuses []batchFileStatus, written []string, atomic, rolledBack bool, rollbackFailures []string) error {
 	var first *internal.ToolError
 	var b strings.Builder
-	b.WriteString("Multi-file edit failed — no changes were written")
-	if len(written) > 0 {
-		b.WriteString(fmt.Sprintf(" except: %s (already persisted; verify their content)", strings.Join(written, ", ")))
-	}
-	b.WriteString(".\n")
-	for _, s := range statuses {
-		switch s.state {
-		case "ok":
-			fmt.Fprintf(&b, "  ok   %s (%s)\n", s.display, s.detail)
-		case "fail":
-			fmt.Fprintf(&b, "  fail %s — %s\n", s.display, s.detail)
-			if s.err != nil && first == nil {
-				first = s.err
-			}
-		case "skip":
-			fmt.Fprintf(&b, "  skip %s — %s\n", s.display, s.detail)
+	writeBatchErrorHeader(&b, atomic, len(written) > 0, rollbackFailures)
+	for _, status := range statuses {
+		writeBatchStatus(&b, status)
+		if status.state == "fail" && status.err != nil && first == nil {
+			first = status.err
 		}
 	}
-	te := &internal.ToolError{
-		Tool:     "edit",
-		Type:     "batch_failed",
-		Detail:   strings.TrimSuffix(b.String(), "\n"),
-		HintText: "Multi-file batches are all-or-nothing: nothing is written until every file applies cleanly. Fix the failing file and retry the whole batch.",
+	if atomic && rolledBack && len(rollbackFailures) == 0 {
+		b.WriteString("  rollback: all attempted writes rolled back\n")
+	}
+	toolErr := &internal.ToolError{Tool: "edit", Type: "batch_failed", Detail: strings.TrimSuffix(b.String(), "\n")}
+	if atomic {
+		toolErr.HintText = "Atomic multi-file edit: fix the failing file and retry the whole batch. Validated files were not left partially edited."
+	} else {
+		toolErr.HintText = "Non-atomic multi-file edit: ok files are already persisted. Inspect failed paths after write/verify errors, fix only failures, and do not assume rollback."
 	}
 	if first != nil {
-		te.Type = first.Type
+		toolErr.Type = first.Type
 		if first.HintText != "" {
-			te.HintText = "Multi-file batch: " + first.HintText
+			toolErr.HintText = "Multi-file batch: " + first.HintText + " " + toolErr.HintText
 		}
 	}
-	return te
+	if len(rollbackFailures) > 0 {
+		toolErr.Type = "rollback_failed"
+		toolErr.HintText = "Atomic rollback incomplete: inspect every path marked rollback_failed before retrying; successfully restored paths need no edit."
+	}
+	return toolErr
 }
 
-// applyBatchToLines applies a batch of edits to in-memory lines, returning
-// the resulting lines, the collected match types, and on failure the index of
-// the failing edit (-1 on success) with `lines` holding the content at the
-// point of failure (earlier edits applied) for the diagnostic.
+func writeBatchErrorHeader(b *strings.Builder, atomic, hasWritten bool, rollbackFailures []string) {
+	if atomic && len(rollbackFailures) > 0 {
+		b.WriteString("Atomic multi-file edit failed; rollback incomplete: ")
+		b.WriteString(strings.Join(rollbackFailures, "; "))
+		b.WriteString(".\n")
+		return
+	}
+	if atomic {
+		b.WriteString("Atomic multi-file edit failed — no changes were left written.\n")
+		return
+	}
+	if hasWritten {
+		b.WriteString("Multi-file edit completed with errors — successful files were written; failures were not rolled back")
+	} else {
+		b.WriteString("Multi-file edit completed with errors — no successful files were written; inspect failed paths")
+	}
+	b.WriteString(".\n")
+}
+
+func writeBatchStatus(b *strings.Builder, status batchFileStatus) {
+	switch status.state {
+	case "ok":
+		fmt.Fprintf(b, "  ok   %s (%s)\n", status.display, status.detail)
+	case "fail":
+		fmt.Fprintf(b, "  fail %s — %s\n", status.display, status.detail)
+	case "skip":
+		fmt.Fprintf(b, "  skip %s — %s\n", status.display, status.detail)
+	}
+}
+
 func (t *EditFileTool) applyBatchToLines(original []string, edits []editFileParams) (lines []string, matchTypes []MatchType, failIdx int, err error) {
 	lines = original
-	for i, e := range edits {
-		newLines, mt, opErr := t.applySingleEdit(lines, e)
+	for i, edit := range edits {
+		newLines, matchType, opErr := t.applySingleEdit(lines, edit)
 		if opErr != nil {
 			return lines, matchTypes, i, opErr
 		}
 		lines = newLines
-		if mt != "" {
-			matchTypes = append(matchTypes, mt)
+		if matchType != "" {
+			matchTypes = append(matchTypes, matchType)
 		}
 	}
 	return lines, matchTypes, -1, nil
 }
 
-// toolErrOf unwraps a *internal.ToolError, or nil for anything else.
 func toolErrOf(err error) *internal.ToolError {
-	if te, ok := err.(*internal.ToolError); ok {
-		return te
+	if toolErr, ok := err.(*internal.ToolError); ok {
+		return toolErr
 	}
 	return nil
 }
 
-// toolErrSummary renders an error for the per-path report: typed tool errors
-// as "type: detail", anything else verbatim.
 func toolErrSummary(err error) string {
-	if te := toolErrOf(err); te != nil {
-		return fmt.Sprintf("%s: %s", te.Type, te.Detail)
+	if toolErr := toolErrOf(err); toolErr != nil {
+		return fmt.Sprintf("%s: %s", toolErr.Type, toolErr.Detail)
 	}
 	return err.Error()
 }

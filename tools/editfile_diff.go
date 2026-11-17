@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 Pierre Poissinger
+
 package tools
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/pmezard/go-difflib/difflib"
 )
 
 // truncateStr returns s truncated to n runes with "..." suffix.
@@ -15,53 +20,60 @@ func truncateStr(s string, n int) string {
 	return string(runes[:n]) + "..."
 }
 
-// generateUnifiedDiff produces a unified-diff hunk comparing oldLines and newLines.
+// generateUnifiedDiff produces independent, context-bounded unified-diff
+// hunks. Grouping opcodes is essential: a single hunk from the first through
+// the last edit reprints every unchanged line between distant batch edits.
 func generateUnifiedDiff(oldLines, newLines []string) string {
-	start := firstDiff(oldLines, newLines)
-	if start == len(oldLines) && start == len(newLines) {
-		return ""
-	}
-	oldEnd, newEnd := diffEnds(oldLines, newLines, start)
-	const context = 3
-	ctxStart := maxInt(0, start-context)
-	ctxOldEnd := minInt(len(oldLines), oldEnd+context)
-	before, after := start-ctxStart, ctxOldEnd-oldEnd
+	matcher := difflib.NewMatcherWithJunk(oldLines, newLines, false, nil)
+	groups := matcher.GetGroupedOpCodes(diffContextLines)
 	var b strings.Builder
-	fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", ctxStart+1, oldEnd-start+before+after, ctxStart+1, newEnd-start+before+after)
-	writeDiffRange(&b, " ", oldLines, ctxStart, start)
-	writeDiffRange(&b, "-", oldLines, start, oldEnd)
-	writeDiffRange(&b, "+", newLines, start, newEnd)
-	writeDiffRange(&b, " ", oldLines, oldEnd, ctxOldEnd)
+	for i, group := range groups {
+		if len(group) == 0 {
+			continue
+		}
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		writeDiffHunk(&b, group, oldLines, newLines)
+	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-func firstDiff(oldLines, newLines []string) int {
-	i := 0
-	for i < len(oldLines) && i < len(newLines) && oldLines[i] == newLines[i] {
-		i++
+func writeDiffHunk(b *strings.Builder, group []difflib.OpCode, oldLines, newLines []string) {
+	first, last := group[0], group[len(group)-1]
+	oldStart, oldCount := unifiedDiffRange(first.I1, last.I2)
+	newStart, newCount := unifiedDiffRange(first.J1, last.J2)
+	fmt.Fprintf(b, "@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount)
+	for _, op := range group {
+		writeDiffOpcode(b, op, oldLines, newLines)
 	}
-	return i
 }
-func diffEnds(oldLines, newLines []string, start int) (int, int) {
-	o, n := len(oldLines), len(newLines)
-	for o > start && n > start && oldLines[o-1] == newLines[n-1] {
-		o--
-		n--
+
+// unifiedDiffRange converts zero-based, end-exclusive offsets to unified-diff
+// coordinates. Empty ranges point at the line before the insertion/deletion.
+func unifiedDiffRange(start, stop int) (line, count int) {
+	line = start + 1
+	count = stop - start
+	if count == 0 {
+		line--
 	}
-	return o, n
+	return line, count
 }
-func minInt(a, b int) int {
-	if a < b {
-		return a
+
+func writeDiffOpcode(b *strings.Builder, op difflib.OpCode, oldLines, newLines []string) {
+	switch op.Tag {
+	case 'e':
+		writeDiffRange(b, " ", oldLines, op.I1, op.I2)
+	case 'd':
+		writeDiffRange(b, "-", oldLines, op.I1, op.I2)
+	case 'i':
+		writeDiffRange(b, "+", newLines, op.J1, op.J2)
+	case 'r':
+		writeDiffRange(b, "-", oldLines, op.I1, op.I2)
+		writeDiffRange(b, "+", newLines, op.J1, op.J2)
 	}
-	return b
 }
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
+
 func writeDiffRange(b *strings.Builder, prefix string, lines []string, from, to int) {
 	for i := from; i < to; i++ {
 		fmt.Fprintf(b, "%s%s\n", prefix, lines[i])

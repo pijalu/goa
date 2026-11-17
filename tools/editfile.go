@@ -27,6 +27,7 @@ const (
 	OpInsertAfter    EditOperation = "insert_after"
 	OpInsertBefore   EditOperation = "insert_before"
 	OpDeleteLines    EditOperation = "delete_lines"
+	OpDelete         EditOperation = "delete"
 )
 
 type IndentMode string
@@ -77,6 +78,11 @@ type EditFileTool struct {
 	FileChangeNotifier func(path string)
 	// LSPManager, when set, is notified of content changes for .go files.
 	LSPManager LSPDocumentManager
+
+	// writeFile is an optional filesystem fault-injection seam. Production
+	// writes use WriteFileVerified; tests can force a mid-batch failure to prove
+	// independent writes and atomic rollback.
+	writeFile func(path string, content []byte, perm os.FileMode) error
 }
 
 func (t *EditFileTool) Schema() agentic.ToolSchema {
@@ -86,30 +92,15 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": "file path",
-				},
-				"old_string": map[string]any{
-					"type":        "string",
-					"description": "text to match",
-				},
-				"new_string": map[string]any{
-					"type":        "string",
-					"description": "replacement text",
-				},
+				"path":       map[string]any{"type": "string"},
+				"old_string": map[string]any{"type": "string"},
+				"new_string": map[string]any{"type": "string"},
 				"operation": map[string]any{
 					"type": "string",
-					"enum": []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
+					"enum": []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines", "delete"},
 				},
-				"start_line": map[string]any{
-					"type":        "integer",
-					"description": "start line (1-idx)",
-				},
-				"end_line": map[string]any{
-					"type":        "integer",
-					"description": "end line (1-idx)",
-				},
+				"start_line": map[string]any{"type": "integer"},
+				"end_line":   map[string]any{"type": "integer"},
 				"pattern": map[string]any{
 					"type":        "string",
 					"description": "regex for pattern ops (invalid regex is matched literally)",
@@ -120,11 +111,19 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"occurrence": map[string]any{
 					"type":        "integer",
-					"description": "Nth matching line (default 1)",
+					"description": "Nth match (string) or Nth matching line (pattern)",
+				},
+				"replace_all": map[string]any{
+					"type":        "boolean",
+					"description": "apply to every non-overlapping match",
+				},
+				"atomic": map[string]any{
+					"type":        "boolean",
+					"description": "multi-file only: all-or-nothing with rollback",
 				},
 				"new_content": map[string]any{
 					"type":        "string",
-					"description": "replacement content for line ops; \"\" is valid (one empty line)",
+					"description": "line-op replacement; \"\" is valid (one empty line)",
 				},
 				"indent_mode": map[string]any{
 					"type":        "string",
@@ -133,7 +132,7 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"edits": map[string]any{
 					"type":        "array",
-					"description": "Batch to ONE file: in order, atomic; elements mirror single-edit fields. Line-addressed after line-count-changing edits = stale_line_numbers; split+re-harvest.",
+					"description": "One file, ordered and atomic. Line shifts + later absolute lines = stale_line_numbers; re-harvest.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -141,7 +140,7 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 							// flat single-edit properties documented above (context budget).
 							"operation": map[string]any{
 								"type": "string",
-								"enum": []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
+								"enum": []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines", "delete"},
 							},
 							"path":          map[string]any{"type": "string"}, // optional; fallback when top-level path is omitted
 							"old_string":    map[string]any{"type": "string"},
@@ -151,6 +150,7 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 							"pattern":       map[string]any{"type": "string"},
 							"pattern_flags": map[string]any{"type": "string"},
 							"occurrence":    map[string]any{"type": "integer"},
+							"replace_all":   map[string]any{"type": "boolean"},
 							"new_content":   map[string]any{"type": "string"},
 							"indent_mode": map[string]any{
 								"type": "string",
@@ -161,7 +161,7 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"files": map[string]any{
 					"type":        "array",
-					"description": "Multi-file: {path, edits} per element; all-or-nothing across files, per-path results. Exclusive with path/glob.",
+					"description": "Multi-file targets; independent unless atomic:true.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -173,7 +173,7 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"glob": map[string]any{
 					"type":        "string",
-					"description": "Glob scope (no '**'): top-level 'edits' apply to every match; zero matches hard-fail (glob_no_match).",
+					"description": "Apply top-level edits to matches (no '**'); zero matches fail.",
 				},
 			},
 			"required": []string{},
@@ -196,6 +196,8 @@ type editFileParams struct {
 	Pattern      string           `json:"pattern"`
 	PatternFlags string           `json:"pattern_flags"`
 	Occurrence   int              `json:"occurrence"`
+	ReplaceAll   bool             `json:"replace_all"`
+	Atomic       *bool            `json:"atomic"`
 	NewContent   string           `json:"new_content"`
 	IndentMode   string           `json:"indent_mode"`
 	Edits        []editFileParams `json:"edits"`
@@ -227,7 +229,8 @@ type editFileAlias editFileParams
 // nested edits recurse through UnmarshalJSON automatically.
 type editFileWire struct {
 	editFileAlias
-	NewContent *string `json:"new_content"`
+	NewContent *string         `json:"new_content"`
+	Atomic     json.RawMessage `json:"atomic"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler for editFileParams: an explicitly
@@ -244,6 +247,13 @@ func (p *editFileParams) UnmarshalJSON(data []byte) error {
 		p.NewContent = *w.NewContent
 		p.NewContentSet = true
 	}
+	if w.Atomic != nil {
+		var atomic *bool
+		if err := json.Unmarshal(w.Atomic, &atomic); err != nil || atomic == nil {
+			return fmt.Errorf("atomic must be true or false, not null or another type")
+		}
+		p.Atomic = atomic
+	}
 	return nil
 }
 
@@ -256,9 +266,11 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 			HintText: "Ensure your input is valid JSON with the required fields.",
 		}
 	}
-	// Multi-file batch form (bugs.md B40) takes precedence over the
-	// single-file shapes: "files" targets or a "glob" scope, applied
-	// all-or-nothing across files with per-path results.
+	if err := validateSingleFileAtomic(p); err != nil {
+		return "", err
+	}
+	// Multi-file forms are independent by default; atomic:true preflights every
+	// target and restores attempted writes if any write fails.
 	if out, isMulti, err := t.executeMultiFileForm(p); isMulti {
 		return out, err
 	}
@@ -291,19 +303,15 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 		return t.executeMulti(resolvedPath, originalPath, p)
 	}
 
-	// The schema advertises `operation: "replace"` as a convenience alias for
-	// the classic `old_string`/`new_string` search/replace. Route it through the
-	// same implementation, requiring both fields.
-	if p.Operation == string(OpReplace) || p.OldString != "" {
-		// All-or-nothing guard (bugs.md 2026-08-26): reject a lost/empty
-		// replacement up-front — the empty string used to silently delete
-		// the matched block while reporting success.
-		if err := validateReplacePair(p.OldString, p.NewString); err != nil {
+	if isStringEdit(p) {
+		if err := validateStringEdit(p); err != nil {
 			return "", err
 		}
-		return t.searchReplace(resolvedPath, originalPath, p.OldString, p.NewString, t.AllowFuzz)
+		return t.searchReplace(resolvedPath, originalPath, p)
 	}
-
+	if err := validateNoReplaceAllForLineOp(p); err != nil {
+		return "", err
+	}
 	return t.editByOperation(resolvedPath, originalPath, p)
 }
 
@@ -444,18 +452,19 @@ func formatMultiEditResult(path string, count int, matchTypes []MatchType, note,
 // returns the resulting lines. For a search/replace it also reports the match
 // type; line/pattern operations report an empty match type.
 func (t *EditFileTool) applySingleEdit(lines []string, e editFileParams) ([]string, MatchType, error) {
-	// Classic search/replace (or the "replace" alias) works on the joined text
-	// so the fuzzy matcher sees exactly what the single-edit path sees.
-	if e.Operation == string(OpReplace) || e.OldString != "" {
-		// Same all-or-nothing guard as the flat single-edit path.
-		if err := validateReplacePair(e.OldString, e.NewString); err != nil {
+	if isStringEdit(e) {
+		if err := validateStringEdit(e); err != nil {
 			return nil, "", err
 		}
-		res, err := fuzzyEdit(strings.Join(lines, "\n"), e.OldString, e.NewString, t.AllowFuzz)
+		res, err := fuzzyEditSelected(strings.Join(lines, "\n"), e.OldString, e.NewString, t.AllowFuzz,
+			editSelection{occurrence: e.Occurrence, replaceAll: e.ReplaceAll, deleteMatch: EditOperation(e.Operation) == OpDelete})
 		if err != nil {
 			return nil, "", err
 		}
 		return splitLines(res.NewContent), res.MatchType, nil
+	}
+	if err := validateNoReplaceAllForLineOp(e); err != nil {
+		return nil, "", err
 	}
 
 	op := EditOperation(e.Operation)
@@ -497,7 +506,7 @@ func (t *EditFileTool) wrapMultiEditError(err error, path string, idx, batchSize
 	var te *internal.ToolError
 	switch {
 	case errors.Is(err, ErrAmbiguous), errors.Is(err, ErrNotFound),
-		errors.Is(err, ErrNoChange), errors.Is(err, ErrEmptyOldStr):
+		errors.Is(err, ErrNoChange), errors.Is(err, ErrEmptyOldStr), errors.Is(err, ErrOccurrenceNotFound):
 		// fuzzyEdit sentinel errors get the same rich mapping as the
 		// single-edit path (line-match counts, drift hints).
 		bm := analyzeBlockMatch(strings.Join(content, "\n"), e.OldString)
@@ -565,7 +574,7 @@ func (t *EditFileTool) writeEditResult(targetPath, displayPath, content string) 
 		t.BackupStager.StageBeforeEdit(targetPath, t.ProjectDir)
 	}
 	data := []byte(content)
-	if err := WriteFileVerified(targetPath, data, 0644); err != nil {
+	if err := t.writeVerified(targetPath, data, 0644); err != nil {
 		if verifyFailed(err) {
 			return "", writeVerifyFailedError("edit", targetPath, len(data), err)
 		}
@@ -577,12 +586,19 @@ func (t *EditFileTool) writeEditResult(targetPath, displayPath, content string) 
 	return t.notifyLSP(context.Background(), targetPath), nil
 }
 
+func (t *EditFileTool) writeVerified(path string, data []byte, perm os.FileMode) error {
+	if t.writeFile != nil {
+		return t.writeFile(path, data, perm)
+	}
+	return WriteFileVerified(path, data, perm)
+}
+
 // validateReplacePair enforces the all-or-nothing contract for classic
 // search/replace (bugs.md 2026-08-26): both sides must be present. An empty
 // new_string used to be applied verbatim, silently DELETING the matched block
 // and reporting success — exactly the reported "edit deleted the old block
 // but the replacement content wasn't inserted" failure. Deliberate content
-// removal belongs to operation delete_lines, never to an empty replace field.
+// removal belongs to operation delete (or delete_lines), never to an empty replace field.
 func validateReplacePair(oldStr, newStr string) error {
 	if oldStr == "" {
 		return &internal.ToolError{Tool: "edit", Type: "missing_parameter",
@@ -592,7 +608,7 @@ func validateReplacePair(oldStr, newStr string) error {
 	if newStr == "" {
 		return &internal.ToolError{Tool: "edit", Type: "missing_parameter",
 			Detail:   "Empty 'new_string': this edit would DELETE the matched block without inserting anything.",
-			HintText: "Provide the replacement text in 'new_string'. To remove lines deliberately, use operation 'delete_lines' with start_line/end_line."}
+			HintText: "Provide the replacement text in 'new_string'. To remove text deliberately, use operation 'delete' with old_string (or delete_lines for an exact line range)."}
 	}
 	return nil
 }
@@ -735,35 +751,50 @@ func (t *EditFileTool) Examples() []string {
 	return []string{
 		`{"path": "src/main.go", "old_string": "fmt.Println(\"hello\")", "new_string": "fmt.Println(\"world\")"}`,
 		`{"path": "auth.go", "old_string": "func oldName()", "new_string": "func newName()"}`,
+		`{"path": "auth.go", "old_string": "token", "new_string": "name", "occurrence": 2}`,
+		`{"path": "auth.go", "operation": "delete", "old_string": "obsolete text"}`,
 		`{"path": "src/main.go", "operation": "replace_lines", "start_line": 5, "end_line": 8, "new_content": "func main() {\n\tlog.Println(\"start\")\n}"}`,
 		`{"path": "src/main.go", "edits": [{"old_string": "import \"fmt\"", "new_string": "import (\n\t\"fmt\"\n\t\"log\"\n)"}, {"old_string": "fmt.Println(\"hi\")", "new_string": "log.Println(\"hi\")"}]}`,
 		`{"files": [{"path": "a.go", "edits": [{"old_string": "oldName", "new_string": "newName"}]}, {"path": "b.go", "edits": [{"old_string": "oldName", "new_string": "newName"}]}]}`,
 		`{"glob": "internal/foo/*.go", "edits": [{"old_string": "OldSymbol", "new_string": "NewSymbol"}]}`,
+		`{"atomic": true, "glob": "internal/foo/*.go", "edits": [{"old_string": "OldSymbol", "new_string": "NewSymbol"}]}`,
 	}
 }
 
-// readLines loads the target file and returns its lines, the resolved target
-// path, a fuzzy-filename note (when the requested path did not exist), and
-// whether the file ends with a newline — callers that rewrite the file need
-// that to avoid silently stripping it (splitLines drops the final empty
-// element).
-func (t *EditFileTool) readLines(resolvedPath, originalPath string) ([]string, string, string, bool, error) {
+// editFileSource keeps the exact bytes and resolved path from one read. Atomic
+// batches use the same byte slice for editing and rollback, avoiding a second
+// snapshot read that could observe a different file version.
+type editFileSource struct {
+	targetPath string
+	data       []byte
+	fuzzyNote  string
+}
+
+func (t *EditFileTool) readEditSource(resolvedPath, originalPath string) (editFileSource, error) {
 	targetPath, data, err := ReadFileWithFuzzyFallback(t.Config, resolvedPath, originalPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, "", "", false, &internal.ToolError{Tool: "edit", Type: "file_not_found",
+			return editFileSource{}, &internal.ToolError{Tool: "edit", Type: "file_not_found",
 				Detail:   fmt.Sprintf("File not found: %s", originalPath),
 				HintText: "Check the path or use write to create the file first."}
 		}
-		return nil, "", "", false, &internal.ToolError{Tool: "edit", Type: "read_error",
+		return editFileSource{}, &internal.ToolError{Tool: "edit", Type: "read_error",
 			Detail:   fmt.Sprintf("Cannot read %s: %v", originalPath, err),
 			HintText: "Ensure the file exists and is readable."}
 	}
-	var fuzzyNote string
+	source := editFileSource{targetPath: targetPath, data: data}
 	if targetPath != resolvedPath {
-		fuzzyNote = fmt.Sprintf("Note: file not found, used closest match: %s", targetPath)
+		source.fuzzyNote = fmt.Sprintf("Note: file not found, used closest match: %s", targetPath)
 	}
-	return splitLines(string(data)), targetPath, fuzzyNote, strings.HasSuffix(string(data), "\n"), nil
+	return source, nil
+}
+
+func (t *EditFileTool) readLines(resolvedPath, originalPath string) ([]string, string, string, bool, error) {
+	source, err := t.readEditSource(resolvedPath, originalPath)
+	if err != nil {
+		return nil, "", "", false, err
+	}
+	return splitLines(string(source.data)), source.targetPath, source.fuzzyNote, strings.HasSuffix(string(source.data), "\n"), nil
 }
 
 func errMissingPath() *internal.ToolError {
@@ -822,7 +853,7 @@ func (t *EditFileTool) errWrite(path string, err error) *internal.ToolError {
 // fuzzy) and then, for a single-line oldStr, the additive exact-substring tier.
 // When false, uses exact whole-line and exact-substring matching only.
 // It reads the file, applies the edit, and writes the result back.
-func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr string, allowFuzz bool) (string, error) {
+func (t *EditFileTool) searchReplace(resolvedPath, originalPath string, p editFileParams) (string, error) {
 	targetPath, data, err := ReadFileWithFuzzyFallback(t.Config, resolvedPath, originalPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -835,10 +866,11 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 			HintText: "Ensure the file exists and is readable."}
 	}
 
-	result, err := fuzzyEdit(string(data), oldStr, newStr, allowFuzz)
+	result, err := fuzzyEditSelected(string(data), p.OldString, p.NewString, t.AllowFuzz,
+		editSelection{occurrence: p.Occurrence, replaceAll: p.ReplaceAll, deleteMatch: EditOperation(p.Operation) == OpDelete})
 	if err != nil {
-		bm := analyzeBlockMatch(string(data), oldStr)
-		return "", t.searchReplaceError(originalPath, oldStr, err, bm)
+		bm := analyzeBlockMatch(string(data), p.OldString)
+		return "", t.searchReplaceError(originalPath, p.OldString, err, bm)
 	}
 
 	diagBlock, writeErr := t.writeEditResult(targetPath, originalPath, result.NewContent)
@@ -849,8 +881,16 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 	// Build a clear result message
 	matchDesc := matchTypeDesc(result.MatchType)
 
-	resultMsg := fmt.Sprintf("[edit: %s] search/replace applied — lines %d-%d, match: %s%s\n%s",
-		originalPath, result.StartLine, result.EndLine, matchDesc, resolvedPathNote(targetPath, originalPath), result.Diff)
+	action := "search/replace applied"
+	location := fmt.Sprintf("lines %d-%d", result.StartLine, result.EndLine)
+	if EditOperation(p.Operation) == OpDelete {
+		action = "delete applied"
+	}
+	if result.MatchCount > 1 {
+		location = fmt.Sprintf("%d matches (lines %d-%d)", result.MatchCount, result.StartLine, result.EndLine)
+	}
+	resultMsg := fmt.Sprintf("[edit: %s] %s — %s, match: %s%s\n%s",
+		originalPath, action, location, matchDesc, resolvedPathNote(targetPath, originalPath), result.Diff)
 	if diagBlock != "" {
 		resultMsg += diagBlock
 	}
@@ -887,9 +927,21 @@ func blockMatchHint(bm blockMatch) string {
 func (t *EditFileTool) searchReplaceError(path, oldStr string, err error, bm blockMatch) *internal.ToolError {
 	switch {
 	case errors.Is(err, ErrAmbiguous):
-		return &internal.ToolError{Tool: "edit", Type: "ambiguous_match",
-			Detail:   fmt.Sprintf("Text %q matches multiple locations in %s", truncateStr(oldStr, 40), path),
-			HintText: "Add more surrounding context to 'old_string' so only one location matches. If the block is hard to make unique, use 'operation: replace_lines' with start_line/end_line instead."}
+		detail := fmt.Sprintf("Text %q matches multiple locations in %s", truncateStr(oldStr, 40), path)
+		var ambiguous *ambiguousMatchError
+		if errors.As(err, &ambiguous) {
+			detail = fmt.Sprintf("Text %q matches %d locations in %s", truncateStr(oldStr, 40), ambiguous.count, path)
+		}
+		return &internal.ToolError{Tool: "edit", Type: "ambiguous_match", Detail: detail,
+			HintText: "Add context for a unique match, select one with occurrence:N, or apply to every non-overlapping match with replace_all:true."}
+	case errors.Is(err, ErrOccurrenceNotFound):
+		detail := "Requested occurrence was not found"
+		var occurrence *occurrenceMatchError
+		if errors.As(err, &occurrence) {
+			detail = fmt.Sprintf("old_string matched %d location(s), occurrence %d requested", occurrence.count, occurrence.occurrence)
+		}
+		return &internal.ToolError{Tool: "edit", Type: "occurrence_not_found", Detail: detail,
+			HintText: "Choose occurrence within the reported match count, or use replace_all:true."}
 	case errors.Is(err, ErrNotFound):
 		message := "Text %q not found in %s (exact match only)"
 		if t.AllowFuzz {
