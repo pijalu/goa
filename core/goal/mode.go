@@ -252,6 +252,10 @@ func (m *GoalMode) RestoreUpdate(record GoalEventRecord) {
 	if record.PauseAfterComplete != nil {
 		state.pauseAfterComplete = *record.PauseAfterComplete
 	}
+	if record.VerifyCommand != nil {
+		state.verifyCommand = NormalizeOptionalText(record.VerifyCommand)
+		state.verifyFailures = 0
+	}
 	if record.Todos != nil {
 		state.todos = append([]GoalTodoItem(nil), record.Todos...)
 	}
@@ -845,6 +849,42 @@ func (m *GoalMode) SetPauseAfterComplete(armed bool, actor GoalActor) (GoalSnaps
 		Timestamp:          time.Now(),
 		PauseAfterComplete: &armed,
 		Actor:              &a,
+	})
+	return m.toSnapshot(state), nil
+}
+
+// UpdateVerifyCommand replaces an active goal's verify command using
+// compare-and-swap semantics. Policy such as timeout bounds and command-scope
+// preservation belongs to the caller; this method owns state validation,
+// durability, replay, and protection against stale updates.
+func (m *GoalMode) UpdateVerifyCommand(expected, replacement string, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, err := m.requireState()
+	if err != nil {
+		return GoalSnapshot{}, err
+	}
+	if state.status != GoalActive {
+		return GoalSnapshot{}, fmt.Errorf("verify command can only be updated on an active goal (status %s)", state.status)
+	}
+	if state.verifyCommand == nil || *state.verifyCommand != strings.TrimSpace(expected) {
+		return GoalSnapshot{}, errors.New("verify command changed since it was read; get the goal and retry the update")
+	}
+	command := NormalizeOptionalText(&replacement)
+	if command == nil {
+		return GoalSnapshot{}, errors.New("verify command cannot be empty")
+	}
+	state.verifyCommand = command
+	// A failure streak belongs to the command that produced it. A corrected
+	// verifier starts with a clean streak instead of being auto-blocked by
+	// failures of the old, too-short timeout.
+	state.verifyFailures = 0
+	m.persistState(state, persistOptions{})
+	m.appendGoalUpdateRecord(GoalEventRecord{
+		Type:          GoalEventUpdate,
+		Timestamp:     time.Now(),
+		VerifyCommand: command,
+		Actor:         ptrString(string(actor)),
 	})
 	return m.toSnapshot(state), nil
 }

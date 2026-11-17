@@ -6,6 +6,7 @@ package goal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -191,7 +192,7 @@ func (m *GoalMode) RequestComplete(ctx context.Context, input GoalReasonInput, a
 	// verification required": run it unlocked.
 	failure, evidence := m.runVerification(ctx, decision)
 	if failure == nil {
-		res, err := m.finishCompletion(input, actor)
+		res, err := m.finishCompletion(input, actor, decision.verifyCmd)
 		res.Verification = evidence
 		return res, err
 	}
@@ -285,12 +286,16 @@ func (m *GoalMode) runVerification(ctx context.Context, decision completionDecis
 
 // finishCompletion closes the goal after successful verification, unless
 // the goal state changed while verification ran unlocked.
-func (m *GoalMode) finishCompletion(input GoalReasonInput, actor GoalActor) (CompleteResult, error) {
+func (m *GoalMode) finishCompletion(input GoalReasonInput, actor GoalActor, verifiedCommand *string) (CompleteResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	state := m.state
 	if state == nil || state.status != GoalActive {
 		return CompleteResult{Outcome: CompleteNoGoal}, nil
+	}
+	if verifiedCommand != nil &&
+		(state.verifyCommand == nil || *state.verifyCommand != *verifiedCommand) {
+		return CompleteResult{}, errors.New("verify command changed during verification; retry completion with the updated command")
 	}
 	snap, err := m.markCompleteLocked(input, actor)
 	return CompleteResult{Snapshot: snap, Outcome: CompleteClosed}, err

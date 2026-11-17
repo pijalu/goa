@@ -294,13 +294,17 @@ type GoalEventRecord struct {
 	ManagedBy           *string `json:"managedBy,omitempty"`
 	Objective           *string `json:"objective,omitempty"`
 	CompletionCriterion *string `json:"completionCriterion,omitempty"`
-	VerifyCommand       *string `json:"verifyCommand,omitempty"`
 	Handoff             *string `json:"handover,omitempty"`
 	FreshContext        *bool   `json:"freshContext,omitempty"`
 	Team                *string `json:"team,omitempty"`
 	// Kind carries the goal classification (GoalKind) on goal.create records
 	// so a replayed session restores the unblocking-investigation marker.
 	Kind *GoalKind `json:"kind,omitempty"`
+
+	// VerifyCommand is set on goal.create and on timeout-only goal.update
+	// patches. Update replay replaces the recorded command without changing the
+	// objective, criterion, package scope, or any other goal field.
+	VerifyCommand *string `json:"verifyCommand,omitempty"`
 
 	// goal.update fields (patches)
 	Status       *string           `json:"status,omitempty"`

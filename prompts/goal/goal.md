@@ -26,6 +26,7 @@ Actions:
 - set_budget: hard limit. value(>0)+unit(turns|tokens|ms|s|min|hours); only explicit user limits; compound→1 unit; unreasonable→refuse.
 - add_todo: add task (todoTitle); decompose multi-step work into ordered todos; linked to goal, closed w/ goal.
 - update_todo: set todo status. Req todoId + todoStatus(pending|in_progress|done); open items on complete→reminder.
+- update: verifyCommand: timeout only, same scope.
 - update: set status:
   - active: resume paused/blocked on "continue/proceed" phrasing — immediately, same turn.
   - complete: objective done+validated; ends. ENFORCED: w/ criterion 1st complete→restate→self-audit→call again w/ reason citing evidence (cmds,outputs,tests). No criterion→immediate. W/ verifyCommand: machine verify; fail→reject (fix, complete again); judge may audit. Only when all work done + no useful next action.

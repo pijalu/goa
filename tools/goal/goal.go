@@ -62,6 +62,11 @@ type GoalTool struct {
 	// (goals.verify_timeout) for the live progress display at completion.
 	// Nil = default 2m (Bug A: the timeout must be clear to the user).
 	VerifyTimeout func() time.Duration
+	// VerifyTimeoutLimit reports the maximum Go test timeout the model may set
+	// through a verifyCommand update. Nil uses one hour, matching the global
+	// verifier ceiling. Hosts may inject a stricter user-authorized bound; the
+	// bound itself is never accepted from model-controlled tool input.
+	VerifyTimeoutLimit func() time.Duration
 	// challenged tracks that the previous complete request was intercepted
 	// by the done-gate, so the confirming call knows verification is about
 	// to run and can announce it (command + timeout) to the user.
@@ -101,7 +106,7 @@ type goalArgs struct {
 	Objective           string   `json:"objective,omitempty"`
 	Objectives          []string `json:"objectives,omitempty"`
 	CompletionCriterion *string  `json:"completionCriterion,omitempty"`
-	VerifyCommand       string   `json:"verifyCommand,omitempty"`
+	VerifyCommand       *string  `json:"verifyCommand,omitempty"`
 	Replace             bool     `json:"replace,omitempty"`
 	// FreshContext is a tri-state per-create override: nil = use the
 	// configured default (goals.fresh_context, default true = clean context);
@@ -324,6 +329,7 @@ var actionInferenceRules = []struct {
 }{
 	{func(a goalArgs) bool { return a.Status != "" }, "update"},
 	{func(a goalArgs) bool { return a.Objective != "" || len(a.Objectives) > 0 }, "create"},
+	{func(a goalArgs) bool { return a.VerifyCommand != nil }, "update"},
 	{func(a goalArgs) bool { return a.TodoTitle != "" }, "add_todo"},
 	{func(a goalArgs) bool { return a.TodoID != "" || a.TodoStatus != "" }, "update_todo"},
 	{func(a goalArgs) bool { return a.GoalID != "" && a.Direction != "" }, "reorder"},
@@ -401,7 +407,7 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 			activated = snap
 			continue
 		}
-		if err := t.enqueue(obj, args.CompletionCriterion, optionalText(args.VerifyCommand), t.resolveFreshContext(args), args.Priority == "front", optionalText(args.Handover), strings.TrimSpace(args.Team)); err != nil {
+		if err := t.enqueue(obj, args.CompletionCriterion, args.VerifyCommand, t.resolveFreshContext(args), args.Priority == "front", optionalText(args.Handover), strings.TrimSpace(args.Team)); err != nil {
 			return agentic.ToolResult{}, goalToolErr("goal", "create_failed", err)
 		}
 		queued++
@@ -434,7 +440,7 @@ func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (
 	snapshot, err := t.Mode.CreateGoal(goal.CreateGoalInput{
 		Objective:           objective,
 		CompletionCriterion: args.CompletionCriterion,
-		VerifyCommand:       optionalText(args.VerifyCommand),
+		VerifyCommand:       args.VerifyCommand,
 		Replace:             replace,
 		FreshContext:        t.resolveFreshContext(args),
 		Team:                strings.TrimSpace(args.Team),
@@ -739,6 +745,13 @@ func (t *GoalTool) resolveQueuedID(idOrName string) (string, error) {
 }
 
 func (t *GoalTool) handleUpdate(ctx context.Context, args goalArgs) (agentic.ToolResult, error) {
+	if args.VerifyCommand != nil {
+		if args.Status != "" {
+			return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
+				fmt.Errorf("verifyCommand and status updates require separate calls"))
+		}
+		return t.updateVerifyCommand(*args.VerifyCommand)
+	}
 	if args.Status == "" {
 		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
 			fmt.Errorf("action \"update\" requires \"status\" (active|complete|paused|blocked)"))
@@ -765,6 +778,29 @@ func (t *GoalTool) handleUpdate(ctx context.Context, args goalArgs) (agentic.Too
 		return agentic.ToolResult{}, goalToolErr("goal", "update_failed", err)
 	}
 	return res, nil
+}
+
+func (t *GoalTool) updateVerifyCommand(replacement string) (agentic.ToolResult, error) {
+	snapshot := t.Mode.GetGoal().Goal
+	if snapshot == nil || snapshot.Status != goal.GoalActive {
+		return agentic.ToolResult{}, goalToolErr("goal", "update_failed", fmt.Errorf("no active goal to update"))
+	}
+	if snapshot.VerifyCommand == nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "update_failed", fmt.Errorf("active goal has no verifyCommand to update"))
+	}
+	limit := defaultVerifyTimeoutLimit
+	if t.VerifyTimeoutLimit != nil {
+		limit = t.VerifyTimeoutLimit()
+	}
+	if err := validateVerifyCommandTimeoutUpdate(*snapshot.VerifyCommand, replacement, limit); err != nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "invalid_verify_command", err)
+	}
+	updated, err := t.Mode.UpdateVerifyCommand(*snapshot.VerifyCommand, replacement, goal.GoalActorModel)
+	if err != nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "update_failed", err)
+	}
+	out, _ := json.Marshal(map[string]any{"goal": goal.ForModel(updated)})
+	return agentic.ToolResult{Output: string(out)}, nil
 }
 
 func (t *GoalTool) updateActive(args goalArgs) (agentic.ToolResult, error) {
