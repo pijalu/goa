@@ -323,6 +323,42 @@ func TestHub_DropsSlowClient(t *testing.T) {
 	}
 }
 
+// A client remains attached until its transport has actually closed. Observers
+// use the hub count to detect keepalive drops; removing it first exposes a
+// detached-but-still-connected state and makes a live socket look like a close.
+func TestHub_DetachClosesBeforeForgettingClient(t *testing.T) {
+	hub := NewHub(1)
+	client := &blockingCloseClient{
+		closeStarted: make(chan struct{}),
+		allowClose:   make(chan struct{}),
+	}
+	detach, _ := hub.Attach(client, PlaneCells)
+	done := make(chan struct{})
+	go func() {
+		detach()
+		close(done)
+	}()
+
+	select {
+	case <-client.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("detach did not start closing the client")
+	}
+	attachedDuringClose := hub.Clients()
+	close(client.allowClose)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("detach did not finish")
+	}
+	if attachedDuringClose != 1 {
+		t.Errorf("attached while close was pending = %d, want 1", attachedDuringClose)
+	}
+	if got := hub.Clients(); got != 0 {
+		t.Errorf("attached after close = %d, want 0", got)
+	}
+}
+
 func TestHub_DetachIsIdempotent(t *testing.T) {
 	hub := NewHub(2)
 	c := &fakeClient{}
@@ -428,6 +464,19 @@ func (c *fakeClient) SendControl(ctrl Control) error {
 func (c *fakeClient) Close() error {
 	c.closed = true
 	return nil
+}
+
+// blockingCloseClient lets a test hold detach at the transport-close boundary.
+type blockingCloseClient struct {
+	fakeClient
+	closeStarted chan struct{}
+	allowClose   chan struct{}
+}
+
+func (c *blockingCloseClient) Close() error {
+	close(c.closeStarted)
+	<-c.allowClose
+	return c.fakeClient.Close()
 }
 
 // TestServer_ReadyGateHoldsRequestsUntilWired pins the B7 gate: a request that
