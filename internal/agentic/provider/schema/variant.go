@@ -37,11 +37,23 @@ func (r RemoteCompactionSupport) Supported() bool {
 	return r == RemoteCompactionV1 || r == RemoteCompactionV2
 }
 
+const (
+	// ResponseDialectHy4 enables the tagged control-marker grammar emitted by
+	// hy4-flash-free on the OpenAI-completions API.
+	ResponseDialectHy4 = "hy4"
+	// ResponseDialectNone explicitly disables response normalization, including
+	// the exact-model default applied by ResolveProfile.
+	ResponseDialectNone = "none"
+)
+
 // CompatFlags holds provider-specific compatibility flags.
 type CompatFlags struct {
-	SupportsStore                               *bool          `json:"supports_store,omitempty"`
-	MaxTokensField                              string         `json:"max_tokens_field,omitempty"`
-	ThinkingFormat                              string         `json:"thinking_format,omitempty"`
+	SupportsStore  *bool  `json:"supports_store,omitempty"`
+	MaxTokensField string `json:"max_tokens_field,omitempty"`
+	ThinkingFormat string `json:"thinking_format,omitempty"`
+	// ResponseDialect selects a narrowly scoped response tokenizer. Empty uses
+	// the exact-model defaults; "none" explicitly disables normalization.
+	ResponseDialect                             string         `json:"response_dialect,omitempty"`
 	RequiresReasoningContentOnAssistantMessages bool           `json:"requires_reasoning_content_on_assistant_messages,omitempty"`
 	SystemAsInstructions                        bool           `json:"system_as_instructions,omitempty"`
 	SupportsPromptCache                         bool           `json:"supports_prompt_cache,omitempty"`

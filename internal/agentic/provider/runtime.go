@@ -161,7 +161,7 @@ func executeRequest(
 	url := req.URL
 	if url == "" {
 		if p := protocol.ForAPI(req.Model.Api); p != nil {
-			_ = p.ParseResponse(bytes.NewReader(nil), stream)
+			_ = protocol.ParseResponseForModel(p, bytes.NewReader(nil), stream, req.Model, req.Profile)
 		}
 		return
 	}
@@ -223,7 +223,7 @@ func executeRequest(
 	}
 
 	if p := protocol.ForAPI(req.Model.Api); p != nil {
-		if err := p.ParseResponse(reader, stream); err != nil {
+		if err := protocol.ParseResponseForModel(p, reader, stream, req.Model, req.Profile); err != nil {
 			stream.CloseWithError(err)
 			_ = reader.Close()
 			return

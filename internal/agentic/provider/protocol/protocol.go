@@ -20,6 +20,22 @@ type Protocol interface {
 	ParseResponse(reader io.Reader, stream *schema.AssistantMessageEventStream) error
 }
 
+// modelResponseParser is an optional protocol capability for APIs whose wire
+// dialect depends on the resolved model/profile. Protocols without it retain
+// the original parser behavior.
+type modelResponseParser interface {
+	ParseResponseForModel(reader io.Reader, stream *schema.AssistantMessageEventStream, model schema.Model, profile schema.VariantProfile) error
+}
+
+// ParseResponseForModel dispatches through the model-aware response capability
+// when present, and otherwise preserves the legacy ParseResponse contract.
+func ParseResponseForModel(p Protocol, reader io.Reader, stream *schema.AssistantMessageEventStream, model schema.Model, profile schema.VariantProfile) error {
+	if aware, ok := p.(modelResponseParser); ok {
+		return aware.ParseResponseForModel(reader, stream, model, profile)
+	}
+	return p.ParseResponse(reader, stream)
+}
+
 var registry = make(map[schema.Api]Protocol)
 
 // Register registers a protocol for an API type.

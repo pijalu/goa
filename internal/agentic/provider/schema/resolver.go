@@ -209,6 +209,9 @@ func ResolveProfile(model Model) VariantProfile {
 	r := NewLayeredResolver(layers)
 	profile := r.Resolve(model)
 	profile = migrateThinkingLevelMap(model, profile)
+	if profile.Compat.ResponseDialect == "" && model.Api == ApiOpenAICompletions && model.ID == "hy4-flash-free" {
+		profile.Compat.ResponseDialect = ResponseDialectHy4
+	}
 	return profile
 }
 
@@ -316,6 +319,7 @@ func mergeCompat(c *CompatFlags, o CompatFlags) {
 	setIfNotNil(&c.SupportsToolChoiceNone, o.SupportsToolChoiceNone)
 	setIfNonEmpty(&c.MaxTokensField, o.MaxTokensField)
 	setIfNonEmpty(&c.ThinkingFormat, o.ThinkingFormat)
+	setIfNonEmpty(&c.ResponseDialect, o.ResponseDialect)
 	setIfNonEmpty(&c.ReasoningKey, o.ReasoningKey)
 	setIfNonEmpty(&c.ImageURLScheme, o.ImageURLScheme)
 	mergeMapAny(c.ThinkingExtraBody, o.ThinkingExtraBody)

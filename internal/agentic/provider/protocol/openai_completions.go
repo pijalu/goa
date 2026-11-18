@@ -111,6 +111,17 @@ func (p *openAICompletions) ParseResponse(reader io.Reader, stream *schema.Assis
 	return nil
 }
 
+// ParseResponseForModel enables only the exact Hy4 OpenAI-completions dialect.
+// The legacy entry point above intentionally retains standard parsing.
+func (p *openAICompletions) ParseResponseForModel(reader io.Reader, stream *schema.AssistantMessageEventStream, model schema.Model, profile schema.VariantProfile) error {
+	if model.Api == schema.ApiOpenAICompletions && model.ID == "hy4-flash-free" && profile.Compat.ResponseDialect == schema.ResponseDialectHy4 {
+		parseOpenAIStreamWithHy4(reader, stream)
+		return nil
+	}
+	parseOpenAIStream(reader, stream)
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Compatibility resolution
 // ---------------------------------------------------------------------------
@@ -201,10 +212,11 @@ func catalogToolStream(model schema.Model) bool {
 // ---------------------------------------------------------------------------
 
 type toolCallAccum struct {
-	Index int
-	ID    string
-	Name  string
-	Args  string
+	Index  int
+	ID     string
+	Name   string
+	Args   string
+	Tagged bool
 }
 
 type streamAccum struct {
@@ -217,6 +229,8 @@ type streamAccum struct {
 	Ended             bool
 	ProviderTimings   *parserTimings
 	pendingStopReason *schema.StopReason
+	hy4               *hy4Normalizer
+	hy4CallSeq        int
 }
 
 func newStreamAccum(stream *schema.AssistantMessageEventStream) *streamAccum {
@@ -224,7 +238,16 @@ func newStreamAccum(stream *schema.AssistantMessageEventStream) *streamAccum {
 }
 
 func parseOpenAIStream(body io.Reader, stream *schema.AssistantMessageEventStream) {
+	parseOpenAIStreamDialect(body, stream, nil)
+}
+
+func parseOpenAIStreamWithHy4(body io.Reader, stream *schema.AssistantMessageEventStream) {
+	parseOpenAIStreamDialect(body, stream, &hy4Normalizer{})
+}
+
+func parseOpenAIStreamDialect(body io.Reader, stream *schema.AssistantMessageEventStream, hy4 *hy4Normalizer) {
 	acc := newStreamAccum(stream)
+	acc.hy4 = hy4
 	var decodeErr error
 
 	if err := transport.ParseSSE(body, func(ev transport.SSEEvent) bool {
@@ -308,7 +331,7 @@ func (a *streamAccum) handleAssistantMessage(m parserMessage) {
 func (a *streamAccum) handleToolCall(m parserMessage) {
 	idx := m.ToolCallIndex
 	for _, ta := range a.ToolAccums {
-		if ta.Index == idx {
+		if ta.Index == idx && !ta.Tagged {
 			if m.ToolName != "" {
 				ta.Name = m.ToolName
 			}
@@ -357,6 +380,19 @@ func (a *streamAccum) handleToolCall(m parserMessage) {
 }
 
 func (a *streamAccum) handleThinking(delta string) {
+	if a.hy4 != nil {
+		result := a.hy4.Thinking(delta)
+		a.handleThinkingText(result.Text)
+		a.handleHy4Calls(result.Calls)
+		return
+	}
+	a.handleThinkingText(delta)
+}
+
+func (a *streamAccum) handleThinkingText(delta string) {
+	if delta == "" {
+		return
+	}
 	a.ensureStarted()
 	a.ThinkingBuf += delta
 	a.Stream.Push(schema.AssistantMessageEvent{Type: schema.EventThinkingDelta, Delta: delta})
@@ -364,10 +400,58 @@ func (a *streamAccum) handleThinking(delta string) {
 }
 
 func (a *streamAccum) handleContent(delta string) {
+	if a.hy4 != nil {
+		result := a.hy4.Content(delta)
+		a.handleContentText(result.Text)
+		a.handleHy4Calls(result.Calls)
+		return
+	}
+	a.handleContentText(delta)
+}
+
+func (a *streamAccum) handleContentText(delta string) {
+	if delta == "" {
+		return
+	}
 	a.ensureStarted()
 	a.ContentBuf += delta
 	a.Stream.Push(schema.AssistantMessageEvent{Type: schema.EventTextDelta, Delta: delta})
 	a.HasContent = true
+}
+
+func (a *streamAccum) handleHy4Calls(calls []hy4ToolCall) {
+	for _, call := range calls {
+		a.hy4CallSeq++
+		index := -a.hy4CallSeq // native indexes are non-negative
+		tagged := &toolCallAccum{
+			Index: index, ID: fmt.Sprintf("hy4-tag-%d", a.hy4CallSeq),
+			Name: call.Name, Args: call.Arguments, Tagged: true,
+		}
+		a.ToolAccums = append(a.ToolAccums, tagged)
+		a.HasContent = true
+		a.ensureStarted()
+		if !call.Complete {
+			continue
+		}
+		a.Stream.Push(schema.AssistantMessageEvent{
+			Type: schema.EventToolCallStart, ContentIndex: index,
+			Partial: &schema.AssistantMessage{Content: []schema.ContentBlock{{
+				Type: schema.ContentBlockToolCall, ToolCallID: tagged.ID,
+				ToolName: tagged.Name, ToolArguments: tagged.Args,
+			}}},
+		})
+	}
+}
+
+func (a *streamAccum) finishHy4() {
+	if a.hy4 == nil {
+		return
+	}
+	content, thinking := a.hy4.Finish()
+	a.handleContentText(content.Text)
+	a.handleHy4Calls(content.Calls)
+	a.handleThinkingText(thinking.Text)
+	a.handleHy4Calls(thinking.Calls)
 }
 
 func (a *streamAccum) ensureStarted() {
@@ -395,6 +479,7 @@ func (a *streamAccum) finish(stopReason schema.StopReason) {
 	if a.Ended {
 		return
 	}
+	a.finishHy4()
 	a.flushToolCalls()
 	a.ensureStarted()
 	var blocks []schema.ContentBlock
