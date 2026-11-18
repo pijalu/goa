@@ -148,7 +148,10 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 //     shingles are "hot" (≥ streamLoopShingleHot occurrences) AND they cover
 //     ≥ streamLoopMinCoverage of the tail words. A 3–4 paragraph Option
 //     A/B/C analysis has almost no hot shingles; repeating one TERM has too
-//     few hot shingles; enumerated lists have unique shingles.
+//     few hot shingles; enumerated lists have unique shingles. When a high
+//     configured threshold hides a short-command cycle, a bounded recent
+//     low-vocabulary window supplies the volume check before the same hot
+//     shingle coverage test runs at the base threshold.
 //   - Only the trailing streamLoopTailWindow bytes are scanned, bounding the
 //     per-delta cost.
 //
@@ -230,6 +233,13 @@ const (
 	// inside hot shingles: paraphrase loops are dominated by their template,
 	// while topical repetition keeps repeated fragments a small minority.
 	streamLoopMinCoverage = 0.4
+	// streamLoopLowVocab* bound Detector B's short-cycle fallback. Its recent
+	// window scales with maxRepeats; three words must reach that threshold and
+	// cover 60% of the window, with at most 12 (or maxRepeats) distinct words.
+	streamLoopLowVocabWordsPerRepeat = 8
+	streamLoopLowVocabMaxDistinct    = 12
+	streamLoopLowVocabMinHotWords    = 3
+	streamLoopLowVocabMinCoverage    = 0.6
 )
 
 // exactChainSample extracts Detector A's repeated unit — the trailing
@@ -331,6 +341,23 @@ func streamParaphraseLoop(tail string, maxRepeats int) (period, repeats int, ok 
 		return 0, 0, false
 	}
 	hot := max(streamLoopShingleHot, maxRepeats)
+	if period, repeats, ok := streamShingleCoverageLoop(words, hot); ok {
+		return period, repeats, true
+	}
+	// A short-command cycle can spread its repeats across enough nearby
+	// shingles that none reaches a high configured hot threshold. Confirm both
+	// a tiny recent vocabulary and repeated phrases before lowering that
+	// threshold; the total evidence still scales with maxRepeats.
+	recent, looped := streamLowVocabularyWindow(words, maxRepeats)
+	if !looped {
+		return 0, 0, false
+	}
+	return streamShingleCoverageLoop(recent, streamLoopShingleHot)
+}
+
+// streamShingleCoverageLoop applies Detector B's repeated-shingle and coverage
+// requirements to one word window.
+func streamShingleCoverageLoop(words []string, hot int) (period, repeats int, ok bool) {
 	n := streamLoopShingleWords
 	counts := shingleCounts(words, n)
 	if hotShingleKeys(counts, hot) < streamLoopMinHotShingles {
@@ -341,6 +368,45 @@ func streamParaphraseLoop(tail string, maxRepeats int) (period, repeats int, ok 
 		return 0, 0, false
 	}
 	return n, coveredN / n, true
+}
+
+// streamLowVocabularyWindow detects high-volume cycles that rotate through a
+// tiny command vocabulary without repeating any one shingle maxRepeats times.
+// The recent window grows with the configured tolerance. At least three words
+// must independently reach maxRepeats and dominate the window, while the
+// distinct-word ceiling rejects ordinary prose and enumerated lists.
+func streamLowVocabularyWindow(words []string, maxRepeats int) ([]string, bool) {
+	windowSize := streamLoopMinWords
+	if maxRepeats > streamLoopMinWords/streamLoopLowVocabWordsPerRepeat {
+		// Check against the available word count before multiplying so an
+		// extreme configured threshold cannot overflow int.
+		if maxRepeats > len(words)/streamLoopLowVocabWordsPerRepeat {
+			return nil, false
+		}
+		windowSize = maxRepeats * streamLoopLowVocabWordsPerRepeat
+	}
+	if len(words) < windowSize {
+		return nil, false
+	}
+	window := words[len(words)-windowSize:]
+	counts := make(map[string]int, windowSize)
+	for _, word := range window {
+		counts[word]++
+	}
+	if len(counts) < streamLoopLowVocabMinHotWords || len(counts) > max(streamLoopLowVocabMaxDistinct, maxRepeats) {
+		return nil, false
+	}
+	hotWords, covered := 0, 0
+	for _, count := range counts {
+		if count >= maxRepeats {
+			hotWords++
+			covered += count
+		}
+	}
+	if hotWords < streamLoopLowVocabMinHotWords || float64(covered)/float64(windowSize) < streamLoopLowVocabMinCoverage {
+		return nil, false
+	}
+	return window, true
 }
 
 // shingleCounts counts overlapping n-word shingles over words.
