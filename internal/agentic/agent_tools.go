@@ -99,7 +99,7 @@ func (a *Agent) scheduleAndRunToolCalls(ctx context.Context, tcs []provider.Cont
 	}
 	for i := range tcs {
 		tc := tcs[i]
-		if a.budgetToolCalls[tc.ToolCallID] != "" {
+		if a.isSyntheticToolCall(tc.ToolCallID) {
 			continue
 		}
 		sched.Add(a.newToolCallTask(tc))
@@ -119,6 +119,14 @@ func (a *Agent) newToolCallTask(tc provider.ContentBlock) *ToolCallTask {
 	}
 }
 
+func (a *Agent) isSyntheticToolCall(id string) bool {
+	if a.budgetToolCalls[id] != "" {
+		return true
+	}
+	_, rejected := a.toolProtocolRejections[id]
+	return rejected
+}
+
 func indexResultsByID(results []ToolCallResult) map[string]ToolCallResult {
 	byID := make(map[string]ToolCallResult, len(results))
 	for _, r := range results {
@@ -134,7 +142,7 @@ func (a *Agent) appendToolResults(tcs []provider.ContentBlock, realResults []Too
 		content := a.resolveToolResultContent(tc, byID)
 		result := byID[tc.ToolCallID]
 		images := result.Images
-		if result.Err != nil || a.budgetToolCalls[tc.ToolCallID] != "" {
+		if result.Err != nil || a.isSyntheticToolCall(tc.ToolCallID) {
 			images = nil
 		}
 		if len(images) > 0 && !visionCapable {
@@ -152,7 +160,8 @@ func (a *Agent) appendToolResults(tcs []provider.ContentBlock, realResults []Too
 		// needs text sniffing; persisted sessions drop Metadata and fall
 		// back to the conventional "Error:" prefix instead.
 		mark := "false"
-		if r := byID[tc.ToolCallID]; r.Err != nil {
+		_, protocolRejected := a.toolProtocolRejections[tc.ToolCallID]
+		if r := byID[tc.ToolCallID]; r.Err != nil || protocolRejected {
 			mark = "true"
 		}
 		toolResult.Metadata = map[string]string{metaToolError: mark}
@@ -160,7 +169,7 @@ func (a *Agent) appendToolResults(tcs []provider.ContentBlock, realResults []Too
 		a.history = append(a.history, toolResult)
 		a.mu.Unlock()
 
-		if a.budgetToolCalls[tc.ToolCallID] == "" {
+		if !a.isSyntheticToolCall(tc.ToolCallID) {
 			a.emitEvent(OutputEvent{
 				Type: EventToolResult, State: StateToolResult,
 				ToolName: tc.ToolName, ToolResult: content, Text: content,
@@ -260,6 +269,9 @@ const (
 )
 
 func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[string]ToolCallResult) string {
+	if rejection, ok := a.toolProtocolRejections[tc.ToolCallID]; ok {
+		return rejection.message
+	}
 	if msg := a.budgetToolCalls[tc.ToolCallID]; msg != "" {
 		return msg
 	}

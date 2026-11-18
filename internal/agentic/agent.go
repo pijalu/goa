@@ -293,6 +293,14 @@ type Agent struct {
 	// result message; empty or missing means the call was executed normally.
 	budgetToolCalls map[string]string
 
+	// toolProtocolRejections records native calls rejected before execution
+	// because the provider supplied incomplete or invalid argument JSON.
+	// These entries use visible error results rather than budget warning semantics.
+	toolProtocolRejections map[string]toolProtocolRejection
+	// nativeArgumentFailures counts consecutive malformed native responses in
+	// the current recovery episode, independently of optional loop controls.
+	nativeArgumentFailures int
+
 	// bashReuse detects when the model re-runs the same expensive upstream
 	// command (e.g. `go test ...`) within a single state epoch while only
 	// changing the trailing filter — a wasteful pattern. It resets

@@ -11,7 +11,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-func (a *Agent) emitBudgetToolSkipped(tc provider.ContentBlock, result string) {
+func (a *Agent) emitSyntheticToolResult(tc provider.ContentBlock, result string) {
 	a.emitEvent(OutputEvent{
 		Type: EventToolCall, State: StateToolCall, ToolName: tc.ToolName, ToolInput: tc.ToolArguments, ToolCallID: tc.ToolCallID,
 	})
@@ -66,6 +66,8 @@ func IsGuardrailResult(s string) bool {
 	case strings.HasPrefix(trimmed, ToolRepeatedMessagePrefix):
 		return true
 	case strings.HasPrefix(trimmed, ToolLoopMessagePrefix):
+		return true
+	case strings.HasPrefix(trimmed, ToolProtocolResultPrefix):
 		return true
 	default:
 		return false
@@ -136,7 +138,7 @@ func (a *Agent) synthesizeAssistantBuffer() Message {
 // buffered, keeping the tool_call/tool_result pairing intact for strict
 // providers like DeepSeek. Skipped calls are recorded in budgetToolCalls so
 // executeBufferedToolCalls substitutes the stored message instead of
-// executing, and emitBudgetToolSkipped sends TUI events immediately.
+// executing, and emitSyntheticToolResult sends TUI events immediately.
 func (a *Agent) shouldBufferToolCall(tc provider.ContentBlock) bool {
 	callKey := tc.ToolName + "::" + tc.ToolArguments
 
@@ -265,7 +267,7 @@ func (a *Agent) applyToolGuardrail(tc provider.ContentBlock, callKey, skipMsg st
 	default:
 		a.cfg.Logger.Log(Warn, "Soft repeat: tool call %q repeated %d time(s) in window / %d time(s) consecutively; substituting hint", tc.ToolName, windowCount, consecutiveCount)
 	}
-	a.emitBudgetToolSkipped(tc, skipMsg)
+	a.emitSyntheticToolResult(tc, skipMsg)
 	a.bufferedToolCalls = append(a.bufferedToolCalls, tc)
 }
 
@@ -481,6 +483,9 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 
 	// If any call was executed for real, continue so the LLM sees results.
 	if len(realResults) > 0 {
+		if a.hasTerminalProtocolRejection(tcs) {
+			return false
+		}
 		a.mu.Lock()
 		a.turnHadToolExecution = true
 		a.mu.Unlock()
@@ -496,7 +501,16 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 			return false
 		}
 	}
-	return true
+	return !a.hasTerminalProtocolRejection(tcs)
+}
+
+func (a *Agent) hasTerminalProtocolRejection(tcs []provider.ContentBlock) bool {
+	for _, tc := range tcs {
+		if rejection, ok := a.toolProtocolRejections[tc.ToolCallID]; ok && rejection.terminal {
+			return true
+		}
+	}
+	return false
 }
 
 // applyToolLoadRequests reads Meta[MetaLoadTools] from executed tool results

@@ -41,6 +41,7 @@ func migrateMessage(m Message) provider.Message {
 			ToolCallID: m.ToolCallID,
 			ToolName:   m.ToolName,
 			Text:       text,
+			IsError:    toolResultMessageIsError(m),
 		})
 	} else {
 		blocks = append(blocks, provider.ContentBlock{
@@ -62,6 +63,15 @@ func migrateMessage(m Message) provider.Message {
 		Role:    roleToProviderRole(m.Role),
 		Content: blocks,
 	}
+}
+
+func toolResultMessageIsError(m Message) bool {
+	if m.Metadata != nil {
+		if marked, ok := m.Metadata[metaToolError]; ok {
+			return marked == "true"
+		}
+	}
+	return strings.HasPrefix(m.Content, toolResultErrorPrefix)
 }
 
 func migrateMessages(msgs []Message) []provider.Message {

@@ -5,6 +5,8 @@ package agentic
 import (
 	"context"
 	"hash/fnv"
+
+	"strings"
 	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
@@ -83,7 +85,17 @@ func (a *Agent) handleStreamToolCallEnd(_ context.Context, _ *provider.Assistant
 	}
 	a.markGenStart()
 	a.resetThinkingStall()
-	a.shouldBufferToolCall(*event.ToolCall)
+	tc := *event.ToolCall
+	class := classifyNativeToolArguments(tc.ToolArguments)
+	if class != nativeArgumentsValid {
+		a.rejectNativeToolCall(tc, class)
+		return false, false, nil
+	}
+	if strings.TrimSpace(tc.ToolArguments) == "" {
+		tc.ToolArguments = "{}"
+	}
+	a.noteValidNativeToolCall()
+	a.shouldBufferToolCall(tc)
 	return false, false, nil
 }
 

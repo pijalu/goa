@@ -325,6 +325,8 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.bufferedToolCalls = nil
 	a.bufferedToolCallCount = 0
 	a.budgetToolCalls = make(map[string]string)
+	a.toolProtocolRejections = make(map[string]toolProtocolRejection)
+	a.nativeArgumentFailures = 0
 	a.stopBatchAfterThis = false
 	a.toolCollapseNextRound = false
 	a.collapseStatsPending = false

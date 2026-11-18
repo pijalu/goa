@@ -231,6 +231,7 @@ type editFileWire struct {
 	editFileAlias
 	NewContent *string         `json:"new_content"`
 	Atomic     json.RawMessage `json:"atomic"`
+	Edits      json.RawMessage `json:"edits"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler for editFileParams: an explicitly
@@ -247,6 +248,13 @@ func (p *editFileParams) UnmarshalJSON(data []byte) error {
 		p.NewContent = *w.NewContent
 		p.NewContentSet = true
 	}
+	if w.Edits != nil {
+		edits, err := decodeEditFileBatch(w.Edits)
+		if err != nil {
+			return err
+		}
+		p.Edits = edits
+	}
 	if w.Atomic != nil {
 		var atomic *bool
 		if err := json.Unmarshal(w.Atomic, &atomic); err != nil || atomic == nil {
@@ -255,6 +263,30 @@ func (p *editFileParams) UnmarshalJSON(data []byte) error {
 		p.Atomic = atomic
 	}
 	return nil
+}
+
+// decodeEditFileBatch accepts native arrays and one compatibility form used
+// by some OpenAI-compatible models: a string containing one JSON array. Nested
+// string encoding remains invalid; no generic repair or recursive decoding is
+// performed.
+func decodeEditFileBatch(raw json.RawMessage) ([]editFileParams, error) {
+	var edits []editFileParams
+	arrayErr := json.Unmarshal(raw, &edits)
+	if arrayErr == nil {
+		return edits, nil
+	}
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, arrayErr
+	}
+	trimmed := strings.TrimSpace(encoded)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "[") {
+		return nil, fmt.Errorf("edits string must contain one JSON array")
+	}
+	if err := json.Unmarshal([]byte(trimmed), &edits); err != nil {
+		return nil, fmt.Errorf("edits string must contain one JSON array: %w", err)
+	}
+	return edits, nil
 }
 
 func (t *EditFileTool) Execute(input string) (string, error) {
