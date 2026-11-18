@@ -35,6 +35,14 @@ func TestTodoListTool_SchemaShape(t *testing.T) {
 	if schema.Name != "todo_list" {
 		t.Errorf("Name = %q, want todo_list", schema.Name)
 	}
+	// The description is the model's only always-visible usage guidance (the
+	// schema is deferred: this line ships in the <deferred_tools> listing and
+	// the tool_search catalog). It must say WHEN to reach for the tool.
+	for _, want := range []string{"ulti-step", "in_progress", "done"} {
+		if !strings.Contains(schema.Description, want) {
+			t.Errorf("Description missing when-to-use guidance %q: %q", want, schema.Description)
+		}
+	}
 	if schema.Description == "" {
 		t.Error("Description must not be empty")
 	}

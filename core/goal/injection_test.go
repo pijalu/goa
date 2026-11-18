@@ -393,6 +393,30 @@ func TestDynamicProgress_SurfacesTodos(t *testing.T) {
 	}
 }
 
+// TestDynamicProgress_EmptyTodosNudgesDecomposition pins the when-needed
+// nudge: an active goal with a blank todo list must tell the model to
+// decompose multi-step work into ordered todos (goal add_todo), otherwise the
+// goal's managed todo list stays empty for the whole goal and the stall
+// watchdog loses its cheapest progress signal.
+func TestDynamicProgress_EmptyTodosNudgesDecomposition(t *testing.T) {
+	snap := GoalSnapshot{Objective: "single", Status: GoalActive}
+	got := BuildDynamicGoalProgress(snap)
+	for _, want := range []string{"Todos: none", "add_todo"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("empty-todo progress missing %q: %q", want, got)
+		}
+	}
+	// A populated list must NOT carry the nudge (no contradictory guidance).
+	populated := BuildDynamicGoalProgress(GoalSnapshot{
+		Objective: "multi",
+		Status:    GoalActive,
+		Todos:     []GoalTodoItem{{ID: "t1", Title: "step", Status: TodoPending}},
+	})
+	if strings.Contains(populated, "Todos: none") {
+		t.Errorf("populated list must not carry the empty-todo nudge: %q", populated)
+	}
+}
+
 // TestBuildStaticGoalReminder_BoundsLongFields verifies a goal with very long
 // objective/criterion/verify/handover produces a bounded reminder: the fields
 // are excerpted (full text stays retrievable via `goal get`), so a pathological

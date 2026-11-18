@@ -60,7 +60,7 @@ type todoInput struct {
 func (t *TodoListTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "todo_list",
-		Description: "Track tasks with a todo list.",
+		Description: "Multi-step task tracking (3+ steps); mark in_progress/done",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

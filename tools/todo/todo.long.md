@@ -4,11 +4,18 @@ SPDX-License-Identifier: GPL-3.0-or-later
 Copyright (C) 2026 Pierre Poissinger
 -->
 
-Manage an in-session todo list for tracking tasks and progress.
+Manage an in-session todo list: break multi-step tasks (3+ steps) into
+visible tracked steps.
 
 Todos are lightweight checklist items — NOT goals. A todo has no lifecycle,
 turns, budget, or completion criterion; use it to break the current task into
 visible steps. Use goals for autonomous multi-turn work.
+
+When to use: any task with 3+ sequential steps, work spanning several files
+or phases, or when the user asks to track progress. Add todos before starting
+work, mark exactly one in_progress while working on it, and mark items done
+immediately after completing them — do not batch status updates at the end.
+Do not use it for single-step requests.
 
 Parameters:
   action       add | update | complete | remove | list | clear
@@ -25,4 +32,5 @@ Goal linkage:
     session list resurfaces unchanged. remove/clear are refused while
     goal-linked (mark items done instead). A goal completed with open todos
     reminds you of them so unfinished work is not silently dropped.
-  - Enabled via tools.enabled.todo_list (default on).
+  - Enabled via tools.enabled.todo_list (default off — goal todos cover
+    tracking while a goal is active; toggle with /tools:todo_list:on).

@@ -8,7 +8,8 @@ Goal list manager: 1 ACTIVE goal pursued autonomously across turns; queue auto-s
 next on complete. Cancel NEVER auto-starts next: it promotes PAUSED.
 
 Create ONLY on explicit user request for autonomous work — never greetings/vague asks
-w/o verifiable end state (ask for one). Queue if a goal is active (never implicit
+w/o verifiable end state (ask for one). Explicit request → create same turn, never
+inline. Queue if a goal is active (never implicit
 replace). Opts: completionCriterion (all objectives incl queued), freshContext (clean
 ctx), replace:true (discard current; sparingly), priority:"front" (queue FRONT),
 verifyCommand (machine check after completion: exit0=pass else reject+fix; repeated
