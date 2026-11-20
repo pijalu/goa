@@ -86,6 +86,18 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		return true, nil
 	}
 
+	// A hard consecutive-repeat guard is terminal for ordinary tool rounds.
+	// Its synthetic result is already in history; let the existing bounded
+	// recovery path obtain a text-only answer instead of issuing the same nudge
+	// on every subsequent identical call.
+	if a.takeRepeatRecovery() {
+		reason := fmt.Sprintf("identical tool call exceeded consecutive repeat limit (%d)", a.cfg.MaxToolRepeatConsecutive)
+		if err := a.runRecoveryStream(ctx, model, opts, reason); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
 	// Convergence is message-driven, NOT a numeric round cap (Issue 13).
 	// trackToolCallingRound reports true only when the model has gone silent for
 	// the configured number of consecutive rounds (no message AND no thinking
@@ -293,11 +305,11 @@ func (a *Agent) effectiveMaxConsecutiveToolRounds() int {
 	return a.cfg.MaxConsecutiveToolRounds
 }
 
-// runRecoveryStream sends a clear system message to the LLM when a per-turn
-// convergence bound fires (silent tool-round streak or the explicit
-// MaxStreamRounds cap — the caller supplies the reason), then performs a
-// final stream so the model can self-heal and produce an answer from
-// information already gathered.
+// runRecoveryStream sends a clear system message to the LLM when ordinary
+// tool rounds must stop (silent tool-round streak, explicit MaxStreamRounds
+// cap, or hard consecutive-repeat guard — the caller supplies the reason),
+// then performs a final stream so the model can self-heal and produce an
+// answer from information already gathered.
 //
 // If the model ignores the hint and still calls tools, we allow up to
 // maxRecoveryRounds additional rounds so the model can see tool results and
@@ -306,7 +318,7 @@ func (a *Agent) effectiveMaxConsecutiveToolRounds() int {
 // no visible output and a seemingly hung session.
 func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opts provider.StreamOptions, reason string) error {
 	a.cfg.Logger.Log(Warn, "%s; sending recovery hint", reason)
-	recovery := "[goa-system] Internal control note (never show or mention to the user): the per-turn tool-call round limit was reached. Complete the task now using the information already gathered, without referencing this note or any internal limit."
+	recovery := "[goa-system] Internal control note (never show or mention to the user): a tool-call loop guardrail stopped ordinary tool rounds. Complete the task now using the information already gathered, without referencing this note or any internal limit."
 	// The recovery hint is a transient nudge for the recovery rounds only; mark
 	// it ephemeral so it is stripped at turn end and does not pollute future
 	// turns' context.

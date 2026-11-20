@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pijalu/goa/internal/agentic"
 )
 
 func TestSchema_NameAndQuestionsRequired(t *testing.T) {
@@ -44,6 +46,39 @@ func TestExecute_MissingQuestionField(t *testing.T) {
 	}}
 	if _, err := tool.Execute(`{"questions":[{"title":"x"}]}`); err == nil {
 		t.Fatal("expected missing_question error")
+	}
+}
+
+func TestSchema_EmptyQuestionsInvalid(t *testing.T) {
+	schema := (&AskUserQuestionTool{}).Schema().Schema
+	if err := agentic.Validate(schema, `{"questions":[]}`); err == nil {
+		t.Fatal("empty questions array must violate the advertised schema")
+	}
+	if err := agentic.Validate(schema, `{"questions":[{"question":"Which option?","options":["A","B"]}]}`); err != nil {
+		t.Fatalf("valid question rejected: %v", err)
+	}
+}
+
+func TestExecute_InputErrorsIncludeValidExample(t *testing.T) {
+	const example = `{"questions":[{"question":"Which option?","options":["A","B"]}]}`
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "invalid JSON", input: `{not json`},
+		{name: "empty questions", input: `{"questions":[]}`},
+		{name: "missing question", input: `{"questions":[{}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := (&AskUserQuestionTool{}).Execute(tt.input)
+			if err == nil {
+				t.Fatal("expected input validation error")
+			}
+			if !strings.Contains(err.Error(), example) {
+				t.Fatalf("error must contain complete valid example %s; got: %v", example, err)
+			}
+		})
 	}
 }
 

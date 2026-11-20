@@ -302,8 +302,8 @@ type Config struct {
 	// MaxToolRepeatConsecutive is the maximum number of CONSECUTIVE identical
 	// tool calls allowed within a single turn. When a different tool or
 	// different arguments appears between calls, the consecutive counter resets.
-	// Default: 2 (allow up to 2 consecutive calls; soft-repeat at 2, hard-loop
-	// at 3+). Set to 0 to disable.
+	// Default: 2 (allow up to 2 consecutive calls; hard-loop at 3). The first
+	// call beyond the limit triggers bounded text-only recovery. Set to 0 to disable.
 	MaxToolRepeatConsecutive int
 	// MaxToolCalls is the maximum number of duplicate occurrences of the same
 	// tool call (same tool + same arguments) allowed within the rolling window

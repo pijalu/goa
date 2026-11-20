@@ -259,6 +259,11 @@ func (a *Agent) effectiveToolWindowSize() int {
 // the call so the model still sees the hint in the tool result.
 func (a *Agent) applyToolGuardrail(tc provider.ContentBlock, callKey, skipMsg string, windowExceeded, consecutiveExceeded bool, windowCount, consecutiveCount int) {
 	a.applyToolBudgetSkip(tc, skipMsg)
+	if consecutiveExceeded {
+		a.mu.Lock()
+		a.repeatRecoveryPending = true
+		a.mu.Unlock()
+	}
 	switch {
 	case consecutiveExceeded:
 		a.cfg.Logger.Log(Warn, "Hard loop: tool call %q repeated %d times consecutively (limit: %d); substituting hint", tc.ToolName, consecutiveCount, a.cfg.MaxToolRepeatConsecutive)
@@ -269,6 +274,17 @@ func (a *Agent) applyToolGuardrail(tc provider.ContentBlock, callKey, skipMsg st
 	}
 	a.emitSyntheticToolResult(tc, skipMsg)
 	a.bufferedToolCalls = append(a.bufferedToolCalls, tc)
+}
+
+// takeRepeatRecovery consumes the per-turn hard consecutive-repeat latch.
+// Clearing it here prevents a cooperative recovery answer from triggering a
+// second recovery episode; prepareTurn also clears it before the next user turn.
+func (a *Agent) takeRepeatRecovery() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pending := a.repeatRecoveryPending
+	a.repeatRecoveryPending = false
+	return pending
 }
 
 // applyToolBudgetSkip records a budget-skip message for the tool call ID.

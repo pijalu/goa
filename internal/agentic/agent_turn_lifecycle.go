@@ -334,6 +334,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.recentToolCalls = nil
 	a.lastCallKey = ""
 	a.consecutiveCount = 0
+	a.repeatRecoveryPending = false
 	a.stateEpoch = 0
 	a.epochAtLastCall = 0
 	a.errStreakTool = ""

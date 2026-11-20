@@ -16,6 +16,8 @@ This detector watches identical tool calls (same tool and arguments) and reports
 | `tool_call_limit_reset_window` | 10 | Number of recent calls considered by the rolling-window guard. |
 | `disable_tool_budget` | false | Disables the agent tool-call budget guards. It does not disable the core loop detector. |
 
+With `max_tool_repeat_consecutive`, calls through the configured limit still execute. The first identical call beyond the limit is skipped and receives a synthetic guardrail result; Goa then enters bounded text-only recovery instead of continuing ordinary tool rounds with repeated hints. Tool history remains correctly paired, and a new user turn restores the normal tool surface.
+
 The interactive path is `/config` → **Loop detection** → **Thresholds**. The same values can be set with `/config:set:execution.<key>:<value>`.
 
 ## Consecutive tool-call rounds

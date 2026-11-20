@@ -28,6 +28,10 @@ import (
 // maxOptions caps the number of options per question to keep the card readable.
 const maxOptions = 6
 
+// validInputHint gives the model a complete corrective payload, not just the
+// name of the field it omitted. Keep the example valid under Schema().
+const validInputHint = `Provide valid JSON with a non-empty questions array; each item requires a non-empty question string. Example: {"questions":[{"question":"Which option?","options":["A","B"]}]}`
+
 // ClarifyFunc is the host callback that displays a question and blocks until
 // the user answers on the main input line. ok==false means the user cancelled.
 // step/total give the question's 1-based position within a multi-question batch
@@ -85,7 +89,8 @@ func (t *AskUserQuestionTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"questions": map[string]any{
 					"type":        "array",
-					"description": "clarifying questions, each asked separately",
+					"minItems":    1,
+					"description": "questions, each asked separately",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -150,14 +155,14 @@ func (t *AskUserQuestionTool) run(ctx context.Context, input string) (string, er
 		return "", &internal.ToolError{
 			Tool: "ask_user_question", Type: "invalid_input",
 			Detail:   fmt.Sprintf("Cannot parse parameters: %v", err),
-			HintText: "Provide valid JSON with a questions array.",
+			HintText: validInputHint,
 		}
 	}
 	if len(p.Questions) == 0 {
 		return "", &internal.ToolError{
 			Tool: "ask_user_question", Type: "missing_questions",
 			Detail:   "at least one question is required",
-			HintText: "Provide a non-empty questions array.",
+			HintText: validInputHint,
 		}
 	}
 
@@ -195,7 +200,7 @@ func (t *AskUserQuestionTool) askOne(clarify ClarifyFunc, q clarifyQuestion, ste
 		return clarifyAnswer{}, &internal.ToolError{
 			Tool: "ask_user_question", Type: "missing_question",
 			Detail:   "each question requires a non-empty 'question' field",
-			HintText: "Provide a question string.",
+			HintText: validInputHint,
 		}
 	}
 	// Cap options and trim.

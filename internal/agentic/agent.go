@@ -318,6 +318,11 @@ type Agent struct {
 	lastCallKey      string
 	consecutiveCount int
 
+	// repeatRecoveryPending latches the first hard consecutive-repeat guardrail
+	// in a turn. Once its synthetic tool result is committed, runStreamRound
+	// switches to bounded text-only recovery instead of another ordinary round.
+	repeatRecoveryPending bool
+
 	// stateEpoch is a monotonically increasing counter bumped every time a
 	// state-mutating tool (StateMutator) executes successfully. It implements
 	// the state-aware repeat horizon: a repeated exact tool call is only a
