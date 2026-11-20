@@ -45,6 +45,18 @@ func TestBashTool_Schema_DescriptionStatesDefaultWorkdir(t *testing.T) {
 	}
 }
 
+func TestBashTool_Schema_DescriptionEnforcesDedicatedFileTools(t *testing.T) {
+	desc := (&BashTool{}).Schema().Description
+	for _, want := range []string{
+		"Files: edits→`edit`, new→`write`",
+		"no bash mutation",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("bash description missing file-tool rule %q: %q", want, desc)
+		}
+	}
+}
+
 func TestBashTool_IsRetryable_ReturnsFalse(t *testing.T) {
 	tool := &BashTool{}
 	if tool.IsRetryable(nil) {

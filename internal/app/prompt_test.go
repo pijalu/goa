@@ -37,6 +37,23 @@ func newTestSubsystems(dir string) *subsystems {
 	}
 }
 
+func TestBuildSystemPrompt_EnforcesDedicatedFileTools(t *testing.T) {
+	subs := newTestSubsystems(t.TempDir())
+	got := buildSystemPrompt(subs)
+	for _, want := range []string{
+		"Content edits→`edit`",
+		"new files→`write`",
+		"`bash`=commands only",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("system prompt missing file-tool rule %q:\n%s", want, got)
+		}
+	}
+	if size := len(buildToolUsageSection(subs)); size > 100 {
+		t.Errorf("tool usage prompt = %d bytes, want <= 100", size)
+	}
+}
+
 // TestPromptContextBanner verifies the startup info-bubble format reporting
 // per-request context cost (system prompt + tool schemas, chars + est.
 // tokens). The banner is the user's window into prompt bloat at every

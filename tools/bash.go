@@ -161,11 +161,12 @@ func (t *BashTool) Schema() agentic.ToolSchema {
 	// The working-directory statement lives in the top-level description because
 	// that is the text the model actually reads; without it the model prepends a
 	// redundant "cd <project root> && " to every command.
-	const cwdNote = " The working directory is the project root by default — do not prepend `cd <project root>` unless a different directory is required."
-	description := "Run a shell command." + cwdNote
+	const cwdNote = " Working directory: project root; use `workdir`, not `cd`."
+	description := "Run a shell command."
 	if t.EnableComplexity {
-		description = "Run a shell command. Complex scripts may be rejected — use simple commands." + cwdNote
+		description += " Complex scripts may be rejected — use simple commands."
 	}
+	description += " Files: edits→`edit`, new→`write`; no bash mutation." + cwdNote
 	// B48: in user-shell mode the description names the resolved shell so the
 	// model emits syntax the actual shell understands (zsh/fish/pwsh differ
 	// from bash). Default bash mode stays silent — bash is the assumption.

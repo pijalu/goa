@@ -60,7 +60,7 @@ func buildSystemPromptSections(subs *subsystems) []systemPromptSection {
 	add("mode-prompt", modeSystemPrompt(subs))
 
 	// 1a. Tool usage principles — global guidance shared by all modes.
-	add("tool-usage", buildToolUsageSection())
+	add("tool-usage", buildToolUsageSection(subs))
 
 	// 2. AGENTS.md context files
 	if len(subs.contextFiles) > 0 {
@@ -366,10 +366,15 @@ func buildSelfDocSection() string {
 // buildToolUsageSection returns a <tool_usage> paragraph with general
 // guidance about how to use the available tools. This section is shared
 // by all modes and injected early in the system prompt.
-func buildToolUsageSection() string {
-	return `<tool_usage>
-Prefer dedicated tools over bash.
-</tool_usage>`
+func buildToolUsageSection(subs *subsystems) string {
+	if subs == nil || subs.promptReg == nil {
+		return ""
+	}
+	text, err := subs.promptReg.Load("tool_usage")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(text)
 }
 
 // promptContextBanner formats the startup info-bubble line reporting the
