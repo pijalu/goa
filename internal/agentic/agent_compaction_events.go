@@ -23,6 +23,10 @@ import (
 // crash between start and end the log holds a start with no matching end;
 // FindOrphanedCompactions detects exactly that on the next boot.
 const (
+	// EventCompactionProgress carries transient local-summarize generation
+	// metrics in OutputEvent.Timings. The counts are estimates and must never be
+	// folded into turn/session totals; exact final usage rides compaction_summary.
+	EventCompactionProgress EventType = "compaction_progress"
 	// EventCompactionStart marks the start of a compaction transaction.
 	EventCompactionStart EventType = "compaction_start"
 	// EventCompactionSummary records the completed summary and the facts of

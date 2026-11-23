@@ -33,6 +33,8 @@ func (a *App) handleAgentOutputEvent(ev *agentic.OutputEvent) {
 		a.handleToolProgress(ev)
 	case agentic.EventProgress:
 		a.handleProgressEvent(ev)
+	case agentic.EventCompactionProgress:
+		a.handleSummarizeProgress(ev)
 	case agentic.EventRateLimit:
 		// Plugins plan §6 step 3: forward classified stream failures to the
 		// plugin event bus (rate_limit_exceeded) for quota hints et al.
@@ -53,6 +55,8 @@ func (a *App) handleAgentStatsEvent(ev *agentic.OutputEvent) {
 		a.handleTokenStats(ev)
 	case agentic.EventContextReset:
 		a.resetCacheBustBaseline()
+	case agentic.EventCompactionEnd:
+		a.clearSummarizeProgress()
 	case agentic.EventCompact:
 		a.recordCompact(ev)
 		// Only a summarize pass is an intentional reset (bugs.md

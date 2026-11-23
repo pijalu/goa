@@ -264,9 +264,9 @@ func TestPctOf(t *testing.T) {
 	}
 }
 
-// TestCompressCommand_AsyncHint verifies that LLM-backed strategies (summarize,
-// hybrid, default) opt into async execution while in-memory strategies stay
-// synchronous.
+// TestCompressCommand_AsyncHint verifies that EVERY valid compression strategy
+// uses the async command busy gate. That gate keeps follow-up messages queued
+// until compression returns, including for the in-memory strategies.
 func TestCompressCommand_AsyncHint(t *testing.T) {
 	cmd := &CompressCommand{}
 	tests := []struct {
@@ -279,9 +279,9 @@ func TestCompressCommand_AsyncHint(t *testing.T) {
 		{"hybrid", []string{"hybrid"}, true, "hybrid"},
 		{"default empty", nil, true, "Compressing"},
 		{"default force", []string{"force"}, true, "Compressing"},
-		{"tool_elision", []string{"tool_elision"}, false, ""},
-		{"selective", []string{"selective"}, false, ""},
-		{"micro", []string{"micro"}, false, ""},
+		{"tool_elision", []string{"tool_elision"}, true, "tool_elision"},
+		{"selective", []string{"selective"}, true, "selective"},
+		{"micro", []string{"micro"}, true, "micro"},
 		{"unknown", []string{"bogus"}, false, ""},
 	}
 	for _, tt := range tests {

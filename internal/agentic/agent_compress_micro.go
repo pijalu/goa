@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
@@ -114,7 +115,7 @@ func (a *Agent) summarizeStreamOnce(ctx context.Context, model provider.Model, o
 		return "", nil, fmt.Errorf("summarization stream: %w", err)
 	}
 
-	summary, err := consumeSummarizeStream(ctx, stream)
+	summary, err := a.consumeSummarizeStream(ctx, stream)
 	if err != nil {
 		return "", nil, err
 	}
@@ -137,10 +138,50 @@ func (a *Agent) summarizeStreamOnce(ctx context.Context, model provider.Model, o
 	return summary, usage, nil
 }
 
-// consumeSummarizeStream drains the summarize stream into the summary text.
-// It returns on context cancellation, on an in-stream provider error, and on
-// a terminal stream failure; a clean close yields the accumulated text.
-func consumeSummarizeStream(ctx context.Context, stream *provider.AssistantMessageEventStream) (string, error) {
+const (
+	summarizeProgressCategory = "summarize-progress"
+	summarizeProgressInterval = 100 * time.Millisecond
+)
+
+// summarizeTokenTimings converts the accumulated checkpoint text into live,
+// explicitly estimated generation metrics. Exact provider usage still rides on
+// the durable compaction-summary event after the stream completes.
+func summarizeTokenTimings(summary string, elapsed time.Duration) *TokenTimings {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	generated := estimateTokens(summary)
+	speed := 0.0
+	if generated > 0 && elapsed > 0 {
+		speed = float64(generated) / elapsed.Seconds()
+	}
+	return &TokenTimings{
+		PredictedN:         generated,
+		PredictedMs:        float64(elapsed) / float64(time.Millisecond),
+		PredictedPerSecond: speed,
+	}
+}
+
+func (a *Agent) emitSummarizeProgress(summary string, elapsed time.Duration) {
+	a.emitEvent(OutputEvent{
+		Type:     EventCompactionProgress,
+		Text:     "Summarizing…",
+		Timings:  summarizeTokenTimings(summary, elapsed),
+		Metadata: map[string]string{"category": summarizeProgressCategory},
+	})
+}
+
+// consumeSummarizeStream drains the summarize stream into the summary text and
+// reports bounded live generation metrics. Progress uses the dedicated
+// EventCompactionProgress type, never EventContent or EventTokenStats: the
+// checkpoint stays out of chat and auxiliary tokens stay out of session totals.
+// It returns on context cancellation, on an in-stream provider error, and on a
+// terminal stream failure; a clean close yields the accumulated text.
+func (a *Agent) consumeSummarizeStream(ctx context.Context, stream *provider.AssistantMessageEventStream) (string, error) {
+	started := time.Now()
+	lastProgress := time.Time{}
+	a.emitSummarizeProgress("", 0)
+
 	var summary strings.Builder
 	for event := range stream.Seq() {
 		if err := ctx.Err(); err != nil {
@@ -148,6 +189,11 @@ func consumeSummarizeStream(ctx context.Context, stream *provider.AssistantMessa
 		}
 		if event.Type == provider.EventTextDelta {
 			summary.WriteString(event.Delta)
+			now := time.Now()
+			if lastProgress.IsZero() || now.Sub(lastProgress) >= summarizeProgressInterval {
+				a.emitSummarizeProgress(summary.String(), now.Sub(started))
+				lastProgress = now
+			}
 		}
 		if event.Type == provider.EventError {
 			// %w keeps the *hooks.ProviderError chain intact: the retry loop
@@ -161,6 +207,10 @@ func consumeSummarizeStream(ctx context.Context, stream *provider.AssistantMessa
 	if err := stream.Err(); err != nil {
 		return "", fmt.Errorf("summarization failed: %w", err)
 	}
+	// Always publish the final estimate, including deltas inside the throttle
+	// window. A retry creates a fresh consumer, so failed-attempt text and timing
+	// never accumulate into the next attempt's counters.
+	a.emitSummarizeProgress(summary.String(), time.Since(started))
 	return summary.String(), nil
 }
 

@@ -38,26 +38,19 @@ func (c *CompressCommand) CompleteArgs(_ core.Context, prefix string) []core.Arg
 	return out
 }
 
-// AsyncHint implements core.AsyncCommand. Strategies that invoke the LLM
-// (summarize, hybrid, and the default which may resolve to either) return a
-// spinner label so the host runs them in a background goroutine instead of
-// freezing the UI. In-memory strategies (tool_elision, selective, micro) are
-// instant and return "" to run synchronously.
+// AsyncHint implements core.AsyncCommand. Every valid compression strategy uses
+// the host's async busy gate, including in-memory passes: follow-up free-text is
+// queued until the compression call has completely returned.
 func (c *CompressCommand) AsyncHint(args []string) string {
 	strategy, _, err := parseCompressArgs(args)
 	if err != nil {
 		return ""
 	}
-	switch strategy {
-	case "", "summarize", "hybrid":
-		label := "Compressing"
-		if strategy != "" {
-			label += " (" + strategy + ")"
-		}
-		return label + "…"
-	default:
-		return ""
+	label := "Compressing"
+	if strategy != "" {
+		label += " (" + strategy + ")"
 	}
+	return label + "…"
 }
 
 func (c *CompressCommand) Run(ctx core.Context, args []string) error {
