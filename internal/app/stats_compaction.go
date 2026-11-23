@@ -56,8 +56,7 @@ func (a *App) handleAgentStatsEvent(ev *agentic.OutputEvent) {
 	case agentic.EventContextReset:
 		a.resetCacheBustBaseline()
 	case agentic.EventCompactionEnd:
-		// Compression leaves status and footer activity untouched. The compaction
-		// bubble is the sole user-facing completion update.
+		a.clearSummarizeProgress()
 	case agentic.EventCompact:
 		a.recordCompact(ev)
 		// Only a summarize pass is an intentional reset (bugs.md

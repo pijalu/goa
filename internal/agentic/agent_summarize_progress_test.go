@@ -4,8 +4,10 @@ package agentic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
@@ -61,6 +63,28 @@ func TestSummarizeHistory_EmitsLiveTokenProgress(t *testing.T) {
 		if ev.Type == EventTokenStats {
 			t.Errorf("live summarize progress must not alter turn token stats: %#v", ev)
 		}
+	}
+}
+
+func TestConsumeSummarizeStream_CancelWhileIdle(t *testing.T) {
+	agent := NewAgent(Config{})
+	stream := provider.NewAssistantMessageEventStream(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := agent.consumeSummarizeStream(ctx, stream)
+		done <- err
+	}()
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("consumeSummarizeStream error = %v, want context.Canceled", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		stream.Cancel()
+		t.Fatal("idle summarize stream did not return after context cancellation")
 	}
 }
 

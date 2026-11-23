@@ -264,45 +264,42 @@ func TestPctOf(t *testing.T) {
 	}
 }
 
-// TestCompressCommand_AsyncHint verifies that EVERY valid compression strategy
-// uses the async command busy gate. That gate keeps follow-up messages queued
-// until compression returns, including for the in-memory strategies.
-func TestCompressCommand_AsyncHint(t *testing.T) {
+// TestCompressCommand_SynchronousActivity verifies that every valid strategy
+// has a strategy-specific global-spinner label without opting into async
+// dispatch or its busy/steering gate.
+func TestCompressCommand_SynchronousActivity(t *testing.T) {
 	cmd := &CompressCommand{}
+	var command core.Command = cmd
+	if _, ok := command.(core.AsyncCommand); ok {
+		t.Fatal("compression must run synchronously, not through core.AsyncCommand")
+	}
+	if _, ok := command.(core.SilentAsyncCommand); ok {
+		t.Fatal("compression must show its global spinner, not suppress activity")
+	}
+
+	activity, ok := command.(interface{ ActivityHint(args []string) string })
+	if !ok {
+		t.Fatal("compression does not provide a synchronous activity label")
+	}
 	tests := []struct {
-		name      string
-		args      []string
-		wantAsync bool
-		wantSub   string // substring expected in the label when async
+		name string
+		args []string
+		want string
 	}{
-		{"summarize", []string{"summarize"}, true, "summarize"},
-		{"hybrid", []string{"hybrid"}, true, "hybrid"},
-		{"default empty", nil, true, "Compressing"},
-		{"default force", []string{"force"}, true, "Compressing"},
-		{"tool_elision", []string{"tool_elision"}, true, "tool_elision"},
-		{"selective", []string{"selective"}, true, "selective"},
-		{"micro", []string{"micro"}, true, "micro"},
-		{"unknown", []string{"bogus"}, false, ""},
+		{"default empty", nil, "Compressing…"},
+		{"default force", []string{"force"}, "Compressing…"},
+		{"tool_elision", []string{"tool_elision"}, "Compressing (tool_elision)…"},
+		{"selective", []string{"selective"}, "Compressing (selective)…"},
+		{"summarize", []string{"summarize"}, "Compressing (summarize)…"},
+		{"hybrid", []string{"hybrid"}, "Compressing (hybrid)…"},
+		{"micro", []string{"micro"}, "Compressing (micro)…"},
+		{"unknown", []string{"bogus"}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			label := cmd.AsyncHint(tt.args)
-			if tt.wantAsync && label == "" {
-				t.Fatalf("AsyncHint(%v) = empty, want non-empty label", tt.args)
-			}
-			if !tt.wantAsync && label != "" {
-				t.Fatalf("AsyncHint(%v) = %q, want empty (sync)", tt.args, label)
-			}
-			if tt.wantSub != "" && !strings.Contains(label, tt.wantSub) {
-				t.Errorf("AsyncHint(%v) = %q, want it to contain %q", tt.args, label, tt.wantSub)
+			if got := activity.ActivityHint(tt.args); got != tt.want {
+				t.Errorf("ActivityHint(%v) = %q, want %q", tt.args, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestCompressCommand_SilentAsync(t *testing.T) {
-	var cmd core.Command = &CompressCommand{}
-	if _, ok := cmd.(core.SilentAsyncCommand); !ok {
-		t.Fatal("compression must retain async queueing without status-bar updates")
 	}
 }

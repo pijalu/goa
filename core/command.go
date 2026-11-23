@@ -45,8 +45,10 @@ type InternalCommand interface {
 // for a long time (e.g. it calls an LLM). When AsyncHint returns a non-empty
 // label, the host runs Run in a background goroutine instead of on the UI
 // event loop and keeps the input line live so the user can enqueue steering
-// until the command completes. By default the label is shown as a dedicated
-// spinner. The enqueued text is delivered as a follow-up agent message once
+// until the command completes. Esc cancels Context.GoContext(); blocking
+// commands must honor that context so cancellation can release the busy gate.
+// By default the label is shown as a dedicated spinner. The enqueued text is
+// delivered as a follow-up agent message once
 // the command finishes.
 //
 // The args parameter lets a command opt in per-invocation: returning "" runs
@@ -56,6 +58,13 @@ type InternalCommand interface {
 // synchronous.
 type AsyncCommand interface {
 	AsyncHint(args []string) string
+}
+
+// ActivityCommand is an optional interface for synchronous commands that need
+// a specific global-spinner label instead of the generic "executing /cmd ..."
+// placeholder. It changes presentation only; it never enables async dispatch.
+type ActivityCommand interface {
+	ActivityHint(args []string) string
 }
 
 // SilentAsyncCommand is an optional marker for async commands that must retain
@@ -80,6 +89,16 @@ func AsyncHintOf(cmd Command, args []string) string {
 		return ""
 	}
 	return ac.AsyncHint(args)
+}
+
+// ActivityHintOf returns a synchronous command's custom global-spinner label,
+// or "" when the generic executing placeholder should be used.
+func ActivityHintOf(cmd Command, args []string) string {
+	ac, ok := cmd.(ActivityCommand)
+	if !ok {
+		return ""
+	}
+	return ac.ActivityHint(args)
 }
 
 // StatusProvider is an optional interface commands implement to customize the

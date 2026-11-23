@@ -134,6 +134,10 @@ type DocInfo struct {
 // than the full Context. Context implements CommandEnv, UIHost, and
 // SessionEnv, and individual helpers should accept only the role they use.
 type Context struct {
+	// Context carries cancellation and deadlines for the command invocation.
+	// Nil means context.Background(); use GoContext rather than reading it directly.
+	Context context.Context
+
 	// Config is the current active configuration.
 	Config *config.Config
 
@@ -357,6 +361,15 @@ type Context struct {
 	// Steering buffers user input submitted while the agent is running and
 	// injects it as a follow-up user message when the current turn ends.
 	Steering *SteeringQueue
+}
+
+// GoContext returns the command invocation context, or context.Background()
+// for synchronous hosts and tests that do not provide one.
+func (c Context) GoContext() context.Context {
+	if c.Context == nil {
+		return context.Background()
+	}
+	return c.Context
 }
 
 // Compile-time assertions that Context implements the three role interfaces.

@@ -5,7 +5,6 @@
 package commands
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -38,10 +37,9 @@ func (c *CompressCommand) CompleteArgs(_ core.Context, prefix string) []core.Arg
 	return out
 }
 
-// AsyncHint implements core.AsyncCommand. Every valid compression strategy uses
-// the host's async busy gate, including in-memory passes: follow-up free-text is
-// queued until the compression call has completely returned.
-func (c *CompressCommand) AsyncHint(args []string) string {
+// ActivityHint implements core.ActivityCommand. Compression stays on the
+// synchronous command path; this label customizes its global status spinner.
+func (c *CompressCommand) ActivityHint(args []string) string {
 	strategy, _, err := parseCompressArgs(args)
 	if err != nil {
 		return ""
@@ -52,10 +50,6 @@ func (c *CompressCommand) AsyncHint(args []string) string {
 	}
 	return label + "…"
 }
-
-// SilentAsync keeps compression results in the compaction bubble without
-// replacing status-bar or footer activity while the command runs.
-func (c *CompressCommand) SilentAsync() {}
 
 func (c *CompressCommand) Run(ctx core.Context, args []string) error {
 	if ctx.AgentManager == nil {
@@ -76,7 +70,7 @@ func (c *CompressCommand) Run(ctx core.Context, args []string) error {
 	}
 
 	start := time.Now()
-	if err := ctx.AgentManager.TriggerCompressionWith(context.Background(), strategy, force); err != nil {
+	if err := ctx.AgentManager.TriggerCompressionWith(ctx.GoContext(), strategy, force); err != nil {
 		return fmt.Errorf("compression failed: %w", err)
 	}
 	elapsed := time.Since(start)

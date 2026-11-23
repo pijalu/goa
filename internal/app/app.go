@@ -49,6 +49,10 @@ type App struct {
 	// sessionActive tracks whether the agent is currently processing a turn.
 	sessionActive bool
 
+	// summarizeStatusActive marks ownership of the global status spinner by a
+	// local summarize pass, so compaction end clears only its own activity.
+	summarizeStatusActive bool
+
 	// Token tracking for conversation statistics in footer.
 	tokenPromptTotal     int
 	tokenPredictedTotal  int
@@ -162,6 +166,10 @@ type App struct {
 	// inside app.apply (which runs on the loop), and read from routeSteering
 	// (also on the loop) — so no mutex is required.
 	commandBusy bool
+
+	// commandCancel cancels the active async command's invocation context.
+	// Like commandBusy, it is accessed only on the TUI commandLoop.
+	commandCancel context.CancelFunc
 
 	// goalCompletionHandoff stashes the terminal reason (completion evidence)
 	// of the goal that just completed so the next auto-promoted queued goal

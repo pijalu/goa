@@ -183,7 +183,7 @@ func (a *Agent) consumeSummarizeStream(ctx context.Context, stream *provider.Ass
 	a.emitSummarizeProgress("", 0)
 
 	var summary strings.Builder
-	for event := range stream.Seq() {
+	for event := range stream.SeqCtx(ctx) {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
@@ -204,6 +204,12 @@ func (a *Agent) consumeSummarizeStream(ctx context.Context, stream *provider.Ass
 		}
 	}
 
+	// SeqCtx also returns when ctx ends while the provider stream stays open.
+	// Check cancellation before stream.Err(), whose terminal wait would otherwise
+	// recreate the hang that SeqCtx just escaped.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := stream.Err(); err != nil {
 		return "", fmt.Errorf("summarization failed: %w", err)
 	}

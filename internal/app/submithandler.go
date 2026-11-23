@@ -5,6 +5,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -237,7 +238,7 @@ func (a *App) handleSlashCommand(input string) {
 	// that consists only of commands (e.g. /orchestrate) is not empty on reload.
 	a.recordCommandInSessionStore(result, input)
 
-	// Long-running commands (e.g. /compress:summarize) opt into async
+	// Long-running commands (e.g. plugin bridge calls) opt into async
 	// execution: Run in a background goroutine, keeping the UI responsive and
 	// the input line live for steering. Commands may show a spinner or opt into
 	// silent status handling. Doc suffixes (/cmd:?, /cmd:??) bypass this path.
@@ -276,20 +277,22 @@ func (a *App) handleSlashCommand(input string) {
 // Regular async commands show a dedicated spinner; SilentAsyncCommand
 // implementations leave existing status activity untouched. On completion the
 // result is rendered and any enqueued steering is delivered as a follow-up agent
-// message. Guards against concurrent async commands: a second invocation while
-// one is running is rejected with a clear message rather than racing on shared
-// state (e.g. two concurrent compressions corrupting history).
+// message. Esc cancels the invocation context; commands must honor ctx.GoContext()
+// for blocking work. Guards against concurrent async commands: a second invocation
+// while one is running is rejected rather than racing on shared command state.
 func (a *App) runAsyncCommand(result *core.RouteResult, input, trimmed, label string) {
 	subs := a.subs
 
 	if a.commandBusy {
 		subs.chat.AddSystemMessage(fmt.Sprintf("> %s", input))
-		subs.chat.AddSystemMessage("Another command is already running — please wait for it to finish.")
+		subs.chat.AddSystemMessage("Another command is already running — press Esc to cancel it, or wait for it to finish.")
 		subs.tuiEngine.RequestRender()
 		return
 	}
 
 	a.commandBusy = true
+	commandCtx, commandCancel := context.WithCancel(context.Background())
+	a.commandCancel = commandCancel
 
 	// Most async commands show a spinner immediately. Silent commands retain
 	// the busy/steering gate without changing existing status-bar activity.
@@ -301,8 +304,10 @@ func (a *App) runAsyncCommand(result *core.RouteResult, input, trimmed, label st
 	}
 
 	ctx := coreContextForCommand(subs, a)
+	ctx.Context = commandCtx
 
 	go func() {
+		defer commandCancel()
 		var (
 			output string
 			err    error
@@ -317,6 +322,7 @@ func (a *App) runAsyncCommand(result *core.RouteResult, input, trimmed, label st
 		}()
 
 		a.apply(func() {
+			a.commandCancel = nil
 			a.commandBusy = false
 			if !silent {
 				subs.statusMsg.Clear()
@@ -422,9 +428,10 @@ func (a *App) echoCommandResult(result *core.RouteResult, input, output string) 
 	}
 }
 
-// beginCommandPlaceholder shows an "executing /cmd ..." status line before a
-// command's synchronous Run so there is no silent gap between submit and
-// first feedback. It returns true when the placeholder was shown and the
+// beginCommandPlaceholder shows a command's synchronous activity before Run
+// so there is no silent gap between submit and first feedback. ActivityCommand
+// supplies a specific label; other commands use "executing /cmd ...". It
+// returns true when the placeholder was shown and the
 // caller must Clear it after Execute. Doc-suffix lookups (/cmd:?, /cmd:??)
 // and not-found parses are instant; only actual execution gets the
 // placeholder.
@@ -433,8 +440,12 @@ func (a *App) beginCommandPlaceholder(result *core.RouteResult, trimmed string) 
 	if result.Command == nil || result.DocLevel != core.DocSuffixNone || subs.statusMsg == nil {
 		return false
 	}
+	label := core.ActivityHintOf(result.Command, result.Args)
+	if label == "" {
+		label = fmt.Sprintf("executing %s ...", trimmed)
+	}
 	subs.statusMsg.Reset()
-	subs.statusMsg.Show(fmt.Sprintf("executing %s ...", trimmed))
+	subs.statusMsg.Show(label)
 	subs.tuiEngine.RequestRender()
 	return true
 }

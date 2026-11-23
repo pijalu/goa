@@ -258,6 +258,9 @@ func (a *App) handleEscape() {
 	// result before the interrupt sequence below tears the turn down. No-op
 	// (returns false) when no request is pending.
 	a.cancelPendingMainInput()
+	if a.commandCancel != nil {
+		a.commandCancel()
+	}
 	if subs.agentMgr != nil {
 		subs.agentMgr.CancelTurn("user_interrupt", "Escape pressed")
 		// ESC is a hard stop (S1): input queued as steering mid-turn

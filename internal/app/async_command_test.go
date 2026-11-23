@@ -5,15 +5,62 @@
 package app
 
 import (
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/commands"
+	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/tui"
 )
+
+var asyncCommandProviderCounter atomic.Uint64
+
+// stalledCompactionProvider holds the summarize stream open until the test
+// releases it, making the in-flight synchronous spinner observable.
+type stalledCompactionProvider struct {
+	api         provider.Api
+	started     chan struct{}
+	release     chan struct{}
+	startOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func newStalledCompactionProvider() *stalledCompactionProvider {
+	return &stalledCompactionProvider{
+		api:     provider.Api(fmt.Sprintf("app-compress-sync-%d", asyncCommandProviderCounter.Add(1))),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (p *stalledCompactionProvider) API() provider.Api { return p.api }
+
+func (p *stalledCompactionProvider) Stream(_ provider.Model, _ provider.Context, _ provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	stream := provider.NewAssistantMessageEventStream(8)
+	p.startOnce.Do(func() { close(p.started) })
+	go func() {
+		<-p.release
+		stream.Push(provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "checkpoint"})
+		stream.End(&provider.AssistantMessage{StopReason: provider.StopReasonEndTurn})
+	}()
+	return stream, nil
+}
+
+func (p *stalledCompactionProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return p.Stream(model, ctx, provider.BuildSimpleOptions(model, opts))
+}
+
+func (p *stalledCompactionProvider) releaseStream() {
+	p.releaseOnce.Do(func() { close(p.release) })
+}
 
 // testAsyncCommand implements core.Command + core.AsyncCommand. It blocks in
 // Run until the test closes release, so the mid-execution state (spinner,
@@ -38,7 +85,11 @@ func (c *testAsyncCommand) Run(ctx core.Context, args []string) error {
 		c.spinnerText = c.status.Text()
 	}
 	close(c.started)
-	<-c.release
+	select {
+	case <-c.release:
+	case <-ctx.GoContext().Done():
+		return ctx.GoContext().Err()
+	}
 	ctx.Writef("async result")
 	return nil
 }
@@ -301,6 +352,67 @@ func (c *renamedAsyncCommand) Run(ctx core.Context, args []string) error {
 	return c.inner.Run(ctx, args)
 }
 
+// TestCompressCommand_SynchronousGlobalSpinner pins the command contract while
+// summarize is stalled: compression stays on the synchronous command path,
+// never sets the async busy gate, and exposes a visible strategy-specific
+// StatusMsg for the entire provider call.
+func TestCompressCommand_SynchronousGlobalSpinner(t *testing.T) {
+	p := newStalledCompactionProvider()
+	provider.RegisterApiProvider(p)
+	t.Cleanup(p.releaseStream)
+
+	agent := agentic.NewAgent(agentic.Config{
+		Model: provider.Model{ID: "compress-sync-test", Api: p.API()},
+	})
+	agent.SetHistory([]agentic.Message{
+		{Type: agentic.Content, Role: agentic.User, Content: "earlier question"},
+		{Type: agentic.Content, Role: agentic.Assistant, Content: "earlier answer"},
+	})
+	am := core.NewAgentManager(&config.Config{}, nil, nil, nil, event.MakeBus(16, 16, 16, 16), "")
+	am.SetActiveAgentForTest(agent)
+
+	a, engine, status, chat := newAsyncTestApp(t, &commands.CompressCommand{})
+	// Stop the loops so this test can invoke the synchronous path directly and
+	// inspect StatusMsg without racing its commandLoop-owned state.
+	engine.Stop()
+	a.subs.agentMgr = am
+
+	done := make(chan struct{})
+	go func() {
+		a.handleSlashCommand("/compress:summarize")
+		close(done)
+	}()
+	select {
+	case <-p.started:
+	case <-time.After(time.Second):
+		p.releaseStream()
+		t.Fatal("summarize provider stream did not start")
+	}
+
+	if a.commandBusy {
+		t.Error("compression must not enable the async command busy/steering gate")
+	}
+	if !status.IsVisible() {
+		t.Error("compression must show the global status spinner")
+	}
+	if got := status.Text(); got != "Compressing (summarize)…" {
+		t.Errorf("compression spinner text = %q, want %q", got, "Compressing (summarize)…")
+	}
+	if containsRendered(chat, "already running") {
+		t.Error("synchronous compression must not emit the async busy error")
+	}
+
+	p.releaseStream()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("synchronous compression did not finish after releasing its provider")
+	}
+	if status.IsVisible() {
+		t.Errorf("compression spinner remained visible after completion: %q", status.Text())
+	}
+}
+
 // TestAsyncCommand_DocSuffixBypassesAsync verifies that /cmd:? and /cmd:??
 // (doc lookups) never trigger the async path, even for async commands.
 func TestAsyncCommand_DocSuffixBypassesAsync(t *testing.T) {
@@ -429,8 +541,8 @@ func TestSyncCommand_NotAffectedByAsyncPath(t *testing.T) {
 }
 
 // TestAsyncCommand_SteeringRestoredOnEscape verifies that pressing ESC during
-// an async command restores enqueued steering to the input line (the command
-// itself continues and completes normally).
+// an async command restores enqueued steering to the input line and cancels
+// the command invocation.
 func TestAsyncCommand_SteeringRestoredOnEscape(t *testing.T) {
 	cmd := &testAsyncCommand{
 		started: make(chan struct{}),
@@ -474,14 +586,7 @@ func TestAsyncCommand_SteeringRestoredOnEscape(t *testing.T) {
 		t.Errorf("input = %q after ESC, want it to contain restored steering text", restored)
 	}
 
-	// Command still busy (ESC doesn't cancel async commands).
-	var busy bool
-	engine.ApplySync(func() { busy = a.commandBusy })
-	if !busy {
-		t.Error("commandBusy should still be true after ESC — ESC restores steering but does not cancel the command")
-	}
-
-	// Complete the command.
-	close(cmd.release)
-	waitFor(t, engine, time.Second, func() bool { return !a.commandBusy }, "expected command to complete after release")
+	waitFor(t, engine, time.Second, func() bool {
+		return !a.commandBusy
+	}, "expected Esc to cancel the async command and release its busy gate")
 }
