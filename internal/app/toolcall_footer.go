@@ -73,12 +73,9 @@ func (a *App) toolCallProgressLabel() string {
 	return "Tool calling"
 }
 
-// clearToolBusy resets the status after a tool result.
+// clearToolBusy resets model busy state after a tool result without replacing
+// the existing status while the updated context is sent back to the model.
 func (a *App) clearToolBusy() {
-	// After a tool result the harness sends the updated context back to the
-	// LLM. Show "Sending request..." so the UI does not prematurely report
-	// "Answering..." while the model is still being prepared.
-	a.subs.statusMsg.Show("Sending request...")
 	a.subs.footer.SetModelBusy(false)
 }
 

@@ -53,6 +53,10 @@ func (c *CompressCommand) AsyncHint(args []string) string {
 	return label + "…"
 }
 
+// SilentAsync keeps compression results in the compaction bubble without
+// replacing status-bar or footer activity while the command runs.
+func (c *CompressCommand) SilentAsync() {}
+
 func (c *CompressCommand) Run(ctx core.Context, args []string) error {
 	if ctx.AgentManager == nil {
 		return fmt.Errorf("no active agent session")

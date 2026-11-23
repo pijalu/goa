@@ -238,9 +238,9 @@ func (a *App) handleSlashCommand(input string) {
 	a.recordCommandInSessionStore(result, input)
 
 	// Long-running commands (e.g. /compress:summarize) opt into async
-	// execution: Run in a background goroutine with a dedicated spinner,
-	// keeping the UI responsive and the input line live for steering. Doc
-	// suffixes (/cmd:?, /cmd:??) are instant and bypass this path.
+	// execution: Run in a background goroutine, keeping the UI responsive and
+	// the input line live for steering. Commands may show a spinner or opt into
+	// silent status handling. Doc suffixes (/cmd:?, /cmd:??) bypass this path.
 	if result.DocLevel == core.DocSuffixNone && result.Command != nil {
 		if label := core.AsyncHintOf(result.Command, result.Args); label != "" {
 			a.runAsyncCommand(result, input, trimmed, label)
@@ -272,9 +272,10 @@ func (a *App) handleSlashCommand(input string) {
 }
 
 // runAsyncCommand launches a long-running command in a background goroutine,
-// showing a dedicated spinner and keeping the input line live so the user can
-// enqueue steering until completion. On completion it clears the spinner,
-// renders the result, and delivers any enqueued steering as a follow-up agent
+// keeping the input line live so the user can enqueue steering until completion.
+// Regular async commands show a dedicated spinner; SilentAsyncCommand
+// implementations leave existing status activity untouched. On completion the
+// result is rendered and any enqueued steering is delivered as a follow-up agent
 // message. Guards against concurrent async commands: a second invocation while
 // one is running is rejected with a clear message rather than racing on shared
 // state (e.g. two concurrent compressions corrupting history).
@@ -290,11 +291,14 @@ func (a *App) runAsyncCommand(result *core.RouteResult, input, trimmed, label st
 
 	a.commandBusy = true
 
-	// Show the spinner immediately so there is no silent gap between submit
-	// and the background work becoming visible.
-	subs.statusMsg.Reset()
-	subs.statusMsg.Show(label)
-	subs.tuiEngine.RequestRender()
+	// Most async commands show a spinner immediately. Silent commands retain
+	// the busy/steering gate without changing existing status-bar activity.
+	_, silent := result.Command.(core.SilentAsyncCommand)
+	if !silent {
+		subs.statusMsg.Reset()
+		subs.statusMsg.Show(label)
+		subs.tuiEngine.RequestRender()
+	}
 
 	ctx := coreContextForCommand(subs, a)
 
@@ -314,7 +318,9 @@ func (a *App) runAsyncCommand(result *core.RouteResult, input, trimmed, label st
 
 		a.apply(func() {
 			a.commandBusy = false
-			subs.statusMsg.Clear()
+			if !silent {
+				subs.statusMsg.Clear()
+			}
 			if err != nil {
 				output = fmt.Sprintf("Error: %v", err)
 			}

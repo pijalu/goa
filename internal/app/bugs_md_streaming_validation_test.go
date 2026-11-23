@@ -372,17 +372,14 @@ func TestBugs_WriteToolStatsShowsTotal(t *testing.T) {
 	}
 }
 
-// TestBugs_ProgressClearClearsStatus validates the "stuck in
-// sending" fix: the agent's cleanup path emits EventProgress with empty text
-// on every turn exit, and the app must translate it into a status-spinner
-// clear. Previously handleProgressEvent ignored empty-text events, so the
-// clear emission was a no-op and "Sending request..." could linger.
+// TestBugs_ProgressClearClearsStatus validates the agent's cleanup path:
+// EventProgress with empty text must clear any visible generic status spinner.
 func TestBugs_ProgressClearClearsStatus(t *testing.T) {
 	sc := newUIScenario(t, 100, 24)
 
-	sc.apply(&agentic.OutputEvent{Type: agentic.EventProgress, Text: "Sending request..."})
-	if got := sc.status.Text(); got != "Sending request..." {
-		t.Fatalf("precondition: expected status 'Sending request...', got %q", got)
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventProgress, Text: "Retrying..."})
+	if got := sc.status.Text(); got != "Retrying..." {
+		t.Fatalf("precondition: expected generic progress status, got %q", got)
 	}
 
 	sc.apply(&agentic.OutputEvent{Type: agentic.EventProgress, Text: ""})

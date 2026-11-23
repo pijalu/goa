@@ -38,8 +38,7 @@ func TestSpinnerLocation(t *testing.T) {
 func TestFilmstrip_SpinnerLocation(t *testing.T) {
 	events := []*agentic.OutputEvent{
 		{Type: agentic.EventStateChange, State: agentic.StateThinking},
-		// Prompt progress is the flow that marks the footer model busy
-		// (stats.go handlePromptProgress): status line + footer frame.
+		// Prompt progress must not replace the existing activity label.
 		{Type: agentic.EventProgress, PromptProgress: &agentic.PromptProgress{Total: 1000, Processed: 100}},
 		{Type: agentic.EventContent, State: agentic.StateThinking, IsDelta: true, Text: "weighing options"},
 	}
@@ -49,8 +48,8 @@ func TestFilmstrip_SpinnerLocation(t *testing.T) {
 	for _, ev := range events {
 		chatSc.apply(ev)
 	}
-	if rendered := chatSc.filmstrip().Render(); !strings.Contains(rendered, "⬡ Processing... 10%") {
-		t.Errorf("chat mode: expected in-chat status line \"⬡ Processing... 10%%\", got:\n%s", rendered)
+	if rendered := chatSc.filmstrip().Render(); !strings.Contains(rendered, "⬡ Thinking...") {
+		t.Errorf("chat mode: expected existing in-chat thinking status to remain, got:\n%s", rendered)
 	}
 
 	// statusbar mode: no in-chat status line; footer carries the spinner frame.
@@ -62,7 +61,7 @@ func TestFilmstrip_SpinnerLocation(t *testing.T) {
 		barSc.apply(ev)
 	}
 	barRendered := barSc.filmstrip().Render()
-	if strings.Contains(barRendered, "⬡ Processing") {
+	if strings.Contains(barRendered, "⬡ Thinking") {
 		t.Errorf("statusbar mode: in-chat status line must be suppressed, got:\n%s", barRendered)
 	}
 	// The busy-indicator path stays live: Show() updates the shared spinner

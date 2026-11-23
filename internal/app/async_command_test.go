@@ -43,6 +43,10 @@ func (c *testAsyncCommand) Run(ctx core.Context, args []string) error {
 	return nil
 }
 
+type testSilentAsyncCommand struct{ *testAsyncCommand }
+
+func (c *testSilentAsyncCommand) SilentAsync() {}
+
 // testConditionalAsyncCommand opts into async only for the "slow" sub-command.
 type testConditionalAsyncCommand struct {
 	started chan struct{}
@@ -153,6 +157,38 @@ func TestAsyncCommand_RunsInBackgroundWithSpinner(t *testing.T) {
 	// Output rendered in chat.
 	if !containsRendered(chat, "async result") {
 		t.Errorf("expected chat to contain command output")
+	}
+}
+
+func TestAsyncCommand_SilentLeavesStatusUnchanged(t *testing.T) {
+	base := &testAsyncCommand{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	cmd := &testSilentAsyncCommand{testAsyncCommand: base}
+	a, engine, status, _ := newAsyncTestApp(t, cmd)
+	defer engine.Stop()
+	base.status = status
+
+	engine.ApplySync(func() {
+		status.Show("Existing status")
+		a.subs.footer.SetData(tui.FooterData{MainActivity: "Existing activity"})
+		a.handleSlashCommand("/asynccmd")
+	})
+	<-base.started
+
+	waitFor(t, engine, time.Second, func() bool { return a.commandBusy }, "expected silent command busy gate")
+	if got := status.Text(); got != "Existing status" {
+		t.Errorf("status while silent command runs = %q, want unchanged", got)
+	}
+	if got := a.subs.footer.Data().MainActivity; got != "Existing activity" {
+		t.Errorf("footer while silent command runs = %q, want unchanged", got)
+	}
+
+	close(base.release)
+	waitFor(t, engine, time.Second, func() bool { return !a.commandBusy }, "expected silent command completion")
+	if got := status.Text(); got != "Existing status" {
+		t.Errorf("status after silent command = %q, want unchanged", got)
 	}
 }
 

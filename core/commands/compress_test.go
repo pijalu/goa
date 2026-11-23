@@ -299,3 +299,10 @@ func TestCompressCommand_AsyncHint(t *testing.T) {
 		})
 	}
 }
+
+func TestCompressCommand_SilentAsync(t *testing.T) {
+	var cmd core.Command = &CompressCommand{}
+	if _, ok := cmd.(core.SilentAsyncCommand); !ok {
+		t.Fatal("compression must retain async queueing without status-bar updates")
+	}
+}

@@ -143,12 +143,15 @@ func TestUIScenario_SpinnerSurvivesMidTurnEventEnd(t *testing.T) {
 		}
 	}
 
-	wantContains := []string{"Thinking", "Tool calling", "Sending request"}
+	wantContains := []string{"Thinking", "Tool calling"}
 	joined := strings.Join(trace, "|")
 	for _, w := range wantContains {
 		if !strings.Contains(joined, w) {
 			t.Errorf("expected status trace to contain %q, got %v", w, trace)
 		}
+	}
+	if strings.Contains(joined, "Sending request") {
+		t.Errorf("sending must leave the existing status unchanged, got %v", trace)
 	}
 }
 

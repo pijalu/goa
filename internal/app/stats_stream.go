@@ -22,20 +22,22 @@ func (a *App) resetCacheBustBaseline() {
 }
 
 func (a *App) handleProgressEvent(ev *agentic.OutputEvent) {
-	// Show prompt-processing progress while waiting for the first token,
-	// or reconnection/status messages.
+	// Show reconnection and other generic progress messages. Prompt processing
+	// deliberately leaves existing status and footer activity untouched.
 	if ev.PromptProgress != nil {
-		a.setWaitingForReplyStatus(ev.PromptProgress)
 		return
 	}
 	if ev.Text != "" {
+		if ev.Text == "Sending request..." {
+			return
+		}
 		a.subs.statusMsg.Show(ev.Text)
 		a.subs.tuiEngine.RequestRender()
 		return
 	}
 	// Empty text is the agent's progress-clear signal (emitted by
 	// finishProcessing on every turn-exit path and by the stream retry
-	// logic). Without this branch the "Sending request..." spinner would
+	// logic). Without this branch a visible generic progress spinner would
 	// linger on any exit path that skips EventEnd.
 	a.subs.statusMsg.Clear()
 	a.subs.tuiEngine.RequestRender()
@@ -479,9 +481,8 @@ func (a *App) handleStateChange(ev *agentic.OutputEvent) {
 		mainActivity = ""
 		a.subs.statusMsg.Show(a.toolCallProgressLabel())
 	case agentic.StateToolResult:
-		// The harness is sending tool results back to the LLM. Keep the
-		// spinner active with the most accurate label: tool progress if
-		// more calls are still pending, otherwise "Sending request...".
+		// The harness is sending tool results back to the model. Keep any
+		// pending tool progress; otherwise leave the existing status untouched.
 		activity = ""
 		mainActivity = ""
 		if a.subs.agentMgr != nil {
@@ -490,7 +491,8 @@ func (a *App) handleStateChange(ev *agentic.OutputEvent) {
 				break
 			}
 		}
-		a.subs.statusMsg.Show("Sending request...")
+		// Sending a tool result back to the model leaves the existing status
+		// untouched. A subsequent model state will supply its own activity.
 	}
 	subs := a.subs
 	subs.footer.SetData(tui.FooterData{
@@ -586,32 +588,6 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 // (handleStreamingToolCallUpdate / findActiveToolWidget / createStreamingToolWidget
 // were folded into the ToolCallTracker, which owns widget identity for both
 // delta and final tool-call events.)
-
-func (a *App) setWaitingForReplyStatus(pp *agentic.PromptProgress) {
-	subs := a.subs
-	label := "Sending request..."
-	if pp.Total > 0 {
-		pct := pp.Processed * 100 / pp.Total
-		label = fmt.Sprintf("Processing... %d%%", pct)
-	}
-	subs.statusMsg.Show(label)
-	if pp.Total > 0 {
-		subs.footer.SetData(tui.FooterData{
-			Workdir:                subs.projectDir,
-			Model:                  activeModelDisplay(subs),
-			Profile:                string(subs.effectiveModeState().Major),
-			Mode:                   string(subs.effectiveModeState().Autonomy),
-			Activity:               "wait",
-			MainActivity:           label,
-			CompanionModel:         companionModelDisplay(subs),
-			Provider:               sessionProviderID(subs),
-			ThinkingLevel:          mainThinkingLevel(subs),
-			CompanionThinkingLevel: companionThinkingLevel(subs),
-		})
-		subs.footer.SetModelBusy(true)
-	}
-	subs.tuiEngine.RequestRender()
-}
 
 // cacheBustDropToleranceTokens is the wobble absorbed before a drop in cache
 // reads counts as a cache bust: providers report cached tokens at block

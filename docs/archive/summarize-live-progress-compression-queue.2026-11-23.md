@@ -4,6 +4,14 @@
 
 Closed 2026-11-23. Moved from `bugs.md`; fixed in the associated commit.
 
+> Follow-up UX correction: summarize and other compression passes no longer
+> update the status bar or footer while sending, processing, or compacting.
+> `EventCompactionProgress` remains available as SDK telemetry, but the TUI
+> consumes it without displaying it or adding it to session token totals.
+> Compression uses the async busy/steering queue through `SilentAsyncCommand`
+> without a spinner. The compaction bubble is the sole completion activity.
+> The UI-rendering steps below record the superseded initial implementation.
+
 ## Observed and expected behavior
 
 `/compress:summarize` drained its provider stream without observer updates, so

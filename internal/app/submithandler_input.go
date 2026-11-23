@@ -348,7 +348,6 @@ func (a *App) sendToAgentWithImages(input string, images []string) {
 		a.warnIfImagesUnsupported(images)
 	}
 
-	modelName := a.resolveModelName()
 	input = a.expandSkillInput(input)
 	// Expand @file references to absolute paths so the model can read them.
 	input = a.expandAtRefs(input)
@@ -364,7 +363,6 @@ func (a *App) sendToAgentWithImages(input string, images []string) {
 		return
 	}
 
-	a.showSendingStatus(modelName)
 	if err := subs.agentMgr.SendUserInputWithImages(input, images); err != nil {
 		a.handleSendError(err)
 	}
@@ -525,16 +523,6 @@ func (a *App) markSessionActive() {
 	a.sessionActive = true
 }
 
-func (a *App) resolveModelName() string {
-	subs := a.subs
-	providerCfg, _ := subs.providerMgr.Active()
-	modelName := subs.cfg.ActiveModel
-	if providerCfg != nil {
-		modelName = subs.providerMgr.ResolveModelName(*providerCfg, subs.cfg.ActiveModel)
-	}
-	return modelName
-}
-
 func (a *App) expandSkillInput(input string) string {
 	subs := a.subs
 	if !strings.HasPrefix(input, "/skill:") || subs.skillRegistry == nil {
@@ -551,27 +539,6 @@ func (a *App) expandSkillInput(input string) string {
 		return expanded
 	}
 	return input
-}
-
-func (a *App) showSendingStatus(modelName string) {
-	subs := a.subs
-	modelStr := modelDisplay(subs.cfg.ActiveProvider, modelName)
-	subs.statusMsg.Reset()
-	subs.statusMsg.Show("Sending request...")
-	subs.footer.SetData(tui.FooterData{
-		Workdir:                subs.projectDir,
-		Model:                  modelStr,
-		Profile:                string(subs.effectiveModeState().Major),
-		Mode:                   string(subs.effectiveModeState().Autonomy),
-		Activity:               "send",
-		MainActivity:           "Sending request...",
-		CompanionModel:         companionModelDisplay(subs),
-		Provider:               sessionProviderID(subs),
-		ThinkingLevel:          mainThinkingLevel(subs),
-		CompanionThinkingLevel: companionThinkingLevel(subs),
-	})
-	subs.footer.SetModelBusy(true)
-	subs.tuiEngine.RequestRender()
 }
 
 func (a *App) handleSendError(err error) {

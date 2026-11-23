@@ -19,41 +19,24 @@ import (
 	goaltui "github.com/pijalu/goa/tui/goal"
 )
 
-func TestShowSendingStatus_SetsSendingLabel(t *testing.T) {
-	app := New(testSubsystems())
-	app.subs.tuiEngine = tui.NewTUI(tui.NewProcessTerminal())
-	app.showSendingStatus("lm-qwen")
+func TestHandleProgressEvent_PromptProgressLeavesStatusUnchanged(t *testing.T) {
+	for _, progress := range []*agentic.PromptProgress{
+		{},
+		{Total: 100, Processed: 42},
+	} {
+		app := New(testSubsystems())
+		app.subs.tuiEngine = tui.NewTUI(tui.NewProcessTerminal())
+		app.subs.statusMsg.Show("Existing status")
+		app.subs.footer.SetData(tui.FooterData{MainActivity: "Existing activity"})
 
-	if app.subs.statusMsg.Text() != "Sending request..." {
-		t.Errorf("status text = %q, want %q", app.subs.statusMsg.Text(), "Sending request...")
-	}
-	if app.subs.footer.Data().MainActivity != "Sending request..." {
-		t.Errorf("footer MainActivity = %q, want %q", app.subs.footer.Data().MainActivity, "Sending request...")
-	}
-}
+		app.handleProgressEvent(&agentic.OutputEvent{Type: agentic.EventProgress, PromptProgress: progress})
 
-func TestSetWaitingForReplyStatus_ShowsSending(t *testing.T) {
-	app := New(testSubsystems())
-	app.subs.tuiEngine = tui.NewTUI(tui.NewProcessTerminal())
-	app.setWaitingForReplyStatus(&agentic.PromptProgress{})
-
-	want := "Sending request..."
-	if app.subs.statusMsg.Text() != want {
-		t.Errorf("status text = %q, want %q", app.subs.statusMsg.Text(), want)
-	}
-}
-
-func TestSetWaitingForReplyStatus_ShowsProgress(t *testing.T) {
-	app := New(testSubsystems())
-	app.subs.tuiEngine = tui.NewTUI(tui.NewProcessTerminal())
-	app.setWaitingForReplyStatus(&agentic.PromptProgress{Total: 100, Processed: 42})
-
-	want := "Processing... 42%"
-	if app.subs.statusMsg.Text() != want {
-		t.Errorf("status text = %q, want %q", app.subs.statusMsg.Text(), want)
-	}
-	if app.subs.footer.Data().MainActivity != want {
-		t.Errorf("footer MainActivity = %q, want %q", app.subs.footer.Data().MainActivity, want)
+		if got := app.subs.statusMsg.Text(); got != "Existing status" {
+			t.Errorf("status text = %q, want unchanged", got)
+		}
+		if got := app.subs.footer.Data().MainActivity; got != "Existing activity" {
+			t.Errorf("footer MainActivity = %q, want unchanged", got)
+		}
 	}
 }
 
@@ -84,19 +67,42 @@ func TestHandleStateChange_ThinkingSetsActivity(t *testing.T) {
 	}
 }
 
-func TestClearToolBusy_ShowsSendingRequest(t *testing.T) {
+func TestClearToolBusy_DoesNotShowSendingRequest(t *testing.T) {
 	app := New(testSubsystems())
 	app.subs.statusMsg = tui.NewStatusMsg()
 	app.subs.footer = tui.NewFooter()
+	app.subs.statusMsg.Show("Tool calling")
 	app.subs.footer.SetModelBusy(true)
 
 	app.clearToolBusy()
 
-	if app.subs.statusMsg.Text() != "Sending request..." {
-		t.Errorf("status text = %q, want %q", app.subs.statusMsg.Text(), "Sending request...")
+	if got := app.subs.statusMsg.Text(); got != "Tool calling" {
+		t.Errorf("status text = %q, want existing tool status unchanged", got)
 	}
 	if app.subs.footer.Data().ModelBusy {
 		t.Error("expected model busy cleared after clearToolBusy")
+	}
+}
+
+func TestHandleProgressEvent_SendingLeavesStatusUnchanged(t *testing.T) {
+	app := New(testSubsystems())
+	app.subs.statusMsg.Show("Existing status")
+
+	app.handleProgressEvent(&agentic.OutputEvent{Type: agentic.EventProgress, Text: "Sending request..."})
+
+	if got := app.subs.statusMsg.Text(); got != "Existing status" {
+		t.Errorf("status text = %q, want unchanged", got)
+	}
+}
+
+func TestHandleStateChange_ToolResultDoesNotShowSendingRequest(t *testing.T) {
+	app := New(testSubsystems())
+	app.subs.statusMsg.Show("Tool calling")
+
+	app.handleStateChange(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateToolResult})
+
+	if got := app.subs.statusMsg.Text(); got != "Tool calling" {
+		t.Errorf("status text = %q, want existing tool status unchanged", got)
 	}
 }
 

@@ -44,20 +44,24 @@ type InternalCommand interface {
 // AsyncCommand is an optional interface commands implement when Run may block
 // for a long time (e.g. it calls an LLM). When AsyncHint returns a non-empty
 // label, the host runs Run in a background goroutine instead of on the UI
-// event loop, shows a dedicated spinner with that label, and keeps the input
-// line live so the user can enqueue steering until the command completes. The
-// enqueued text is delivered as a follow-up agent message once the command
-// finishes.
+// event loop and keeps the input line live so the user can enqueue steering
+// until the command completes. By default the label is shown as a dedicated
+// spinner. The enqueued text is delivered as a follow-up agent message once
+// the command finishes.
 //
 // The args parameter lets a command opt in per-invocation: returning "" runs
-// synchronously as usual. For example, /compress:summarize returns a spinner
-// label (it calls the LLM), while /compress:tool_elision returns "" (in-memory,
-// instant).
+// synchronously as usual.
 //
 // Doc-suffix lookups (/cmd:?, /cmd:??) bypass the async path and are always
 // synchronous.
 type AsyncCommand interface {
 	AsyncHint(args []string) string
+}
+
+// SilentAsyncCommand is an optional marker for async commands that must retain
+// the busy/steering queue without changing the status bar or footer.
+type SilentAsyncCommand interface {
+	SilentAsync()
 }
 
 // IsInternal reports whether a command should be hidden from the chat/LLM.
@@ -67,9 +71,9 @@ func IsInternal(cmd Command) bool {
 	return ok && ic.IsInternal()
 }
 
-// AsyncHintOf returns the spinner label for the command if it implements
-// AsyncCommand and opts in for the given args, otherwise "". It is the single
-// place the host asks "should I run this asynchronously?".
+// AsyncHintOf returns the async label for the command if it implements
+// AsyncCommand and opts in for the given args, otherwise "". SilentAsyncCommand
+// implementations use the same async path without displaying this label.
 func AsyncHintOf(cmd Command, args []string) string {
 	ac, ok := cmd.(AsyncCommand)
 	if !ok {

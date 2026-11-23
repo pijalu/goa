@@ -432,7 +432,7 @@ func (m *configMenu) openSpinnerLocation() { m.open(m.settingSpinnerLocation) }
 func (m *configMenu) settingSpinnerLocation() {
 	m.current = m.settingSpinnerLocation
 	items := []tui.SelectorItem{
-		{Value: "chat", Label: "chat", Description: "in-chat \"Sending request...\" spinner line (default)"},
+		{Value: "chat", Label: "chat", Description: "in-chat activity spinner line (default)"},
 		{Value: "statusbar", Label: "statusbar", Description: "animated frame next to the model in the status bar only"},
 	}
 	current := m.ctx.Config.TUI.SpinnerLocation
