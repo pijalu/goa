@@ -206,10 +206,7 @@ func alignOneMessage(t *testing.T, round string, i, j int, pm provider.Message, 
 		return 1, false // unchanged, in order
 	}
 	if adv, el, ok := elideCall(t, round, pm, nm, pk, nk, pTool, pCallID, elidedCalls); ok {
-		if j+1 < len(next) && assistantContentPreservedAfterElision(pm, next[j+1]) {
-			adv = 2
-		}
-		return adv, el
+		return advanceAfterCallElision(pm, next, j, adv), el
 	}
 	if adv, el, ok := elideResult(t, round, pk, nk, pCallID, pResElided, nm, elidedResults); ok {
 		return adv, el
@@ -219,6 +216,15 @@ func alignOneMessage(t *testing.T, round string, i, j int, pm provider.Message, 
 	}
 	t.Errorf("%s: non-elision mutation at prev idx %d\n  prev: %s\n  next: %s", round, i, wire(pm), wire(nm))
 	return 1, false // resync to keep subsequent errors meaningful
+}
+
+// advanceAfterCallElision also consumes a following assistant message when it
+// preserves the non-tool-call content of the elided message.
+func advanceAfterCallElision(pm provider.Message, next []provider.Message, j, advance int) int {
+	if j+1 < len(next) && assistantContentPreservedAfterElision(pm, next[j+1]) {
+		return 2
+	}
+	return advance
 }
 
 // elideCall handles an assistant call elided into its note (exactly once).
