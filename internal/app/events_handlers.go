@@ -115,6 +115,16 @@ func (a *App) handleWorkflowProgressEvent(e *event.WorkflowProgress) {
 	a.subs.footer.SetData(data)
 }
 
+func (a *App) handleSessionTodoChange(change *event.SessionTodoChange) {
+	if change == nil || a.subs.footer == nil {
+		return
+	}
+	a.subs.footer.SetSessionTodoCount(change.Open)
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.RequestRender()
+	}
+}
+
 func (a *App) handleGoalUpdate(update *event.GoalUpdate) {
 	if update == nil || a.subs.chat == nil {
 		return

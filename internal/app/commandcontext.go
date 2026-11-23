@@ -320,7 +320,7 @@ func runtimeToolBuilders(subs *subsystems) map[string]func() (agentic.Tool, bool
 			if subs.goalManager == nil {
 				return nil, false
 			}
-			return &tools.TodoListTool{Mode: subs.goalManager.Mode}, true
+			return newTodoListTool(subs.goalManager, subs.events), true
 		},
 	}
 }

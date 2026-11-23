@@ -121,6 +121,8 @@ func (a *App) handleFooterEvent(ev event.FooterEvent) {
 		a.handleWorkflowStatusEvent(ev.WorkflowStatus)
 	case ev.WorkflowProgress != nil:
 		a.handleWorkflowProgressEvent(ev.WorkflowProgress)
+	case ev.SessionTodoChange != nil:
+		a.handleSessionTodoChange(ev.SessionTodoChange)
 	case ev.MinorMode != nil:
 		if a.subs.footer != nil {
 			a.subs.footer.SetMinorMode(ev.MinorMode.Mode)

@@ -166,6 +166,8 @@ type FooterEvent struct {
 	WorkflowProgress *WorkflowProgress
 	// TaskStatusChange carries a task status change notification.
 	TaskStatusChange *TaskStatusChange
+	// SessionTodoChange carries the open count after a session-list mutation.
+	SessionTodoChange *SessionTodoChange
 }
 
 // ModeChange is emitted when the agent's mode changes.
@@ -215,6 +217,12 @@ type TaskStatusChange struct {
 	Status      string
 	Index       int
 	Total       int
+}
+
+// SessionTodoChange is emitted after the standalone todo_list session list
+// changes. Open counts pending and in-progress items; done items are closed.
+type SessionTodoChange struct {
+	Open int
 }
 
 // TaskUpdate is emitted when a background task changes status.

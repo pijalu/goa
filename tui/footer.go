@@ -38,13 +38,17 @@ func (f *Footer) SetMinorMode(mode string) { f.data.MinorMode = mode }
 // SetGoalStatus explicitly sets or clears the goal status, goal count and
 // pending-todo count, bypassing SetData's preservation logic — the goal
 // equivalent of SetMinorMode. updateGoalFooter is the sole caller; pass an
-// empty status to clear the ◈ goal-count marker and ⬩ todo markers when no
-// goal exists.
+// empty status to clear the ◈ goal-count marker and goal-linked ⬩ markers;
+// any standalone session Todo markers remain independent.
 func (f *Footer) SetGoalStatus(status string, goalCount, pendingTodos int) {
 	f.data.GoalStatus = status
 	f.data.GoalCount = goalCount
 	f.data.GoalPendingTodos = pendingTodos
 }
+
+// SetSessionTodoCount sets the open count for the session-only todo list.
+// Goal snapshots take precedence while a goal is active.
+func (f *Footer) SetSessionTodoCount(open int) { f.data.SessionPendingTodos = open }
 
 // SetTeam explicitly sets or clears the team badge (name + drift marker),
 // bypassing SetData's preservation logic — the team equivalent of

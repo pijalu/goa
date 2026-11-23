@@ -714,29 +714,29 @@ func formatFooterLineAt(stats, model, provider, thinking, activity string, busy,
 	return b.String()
 }
 
-// goalProfileLabel renders the line-1 right-side label: while a goal is
-// ACTIVE, a ◈ goal-count marker prefixes the profile label (one ◈ per goal
-// up to 3, then a numeric prefix — "◈", "◈◈◈", "25◈"), and one ⬩ per pending
-// todo follows it (up to 3, then +(n-3)) — ◈◈◈ coding-posture ⬩⬩⬩+2 │ YOLO.
-// The markers are the ONLY goal signal in the footer: objective, status and
-// todo detail live in the dedicated goal bubble chrome, so no goal detail is
-// duplicated here. The ◈ decoration marks an active goal ONLY: a
-// paused/blocked goal must not read as "goal running". Without an active
-// goal the label is the bare profile(minor) text.
+// goalProfileLabel renders the line-1 right-side label. While a goal is
+// ACTIVE, a ◈ goal-count marker prefixes the profile and the goal's open-Todo
+// markers follow it. With no active goal, standalone session Todo markers
+// follow the bare profile instead. Counts render up to three glyphs, then an
+// overflow suffix — ◈◈◈ coding-posture ⬩⬩⬩+2 │ YOLO. Objective, status and
+// Todo titles remain in their dedicated UI rather than duplicating detail in
+// the footer. Paused/blocked goals never carry the active ◈ decoration.
 func (f *Footer) goalProfileLabel(fg string) string {
 	label := f.data.Profile
 	if f.data.MinorMode != "" {
 		label = fmt.Sprintf("%s(%s)", f.data.Profile, f.data.MinorMode)
 	}
-	if f.data.GoalStatus != "active" {
-		return label
+	pending := f.data.SessionPendingTodos
+	marked := label
+	if f.data.GoalStatus == "active" {
+		sign := goalCountMarkers(f.data.GoalCount)
+		if sign == "" {
+			sign = "◈" // an active goal without a recorded count still marks
+		}
+		marked = ansi.Fg(TheTheme.ColorHex("tool_success")) + sign + ansi.Reset + fg + " " + label
+		pending = f.data.GoalPendingTodos
 	}
-	sign := goalCountMarkers(f.data.GoalCount)
-	if sign == "" {
-		sign = "◈" // an active goal without a recorded count still marks
-	}
-	marked := ansi.Fg(TheTheme.ColorHex("tool_success")) + sign + ansi.Reset + fg + " " + label
-	if todos := goalTodoMarkers(f.data.GoalPendingTodos); todos != "" {
+	if todos := goalTodoMarkers(pending); todos != "" {
 		marked += " " + todos
 	}
 	return marked

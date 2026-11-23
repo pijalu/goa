@@ -374,7 +374,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	// linked to the goal's own todo list while a goal is active and falls back
 	// to its session list otherwise; tools.enabled.todo gates registration.
 	if cfg.Tools.Enabled.Todo {
-		subs.toolRegistry.Register(&tools.TodoListTool{Mode: goalManager.Mode})
+		subs.toolRegistry.Register(newTodoListTool(goalManager, agentBundle.eventBus))
 	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	registerSessionQueryTools(subs.toolRegistry, agentBundle.sessionStore, cfg)

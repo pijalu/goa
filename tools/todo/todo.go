@@ -30,6 +30,9 @@ type TodoListTool struct {
 	agentic.BaseTool
 	// Mode links the tool to the active goal's todo list. Nil = session list only.
 	Mode *goal.GoalMode
+	// OnSessionChange runs after a session-list mutation with its open-item
+	// count. Goal-linked mutations publish through GoalMode instead.
+	OnSessionChange func(openTodos int)
 
 	mu     sync.RWMutex
 	items  []TodoItem
@@ -162,10 +165,12 @@ func (t *TodoListTool) add(desc string) (string, error) {
 		return t.addGoalTodo(desc)
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.nextID++
 	id := fmt.Sprintf("todo-%d", t.nextID)
 	t.items = append(t.items, TodoItem{ID: id, Description: desc, Status: statusPending})
+	open := countOpenSessionTodos(t.items)
+	t.mu.Unlock()
+	t.notifySessionChange(open)
 	return fmt.Sprintf("[todo_list] Added %s: %s", id, desc), nil
 }
 
@@ -177,15 +182,19 @@ func (t *TodoListTool) update(id, status string) (string, error) {
 		return t.updateGoalTodo(id, status)
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	for i := range t.items {
 		if t.items[i].ID == id {
 			if status != "" {
 				t.items[i].Status = status
 			}
-			return fmt.Sprintf("[todo_list] Updated %s (%s)", id, t.items[i].Status), nil
+			updated := t.items[i].Status
+			open := countOpenSessionTodos(t.items)
+			t.mu.Unlock()
+			t.notifySessionChange(open)
+			return fmt.Sprintf("[todo_list] Updated %s (%s)", id, updated), nil
 		}
 	}
+	t.mu.Unlock()
 	return "", &internal.ToolError{Tool: "todo_list", Type: "not_found", Detail: fmt.Sprintf("todo %q not found", id), HintText: "Use list to see available ids."}
 }
 
@@ -199,13 +208,16 @@ func (t *TodoListTool) remove(id string) (string, error) {
 			HintText: "Mark the item done instead, or let it close with the goal."}
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	for i, item := range t.items {
 		if item.ID == id {
 			t.items = append(t.items[:i], t.items[i+1:]...)
+			open := countOpenSessionTodos(t.items)
+			t.mu.Unlock()
+			t.notifySessionChange(open)
 			return fmt.Sprintf("[todo_list] Removed %s", id), nil
 		}
 	}
+	t.mu.Unlock()
 	return "", &internal.ToolError{Tool: "todo_list", Type: "not_found", Detail: fmt.Sprintf("todo %q not found", id), HintText: "Use list to see available ids."}
 }
 
@@ -236,9 +248,26 @@ func (t *TodoListTool) clear() (string, error) {
 			HintText: "Goal todos close with the goal; mark items done instead."}
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.items = nil
+	t.mu.Unlock()
+	t.notifySessionChange(0)
 	return "[todo_list] Cleared all todos", nil
+}
+
+func countOpenSessionTodos(items []TodoItem) int {
+	open := 0
+	for _, item := range items {
+		if item.Status != statusDone {
+			open++
+		}
+	}
+	return open
+}
+
+func (t *TodoListTool) notifySessionChange(open int) {
+	if t.OnSessionChange != nil {
+		t.OnSessionChange(open)
+	}
 }
 
 // Items returns a copy of the current todo items.

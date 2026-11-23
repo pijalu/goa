@@ -305,6 +305,22 @@ func goalCreateGate(cfg *config.Config, opts RuntimeOptions) func() bool {
 	return func() bool { return cfg.Tools.Enabled.Goal || opts.Goal }
 }
 
+// newTodoListTool wires session-list mutations to the footer without coupling
+// the tool to application events. Goal-linked mutations continue to flow
+// through GoalMode's lossless snapshot publisher.
+func newTodoListTool(manager *core.GoalManager, bus *event.Bus) *tools.TodoListTool {
+	tool := &tools.TodoListTool{}
+	if manager != nil {
+		tool.Mode = manager.Mode
+	}
+	tool.OnSessionChange = func(open int) {
+		if bus != nil {
+			bus.Footer <- event.FooterEvent{SessionTodoChange: &event.SessionTodoChange{Open: open}}
+		}
+	}
+	return tool
+}
+
 func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn func() bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) {
 	toolRegistry.Register(newGoalTool(manager, createFlagOn, autoUnblock, freshContextDefault, verifyTimeout))
 }

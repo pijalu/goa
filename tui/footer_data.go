@@ -54,10 +54,11 @@ type FooterData struct {
 	ActiveAgentModel    string
 	ActiveAgentRole     string // role label ("coder", "companion", …) for color-coding
 
-	GoalStatus         string // "active", "paused", "blocked", or empty when no goal; drives only the ◈ marker (goal detail lives in the goal bubble)
-	GoalCount          int    // total goals: 1 current + queued; drives the ◈ goal-count sign (1 → "◈", 3 → "◈◈◈", 25 → "25◈")
-	GoalPendingTodos   int    // count of not-done todos on the active goal; drives the ⬩ markers next to the mode
-	OrchestrationStats string // per-model orchestration stats rendered as an extra footer line
+	GoalStatus          string // "active", "paused", "blocked", or empty when no goal; drives only the ◈ marker (goal detail lives in the goal bubble)
+	GoalCount           int    // total goals: 1 current + queued; drives the ◈ goal-count sign (1 → "◈", 3 → "◈◈◈", 25 → "25◈")
+	GoalPendingTodos    int    // count of not-done todos on the active goal; drives the ⬩ markers next to the mode
+	SessionPendingTodos int    // open standalone todo_list items; rendered only while no goal is active
+	OrchestrationStats  string // per-model orchestration stats rendered as an extra footer line
 	// AgentTabStats is the ACTIVE multi-agent tab's stat line (T5), rendered
 	// as one extra footer line below the chrome. Written ONLY through
 	// Footer.SetAgentStats (the sole writer, mirroring SetGoalStatus) so
@@ -99,7 +100,7 @@ type FooterSegment struct {
 // context/quota figure is never dropped. The model identity (tier 8) is
 // preserved by ellipsizing the model name before anything at tier 8 is removed.
 const (
-	FooterTierHelp = 0 // /help hint and model-row steering hint — first casualty
+	FooterTierHelp     = 0 // /help hint and model-row steering hint — first casualty
 	FooterTierAmount   = 1 // $0.6259
 	FooterTierProvider = 2 // (opencode-go)
 	FooterTierTokens   = 3 // ↑291.6K ↓130.4K
@@ -139,6 +140,7 @@ func preserveFooterData(prev, data FooterData) FooterData {
 	data = preserveFooterModeAndProfile(prev, data)
 	data = preserveFooterPluginSegments(prev, data)
 	data = preserveFooterGoal(prev, data)
+	data.SessionPendingTodos = prev.SessionPendingTodos
 	data = preserveFooterTeam(prev, data)
 	data = preserveFooterAgentStats(prev, data)
 	data = preserveFooterActiveAgent(prev, data)
