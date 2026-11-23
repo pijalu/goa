@@ -10,6 +10,40 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
+// TestRegistry_OpenAICodexSparkSurvivesCatalogRotation pins the Codex-supported
+// model whose OpenAI catalog entry was removed by models.dev on 2026-11-23.
+// The curated entry must keep both picker visibility and model metadata intact.
+func TestRegistry_OpenAICodexSparkSurvivesCatalogRotation(t *testing.T) {
+	const id = "gpt-5.3-codex-spark"
+	m := GetModelForProvider(provider.ProviderOpenAI, id)
+	if m == nil {
+		t.Fatalf("GetModelForProvider(openai, %q) returned nil", id)
+	}
+	if m.Provider != provider.ProviderOpenAI {
+		t.Errorf("Provider = %q, want openai", m.Provider)
+	}
+	if !m.Reasoning {
+		t.Error("Reasoning = false, want true")
+	}
+	if m.ContextWindow != 128000 || m.MaxTokens != 32000 {
+		t.Errorf("limits = (%d, %d), want (128000, 32000)", m.ContextWindow, m.MaxTokens)
+	}
+	if got := m.ThinkingLevelMap[provider.ThinkingXHigh]; got != "xhigh" {
+		t.Errorf("ThinkingLevelMap[xhigh] = %q, want xhigh", got)
+	}
+
+	found := false
+	for _, candidate := range GetModels(provider.ProviderOpenAI) {
+		if candidate.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("GetModels(openai) omitted %q", id)
+	}
+}
+
 // IsCuratedOverride is the wire-format probe's pin signal: any model covered
 // by a hand-maintained override (exact ID or prefix) is "curated" and must
 // never be probed, because the override authoritatively chose its wire API.

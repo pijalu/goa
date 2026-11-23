@@ -65,6 +65,26 @@ models:
       input: 1.1e-06
       output: 4.4e-06
     input_types: [text]
+  # Codex subscription-only model: models.dev removed its OpenAI catalog entry
+  # on 2026-11-23, but chatgpt.com/backend-api still serves it. Keep the exact
+  # override so catalog regeneration cannot hide it from the Codex picker.
+  # API and base_url stay provider-controlled; these are model-intrinsic metadata.
+  - id: "gpt-5.3-codex-spark"
+    provider: openai
+    name: "GPT-5.3 Codex Spark"
+    reasoning: true
+    context_window: 128000
+    max_tokens: 32000
+    thinking_level_map:
+      low: "low"
+      medium: "medium"
+      high: "high"
+      xhigh: "xhigh"
+    cost:
+      input: 1.75e-06
+      output: 1.4e-05
+      cache_read: 1.75e-07
+    input_types: [text, image, pdf]
   - id: "claude-sonnet-4-20250514"
     provider: anthropic
     api: anthropic-messages
