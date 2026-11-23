@@ -37,9 +37,9 @@ func (c *CompressCommand) CompleteArgs(_ core.Context, prefix string) []core.Arg
 	return out
 }
 
-// ActivityHint implements core.ActivityCommand. Compression stays on the
-// synchronous command path; this label customizes its global status spinner.
-func (c *CompressCommand) ActivityHint(args []string) string {
+// AsyncHint implements core.AsyncCommand. Compression may wait on a provider,
+// so it runs off the TUI command loop and shows a global status spinner.
+func (c *CompressCommand) AsyncHint(args []string) string {
 	strategy, _, err := parseCompressArgs(args)
 	if err != nil {
 		return ""

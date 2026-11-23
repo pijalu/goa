@@ -352,17 +352,17 @@ func (c *renamedAsyncCommand) Run(ctx core.Context, args []string) error {
 	return c.inner.Run(ctx, args)
 }
 
-// TestCompressCommand_SynchronousGlobalSpinner pins the command contract while
-// summarize is stalled: compression stays on the synchronous command path,
-// never sets the async busy gate, and exposes a visible strategy-specific
-// StatusMsg for the entire provider call.
-func TestCompressCommand_SynchronousGlobalSpinner(t *testing.T) {
+// TestCompressCommand_AsyncKeepsUILoopResponsive holds the summarize provider
+// open while submitting /compress on the real command loop. A synchronous Run
+// blocks that loop until the provider returns; async dispatch must leave it able
+// to process input and show the global compression spinner immediately.
+func TestCompressCommand_AsyncKeepsUILoopResponsive(t *testing.T) {
 	p := newStalledCompactionProvider()
 	provider.RegisterApiProvider(p)
 	t.Cleanup(p.releaseStream)
 
 	agent := agentic.NewAgent(agentic.Config{
-		Model: provider.Model{ID: "compress-sync-test", Api: p.API()},
+		Model: provider.Model{ID: "compress-async-test", Api: p.API()},
 	})
 	agent.SetHistory([]agentic.Message{
 		{Type: agentic.Content, Role: agentic.User, Content: "earlier question"},
@@ -371,16 +371,14 @@ func TestCompressCommand_SynchronousGlobalSpinner(t *testing.T) {
 	am := core.NewAgentManager(&config.Config{}, nil, nil, nil, event.MakeBus(16, 16, 16, 16), "")
 	am.SetActiveAgentForTest(agent)
 
-	a, engine, status, chat := newAsyncTestApp(t, &commands.CompressCommand{})
-	// Stop the loops so this test can invoke the synchronous path directly and
-	// inspect StatusMsg without racing its commandLoop-owned state.
-	engine.Stop()
+	a, engine, status, _ := newAsyncTestApp(t, &commands.CompressCommand{})
+	defer engine.Stop()
 	a.subs.agentMgr = am
 
-	done := make(chan struct{})
+	dispatchDone := make(chan struct{})
 	go func() {
-		a.handleSlashCommand("/compress:summarize")
-		close(done)
+		engine.ApplySync(func() { a.handleSlashCommand("/compress:summarize") })
+		close(dispatchDone)
 	}()
 	select {
 	case <-p.started:
@@ -389,28 +387,45 @@ func TestCompressCommand_SynchronousGlobalSpinner(t *testing.T) {
 		t.Fatal("summarize provider stream did not start")
 	}
 
-	if a.commandBusy {
-		t.Error("compression must not enable the async command busy/steering gate")
+	var (
+		busy    bool
+		visible bool
+		label   string
+	)
+	probeDone := make(chan struct{})
+	go func() {
+		engine.ApplySync(func() {
+			busy = a.commandBusy
+			visible = status.IsVisible()
+			label = status.Text()
+			close(probeDone)
+		})
+	}()
+	select {
+	case <-probeDone:
+	case <-time.After(200 * time.Millisecond):
+		p.releaseStream()
+		select {
+		case <-dispatchDone:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("/compress froze the TUI command loop while summarize was waiting for its provider")
 	}
-	if !status.IsVisible() {
+
+	if !busy {
+		t.Error("compression must enable the async command busy/steering gate")
+	}
+	if !visible {
 		t.Error("compression must show the global status spinner")
 	}
-	if got := status.Text(); got != "Compressing (summarize)…" {
-		t.Errorf("compression spinner text = %q, want %q", got, "Compressing (summarize)…")
-	}
-	if containsRendered(chat, "already running") {
-		t.Error("synchronous compression must not emit the async busy error")
+	if label != "Compressing (summarize)…" {
+		t.Errorf("compression spinner text = %q, want %q", label, "Compressing (summarize)…")
 	}
 
 	p.releaseStream()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("synchronous compression did not finish after releasing its provider")
-	}
-	if status.IsVisible() {
-		t.Errorf("compression spinner remained visible after completion: %q", status.Text())
-	}
+	waitFor(t, engine, time.Second, func() bool {
+		return !a.commandBusy && !status.IsVisible()
+	}, "expected compression to finish and clear its spinner")
 }
 
 // TestAsyncCommand_DocSuffixBypassesAsync verifies that /cmd:? and /cmd:??

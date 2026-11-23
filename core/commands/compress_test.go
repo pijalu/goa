@@ -264,23 +264,19 @@ func TestPctOf(t *testing.T) {
 	}
 }
 
-// TestCompressCommand_SynchronousActivity verifies that every valid strategy
-// has a strategy-specific global-spinner label without opting into async
-// dispatch or its busy/steering gate.
-func TestCompressCommand_SynchronousActivity(t *testing.T) {
+// TestCompressCommand_AsyncHint verifies that every valid strategy runs off
+// the TUI command loop with a strategy-specific global-spinner label.
+func TestCompressCommand_AsyncHint(t *testing.T) {
 	cmd := &CompressCommand{}
 	var command core.Command = cmd
-	if _, ok := command.(core.AsyncCommand); ok {
-		t.Fatal("compression must run synchronously, not through core.AsyncCommand")
+	async, ok := command.(core.AsyncCommand)
+	if !ok {
+		t.Fatal("compression must run through core.AsyncCommand")
 	}
 	if _, ok := command.(core.SilentAsyncCommand); ok {
 		t.Fatal("compression must show its global spinner, not suppress activity")
 	}
 
-	activity, ok := command.(interface{ ActivityHint(args []string) string })
-	if !ok {
-		t.Fatal("compression does not provide a synchronous activity label")
-	}
 	tests := []struct {
 		name string
 		args []string
@@ -297,8 +293,8 @@ func TestCompressCommand_SynchronousActivity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := activity.ActivityHint(tt.args); got != tt.want {
-				t.Errorf("ActivityHint(%v) = %q, want %q", tt.args, got, tt.want)
+			if got := async.AsyncHint(tt.args); got != tt.want {
+				t.Errorf("AsyncHint(%v) = %q, want %q", tt.args, got, tt.want)
 			}
 		})
 	}
