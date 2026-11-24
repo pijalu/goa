@@ -147,6 +147,18 @@ func TestAgentMCPRenderer_RenderResult_SummaryShapes(t *testing.T) {
 	}
 }
 
+func TestAgentMCPRenderer_RenderResult_ErrorPreservesDetailAndHint(t *testing.T) {
+	output := "Error: [mcp error: mcp_error]\n" +
+		"mcp error: Error executing tool click: element is not visible\n" +
+		"Hint: Inspect the page and choose a visible element."
+
+	r := NewAgentMCPRenderer()
+	got := ansi.Strip(r.RenderResult(output, tuirender.RenderContext{IsError: true}))
+	if got != output {
+		t.Errorf("error output lost diagnostic lines:\ngot:\n%s\nwant:\n%s", got, output)
+	}
+}
+
 func TestAgentMCPRenderer_RenderResult_LongNonJSONTruncated(t *testing.T) {
 	r := NewAgentMCPRenderer()
 	got := ansi.Strip(r.RenderResult(strings.Repeat("x", 300), tuirender.RenderContext{}))

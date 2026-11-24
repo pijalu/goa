@@ -81,6 +81,11 @@ func (r *AgentMCPRenderer) RenderResult(output string, ctx tuirender.RenderConte
 	if output == "" {
 		return ""
 	}
+	// Tool errors already contain the category, underlying cause, and recovery
+	// hint. Never fold them to the first line: that hides the actionable cause.
+	if ctx.IsError {
+		return rToolOutput(output)
+	}
 	return rToolOutput(r.summarize(output))
 }
 

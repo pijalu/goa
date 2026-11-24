@@ -189,13 +189,16 @@ func TestAgentMCPLiveToolErrorClass(t *testing.T) {
 			return backendAdapter{c: client.NewWithManager(mgr)}, nil
 		},
 	}
-	_, err = tool.Execute(`{"action":"call_tool","server":"alpha","tool":"fail"}`)
+	_, err = tool.Execute(`{"action":"call_tool","server":"alpha","tool":"fail","args":{"text":"trigger"}}`)
 	if err == nil {
 		t.Fatal("want error, got nil")
 	}
 	var te *internal.ToolError
 	if !errors.As(err, &te) || te.Type != "mcp_error" {
 		t.Fatalf("error = %v, want mcp_error", err)
+	}
+	if !strings.Contains(te.Detail, "boom") {
+		t.Errorf("detail = %q, want the MCP server's error text", te.Detail)
 	}
 }
 
