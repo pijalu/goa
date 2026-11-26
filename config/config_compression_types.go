@@ -64,6 +64,38 @@ type ContextCompressionConfig struct {
 	// calls — the window resets to the system prompt plus the preserved
 	// recent-turn/last-user tail.
 	FreshWindow FreshWindowSettings `yaml:"fresh_window,omitempty"`
+	// IdleSummarize runs one explicit summarize after a completed turn has
+	// remained idle for the configured delay. Pointer-backed values preserve
+	// explicit zero through the configuration cascade (zero delay disables it).
+	IdleSummarize IdleSummarizeSettings `yaml:"idle_summarize,omitempty"`
+}
+
+// IdleSummarizeSettings configures one-shot summarize compaction after an
+// exchange has stopped. The timer is reset or cancelled by every new exchange.
+type IdleSummarizeSettings struct {
+	// TriggerPercent is the minimum projected context-window occupancy required
+	// when the timer fires. Nil inherits; zero permits any non-empty history.
+	TriggerPercent *int `yaml:"trigger_percent,omitempty"`
+	// DelaySeconds is the inactivity delay after a completed stop. Nil inherits;
+	// zero disables idle summarization.
+	DelaySeconds *int `yaml:"delay_seconds,omitempty"`
+}
+
+// TriggerPercentValue returns the configured occupancy threshold, defaulting
+// to 10 percent when the setting is absent at every cascade layer.
+func (s IdleSummarizeSettings) TriggerPercentValue() int {
+	if s.TriggerPercent == nil {
+		return 10
+	}
+	return *s.TriggerPercent
+}
+
+// DelaySecondsValue returns the idle delay in seconds, defaulting to 240.
+func (s IdleSummarizeSettings) DelaySecondsValue() int {
+	if s.DelaySeconds == nil {
+		return 240
+	}
+	return *s.DelaySeconds
 }
 
 // CompressionThresholdsConfig holds the fill levels (percent of the effective

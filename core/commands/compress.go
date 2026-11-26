@@ -19,7 +19,7 @@ import (
 type CompressCommand struct{}
 
 func (c *CompressCommand) Name() string      { return "compress" }
-func (c *CompressCommand) Aliases() []string { return []string{} }
+func (c *CompressCommand) Aliases() []string { return []string{"compact"} }
 func (c *CompressCommand) ShortHelp() string { return "Compress agent context window" }
 func (c *CompressCommand) LongHelp() string {
 	return help.LongHelp(c.Name())

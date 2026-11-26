@@ -328,6 +328,10 @@ func (am *AgentManager) StopSession() error {
 		return nil
 	}
 
+	// Invalidate the agent-owned idle summarize timer before dropping the last
+	// session reference; otherwise it can compact an orphaned conversation.
+	am.activeAgent.Stop()
+
 	if am.cancel != nil {
 		am.cancelSource = "session_shutdown"
 		am.cancelReason = "active session stopped"

@@ -5,6 +5,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pijalu/goa/config"
@@ -28,6 +30,7 @@ import (
 
 func setupCompressionSelectors(t *testing.T, sc *uiScenario) (core.Context, func(), func(string), func()) {
 	subs := sc.app.subs
+	t.Setenv("GOA_HOME", t.TempDir())
 	subs.loader = config.NewCascadeLoader(t.TempDir(), "", nil)
 	ctx := coreContextForCommand(subs, sc.app)
 	ctx.SkillRegistry = skills.NewSkillRegistry(nil)
@@ -160,6 +163,68 @@ func TestConfigCompressionMenu_Filmstrip(t *testing.T) {
 
 	_ = core.Context{} // context wiring reference
 	t.Log("\nfilmstrip:\n" + film.Render())
+}
+
+func TestConfigCompressionIdleSummarize_Filmstrip(t *testing.T) {
+	sc := newUIScenario(t, 120, 60)
+	subs := sc.app.subs
+	ctx, drainSelectors, pick, _ := setupCompressionSelectors(t, sc)
+	sc.engine.ApplySync(func() { _ = (&commands.ConfigCommand{}).Run(ctx, nil) })
+	drainSelectors()
+	sc.engine.RenderNow()
+	waitForFrame(t, sc, "Settings:")
+	film := sc.filmstrip()
+	pick("Compression")
+	waitForFrame(t, sc, "Compression:")
+	pick("Advanced")
+	waitForFrame(t, sc, "Compression — advanced:")
+	mustContainAll(t, sc, "idle summarize advanced rows",
+		"Idle summarize: minimum context %", "10%",
+		"Idle summarize: delay seconds", "240s")
+	film.Capture("config/idle-summarize-defaults", sc.engine.AgentFrame(), "")
+
+	pick("Idle summarize: minimum")
+	waitForFrame(t, sc, "Idle summarize minimum context occupancy:")
+	film.Capture("config/idle-summarize-trigger-picker", sc.engine.AgentFrame(), "")
+	pick("25")
+	waitForFrame(t, sc, "Compression — advanced:")
+	if got := subs.cfg.ContextCompression.IdleSummarize.TriggerPercentValue(); got != 25 {
+		t.Fatalf("idle trigger after filmstrip selection = %d, want 25", got)
+	}
+	mustContainAll(t, sc, "updated idle trigger row", "25%")
+
+	pick("Idle summarize: delay")
+	waitForFrame(t, sc, "Idle summarize delay (seconds; 0 = disabled):")
+	film.Capture("config/idle-summarize-delay-picker", sc.engine.AgentFrame(), "")
+	pick("off")
+	waitForFrame(t, sc, "Compression — advanced:")
+	if got := subs.cfg.ContextCompression.IdleSummarize.DelaySecondsValue(); got != 0 {
+		t.Fatalf("idle delay after filmstrip selection = %d, want explicit zero", got)
+	}
+	mustContainAll(t, sc, "updated idle delay row", "off")
+	assertIdleSummarizePersistence(t, 25, 0)
+	film.Capture("config/idle-summarize-updated", sc.engine.AgentFrame(), "")
+	t.Log("\nfilmstrip:\n" + film.Render())
+}
+
+func assertIdleSummarizePersistence(t *testing.T, trigger, delay int) {
+	t.Helper()
+	path := filepath.Join(os.Getenv("GOA_HOME"), ".goa", "config.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("idle summarize selections were not persisted: %v", err)
+	}
+	loader := config.NewCascadeLoader(t.TempDir(), "", nil)
+	reloaded, err := loader.Load()
+	if err != nil {
+		t.Fatalf("reload saved filmstrip config: %v\n%s", err, data)
+	}
+	if got := reloaded.ContextCompression.IdleSummarize.TriggerPercentValue(); got != trigger {
+		t.Errorf("reloaded idle trigger = %d, want %d\n%s", got, trigger, data)
+	}
+	if got := reloaded.ContextCompression.IdleSummarize.DelaySecondsValue(); got != delay {
+		t.Errorf("reloaded idle delay = %d, want %d\n%s", got, delay, data)
+	}
 }
 
 // mustContainAll asserts the current visible frame contains every substring.

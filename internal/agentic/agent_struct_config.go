@@ -201,6 +201,9 @@ type ContextCompressionConfig struct {
 	// strategy (Codex Phase 2b.3): a full window reset with ZERO
 	// summarization calls. See FreshWindowConfig.
 	FreshWindow FreshWindowConfig
+
+	// IdleSummarize configures the one-shot post-stop summarize timer.
+	IdleSummarize IdleSummarizeConfig
 }
 
 // FreshWindowConfig configures the fresh_window compaction strategy: when a
@@ -505,6 +508,8 @@ func NewAgent(cfg Config) *Agent {
 	if cfg.Model.ContextWindow > 0 {
 		a.contextWindow.Store(int64(cfg.Model.ContextWindow))
 	}
+	a.idleSummarize = newIdleSummarizeScheduler(a.runIdleSummarize)
+	a.idleSummarize.Configure(cfg.ContextCompression.IdleSummarize)
 	// Resolve the provider's terminator-omission capability once, here, rather
 	// than at every stall decision: it is a property of the endpoint, fixed for
 	// the agent's lifetime. Deriving it from the catalog keeps the knowledge in

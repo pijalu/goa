@@ -17,52 +17,54 @@ import (
 type configSetter func(cfg *config.Config, value string) error
 
 var configSetters = map[string]configSetter{
-	"mode.default.major":                             setActiveMajor,
-	"active_provider":                                setString(func(cfg *config.Config) *string { return &cfg.ActiveProvider }),
-	"active_model":                                   setActiveModel,
-	"multi_agent.companion_model":                    setStringWithValidate(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionModel }, validateActiveModel),
-	"execution.mode":                                 setExecutionMode,
-	"execution.activity_timeout":                     setStallDuration(func(cfg *config.Config) *string { return &cfg.Execution.ActivityTimeout }),
-	"execution.activity_warn_after":                  setStallDuration(func(cfg *config.Config) *string { return &cfg.Execution.ActivityWarnAfter }),
-	"execution.retries":                              setInt(func(cfg *config.Config) *int { return &cfg.Execution.Retries }),
-	"execution.auto_save_model":                      setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.AutoSaveModel }),
-	"execution.auto_heal_tool_calls":                 setBool(func(cfg *config.Config) *bool { return &cfg.Execution.AutoHealToolCalls }),
-	"mode.plan_file_path":                            setString(func(cfg *config.Config) *string { return &cfg.Mode.PlanFilePath }),
-	"execution.max_tool_calls":                       setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolCalls }),
-	"execution.max_tool_repeat_total":                setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
-	"execution.max_tool_repeat_consecutive":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatConsecutive }),
-	"execution.max_tool_error_streak":                setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolErrorStreak }),
-	"execution.tool_call_limit_reset_window":         setInt(func(cfg *config.Config) *int { return &cfg.Execution.ToolCallLimitResetWindow }),
-	"execution.max_stream_rounds":                    setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxStreamRounds }),
-	"goals.default_turn_budget":                      setInt(func(cfg *config.Config) *int { return &cfg.Goals.DefaultTurnBudget }),
-	"goals.stall_turns":                              setInt(func(cfg *config.Config) *int { return &cfg.Goals.StallTurns }),
-	"goals.verify_timeout":                           setGoalVerifyTimeout,
-	"execution.max_tool_repeat":                      setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
-	"execution.max_consecutive_tool_rounds":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxConsecutiveToolRounds }),
-	"tui.theme":                                      setString(func(cfg *config.Config) *string { return &cfg.TUI.Theme }),
-	"tui.spinner":                                    setSpinnerName,
-	"tui.spinner_location":                           setSpinnerLocation,
-	"tui.transparency.show_thinking":                 setBool(func(cfg *config.Config) *bool { return &cfg.TUI.Transparency.ShowThinking }),
-	"tui.transparency.thinking_collapsed":            setThinkingCollapsed,
-	"logging.level":                                  setString(func(cfg *config.Config) *string { return &cfg.Logging.Level }),
-	"logging.file":                                   setString(func(cfg *config.Config) *string { return &cfg.Logging.File }),
-	"thinking_level":                                 setThinkingLevel,
-	"multi_agent.enabled":                            setBool(func(cfg *config.Config) *bool { return &cfg.MultiAgent.Enabled }),
-	"multi_agent.companion_provider":                 setString(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionProvider }),
-	"context_compression.enabled":                    setBoolPtr(func(cfg *config.Config) **bool { return &cfg.ContextCompression.Enabled }),
-	"context_compression.strategy":                   setCompressionStrategy,
-	"context_compression.threshold_percent":          setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.ThresholdPercent }, 0, 100),
-	"context_compression.thresholds.soft_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.SoftPercent }, 0, 100),
-	"context_compression.thresholds.trigger_percent": setTriggerPercentClearLegacy,
-	"context_compression.thresholds.hard_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.HardPercent }, 0, 100),
-	"context_compression.strategies.soft":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Soft }),
-	"context_compression.strategies.trigger":         setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Trigger }),
-	"context_compression.strategies.hard":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Hard }),
-	"context_compression.cache_gate":                 setCacheGate,
-	"context_compression.max_tokens":                 setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
-	"context_compression.on_context_error":           setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
-	"context_compression.on_error_strategy":          setOnErrorStrategy,
-	"context_compression.preserve_recent_turns":      setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.PreserveRecentTurns }, 0, 100),
+	"mode.default.major":                                 setActiveMajor,
+	"active_provider":                                    setString(func(cfg *config.Config) *string { return &cfg.ActiveProvider }),
+	"active_model":                                       setActiveModel,
+	"multi_agent.companion_model":                        setStringWithValidate(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionModel }, validateActiveModel),
+	"execution.mode":                                     setExecutionMode,
+	"execution.activity_timeout":                         setStallDuration(func(cfg *config.Config) *string { return &cfg.Execution.ActivityTimeout }),
+	"execution.activity_warn_after":                      setStallDuration(func(cfg *config.Config) *string { return &cfg.Execution.ActivityWarnAfter }),
+	"execution.retries":                                  setInt(func(cfg *config.Config) *int { return &cfg.Execution.Retries }),
+	"execution.auto_save_model":                          setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.AutoSaveModel }),
+	"execution.auto_heal_tool_calls":                     setBool(func(cfg *config.Config) *bool { return &cfg.Execution.AutoHealToolCalls }),
+	"mode.plan_file_path":                                setString(func(cfg *config.Config) *string { return &cfg.Mode.PlanFilePath }),
+	"execution.max_tool_calls":                           setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolCalls }),
+	"execution.max_tool_repeat_total":                    setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
+	"execution.max_tool_repeat_consecutive":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatConsecutive }),
+	"execution.max_tool_error_streak":                    setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolErrorStreak }),
+	"execution.tool_call_limit_reset_window":             setInt(func(cfg *config.Config) *int { return &cfg.Execution.ToolCallLimitResetWindow }),
+	"execution.max_stream_rounds":                        setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxStreamRounds }),
+	"goals.default_turn_budget":                          setInt(func(cfg *config.Config) *int { return &cfg.Goals.DefaultTurnBudget }),
+	"goals.stall_turns":                                  setInt(func(cfg *config.Config) *int { return &cfg.Goals.StallTurns }),
+	"goals.verify_timeout":                               setGoalVerifyTimeout,
+	"execution.max_tool_repeat":                          setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
+	"execution.max_consecutive_tool_rounds":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxConsecutiveToolRounds }),
+	"tui.theme":                                          setString(func(cfg *config.Config) *string { return &cfg.TUI.Theme }),
+	"tui.spinner":                                        setSpinnerName,
+	"tui.spinner_location":                               setSpinnerLocation,
+	"tui.transparency.show_thinking":                     setBool(func(cfg *config.Config) *bool { return &cfg.TUI.Transparency.ShowThinking }),
+	"tui.transparency.thinking_collapsed":                setThinkingCollapsed,
+	"logging.level":                                      setString(func(cfg *config.Config) *string { return &cfg.Logging.Level }),
+	"logging.file":                                       setString(func(cfg *config.Config) *string { return &cfg.Logging.File }),
+	"thinking_level":                                     setThinkingLevel,
+	"multi_agent.enabled":                                setBool(func(cfg *config.Config) *bool { return &cfg.MultiAgent.Enabled }),
+	"multi_agent.companion_provider":                     setString(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionProvider }),
+	"context_compression.enabled":                        setBoolPtr(func(cfg *config.Config) **bool { return &cfg.ContextCompression.Enabled }),
+	"context_compression.strategy":                       setCompressionStrategy,
+	"context_compression.threshold_percent":              setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.ThresholdPercent }, 0, 100),
+	"context_compression.thresholds.soft_percent":        setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.SoftPercent }, 0, 100),
+	"context_compression.thresholds.trigger_percent":     setTriggerPercentClearLegacy,
+	"context_compression.thresholds.hard_percent":        setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.HardPercent }, 0, 100),
+	"context_compression.strategies.soft":                setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Soft }),
+	"context_compression.strategies.trigger":             setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Trigger }),
+	"context_compression.strategies.hard":                setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Hard }),
+	"context_compression.cache_gate":                     setCacheGate,
+	"context_compression.max_tokens":                     setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
+	"context_compression.on_context_error":               setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
+	"context_compression.on_error_strategy":              setOnErrorStrategy,
+	"context_compression.preserve_recent_turns":          setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.PreserveRecentTurns }, 0, 100),
+	"context_compression.idle_summarize.trigger_percent": setIntPtrRange(func(cfg *config.Config) **int { return &cfg.ContextCompression.IdleSummarize.TriggerPercent }, 0, 100),
+	"context_compression.idle_summarize.delay_seconds":   setIdleSummarizeDelaySeconds,
 	// Micro compaction knobs: no hidden configuration keys — the micro own
 	// gates (usage ratio, cold-cache threshold) change runtime behavior and
 	// must be visible/settable like every other compression knob.
@@ -570,6 +572,33 @@ func setIntRange(getter func(*config.Config) *int, min, max int) configSetter {
 		*getter(cfg) = v
 		return nil
 	}
+}
+
+func setIntPtrRange(getter func(*config.Config) **int, min, max int) configSetter {
+	return func(cfg *config.Config, value string) error {
+		v, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		if v < min || v > max {
+			return fmt.Errorf("value must be between %d and %d (got %d)", min, max, v)
+		}
+		*getter(cfg) = &v
+		return nil
+	}
+}
+
+func setIdleSummarizeDelaySeconds(cfg *config.Config, value string) error {
+	v, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	const maxDelaySeconds = int64(time.Duration(1<<63-1) / time.Second)
+	if v < 0 || int64(v) > maxDelaySeconds {
+		return fmt.Errorf("idle summarize delay must be between 0 and %d seconds (got %d)", maxDelaySeconds, v)
+	}
+	cfg.ContextCompression.IdleSummarize.DelaySeconds = &v
+	return nil
 }
 
 // setGoalVerifyTimeout parses a duration for goals.verify_timeout: positive,

@@ -384,6 +384,7 @@ func (c *Config) validateAgenticModels(ve *internal.ValidationError) {
 
 func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	cc := c.ContextCompression
+	validateIdleSummarize(ve, "context_compression.idle_summarize", cc.IdleSummarize)
 	if !cc.EnabledValue() {
 		return
 	}
@@ -403,6 +404,23 @@ func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	validateFreshWindow(ve, "context_compression.fresh_window", cc.FreshWindow)
 	for id, o := range cc.PerModel {
 		c.validateCompressionOverride(ve, id, o)
+	}
+}
+
+func validateIdleSummarize(ve *internal.ValidationError, path string, s IdleSummarizeSettings) {
+	if s.TriggerPercent != nil && (*s.TriggerPercent < 0 || *s.TriggerPercent > 100) {
+		ve.Add(fmt.Sprintf("%s.trigger_percent: must be 0-100 (got %d)", path, *s.TriggerPercent))
+	}
+	if s.DelaySeconds == nil {
+		return
+	}
+	if *s.DelaySeconds < 0 {
+		ve.Add(fmt.Sprintf("%s.delay_seconds: must be >= 0 (got %d)", path, *s.DelaySeconds))
+		return
+	}
+	const maxDelaySeconds = int64(time.Duration(1<<63-1) / time.Second)
+	if int64(*s.DelaySeconds) > maxDelaySeconds {
+		ve.Add(fmt.Sprintf("%s.delay_seconds: duration overflows time.Duration (got %d)", path, *s.DelaySeconds))
 	}
 }
 

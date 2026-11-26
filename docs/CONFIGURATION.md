@@ -140,6 +140,9 @@ context_compression:
                                      # tool_elision | selective | micro
   strategy: ""                       # Legacy trigger-layer strategy alias
   preserve_recent_turns: 4           # Keep last N turns uncompressed
+  idle_summarize:
+    trigger_percent: 10              # Min projected context occupancy; 0 = any nonempty history
+    delay_seconds: 240               # Post-stop inactivity delay; 0 = disabled
   micro_compaction:
     keep_recent_messages: 20         # Messages to never truncate
     min_content_tokens: 100          # Min content before truncating
@@ -447,6 +450,21 @@ features:
   # switched-to agent's history is faithful and scrollable.
   multi_agent_scrollback_replay: false
 ```
+
+### Idle Summarize After a Stop
+
+`context_compression.idle_summarize` runs the explicit `/compact:summarize`
+path once after a completed turn remains idle. The default delay is 240
+seconds, and the default minimum projected context occupancy is 10%. Set
+`delay_seconds: 0` to disable the feature, or `trigger_percent: 0` to permit
+any non-empty history.
+
+Starting an exchange, stopping the agent, or clearing/restoring history
+cancels and invalidates pending work. Completion does not rearm until a later
+exchange stops. A new exchange cancels an in-flight summarize and waits for the
+provider to unwind before appending history. A completed checkpoint advances
+the provider cache generation, so the next request uses the compressed context
+under a fresh cache identity.
 
 ### Per-Model Thinking-Level Remap (`thinking_level_native_map`)
 

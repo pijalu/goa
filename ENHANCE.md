@@ -1,5 +1,11 @@
 # ENHANCE.md — Lowering Unexpected Token Usage
 
+> **Implementation update:** the explicit user-requested
+> `context_compression.idle_summarize` feature supersedes this proposal's
+> blanket rejection of automatic compaction. It uses configurable post-stop
+> inactivity and context occupancy; it still never probes or predicts provider
+> cache state. The cost analysis below remains useful historical context.
+
 ## Executive summary
 
 **Problem.** Goa sessions run on an append-only context: every byte added (file reads, tool output,

@@ -134,6 +134,13 @@ context_compression:
     cache_miss_threshold: "1h"
     truncated_marker: "[Old tool result content cleared]"
     min_context_ratio: 0.5
+  # After a turn stops, run one explicit summarize once the conversation has
+  # remained idle for delay_seconds. Any new exchange cancels and resets it.
+  # trigger_percent is the minimum projected context-window occupancy at firing.
+  # Set delay_seconds: 0 to disable idle summarization.
+  idle_summarize:
+    trigger_percent: 10
+    delay_seconds: 240
   # fresh_window (Codex TokenBudget mode): a full-window compaction with ZERO
   # summarization calls — the cheapest full compaction. When enabled (or when
   # a strategy slot names "fresh_window"), a compaction that would summarize

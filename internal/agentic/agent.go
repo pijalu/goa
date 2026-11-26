@@ -84,11 +84,16 @@ type Agent struct {
 	observerCounter uint64
 	Output          chan Message
 
-	mu         sync.Mutex
-	processing bool
-	queue      []string
-	cancel     context.CancelFunc
-	emitState  OutputState // Track last emitted state for state change events
+	mu sync.Mutex
+	// activityMu excludes idle/manual history replacement from active turns.
+	// Turns hold a read lock; idle compaction takes TryLock exclusively.
+	activityMu    sync.RWMutex
+	idleSummarize *idleSummarizeScheduler
+	runSerial     uint64
+	processing    bool
+	queue         []string
+	cancel        context.CancelFunc
+	emitState     OutputState // Track last emitted state for state change events
 
 	// Loop guardrail: tracks how many times each exact tool call (name + input)
 	// has been issued in the current turn. Used by MaxToolRepeatTotal.

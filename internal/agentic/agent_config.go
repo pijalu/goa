@@ -11,6 +11,8 @@ import (
 )
 
 func (a *Agent) SetHistory(history []Message) {
+	a.lockHistoryActivity()
+	defer a.activityMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -57,8 +59,11 @@ func (a *Agent) SetModel(mdl provider.Model) {
 // ceiling tracks the new model's context window.
 func (a *Agent) SetContextCompression(cfg ContextCompressionConfig) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.cfg.ContextCompression = cfg
+	a.mu.Unlock()
+	if a.idleSummarize != nil {
+		a.idleSummarize.Configure(cfg.IdleSummarize)
+	}
 }
 
 // CompressionConfig returns the current context compression configuration.

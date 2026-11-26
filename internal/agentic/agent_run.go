@@ -32,6 +32,10 @@ func (a *Agent) RunWithMetadata(ctx context.Context, input string, metadata map[
 }
 
 func (a *Agent) runInternal(ctx context.Context, input string, images []string, metadata map[string]string) error {
+	// Cancel idle compaction before waiting for its exclusive activity lock, so
+	// the provider unwinds before this exchange can append new history.
+	a.idleSummarizeStarted()
+	a.activityMu.RLock()
 	a.mu.Lock()
 
 	// Initialize history with system prompt on first call
@@ -51,10 +55,13 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 	if a.processing {
 		a.queue = append(a.queue, input)
 		a.mu.Unlock()
+		a.activityMu.RUnlock()
 		return nil
 	}
 
 	a.processing = true
+	a.runSerial++
+	runID := a.runSerial
 	ctx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
 	a.mu.Unlock()
@@ -124,7 +131,10 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 	// this because cancel is stored in a struct field). The error path
 	// previously also left a.processing==true, which made the next Run() queue
 	// forever instead of processing.
-	a.finishProcessing()
+	if a.finishProcessingRun(runID) {
+		a.idleSummarizeStopped()
+	}
+	a.activityMu.RUnlock()
 
 	return err
 }
@@ -150,7 +160,17 @@ func (a *Agent) nextQueuedInput() (input string, ok bool) {
 // caller's parent ctx is cancelled; go vet -lostcancel cannot detect this
 // because the func is stored in a struct field rather than a local.
 func (a *Agent) finishProcessing() {
+	a.finishProcessingRun(0)
+}
+
+// finishProcessingRun is generation-scoped: Stop or a subsequent owner makes
+// an older run's cleanup a no-op, including preventing a stale timer rearm.
+func (a *Agent) finishProcessingRun(runID uint64) bool {
 	a.mu.Lock()
+	if runID != 0 && runID != a.runSerial {
+		a.mu.Unlock()
+		return false
+	}
 	a.processing = false
 	a.lastTurnEnd = time.Now()
 	cancel := a.cancel
@@ -160,6 +180,7 @@ func (a *Agent) finishProcessing() {
 	if cancel != nil {
 		cancel()
 	}
+	return true
 }
 
 // RunAndCollect runs the agent synchronously and collects all text output
@@ -188,7 +209,9 @@ func (a *Agent) RunAndCollect(ctx context.Context, input string) (string, error)
 
 // Stop cancels any ongoing processing and resets the agent state.
 func (a *Agent) Stop() {
+	a.idleSummarizeStarted()
 	a.mu.Lock()
+	a.runSerial++
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil

@@ -470,6 +470,7 @@ func (c *Config) mergeContextCompression(other *Config) {
 	mergeMicroCompaction(&c.ContextCompression.MicroCompaction, cc.MicroCompaction)
 	mergeToolResultPruning(&c.ContextCompression.ToolResultPruning, cc.ToolResultPruning)
 	mergeFreshWindow(&c.ContextCompression.FreshWindow, cc.FreshWindow)
+	mergeIdleSummarize(&c.ContextCompression.IdleSummarize, cc.IdleSummarize)
 }
 
 // contextCompressionLayerEmpty reports whether a cascade layer carries no
@@ -495,7 +496,17 @@ func contextCompressionSubBlocksEmpty(cc ContextCompressionConfig) bool {
 		len(cc.PerModel) == 0 &&
 		cc.MicroCompaction == (MicroCompactionSettings{}) &&
 		cc.ToolResultPruning == (ToolResultPruningSettings{}) &&
-		cc.FreshWindow == (FreshWindowSettings{})
+		cc.FreshWindow == (FreshWindowSettings{}) &&
+		cc.IdleSummarize == (IdleSummarizeSettings{})
+}
+
+func mergeIdleSummarize(dst *IdleSummarizeSettings, src IdleSummarizeSettings) {
+	if src.TriggerPercent != nil {
+		dst.TriggerPercent = src.TriggerPercent
+	}
+	if src.DelaySeconds != nil {
+		dst.DelaySeconds = src.DelaySeconds
+	}
 }
 
 // mergeCompressionStrategies overlays non-empty per-layer strategy fields.

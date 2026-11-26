@@ -72,6 +72,8 @@ const elidedToolCallArguments = "[elided]"
 const elidedToolResultContent = "[tool result elided]"
 
 func (a *Agent) Compact(ctx context.Context) error {
+	a.lockHistoryActivity()
+	defer a.activityMu.Unlock()
 	return a.compactOrdered(ctx, a.compactSlotStrategy(), false)
 }
 

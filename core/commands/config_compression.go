@@ -159,6 +159,8 @@ func (m *configMenu) settingCompressionAdvanced() {
 		"micro_keep_recent_messages": m.settingCompressionMicroKeepRecent,
 		"micro_min_content_tokens":   m.settingCompressionMicroMinContent,
 		"micro_truncated_marker":     m.settingCompressionMicroMarker,
+		"idle_trigger":               m.settingCompressionIdleTrigger,
+		"idle_delay":                 m.settingCompressionIdleDelay,
 	}
 	// B56: sticky picker — the toggle rows flip in place, opener rows open
 	// another picker (CloseOnSelect), Escape closes.
@@ -204,8 +206,59 @@ func (m *configMenu) compressionAdvancedItems() []tui.SelectorItem {
 		{Value: "micro_keep_recent_messages", Label: "Micro: keep recent messages", Description: microKeepRecentLabel(cfg), CloseOnSelect: true},
 		{Value: "micro_min_content_tokens", Label: "Micro: min content tokens", Description: microMinContentTokensLabel(cfg), CloseOnSelect: true},
 		{Value: "micro_truncated_marker", Label: "Micro: truncation marker", Description: microTruncatedMarkerLabel(cfg), CloseOnSelect: true},
+		{Value: "idle_trigger", Label: "Idle summarize: minimum context %", Description: fmt.Sprintf("%d%%", cfg.ContextCompression.IdleSummarize.TriggerPercentValue()), CloseOnSelect: true},
+		{Value: "idle_delay", Label: "Idle summarize: delay seconds", Description: idleSummarizeDelayLabel(cfg.ContextCompression.IdleSummarize.DelaySecondsValue()), CloseOnSelect: true},
 		{Value: "per_model", Label: "Per-model overrides", Description: perModelCompressionLabel(cfg), CloseOnSelect: true},
 	}
+}
+
+func (m *configMenu) settingCompressionIdleTrigger() {
+	m.current = m.settingCompressionIdleTrigger
+	items := make([]tui.SelectorItem, 0, 21)
+	for percent := 0; percent <= 100; percent += 5 {
+		description := "compact at or above this occupancy"
+		if percent == 0 {
+			description = "allow any non-empty history"
+		}
+		items = append(items, tui.SelectorItem{
+			Value: fmt.Sprintf("%d", percent), Label: fmt.Sprintf("%d%%", percent), Description: description,
+		})
+	}
+	current := fmt.Sprintf("%d", m.ctx.Config.ContextCompression.IdleSummarize.TriggerPercentValue())
+	m.ctx.SelectOption("Idle summarize minimum context occupancy:", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.idle_summarize.trigger_percent", v)
+		m.back()
+	})
+}
+
+func (m *configMenu) settingCompressionIdleDelay() {
+	m.current = m.settingCompressionIdleDelay
+	items := make([]tui.SelectorItem, 0, 9)
+	for _, seconds := range []int{0, 30, 60, 120, 240, 300, 600, 900} {
+		items = append(items, tui.SelectorItem{
+			Value: fmt.Sprintf("%d", seconds), Label: idleSummarizeDelayLabel(seconds), Description: "inactivity after a completed stop",
+		})
+	}
+	current := m.ctx.Config.ContextCompression.IdleSummarize.DelaySecondsValue()
+	m.ctx.SelectOption("Idle summarize delay (seconds; 0 = disabled):", items, fmt.Sprintf("%d", current), func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.idle_summarize.delay_seconds", v)
+		m.back()
+	})
+}
+
+func idleSummarizeDelayLabel(seconds int) string {
+	if seconds == 0 {
+		return "off"
+	}
+	return fmt.Sprintf("%ds", seconds)
 }
 
 // ceilingPercentLabel renders a layer ceiling: N% or the explicit disabled

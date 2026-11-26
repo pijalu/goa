@@ -13,6 +13,8 @@ func (a *Agent) MaybeCompress(ctx context.Context) error {
 // per-strategy thresholds are bypassed so manual invocations always perform
 // work. No-op if the history is empty.
 func (a *Agent) MaybeCompressWith(ctx context.Context, strategy CompressionStrategy, force bool) error {
+	a.lockHistoryActivity()
+	defer a.activityMu.Unlock()
 	a.mu.Lock()
 	n := len(a.history)
 	a.mu.Unlock()

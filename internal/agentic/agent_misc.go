@@ -51,11 +51,20 @@ func (a *Agent) undoLastAssistantMessage() {
 // Returns true if tool calls were encountered (caller should re-stream).
 // a fallback for providers that omit timing fields (LM Studio, llama.cpp, Ollama).
 func (a *Agent) Clear() {
+	a.idleSummarizeStarted()
+	// Cancel the active provider before waiting for its activity read lock.
 	a.mu.Lock()
-
 	if a.cancel != nil {
 		a.cancel()
 	}
+	a.mu.Unlock()
+	a.activityMu.Lock()
+	a.idleSummarizeStarted()
+	defer a.activityMu.Unlock()
+	a.mu.Lock()
+
+	a.runSerial++
+	a.cancel = nil
 
 	a.history = nil
 	a.cacheGeneration++

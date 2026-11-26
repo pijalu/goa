@@ -5,6 +5,7 @@ Copyright (C) 2026 Pierre Poissinger
 -->
 
 Usage: /compress[:strategy][:force]
+Alias: /compact[:strategy][:force]
 
 Trigger context compression on the active agent session.
 Reduces token usage by summarizing older conversation turns
@@ -29,8 +30,16 @@ per-strategy thresholds.
 Compression strategy, trigger threshold, and max-tokens can be
 configured permanently via /config → Compression.
 
+Idle summarize (context_compression.idle_summarize) runs the same explicit
+summarize path once after a completed turn has remained idle. By default it
+waits 240 seconds and requires at least 10% projected context occupancy. A
+new exchange cancels and resets the countdown, including an in-flight request;
+completion does not rearm until another exchange stops. Set delay_seconds: 0
+to disable it. These settings live under /config → Compression → Advanced.
+
 Examples:
   /compress                 Compress with the configured strategy (forced)
   /compress:micro           Force micro compaction
   /compress:summarize       Force summarization
+  /compact:summarize        Alias for the same explicit summarize path
   /compress:tool_elision    Force tool_elision

@@ -374,8 +374,16 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 	// An explicit per-model enabled:false force-disables the model. The
 	// reactive safety net (on_context_error / on_error_strategy) is always
 	// carried through below, independent of this toggle.
-	if !cfg.ContextCompression.CompressionEnabledForModel(modelKey) {
+	compressionEnabled := cfg.ContextCompression.CompressionEnabledForModel(modelKey)
+	if !compressionEnabled {
 		thresholds = agentic.CompressionThresholds{}
+	}
+	idleSummarize := agentic.IdleSummarizeConfig{
+		TriggerPercent: cfg.ContextCompression.IdleSummarize.TriggerPercentValue(),
+		Delay:          time.Duration(cfg.ContextCompression.IdleSummarize.DelaySecondsValue()) * time.Second,
+	}
+	if !compressionEnabled {
+		idleSummarize.Delay = 0
 	}
 
 	// The legacy whole-config `strategy` was the main compression strategy; with
@@ -397,6 +405,7 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 		MicroCompaction:     buildMicroCompactionConfig(cfg.ContextCompression.MicroCompaction),
 		ToolResultPruning:   buildToolResultPruningConfig(cfg.ContextCompression.ToolResultPruning),
 		FreshWindow:         buildFreshWindowConfig(cfg.ContextCompression.FreshWindow),
+		IdleSummarize:       idleSummarize,
 	}
 }
 

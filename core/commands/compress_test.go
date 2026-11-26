@@ -14,6 +14,22 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
+func TestCompactAliasRoutesToSummarize(t *testing.T) {
+	reg := core.NewCommandRegistry()
+	cmd := &CompressCommand{}
+	if err := reg.Register(cmd); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	router := core.NewCommandRouter(reg, core.NewDocEngine(reg))
+	result := router.Parse("/compact:summarize")
+	if result == nil || result.Command != cmd {
+		t.Fatalf("Parse(/compact:summarize) = %+v, want CompressCommand", result)
+	}
+	if len(result.Args) != 1 || result.Args[0] != "summarize" {
+		t.Fatalf("Args = %v, want [summarize]", result.Args)
+	}
+}
+
 func TestParseCompressArgs_DefaultForce(t *testing.T) {
 	strategy, force, err := parseCompressArgs(nil)
 	if err != nil {

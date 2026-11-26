@@ -5,6 +5,7 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -508,11 +509,12 @@ func persistConfigValue(ctx core.Context, key string, path []string, value strin
 	// Project-scoped keys (e.g. execution.auto_heal_tool_calls) must survive
 	// restarts even when the project config already pins the key: writing to
 	// the home layer would be shadowed by the project file on next load.
+	committedValue := configValueAtPath(ctx.Config, savePath, value)
 	if projectScopedConfigKeys[key] {
-		if err := ctx.ConfigSaver.SaveProjectField(savePath, scalarValue(value)); err != nil {
+		if err := ctx.ConfigSaver.SaveProjectField(savePath, committedValue); err != nil {
 			return fmt.Errorf("set %s = %s (in memory, but failed to persist to project config: %v)", key, value, err)
 		}
-	} else if err := ctx.ConfigSaver.SaveHomeField(savePath, scalarValue(value)); err != nil {
+	} else if err := ctx.ConfigSaver.SaveHomeField(savePath, committedValue); err != nil {
 		return fmt.Errorf("set %s = %s (in memory, but failed to persist: %v)", key, value, err)
 	}
 	// Setting the tiered trigger_percent clears the deprecated legacy
@@ -626,6 +628,89 @@ func tempKindToConfigInfix(kind string) string {
 		return "stream"
 	}
 	return "tool"
+}
+
+// configValueAtPath returns the committed field's actual value so persistence
+// preserves its YAML type. Raw string inference is only a fallback for synthetic
+// paths: strconv.ParseBool accepts "0" and "1", so inferring first would write
+// booleans into integer settings (and inferring integers first would do the
+// reverse for boolean settings).
+func configValueAtPath(cfg *config.Config, path []string, raw string) any {
+	value := reflect.ValueOf(cfg)
+	for _, segment := range path {
+		child, ok := configPathChild(value, segment)
+		if !ok {
+			return scalarValue(raw)
+		}
+		value = child
+	}
+	value, ok := indirectConfigValue(value)
+	if !ok || !value.IsValid() || !value.CanInterface() {
+		return scalarValue(raw)
+	}
+	return value.Interface()
+}
+
+func configPathChild(value reflect.Value, segment string) (reflect.Value, bool) {
+	value, ok := indirectConfigValue(value)
+	if !ok {
+		return reflect.Value{}, false
+	}
+	switch value.Kind() {
+	case reflect.Struct:
+		return configStructField(value, segment)
+	case reflect.Map:
+		if value.Type().Key().Kind() != reflect.String {
+			return reflect.Value{}, false
+		}
+		key := reflect.ValueOf(segment).Convert(value.Type().Key())
+		child := value.MapIndex(key)
+		return child, child.IsValid()
+	case reflect.Slice, reflect.Array:
+		return configSliceElement(value, segment)
+	default:
+		return reflect.Value{}, false
+	}
+}
+
+func indirectConfigValue(value reflect.Value) (reflect.Value, bool) {
+	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
+		if value.IsNil() {
+			return reflect.Value{}, false
+		}
+		value = value.Elem()
+	}
+	return value, value.IsValid()
+}
+
+func configStructField(value reflect.Value, name string) (reflect.Value, bool) {
+	typeInfo := value.Type()
+	for i := 0; i < value.NumField(); i++ {
+		fieldInfo := typeInfo.Field(i)
+		yamlName := strings.Split(fieldInfo.Tag.Get("yaml"), ",")[0]
+		if yamlName == "" {
+			yamlName = strings.ToLower(fieldInfo.Name)
+		}
+		if yamlName == name {
+			return value.Field(i), true
+		}
+	}
+	return reflect.Value{}, false
+}
+
+func configSliceElement(value reflect.Value, id string) (reflect.Value, bool) {
+	for i := 0; i < value.Len(); i++ {
+		element := value.Index(i)
+		idField, ok := configStructField(element, "id")
+		if !ok {
+			continue
+		}
+		idField, ok = indirectConfigValue(idField)
+		if ok && idField.Kind() == reflect.String && idField.String() == id {
+			return element, true
+		}
+	}
+	return reflect.Value{}, false
 }
 
 // scalarValue converts common UI values to scalars suitable for YAML.
