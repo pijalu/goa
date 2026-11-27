@@ -45,16 +45,18 @@ type AgentFrame struct {
 // AgentFrame produces the plain-text structured view of the Scene.
 // viewportH is the terminal height (number of visible rows).
 func (s *Scene) AgentFrame(viewportH int) AgentFrame {
+	if viewportH < 1 {
+		viewportH = 24
+	}
 	canvas, _ := s.compose(0)
 	height := len(canvas)
-	vTop := height - viewportH
-	if vTop < 0 {
-		vTop = 0
-	}
-	vBottom := vTop + viewportH
-	if vBottom > height {
-		vBottom = height
-	}
+	// Read the visible rows through the frame's canvas↔screen mapping — the
+	// SAME geometry the painter (drawWindow) and overlay placement use. Slicing
+	// the canvas directly would label rows against a viewport top the terminal
+	// never shows once the watermark clamp lifts it, and would put the pinned
+	// chrome band at the wrong screen rows.
+	m := newWindowMapping(height, viewportH, s.ChromeHeight, s.ScrollTop)
+	vTop, vBottom := m.top, m.transcriptEnd
 
 	frame := AgentFrame{Width: s.TerminalW, Height: viewportH, Cursor: s.Cursor, Nodes: s.Nodes}
 	frame.Nodes = fillNodeText(frame.Nodes, s.Layers)
@@ -73,10 +75,20 @@ func (s *Scene) AgentFrame(viewportH int) AgentFrame {
 		frame.Layers = append(frame.Layers, al)
 	}
 
-	// Visible viewport, top-to-bottom.
-	for i := vTop; i < vBottom && i < len(canvas); i++ {
-		frame.Visible = append(frame.Visible, ansi.Strip(canvas[i]))
+	// Visible viewport, top-to-bottom, in screen rows. Rows the mapping paints
+	// blank (the filler gap left by the watermark clamp) stay — they are part of
+	// the frame — but the view does not pad below the last painted row.
+	last := -1
+	for screenRow := 0; screenRow < viewportH; screenRow++ {
+		ci, ok := m.canvasRow(screenRow)
+		if !ok || ci >= len(canvas) {
+			frame.Visible = append(frame.Visible, "")
+			continue
+		}
+		frame.Visible = append(frame.Visible, ansi.Strip(canvas[ci]))
+		last = screenRow
 	}
+	frame.Visible = frame.Visible[:last+1]
 	return frame
 }
 

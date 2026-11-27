@@ -238,7 +238,6 @@ func (c *Compositor) handleMidTranscriptEdit(scene *Scene, canvas []string, widt
 func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, height int, wipe bool) {
 	c.setTracePath("full")
 	c.fullRedrawCount++
-	vt := c.windowTop(len(canvas), height)
 
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
@@ -252,42 +251,18 @@ func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, heigh
 	// drawWindow repaints every row (first frame / full repaint), so the scroll
 	// advance did not pre-write any bottom rows for repaintWindow to skip.
 	c.lastScrollCount = 0
-	// Two-phase repaint: transcript in [1, windowH], chrome in [windowH+1, height].
-	// This keeps the chrome band pinned at the screen bottom even when vt is
-	// clamped above the natural anchor (windowTop's watermark clamp).
-	windowH := height - c.chromeH
-	if windowH < 1 {
-		windowH = 1
-	}
-	contentEnd := len(canvas) - c.chromeH
-	if contentEnd < 0 {
-		contentEnd = 0
-	}
-	transcriptEnd := vt + windowH
-	if transcriptEnd > contentEnd {
-		transcriptEnd = contentEnd
-	}
-	for i := vt; i < transcriptEnd; i++ {
-		screenRow := i - vt + 1
+	// Paint every screen row through the frame's single canvas↔screen mapping:
+	// the transcript phase from the watermark-clamped top, blank filler where a
+	// clamp shortened it, then the chrome band pinned to the screen bottom. One
+	// loop over the mapping (instead of three ranges) is what keeps the painter
+	// and Scene.AgentFrame/placeOverlays from drifting apart.
+	m := newWindowMapping(len(canvas), height, c.chromeH, c.scrollTop)
+	vt := m.top
+	for screenRow := 1; screenRow <= height; screenRow++ {
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		writeRowText(&buf, canvas[i], width)
-		c.traceWroteRow(screenRow)
-	}
-	// Clear any stale transcript rows between the transcript end and the
-	// chrome band (a clamped window can leave rows the taller previous frame
-	// painted).
-	for screenRow := transcriptEnd - vt + 1; screenRow <= windowH; screenRow++ {
-		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		c.traceWroteRow(screenRow)
-	}
-	// Draw the pinned chrome band in the rows below the transcript region.
-	for i := contentEnd; i < len(canvas); i++ {
-		screenRow := windowH + (i - contentEnd) + 1
-		if screenRow > height {
-			break
+		if ci, ok := m.canvasRow(screenRow - 1); ok {
+			writeRowText(&buf, canvas[ci], width)
 		}
-		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		writeRowText(&buf, canvas[i], width)
 		c.traceWroteRow(screenRow)
 	}
 	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)
@@ -321,34 +296,19 @@ func (c *Compositor) drawWindowResetScrollback(canvas []string, cursor *CursorPo
 	c.scrollTop = 0
 	c.vt = 0
 	c.reemitScrollback(&buf, canvas, vt, width, height)
-	// Repaint the visible window. The transcript occupies only the top
-	// height-chromeH rows (the chrome band is pinned below), so the window is
-	// windowH rows tall, not height. Repainting canvas[vt:] (height rows) would
-	// overflow chromeH rows into the chrome zone and duplicate content — the
-	// reset-path duplicate-row bug. Stop the transcript repaint at windowH,
-	// then draw the chrome band in its own rows below.
-	windowH := height - c.chromeH
-	if windowH < 1 {
-		windowH = 1
-	}
-	transcriptEnd := vt + windowH
-	if transcriptEnd > len(canvas)-c.chromeH {
-		transcriptEnd = len(canvas) - c.chromeH
-	}
-	for i := vt; i < transcriptEnd; i++ {
-		screenRow := i - vt + 1
+	// Repaint the visible window through the same canvas↔screen mapping the
+	// steady-state painter uses (watermark is 0 here, the scrollback was just
+	// wiped): transcript phase from the window top, blank filler where the
+	// mapping has none, then the chrome band pinned to the screen bottom. Using
+	// the shared mapping is what keeps the reset path from spilling chrome rows
+	// into the transcript zone (the duplicate-row bug).
+	m := newWindowMapping(len(canvas), height, c.chromeH, 0)
+	vt = m.top
+	for screenRow := 1; screenRow <= height; screenRow++ {
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		writeRowText(&buf, canvas[i], width)
-		c.traceWroteRow(screenRow)
-	}
-	// Draw the pinned chrome band in the rows below the transcript region.
-	for i := transcriptEnd; i < len(canvas); i++ {
-		screenRow := windowH + (i - transcriptEnd) + 1
-		if screenRow > height {
-			break
+		if ci, ok := m.canvasRow(screenRow - 1); ok {
+			writeRowText(&buf, canvas[ci], width)
 		}
-		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		writeRowText(&buf, canvas[i], width)
 		c.traceWroteRow(screenRow)
 	}
 	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)

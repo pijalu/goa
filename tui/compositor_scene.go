@@ -53,6 +53,15 @@ type Scene struct {
 	// 0 = no pinned chrome (the whole canvas is scrollable transcript).
 	ChromeHeight int
 
+	// ScrollTop is the Compositor's scrollback watermark at build time. compose
+	// clamps the window top to it exactly like the paint path does
+	// (Compositor.windowTop), so overlay placement and row painting share one
+	// geometry: an overlay placed against the unclamped bottom-anchored window
+	// top lands on canvas rows the painter then treats as chrome/blank when a
+	// shrink has lifted the clamp — splitting a popup across both phases and
+	// leaving stale rows plus blank gaps on screen.
+	ScrollTop int
+
 	// WidthChanged reports that the terminal width differs from the previous
 	// frame. The Compositor sets it before calling compose; on a width change
 	// compose must materialize the FULL canvas (not just the visible window),
@@ -97,6 +106,29 @@ type Scene struct {
 // reset frames (width or bottom-chrome height change) require because they
 // re-emit the entire off-screen transcript.
 //
+// padToScreen pads a canvas shorter than the terminal with blank TRANSCRIPT
+// rows, inserted immediately before the pinned chrome band, so the canvas spans
+// the whole screen and no screen row is left as unpaintable filler. It is a
+// no-op when nothing needs filling: the canvas already fills the screen, the
+// terminal geometry is unknown, or rows have already been emitted into
+// scrollback (ScrollTop > 0), where inserting blank rows would shift the row
+// identities the watermark refers to.
+func (s *Scene) padToScreen(canvas []string) []string {
+	termH := s.TerminalH
+	if termH < 1 || s.ScrollTop > 0 || len(canvas) >= termH {
+		return canvas
+	}
+	chromeH := max(0, s.ChromeHeight)
+	chromeH = min(chromeH, termH)
+	contentEnd := max(0, len(canvas)-chromeH)
+	pad := termH - len(canvas)
+	padded := make([]string, 0, termH)
+	padded = append(padded, canvas[:contentEnd]...)
+	padded = append(padded, make([]string, pad)...)
+	padded = append(padded, canvas[contentEnd:]...)
+	return padded
+}
+
 // This is the single place that decides pixel placement of base content.
 // Overlays are composited separately (viewport-relative) by the caller's
 // render path, never here.
@@ -108,6 +140,16 @@ func (s *Scene) compose(cullFloor int) (canvas []string, hasOverlay bool) {
 	canvas = make([]string, height)
 
 	viewportStart := max(0, height-s.TerminalH)
+	// Share the painter's window top: Compositor.windowTop clamps the viewport
+	// to the scrollback watermark so rows already committed to terminal
+	// scrollback are never repainted. Overlay placement must use the SAME top,
+	// otherwise an overlay is written to canvas rows the painter maps to the
+	// pinned chrome band (or to blank filler), which splits it in two and
+	// leaves stale/blank rows on screen.
+	if viewportStart < s.ScrollTop {
+		viewportStart = s.ScrollTop
+	}
+	m := s.mapping(height)
 	visibleEnd := min(height, viewportStart+s.TerminalH)
 	if visibleEnd <= viewportStart {
 		visibleEnd = viewportStart + 1
@@ -139,8 +181,119 @@ func (s *Scene) compose(cullFloor int) (canvas []string, hasOverlay bool) {
 	if len(overlays) == 0 {
 		return applyLineResets(canvas, placeStart, visibleEnd), false
 	}
-	canvas = placeOverlays(canvas, overlays, height, s.TerminalH, s.TerminalW)
+	// An overlay floats over the SCREEN, so it needs canvas rows to sit on for
+	// every screen row it may use: pad a short canvas up to the terminal height
+	// and re-derive the geometry for the padded canvas. Without this the window
+	// mapping leaves blank filler screen rows that no canvas row maps to (the
+	// painter blanks them every frame), so an overlay over them — e.g. a
+	// full-screen selector on an otherwise empty scene — was truncated away.
+	// Padding is only safe while nothing scrolled (see padToScreen) and only
+	// happens for overlay frames, so base canvases keep their exact content
+	// length.
+	if padded := s.padToScreen(canvas); len(padded) != len(canvas) {
+		canvas = padded
+		height = len(canvas)
+		m = s.mapping(height)
+		visibleEnd = min(height, max(viewportStart, m.top)+s.TerminalH)
+	}
+	canvas = placeOverlays(canvas, overlays, m, s.TerminalW)
 	return applyLineResets(canvas, placeStart, visibleEnd), true
+}
+
+// windowMapping is the ONE canvas-row ↔ screen-row geometry of a frame. The
+// painter (drawWindow), the agent view (Scene.AgentFrame) and overlay
+// placement all derive their rows from it, so they can never disagree.
+//
+// The mapping is piecewise because the visible window is assembled from two
+// independent anchors:
+//
+//   - the TRANSCRIPT phase draws canvas rows [top, transcriptEnd) top-down from
+//     screen row 1, where top is the bottom-anchored viewport top clamped to the
+//     scrollback watermark (rows below the watermark are already committed and
+//     must never be repainted).
+//   - the CHROME band (status line, goal bubble, editor, footer) is PINNED to
+//     the bottom: its first canvas row (contentEnd) is always painted at screen
+//     row windowH+1. A watermark clamp that shortens the transcript phase
+//     therefore leaves blank filler rows between the two phases instead of
+//     sliding the chrome up.
+//
+// Overlays are placed relative to screen rows (see placeOverlays) and must stay
+// inside the transcript phase: a row of an overlay that leaked into the chrome
+// phase would be painted at a different screen row than intended, splitting it
+// and leaving stale rows plus blank gaps on screen.
+type windowMapping struct {
+	top           int // canvas row painted on screen row 1 (watermark-clamped)
+	transcriptEnd int // canvas row where the transcript phase stops (exclusive)
+	contentEnd    int // first canvas row of the pinned chrome band
+	windowH       int // transcript region height in screen rows
+	canvasLen     int
+}
+
+// newWindowMapping computes the frame geometry from the canvas length, the
+// terminal height, the pinned chrome height and the scrollback watermark.
+// scrollTop == 0 means "no watermark yet" (scrollback reset paths).
+func newWindowMapping(canvasLen, termH, chromeH, scrollTop int) windowMapping {
+	if termH < 1 {
+		termH = 24
+	}
+	if chromeH < 0 {
+		chromeH = 0
+	}
+	if chromeH > termH {
+		chromeH = termH
+	}
+	windowH := termH - chromeH
+	if windowH < 1 {
+		windowH = 1
+	}
+	contentEnd := canvasLen - chromeH
+	if contentEnd < 0 {
+		contentEnd = 0
+	}
+	top := max(0, canvasLen-termH)
+	if top < scrollTop {
+		top = scrollTop
+	}
+	transcriptEnd := min(top+windowH, contentEnd)
+	return windowMapping{
+		top:           top,
+		transcriptEnd: transcriptEnd,
+		contentEnd:    contentEnd,
+		windowH:       windowH,
+		canvasLen:     canvasLen,
+	}
+}
+
+// mapping returns this scene's frame geometry for a canvas of canvasLen rows.
+func (s *Scene) mapping(canvasLen int) windowMapping {
+	return newWindowMapping(canvasLen, s.TerminalH, s.ChromeHeight, s.ScrollTop)
+}
+
+// canvasRow maps a 0-based screen row to the canvas row painted there. ok is
+// false for the blank filler rows left when the watermark clamp shortens the
+// transcript phase (chrome stays pinned to the screen bottom).
+func (m windowMapping) canvasRow(screenRow int) (int, bool) {
+	if screenRow < 0 {
+		return 0, false
+	}
+	if screenRow < m.windowH {
+		c := m.top + screenRow
+		if c < m.transcriptEnd {
+			return c, true
+		}
+		return 0, false
+	}
+	c := m.contentEnd + (screenRow - m.windowH)
+	if c < m.canvasLen {
+		return c, true
+	}
+	return 0, false
+}
+
+// transcriptRows is the number of screen rows the transcript phase paints —
+// the screen rows an overlay may occupy.
+func (m windowMapping) transcriptRows() int {
+	return max(0, m.transcriptEnd-m.top)
 }
 
 // baseCanvasHeight returns the canvas height needed for base (non-overlay)
@@ -170,21 +323,47 @@ func overlaysOf(layers []Layer) []Layer {
 	return overlays
 }
 
-// placeOverlays composites overlay layers (viewport-relative Y) onto the
-// canvas, extending it as needed, and returns the updated canvas.
-func placeOverlays(canvas []string, overlays []Layer, baseHeight, termH, termW int) []string {
-	viewportStart := baseHeight - termH
-	if viewportStart < 0 {
-		viewportStart = 0
+// placeOverlays composites overlay layers onto the canvas and returns the
+// updated canvas. Overlay Rect.Y is SCREEN-relative (0 = top of the visible
+// viewport); it is converted to a canvas row through the frame's
+// windowMapping, and clamped so the overlay stays inside the transcript phase
+// — the only screen rows the transcript paint phase draws from. An overlay that
+// leaked past the transcript phase would be painted by the chrome phase at a
+// different screen row (the two anchors diverge whenever the watermark clamp
+// lifts the window top), leaving stale rows and blank gaps on screen.
+//
+// An overlay taller than the transcript phase is truncated to the rows that can
+// be shown.
+func placeOverlays(canvas []string, overlays []Layer, m windowMapping, termW int) []string {
+	transcriptRows := m.transcriptRows()
+	if transcriptRows < 1 {
+		transcriptRows = 1
 	}
 	for _, l := range overlays {
-		absY := viewportStart + l.Rect.Y
-		for len(canvas) < absY+l.Rect.H {
+		lines := l.Content
+		h := l.Rect.H
+		if h > len(lines) {
+			h = len(lines)
+		}
+		if h > transcriptRows {
+			h = transcriptRows
+			lines = lines[:h]
+		}
+		y := l.Rect.Y
+		if y+h > transcriptRows {
+			y = transcriptRows - h
+		}
+		if y < 0 {
+			y = 0
+		}
+		absY := m.top + y
+		for len(canvas) < absY+h {
 			canvas = append(canvas, "")
 		}
 		placed := l
-		placed.Rect = Rect{X: l.Rect.X, Y: absY, W: l.Rect.W, H: l.Rect.H}
-		placeLayer(canvas, placed, termW, viewportStart, viewportStart+termH)
+		placed.Rect = Rect{X: l.Rect.X, Y: absY, W: l.Rect.W, H: h}
+		placed.Content = lines
+		placeLayer(canvas, placed, termW, m.top, m.top+m.windowH)
 	}
 	return canvas
 }

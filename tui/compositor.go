@@ -394,11 +394,19 @@ func (c *Compositor) Restore() {
 // newly scrolled-off rows into scrollback, repaint the visible window, restore
 // the cursor — all in one synchronized frame.
 func (c *Compositor) Render(scene *Scene) {
+	// The Scene's size is the terminal's REAL size and the painter must trust
+	// it: the window mapping derives blank filler rows from (height - chromeH),
+	// so inventing a taller screen than the terminal has makes the painter
+	// address rows past the last one. Terminals clamp CUP to the last row, so
+	// each of those writes ERASES the bottom row instead of clearing a row that
+	// does not exist (the styled-stream-resize parity failure: a 6-row screen
+	// repainted as if it were 24 tall lost its last line). Only degenerate /
+	// uninitialised sizes are replaced, never a real small one.
 	width, height := scene.TerminalW, scene.TerminalH
-	if width < 20 {
+	if width < 1 {
 		width = 80
 	}
-	if height < 10 {
+	if height < 1 {
 		height = 24
 	}
 	scene.TerminalW = width
@@ -423,6 +431,11 @@ func (c *Compositor) Render(scene *Scene) {
 	c.clearRequested = false
 
 	kind := c.classifyFrame(scene, width, height)
+	// The live watermark wins over any value stamped at snapshot time: compose
+	// clamps the window top to it (overlay placement and, below, the painter
+	// share this one geometry), and scrollTop only advances, so a concurrent
+	// frame can leave the snapshot's stamp stale.
+	scene.ScrollTop = c.scrollTop
 	canvas, _ := scene.compose(kind.cullFloor(c.scrollTop))
 	c.beginTrace(scene, canvas, width, height)
 	defer c.emitTrace()

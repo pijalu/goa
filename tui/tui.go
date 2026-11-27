@@ -304,9 +304,12 @@ func (t *TUI) SetRenderTrace(path string) error {
 func (t *TUI) AgentFrame() AgentFrame {
 	var frame AgentFrame
 	t.ApplySync(func() {
-		w, h := t.terminal.Size()
-		scene := t.buildScene(w, h)
-		frame = scene.AgentFrame(h)
+		_, h := t.terminal.Size()
+		// buildSnapshot (not buildScene) so the frame carries the same geometry
+		// stamps a real frame does — notably the scrollback watermark, which the
+		// paint path clamps the viewport top to. A fresh buildScene here would
+		// label rows against a top the terminal never shows.
+		frame = t.buildSnapshot().AgentFrame(h)
 	})
 	return frame
 }
@@ -615,6 +618,12 @@ func (t *TUI) buildSnapshot() *Scene {
 	// Stamp the clear generation so the compositor can drop this snapshot if a
 	// Clear() (e.g. /new) lands before it is rendered (the stale-scene race).
 	scene.ClearGen = t.compositor.ClearGen()
+	// Stamp the scrollback watermark so compose clamps the window top exactly
+	// like the paint path (Compositor.windowTop). Overlay placement (the
+	// autocomplete popup) shares that geometry: without it the popup is placed
+	// against the unclamped bottom-anchored top and lands on canvas rows the
+	// painter renders as chrome when a shrink lifted the clamp.
+	scene.ScrollTop = t.compositor.ScrollWatermark()
 	// Stamp the chat viewport's mutation generation so the compositor can
 	// detect when the conversation has settled (no mutation since the last
 	// frame) and re-sync a deferred scrollback exactly once.
