@@ -207,6 +207,94 @@ func TestConfigCompressionIdleSummarize_Filmstrip(t *testing.T) {
 	t.Log("\nfilmstrip:\n" + film.Render())
 }
 
+func TestConfigCompressionPerModelIdleSummarize_Filmstrip(t *testing.T) {
+	sc := newUIScenario(t, 140, 70)
+	subs := sc.app.subs
+	subs.cfg.Models = append(subs.cfg.Models, config.ModelConfig{ID: "qwen", ProviderID: "local", Model: "qwen-wire"})
+	ctx, drainSelectors, pick, _ := setupCompressionSelectors(t, sc)
+	wantTrigger, wantDelay := 25, 0
+	if err := ctx.ConfigSaver.SaveHomeProvidersAndModels(subs.cfg); err != nil {
+		t.Fatalf("SaveHomeProvidersAndModels: %v", err)
+	}
+	sc.engine.ApplySync(func() { _ = (&commands.ConfigCommand{}).Run(ctx, nil) })
+	drainSelectors()
+	sc.engine.RenderNow()
+	waitForFrame(t, sc, "Settings:")
+	film := sc.filmstrip()
+	pick("Compression")
+	waitForFrame(t, sc, "Compression:")
+	pick("Advanced")
+	waitForFrame(t, sc, "Compression — advanced:")
+	pick("Per-model overrides")
+	waitForFrame(t, sc, "Per-model compression overrides")
+	pick("qwen")
+	waitForFrame(t, sc, "Compression overrides for qwen:")
+	mustContainAll(t, sc, "per-model idle defaults", "Idle summarize: minimum context %", "Idle summarize: delay seconds")
+	film.Capture("config/per-model-idle-inherited", sc.engine.AgentFrame(), "")
+
+	pick("Idle summarize: minimum")
+	waitForFrame(t, sc, "Idle summarize minimum context occupancy for qwen:")
+	mustContainAll(t, sc, "per-model idle trigger picker", "inherit (clear)", "0%")
+	film.Capture("config/per-model-idle-trigger-picker", sc.engine.AgentFrame(), "")
+	pick("25")
+	waitForFrame(t, sc, "Compression overrides for qwen:")
+	assertOptionalIntValue(t, "per-model trigger after selection", subs.cfg.ContextCompression.PerModel["qwen"].IdleSummarize.TriggerPercent, &wantTrigger)
+
+	pick("Idle summarize: delay")
+	waitForFrame(t, sc, "Idle summarize delay for qwen")
+	mustContainAll(t, sc, "per-model idle delay picker", "inherit (clear)", "off", "240s")
+	film.Capture("config/per-model-idle-delay-picker", sc.engine.AgentFrame(), "")
+	pick("off")
+	waitForFrame(t, sc, "Compression overrides for qwen:")
+	ov := subs.cfg.ContextCompression.PerModel["qwen"].IdleSummarize
+	assertOptionalIntValue(t, "per-model delay after selection", ov.DelaySeconds, &wantDelay)
+	mustContainAll(t, sc, "per-model idle updated rows", "25%", "off")
+	film.Capture("config/per-model-idle-updated", sc.engine.AgentFrame(), "")
+	reloaded := reloadCompressionFilmstripConfig(t)
+	ov = reloaded.ContextCompression.PerModel["qwen"].IdleSummarize
+	assertOptionalIntValue(t, "reloaded per-model trigger", ov.TriggerPercent, &wantTrigger)
+	assertOptionalIntValue(t, "reloaded per-model delay", ov.DelaySeconds, &wantDelay)
+
+	// The non-empty inherit action must reach the setter as an empty clear;
+	// a raw empty selector result is reserved for Escape/cancellation.
+	pick("Idle summarize: minimum")
+	waitForFrame(t, sc, "Idle summarize minimum context occupancy for qwen:")
+	pick("inherit (clear)")
+	waitForFrame(t, sc, "Compression overrides for qwen:")
+	ov = subs.cfg.ContextCompression.PerModel["qwen"].IdleSummarize
+	assertOptionalIntValue(t, "trigger after inherit selection", ov.TriggerPercent, nil)
+	assertOptionalIntValue(t, "delay after clearing trigger", ov.DelaySeconds, &wantDelay)
+	reloaded = reloadCompressionFilmstripConfig(t)
+	ov = reloaded.ContextCompression.PerModel["qwen"].IdleSummarize
+	assertOptionalIntValue(t, "reloaded cleared trigger", ov.TriggerPercent, nil)
+	assertOptionalIntValue(t, "reloaded independent delay", ov.DelaySeconds, &wantDelay)
+	film.Capture("config/per-model-idle-trigger-inherited", sc.engine.AgentFrame(), "")
+	t.Log("\nfilmstrip:\n" + film.Render())
+}
+
+func assertOptionalIntValue(t *testing.T, name string, got, want *int) {
+	t.Helper()
+	if want == nil {
+		if got != nil {
+			t.Fatalf("%s = %d, want nil (inherit)", name, *got)
+		}
+		return
+	}
+	if got == nil || *got != *want {
+		t.Fatalf("%s = %v, want %d", name, got, *want)
+	}
+}
+
+func reloadCompressionFilmstripConfig(t *testing.T) *config.Config {
+	t.Helper()
+	loader := config.NewCascadeLoader(t.TempDir(), "", nil)
+	reloaded, err := loader.Load()
+	if err != nil {
+		t.Fatalf("reload saved filmstrip config: %v", err)
+	}
+	return reloaded
+}
+
 func assertIdleSummarizePersistence(t *testing.T, trigger, delay int) {
 	t.Helper()
 	path := filepath.Join(os.Getenv("GOA_HOME"), ".goa", "config.yaml")

@@ -619,6 +619,7 @@ func mergeCompressionPerModel(dst *map[string]ModelCompressionOverride, src map[
 		if o.PreserveRecentTurns != 0 {
 			m.PreserveRecentTurns = o.PreserveRecentTurns
 		}
+		mergeIdleSummarize(&m.IdleSummarize, o.IdleSummarize)
 		(*dst)[id] = m
 	}
 }

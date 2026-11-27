@@ -124,8 +124,9 @@ type CompressionLayerStrategiesConfig struct {
 }
 
 // ModelCompressionOverride overrides selected compression settings for one
-// model, keyed by models[].id under context_compression.per_model. Zero
-// fields inherit the global context_compression values.
+// model, keyed by models[].id under context_compression.per_model. Zero scalar
+// fields inherit the global context_compression values. Idle-summarize fields
+// are pointers, so nil inherits while an explicit zero remains meaningful.
 type ModelCompressionOverride struct {
 	// Enabled is tri-state: nil = inherit the global enablement (with the
 	// implicit-activation rule of CompressionEnabledForModel); an explicit
@@ -140,6 +141,7 @@ type ModelCompressionOverride struct {
 	Strategy            string                           `yaml:"strategy,omitempty"`
 	CacheGate           string                           `yaml:"cache_gate,omitempty"`
 	PreserveRecentTurns int                              `yaml:"preserve_recent_turns,omitempty"`
+	IdleSummarize       IdleSummarizeSettings            `yaml:"idle_summarize,omitempty"`
 }
 
 // CompressionEnabledForModel resolves whether compression is active for one

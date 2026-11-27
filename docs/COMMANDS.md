@@ -135,7 +135,11 @@ Examples:
 With `context_compression.idle_summarize`, the same explicit summarize path
 can run once after a completed turn remains idle. Defaults: 240 seconds and
 10% minimum projected context occupancy. New exchanges cancel/reset pending
-work; `delay_seconds: 0` disables the timer. See CONFIGURATION.md.
+work; `delay_seconds: 0` disables the timer. Both values can be overridden per
+configured model under `context_compression.per_model.<model-id>.idle_summarize`;
+omitted fields inherit the global values, while explicit zeroes remain
+model-specific. Edit them under `/config → Compression → Advanced → Per-model
+overrides`. See CONFIGURATION.md.
 
 ### `/copy` — Copy last response to clipboard
 

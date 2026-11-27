@@ -36,6 +36,9 @@ waits 240 seconds and requires at least 10% projected context occupancy. A
 new exchange cancels and resets the countdown, including an in-flight request;
 completion does not rearm until another exchange stops. Set delay_seconds: 0
 to disable it. These settings live under /config → Compression → Advanced.
+Per-model values live under context_compression.per_model.<model-id>.idle_summarize
+and are editable via Advanced → Per-model overrides. Omitted fields inherit the
+global values; explicit delay_seconds: 0 disables only that model.
 
 Examples:
   /compress                 Compress with the configured strategy (forced)

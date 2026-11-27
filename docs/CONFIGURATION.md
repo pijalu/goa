@@ -143,6 +143,11 @@ context_compression:
   idle_summarize:
     trigger_percent: 10              # Min projected context occupancy; 0 = any nonempty history
     delay_seconds: 240               # Post-stop inactivity delay; 0 = disabled
+  per_model:
+    my-model-id:                     # Stable models[].id, not the provider API name
+      idle_summarize:
+        trigger_percent: 25          # Optional; omit to inherit the global value
+        delay_seconds: 60            # Optional; explicit 0 disables only this model
   micro_compaction:
     keep_recent_messages: 20         # Messages to never truncate
     min_content_tokens: 100          # Min content before truncating
@@ -458,6 +463,29 @@ path once after a completed turn remains idle. The default delay is 240
 seconds, and the default minimum projected context occupancy is 10%. Set
 `delay_seconds: 0` to disable the feature, or `trigger_percent: 0` to permit
 any non-empty history.
+
+Both settings can be overridden independently for a configured model:
+
+```yaml
+context_compression:
+  per_model:
+    my-model-id:                 # Must match models[].id
+      idle_summarize:
+        trigger_percent: 25
+        delay_seconds: 60
+```
+
+Absent per-model fields inherit the global values. Explicit
+`delay_seconds: 0` disables idle summarization only for that model; explicit
+`trigger_percent: 0` means any non-empty history, not inheritance. Compression
+enablement is still resolved per model and gates the timer. The same settings
+are available under `/config → Compression → Advanced → Per-model overrides`,
+including **inherit (clear)** choices, or through `/config:set`:
+
+```text
+/config:set context_compression.per_model.my-model-id.idle_summarize.trigger_percent 25
+/config:set context_compression.per_model.my-model-id.idle_summarize.delay_seconds 0
+```
 
 Starting an exchange, stopping the agent, or clearing/restoring history
 cancels and invalidates pending work. Completion does not rearm until a later

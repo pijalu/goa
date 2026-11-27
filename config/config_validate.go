@@ -385,6 +385,12 @@ func (c *Config) validateAgenticModels(ve *internal.ValidationError) {
 func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	cc := c.ContextCompression
 	validateIdleSummarize(ve, "context_compression.idle_summarize", cc.IdleSummarize)
+	// Idle-summarize values affect runtime behavior even when another model's
+	// compression policy is disabled. Validate every override before the legacy
+	// global-disable early return so invalid per-model values cannot evade it.
+	for id, o := range cc.PerModel {
+		validateIdleSummarize(ve, fmt.Sprintf("context_compression.per_model.%s.idle_summarize", id), o.IdleSummarize)
+	}
 	if !cc.EnabledValue() {
 		return
 	}

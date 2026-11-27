@@ -212,55 +212,6 @@ func (m *configMenu) compressionAdvancedItems() []tui.SelectorItem {
 	}
 }
 
-func (m *configMenu) settingCompressionIdleTrigger() {
-	m.current = m.settingCompressionIdleTrigger
-	items := make([]tui.SelectorItem, 0, 21)
-	for percent := 0; percent <= 100; percent += 5 {
-		description := "compact at or above this occupancy"
-		if percent == 0 {
-			description = "allow any non-empty history"
-		}
-		items = append(items, tui.SelectorItem{
-			Value: fmt.Sprintf("%d", percent), Label: fmt.Sprintf("%d%%", percent), Description: description,
-		})
-	}
-	current := fmt.Sprintf("%d", m.ctx.Config.ContextCompression.IdleSummarize.TriggerPercentValue())
-	m.ctx.SelectOption("Idle summarize minimum context occupancy:", items, current, func(v string, ok bool) {
-		if !ok {
-			m.back()
-			return
-		}
-		m.applySet("context_compression.idle_summarize.trigger_percent", v)
-		m.back()
-	})
-}
-
-func (m *configMenu) settingCompressionIdleDelay() {
-	m.current = m.settingCompressionIdleDelay
-	items := make([]tui.SelectorItem, 0, 9)
-	for _, seconds := range []int{0, 30, 60, 120, 240, 300, 600, 900} {
-		items = append(items, tui.SelectorItem{
-			Value: fmt.Sprintf("%d", seconds), Label: idleSummarizeDelayLabel(seconds), Description: "inactivity after a completed stop",
-		})
-	}
-	current := m.ctx.Config.ContextCompression.IdleSummarize.DelaySecondsValue()
-	m.ctx.SelectOption("Idle summarize delay (seconds; 0 = disabled):", items, fmt.Sprintf("%d", current), func(v string, ok bool) {
-		if !ok {
-			m.back()
-			return
-		}
-		m.applySet("context_compression.idle_summarize.delay_seconds", v)
-		m.back()
-	})
-}
-
-func idleSummarizeDelayLabel(seconds int) string {
-	if seconds == 0 {
-		return "off"
-	}
-	return fmt.Sprintf("%ds", seconds)
-}
-
 // ceilingPercentLabel renders a layer ceiling: N% or the explicit disabled
 // spelling (0 = disabled under the opt-in semantics).
 func ceilingPercentLabel(v int) string {
@@ -354,7 +305,7 @@ func toggleCacheGateValue(v string) string {
 func ceilingPercentItems(withInherit bool) []tui.SelectorItem {
 	items := make([]tui.SelectorItem, 0, 21)
 	if withInherit {
-		items = append(items, tui.SelectorItem{Value: "", Label: "inherit (clear)", Description: "use the global threshold", PreserveOrder: true})
+		items = append(items, tui.SelectorItem{Value: perModelInheritValue, Label: "inherit (clear)", Description: "use the global threshold", PreserveOrder: true})
 	}
 	items = append(items, tui.SelectorItem{Value: "0", Label: "0% (disabled)", Description: "layer off", PreserveOrder: true})
 	for pct := 5; pct <= 100; pct += 5 {
@@ -656,6 +607,11 @@ func maxTokensLabel(v int) string {
 
 // --- per-model overrides ------------------------------------------------------
 
+// perModelInheritValue is intentionally non-empty: the selector channel uses
+// an empty string for Escape/cancel. selectPerModelValue translates this action
+// to the empty configuration value that clears an override.
+const perModelInheritValue = "__inherit__"
+
 // perModelCompressionLabel summarizes how many models carry a compression
 // override for the top-level menu row.
 func perModelCompressionLabel(cfg *config.Config) string {
@@ -728,6 +684,8 @@ func (m *configMenu) settingCompressionPerModelEdit(modelID string) {
 		{Value: "max_tokens", Label: "Max tokens", Description: perModelMaxTokensLabel(ov.MaxTokens)},
 		{Value: "cache_gate", Label: "Cache gate", Description: perModelCacheGateLabel(ov.CacheGate)},
 		{Value: "preserve_recent_turns", Label: "Preserve recent turns", Description: perModelIntInheritLabel(ov.PreserveRecentTurns)},
+		{Value: "idle_summarize.trigger_percent", Label: "Idle summarize: minimum context %", Description: perModelIdleTriggerLabel(ov.IdleSummarize.TriggerPercent)},
+		{Value: "idle_summarize.delay_seconds", Label: "Idle summarize: delay seconds", Description: perModelIdleDelayLabel(ov.IdleSummarize.DelaySeconds)},
 		{Value: "__clear__", Label: "— clear all overrides —", Description: "remove every per-model override for " + modelID},
 	}
 	m.ctx.SelectOption("Compression overrides for "+modelID+":", items, "", func(field string, ok bool) {
@@ -769,6 +727,10 @@ func (m *configMenu) openPerModelCompressionField(modelID, keyPrefix, field stri
 		m.promptPerModelInput("Max tokens for "+modelID+" (empty = inherit):", key)
 	case "preserve_recent_turns":
 		m.promptPerModelInput("Preserve recent turns for "+modelID+" (empty = inherit):", key)
+	case "idle_summarize.trigger_percent":
+		m.selectPerModelValue("Idle summarize minimum context occupancy for "+modelID+":", key, idleSummarizeTriggerItems(true))
+	case "idle_summarize.delay_seconds":
+		m.selectPerModelValue("Idle summarize delay for "+modelID+" (seconds; 0 = disabled):", key, idleSummarizeDelayItems(true))
 	}
 }
 
@@ -778,6 +740,9 @@ func (m *configMenu) selectPerModelValue(title, key string, items []tui.Selector
 		if !ok {
 			m.back()
 			return
+		}
+		if v == perModelInheritValue {
+			v = ""
 		}
 		m.applySet(key, v)
 		m.back()
@@ -867,7 +832,7 @@ func perModelEnabledLabel(ov config.ModelCompressionOverride) string {
 // force on, force off.
 func perModelEnabledItems() []tui.SelectorItem {
 	return []tui.SelectorItem{
-		{Value: "", Label: "inherit (clear)", Description: "follow the global flag; a stated ceiling still opts in"},
+		{Value: perModelInheritValue, Label: "inherit (clear)", Description: "follow the global flag; a stated ceiling still opts in"},
 		{Value: "true", Label: "on", Description: "compression on for this model even if globally disabled"},
 		{Value: "false", Label: "off", Description: "compression off for this model even if globally enabled"},
 	}
@@ -885,7 +850,7 @@ func perModelIntInheritLabel(v int) string {
 func compressionStrategyItems(withInherit bool) []tui.SelectorItem {
 	items := []tui.SelectorItem{}
 	if withInherit {
-		items = append(items, tui.SelectorItem{Value: "", Label: "inherit (clear)", Description: "use the global compression strategy"})
+		items = append(items, tui.SelectorItem{Value: perModelInheritValue, Label: "inherit (clear)", Description: "use the global compression strategy"})
 	}
 	return append(items,
 		tui.SelectorItem{Value: "micro", Label: "micro", Description: "truncate old tool result bodies (cache-friendly)"},
@@ -903,7 +868,7 @@ func compressionStrategyItems(withInherit bool) []tui.SelectorItem {
 func layerStrategyItems(withInherit, soft bool) []tui.SelectorItem {
 	items := []tui.SelectorItem{}
 	if withInherit {
-		items = append(items, tui.SelectorItem{Value: "", Label: "inherit (clear)", Description: "use the global layer strategy"})
+		items = append(items, tui.SelectorItem{Value: perModelInheritValue, Label: "inherit (clear)", Description: "use the global layer strategy"})
 	}
 	_ = soft // all methods on all layers; kept for call-site stability
 	return append(items,
@@ -924,7 +889,7 @@ func percentItemsWithInherit() []tui.SelectorItem {
 // cacheGateItems returns the cache-gate options plus inherit (clear).
 func cacheGateItems() []tui.SelectorItem {
 	return []tui.SelectorItem{
-		{Value: "", Label: "inherit (clear)", Description: "use the global cache-gate setting"},
+		{Value: perModelInheritValue, Label: "inherit (clear)", Description: "use the global cache-gate setting"},
 		{Value: "on", Label: "on", Description: "defer compression while the cache is hot"},
 		{Value: "off", Label: "off", Description: "compress at the threshold regardless of cache"},
 	}

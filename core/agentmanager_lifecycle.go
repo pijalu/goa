@@ -379,8 +379,8 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 		thresholds = agentic.CompressionThresholds{}
 	}
 	idleSummarize := agentic.IdleSummarizeConfig{
-		TriggerPercent: cfg.ContextCompression.IdleSummarize.TriggerPercentValue(),
-		Delay:          time.Duration(cfg.ContextCompression.IdleSummarize.DelaySecondsValue()) * time.Second,
+		TriggerPercent: ov.idleSummarize.TriggerPercentValue(),
+		Delay:          time.Duration(ov.idleSummarize.DelaySecondsValue()) * time.Second,
 	}
 	if !compressionEnabled {
 		idleSummarize.Delay = 0
@@ -473,6 +473,7 @@ type compressionOverlay struct {
 	strategies          config.CompressionLayerStrategiesConfig
 	cacheGate           string
 	legacyTrigger       int
+	idleSummarize       config.IdleSummarizeSettings
 }
 
 // compressionModelConfigID maps the runtime/API model name back to the stable
@@ -511,6 +512,7 @@ func overlayCompressionForModel(cc config.ContextCompressionConfig, modelID stri
 		strategies:          cc.Strategies,
 		cacheGate:           cc.CacheGate,
 		legacyTrigger:       cc.ThresholdPercent,
+		idleSummarize:       cc.IdleSummarize,
 	}
 	if modelID == "" {
 		return ov
@@ -520,7 +522,19 @@ func overlayCompressionForModel(cc config.ContextCompressionConfig, modelID stri
 		return ov
 	}
 	applyCompressionOverride(&ov, o)
+	mergeModelIdleSummarize(&ov.idleSummarize, o.IdleSummarize)
 	return ov
+}
+
+// mergeModelIdleSummarize applies only fields stated by the model override.
+// Pointer presence distinguishes inheritance from an explicit zero.
+func mergeModelIdleSummarize(dst *config.IdleSummarizeSettings, src config.IdleSummarizeSettings) {
+	if src.TriggerPercent != nil {
+		dst.TriggerPercent = src.TriggerPercent
+	}
+	if src.DelaySeconds != nil {
+		dst.DelaySeconds = src.DelaySeconds
+	}
 }
 
 // resolveAgenticThresholds folds the config-layer thresholds with the legacy

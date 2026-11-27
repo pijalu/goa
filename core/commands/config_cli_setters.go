@@ -384,12 +384,8 @@ func applyPerModelField(ov *config.ModelCompressionOverride, field, value string
 		return fmt.Errorf("per-model strategy must be one of: tool_elision, selective, summarize, hybrid, micro, fresh_window")
 	case "strategies.soft", "strategies.trigger", "strategies.hard":
 		return setPerModelLayerStrategy(ov, field, value)
-	case "thresholds.soft_percent":
-		return setPerModelLevel(&ov.Thresholds.SoftPercent, field, value, true)
-	case "thresholds.trigger_percent":
-		return setPerModelLevel(&ov.Thresholds.TriggerPercent, field, value, false)
-	case "thresholds.hard_percent":
-		return setPerModelLevel(&ov.Thresholds.HardPercent, field, value, false)
+	case "thresholds.soft_percent", "thresholds.trigger_percent", "thresholds.hard_percent":
+		return setPerModelThreshold(ov, field, value)
 	case "max_tokens":
 		return setPerModelIntRange(&ov.MaxTokens, field, value, 0, 1<<30)
 	case "cache_gate":
@@ -402,8 +398,57 @@ func applyPerModelField(ov *config.ModelCompressionOverride, field, value string
 		return fmt.Errorf("per-model cache_gate must be \"on\" or \"off\"")
 	case "preserve_recent_turns":
 		return setPerModelIntRange(&ov.PreserveRecentTurns, field, value, 0, 100)
+	case "idle_summarize.trigger_percent", "idle_summarize.delay_seconds":
+		return setPerModelIdleSummarize(ov, field, value)
 	}
 	return fmt.Errorf("unknown per-model compression field: %s", field)
+}
+
+// setPerModelThreshold selects and updates one tri-state threshold override.
+func setPerModelThreshold(ov *config.ModelCompressionOverride, field, value string) error {
+	switch field {
+	case "thresholds.soft_percent":
+		return setPerModelLevel(&ov.Thresholds.SoftPercent, field, value, true)
+	case "thresholds.trigger_percent":
+		return setPerModelLevel(&ov.Thresholds.TriggerPercent, field, value, false)
+	case "thresholds.hard_percent":
+		return setPerModelLevel(&ov.Thresholds.HardPercent, field, value, false)
+	}
+	return fmt.Errorf("unknown per-model threshold field: %s", field)
+}
+
+// setPerModelIdleSummarize updates one tri-state idle-summarize override.
+func setPerModelIdleSummarize(ov *config.ModelCompressionOverride, field, value string) error {
+	switch field {
+	case "idle_summarize.trigger_percent":
+		return setPerModelIntPtrRange(&ov.IdleSummarize.TriggerPercent, field, value, 0, 100)
+	case "idle_summarize.delay_seconds":
+		parsed, err := parseIdleSummarizeDelaySeconds(value, true)
+		if err != nil {
+			return err
+		}
+		ov.IdleSummarize.DelaySeconds = parsed
+		return nil
+	}
+	return fmt.Errorf("unknown per-model idle-summarize field: %s", field)
+}
+
+// setPerModelIntPtrRange writes a tri-state integer override. Empty clears to
+// inherit; numeric zero is materialized rather than confused with absence.
+func setPerModelIntPtrRange(dst **int, field, value string, min, max int) error {
+	if value == "" {
+		*dst = nil
+		return nil
+	}
+	v, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	if v < min || v > max {
+		return fmt.Errorf("%s must be between %d and %d (got %d)", field, min, max, v)
+	}
+	*dst = &v
+	return nil
 }
 
 // setPerModelEnabled validates and writes the per-model enable tri-state
@@ -589,16 +634,30 @@ func setIntPtrRange(getter func(*config.Config) **int, min, max int) configSette
 }
 
 func setIdleSummarizeDelaySeconds(cfg *config.Config, value string) error {
-	v, err := strconv.Atoi(value)
+	parsed, err := parseIdleSummarizeDelaySeconds(value, false)
 	if err != nil {
 		return err
 	}
+	cfg.ContextCompression.IdleSummarize.DelaySeconds = parsed
+	return nil
+}
+
+// parseIdleSummarizeDelaySeconds validates the shared global/per-model delay
+// syntax. Empty is accepted only for per-model fields, where it clears to
+// inherit; a numeric zero remains an explicit disable.
+func parseIdleSummarizeDelaySeconds(value string, allowInherit bool) (*int, error) {
+	if value == "" && allowInherit {
+		return nil, nil
+	}
+	v, err := strconv.Atoi(value)
+	if err != nil {
+		return nil, err
+	}
 	const maxDelaySeconds = int64(time.Duration(1<<63-1) / time.Second)
 	if v < 0 || int64(v) > maxDelaySeconds {
-		return fmt.Errorf("idle summarize delay must be between 0 and %d seconds (got %d)", maxDelaySeconds, v)
+		return nil, fmt.Errorf("idle summarize delay must be between 0 and %d seconds (got %d)", maxDelaySeconds, v)
 	}
-	cfg.ContextCompression.IdleSummarize.DelaySeconds = &v
-	return nil
+	return &v, nil
 }
 
 // setGoalVerifyTimeout parses a duration for goals.verify_timeout: positive,

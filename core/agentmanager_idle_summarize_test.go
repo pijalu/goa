@@ -208,6 +208,55 @@ func TestAgentManagerIdleSummarizeEndToEnd(t *testing.T) {
 	f.assertNextUsesCheckpoint(t, cacheIDBefore)
 }
 
+func TestAgentManagerIdleSummarizePerModelEndToEnd(t *testing.T) {
+	p := &idleSessionStopProvider{
+		api: provider.Api(fmt.Sprintf("idle-manager-per-model-%d", time.Now().UnixNano())), compactionSeen: make(chan struct{}, 4),
+	}
+	provider.RegisterApiProvider(p)
+	trigger, globalDelay, disabledDelay, enabledDelay := 0, 1, 0, 1
+	cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
+		IdleSummarize: config.IdleSummarizeSettings{TriggerPercent: &trigger, DelaySeconds: &globalDelay},
+		PerModel: map[string]config.ModelCompressionOverride{
+			"idle-disabled": {IdleSummarize: config.IdleSummarizeSettings{DelaySeconds: &disabledDelay}},
+			"idle-enabled":  {IdleSummarize: config.IdleSummarizeSettings{DelaySeconds: &enabledDelay}},
+		},
+	}}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+	t.Cleanup(am.Close)
+	t.Cleanup(func() { _ = am.StopSession() })
+	disabled := provider.Model{ID: "idle-disabled", Api: p.api, Provider: provider.ProviderCustom, ContextWindow: 4_000}
+	if _, err := am.StartSession(disabled, provider.StreamOptions{}, "test", nil, cfg); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	agent := am.CurrentAgent()
+	agent.SetHistory([]agentic.Message{
+		{Type: agentic.Content, Role: agentic.System, Content: "test"},
+		{Type: agentic.Content, Role: agentic.User, Content: strings.Repeat("old request ", 100)},
+		{Type: agentic.Content, Role: agentic.Assistant, Content: strings.Repeat("old answer ", 100)},
+	})
+	if err := agent.Run(context.Background(), "disabled model exchange"); err != nil {
+		t.Fatalf("disabled model Run: %v", err)
+	}
+	select {
+	case <-p.compactionSeen:
+		t.Fatal("zero-delay model unexpectedly ran idle summarize")
+	case <-time.After(1200 * time.Millisecond):
+	}
+
+	am.SetModel(provider.Model{ID: "idle-enabled", Api: p.api, Provider: provider.ProviderCustom, ContextWindow: 4_000})
+	if err := agent.Run(context.Background(), "enabled model exchange"); err != nil {
+		t.Fatalf("enabled model Run: %v", err)
+	}
+	select {
+	case <-p.compactionSeen:
+	case <-time.After(3 * time.Second):
+		t.Fatal("enabled model did not run its configured idle summarize")
+	}
+	if got := p.compactionCalls.Load(); got != 1 {
+		t.Fatalf("compaction calls = %d, want exactly one from enabled model", got)
+	}
+}
+
 func TestBuildCompressionConfigMapsIdleSummarize(t *testing.T) {
 	trigger, delay := 37, 125
 	cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
@@ -217,6 +266,77 @@ func TestBuildCompressionConfigMapsIdleSummarize(t *testing.T) {
 	got := am.buildCompressionConfig(cfg, "some-model", 32_768)
 	if got.IdleSummarize.TriggerPercent != 37 || got.IdleSummarize.Delay != 125*time.Second {
 		t.Fatalf("IdleSummarize = %+v, want trigger 37 and delay 125s", got.IdleSummarize)
+	}
+}
+
+func TestBuildCompressionConfigIdleSummarizePerModel(t *testing.T) {
+	trigger, delay, zero, customTrigger, customDelay := 35, 120, 0, 65, 15
+	cfg := &config.Config{
+		Models: []config.ModelConfig{{ID: "stable-id", Model: "wire/shared-model"}},
+		ContextCompression: config.ContextCompressionConfig{
+			IdleSummarize: config.IdleSummarizeSettings{TriggerPercent: &trigger, DelaySeconds: &delay},
+			PerModel: map[string]config.ModelCompressionOverride{
+				"stable-id": {IdleSummarize: config.IdleSummarizeSettings{TriggerPercent: &zero}},
+				"disabled":  {IdleSummarize: config.IdleSummarizeSettings{DelaySeconds: &zero}},
+				"custom": {IdleSummarize: config.IdleSummarizeSettings{
+					TriggerPercent: &customTrigger, DelaySeconds: &customDelay,
+				}},
+			},
+		},
+	}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+	for _, tc := range []struct {
+		model       string
+		wantTrigger int
+		wantDelay   time.Duration
+	}{
+		{"wire/shared-model", 0, 120 * time.Second}, // stable config ID, partial inheritance
+		{"disabled", 35, 0},                         // explicit model-only opt-out
+		{"custom", 65, 15 * time.Second},
+		{"unconfigured", 35, 120 * time.Second},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			got := am.buildCompressionConfig(cfg, tc.model, 32_768).IdleSummarize
+			if got.TriggerPercent != tc.wantTrigger || got.Delay != tc.wantDelay {
+				t.Fatalf("IdleSummarize = %+v, want trigger %d and delay %v", got, tc.wantTrigger, tc.wantDelay)
+			}
+		})
+	}
+}
+
+func TestAgentManagerIdleSummarizePerModelSwitchAndRefresh(t *testing.T) {
+	trigger, firstDelay, secondDelay, refreshedDelay := 20, 30, 60, 45
+	cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
+		IdleSummarize: config.IdleSummarizeSettings{TriggerPercent: &trigger, DelaySeconds: &firstDelay},
+		PerModel: map[string]config.ModelCompressionOverride{
+			"second": {IdleSummarize: config.IdleSummarizeSettings{DelaySeconds: &secondDelay}},
+		},
+	}}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+	first := provider.Model{ID: "first", Api: provider.ApiOpenAICompletions, ContextWindow: 32_768}
+	if _, err := am.StartSession(first, provider.StreamOptions{}, "sys", nil, cfg); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	t.Cleanup(func() { _ = am.StopSession() })
+	if got := am.CurrentAgent().CompressionConfig().IdleSummarize.Delay; got != 30*time.Second {
+		t.Fatalf("first model delay = %v, want 30s", got)
+	}
+
+	am.SetModel(provider.Model{ID: "second", Api: provider.ApiOpenAICompletions, ContextWindow: 32_768})
+	if got := am.CurrentAgent().CompressionConfig().IdleSummarize.Delay; got != time.Minute {
+		t.Fatalf("second model delay = %v, want 1m", got)
+	}
+	ov := cfg.ContextCompression.PerModel["second"]
+	ov.IdleSummarize.DelaySeconds = &refreshedDelay
+	cfg.ContextCompression.PerModel["second"] = ov
+	am.RefreshContextCompression()
+	if got := am.CurrentAgent().CompressionConfig().IdleSummarize.Delay; got != 45*time.Second {
+		t.Fatalf("delay after live refresh = %v, want 45s", got)
+	}
+
+	am.SetModel(first)
+	if got := am.CurrentAgent().CompressionConfig().IdleSummarize.Delay; got != 30*time.Second {
+		t.Fatalf("delay after switching back = %v, want global 30s", got)
 	}
 }
 
@@ -247,6 +367,21 @@ func TestBuildCompressionConfigIdleSummarizeDefaultsAndDisable(t *testing.T) {
 		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
 		if got := am.buildCompressionConfig(cfg, "some-model", 32_768).IdleSummarize.Delay; got != 0 {
 			t.Fatalf("Delay = %v with compression disabled, want zero", got)
+		}
+	})
+
+	t.Run("per-model compression disabled", func(t *testing.T) {
+		disabled, trigger, delay := false, 0, 30
+		cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
+			PerModel: map[string]config.ModelCompressionOverride{
+				"some-model": {Enabled: &disabled, IdleSummarize: config.IdleSummarizeSettings{
+					TriggerPercent: &trigger, DelaySeconds: &delay,
+				}},
+			},
+		}}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		if got := am.buildCompressionConfig(cfg, "some-model", 32_768).IdleSummarize.Delay; got != 0 {
+			t.Fatalf("Delay = %v with per-model compression disabled, want zero", got)
 		}
 	})
 }
