@@ -180,6 +180,11 @@ func restoreSession(
 		return nil
 	}
 
+	// Standalone Todo changes are not part of the persisted agent event stream.
+	// Clear the previous session's list before replay instead of leaving its
+	// footer count attached to the restored conversation.
+	resetSessionTodosForReplay(es)
+
 	// If an agent session is active, inject the rebuilt history so the next
 	// user turn sees the restored conversation context.
 	if agentMgr != nil {
@@ -233,6 +238,14 @@ func restoreSession(
 		es.Flash(fmt.Sprintf("Loaded session: %s (%d events)", name, len(events)))
 	}()
 	return nil
+}
+
+// resetSessionTodosForReplay uses the optional host lifecycle hook without
+// requiring headless command environments to provide one.
+func resetSessionTodosForReplay(es core.EventSink) {
+	if resetter, ok := es.(interface{ ResetSessionTodos() }); ok {
+		resetter.ResetSessionTodos()
+	}
 }
 
 // adoptRestoredSessionModel re-binds the restored session's recorded

@@ -76,6 +76,7 @@ type subsystems struct {
 	commandStats      *CommandStats
 	stateStore        *core.StateStore
 	goalManager       *core.GoalManager
+	todoList          *tools.TodoListTool // app-owned standalone list; shared by startup/runtime lifecycle
 	goalDriver        *core.GoalDriver
 	orchAdapter       *OrchestratorAdapter
 	orchActive        *orchestrator.ActiveRuntime
@@ -373,8 +374,9 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	// The standalone todo_list tool (available outside of goal). It is
 	// linked to the goal's own todo list while a goal is active and falls back
 	// to its session list otherwise; tools.enabled.todo gates registration.
+	todoList := newTodoListTool(goalManager, agentBundle.eventBus)
 	if cfg.Tools.Enabled.Todo {
-		subs.toolRegistry.Register(newTodoListTool(goalManager, agentBundle.eventBus))
+		subs.toolRegistry.Register(todoList)
 	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	registerSessionQueryTools(subs.toolRegistry, agentBundle.sessionStore, cfg)
@@ -441,7 +443,9 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		attachWebFetchSummarizer(subs.toolRegistry, &webFetchAgentPool{pool: agentPool})
 	}
 
-	return assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts, registry, swarmState, taskBus)
+	assembled := assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts, registry, swarmState, taskBus)
+	assembled.todoList = todoList
+	return assembled
 }
 
 // wireCacheStatsIdentity connects cache-stats identity: sub-agent turns flow

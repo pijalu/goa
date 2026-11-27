@@ -270,6 +270,16 @@ func (t *TodoListTool) notifySessionChange(open int) {
 	}
 }
 
+// ResetSession starts a fresh standalone list without touching goal-linked
+// Todos. The notification keeps footer observers in lockstep with the reset.
+func (t *TodoListTool) ResetSession() {
+	t.mu.Lock()
+	t.items = nil
+	t.nextID = 0
+	t.mu.Unlock()
+	t.notifySessionChange(0)
+}
+
 // Items returns a copy of the current todo items.
 func (t *TodoListTool) Items() []TodoItem {
 	t.mu.RLock()

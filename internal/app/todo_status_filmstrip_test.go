@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/ansi"
@@ -115,6 +116,101 @@ func TestFilmstrip_SessionTodoStatusUpdatesFooter(t *testing.T) {
 	for _, step := range steps {
 		view := executeStatusMutation(t, sc, bus, tool, step.input, step.label)
 		assertStatusMutation(t, view, step.label, step.want, step.not)
+	}
+}
+
+func TestFilmstrip_NewSessionClearsSessionTodoStatus(t *testing.T) {
+	sc, bus, _ := newStatusMutationScenario(t)
+	tool := sessionTodoTool(sc.app.subs)
+	sc.app.subs.toolRegistry = tools.NewToolRegistry()
+	sc.app.subs.toolRegistry.Register(tool)
+	for _, description := range []string{"one", "two", "three", "four"} {
+		view := executeStatusMutation(t, sc, bus, tool, `{"action":"add","description":"`+description+`"}`, "add "+description)
+		assertStatusMutation(t, view, "add "+description, nil, nil)
+	}
+	before := ansi.Strip(strings.Join(sc.footer.Render(100), "\n"))
+	if !strings.Contains(before, "coding-posture ⬩⬩⬩+1") {
+		t.Fatalf("reproduction precondition missing four-open-Todo marker:\n%s", before)
+	}
+
+	sc.engine.ApplySync(func() { sc.app.handleNewSession() })
+	sc.engine.RenderNow()
+	after := ansi.Strip(strings.Join(sc.footer.Render(100), "\n"))
+	sc.film.Capture("new session clears standalone todos", sc.engine.AgentFrame(), sc.status.Text())
+	if got := len(tool.Items()); got != 0 {
+		t.Errorf("standalone Todos survived /new: %d items", got)
+	}
+	if strings.Contains(after, "⬩") {
+		t.Errorf("stale standalone Todo marker survived /new:\n%s", after)
+	}
+	t.Logf("new-session Todo status terminal filmstrip:\n%s", sc.filmstrip().Render())
+}
+
+func TestFilmstrip_RestoreSessionClearsSessionTodoStatus(t *testing.T) {
+	sc, bus, _ := newStatusMutationScenario(t)
+	setupForkScenarioStore(t, sc)
+	tool := sessionTodoTool(sc.app.subs)
+	for _, description := range []string{"one", "two", "three", "four"} {
+		executeStatusMutation(t, sc, bus, tool, `{"action":"add","description":"`+description+`"}`, "add "+description)
+	}
+	before := ansi.Strip(strings.Join(sc.footer.Render(100), "\n"))
+	if !strings.Contains(before, "coding-posture ⬩⬩⬩+1") {
+		t.Fatalf("restore reproduction precondition missing four-open-Todo marker:\n%s", before)
+	}
+
+	ctx := coreContextForCommand(sc.app.subs, sc.app)
+	sc.engine.ApplySync(func() {
+		if err := (&commands.SessionCommand{}).Run(ctx, []string{"restore", "src"}); err != nil {
+			t.Errorf("restore session: %v", err)
+		}
+	})
+	waitForFrame(t, sc, "Loaded session: src")
+	after := ansi.Strip(strings.Join(sc.footer.Render(100), "\n"))
+	sc.film.Capture("restored session without standalone todos", sc.engine.AgentFrame(), sc.status.Text())
+	if got := len(tool.Items()); got != 0 {
+		t.Errorf("standalone Todos survived session restore: %d items", got)
+	}
+	if strings.Contains(after, "⬩") {
+		t.Errorf("stale standalone Todo marker survived session restore:\n%s", after)
+	}
+	t.Logf("session-restore Todo status terminal filmstrip:\n%s", sc.filmstrip().Render())
+}
+
+func TestFilmstrip_TodoToolLifecycleClearsSessionStatus(t *testing.T) {
+	sc, bus, _ := newStatusMutationScenario(t)
+	tool := sessionTodoTool(sc.app.subs)
+	sc.app.subs.toolRegistry = tools.NewToolRegistry()
+	sc.app.subs.toolRegistry.Register(tool)
+	sc.app.subs.cfg.Tools.Enabled.Todo = true
+	for _, description := range []string{"one", "two", "three", "four"} {
+		executeStatusMutation(t, sc, bus, tool, `{"action":"add","description":"`+description+`"}`, "add "+description)
+	}
+	ctx := coreContextForCommand(sc.app.subs, sc.app)
+	ctx.ConfigSaver = nil // lifecycle test does not persist a real project layer
+	if _, err := commands.ApplyToolToggle(ctx, "todo_list", false); err != nil {
+		t.Fatalf("disable todo_list: %v", err)
+	}
+	sc.engine.RenderNow()
+	afterDisable := ansi.Strip(strings.Join(sc.footer.Render(100), "\n"))
+	if strings.Contains(afterDisable, "⬩") {
+		t.Errorf("disabled tool left orphaned Todo markers:\n%s", afterDisable)
+	}
+
+	if _, err := commands.ApplyToolToggle(ctx, "todo_list", true); err != nil {
+		t.Fatalf("re-enable todo_list: %v", err)
+	}
+	registered, ok := sc.app.subs.toolRegistry.Get("todo_list")
+	if !ok {
+		t.Fatal("todo_list missing after re-enable")
+	}
+	if got := len(registered.(*tools.TodoListTool).Items()); got != 0 {
+		t.Fatalf("re-enabled todo_list has %d items, want a fresh list", got)
+	}
+	sc.engine.RenderNow()
+	afterEnable := ansi.Strip(strings.Join(sc.footer.Render(100), "\n"))
+	sc.film.Capture("re-enabled empty standalone todo tool", sc.engine.AgentFrame(), sc.status.Text())
+	if strings.Contains(afterEnable, "⬩") {
+		t.Errorf("empty replacement tool inherited stale footer markers:\n%s", afterEnable)
 	}
 }
 

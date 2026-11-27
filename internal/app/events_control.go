@@ -41,6 +41,10 @@ func (a *App) handleNewSession() bool {
 	if a.subs.agentMgr != nil {
 		a.subs.agentMgr.StopSession()
 	}
+	// Standalone Todos belong to the session, not the process or tool registry.
+	// Reset their source of truth and synchronously clear the preserved footer
+	// count so the first fresh frame cannot inherit the old session's markers.
+	resetSessionTodos(a.subs)
 	// Deliberate transcript reset: wipe the screen + terminal scrollback and
 	// reset the compositor watermark so the fresh canvas renders as a first
 	// frame. Without this the old scrollback watermark either flashes the old

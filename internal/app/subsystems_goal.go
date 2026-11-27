@@ -321,6 +321,32 @@ func newTodoListTool(manager *core.GoalManager, bus *event.Bus) *tools.TodoListT
 	return tool
 }
 
+// sessionTodoTool returns the application's single standalone Todo owner.
+// Startup registration and runtime re-enable must not construct independent
+// lists whose counts can diverge from the footer.
+func sessionTodoTool(subs *subsystems) *tools.TodoListTool {
+	if subs.todoList == nil {
+		subs.todoList = newTodoListTool(subs.goalManager, subs.events)
+	}
+	return subs.todoList
+}
+
+// resetSessionTodos resets both the source of truth and the preserved footer
+// field. The tool also publishes its ordinary change event for other consumers;
+// the direct footer write makes /new and tool disable visible in the same UI
+// update instead of depending on a later event-loop turn.
+func resetSessionTodos(subs *subsystems) {
+	if subs == nil {
+		return
+	}
+	if subs.todoList != nil {
+		subs.todoList.ResetSession()
+	}
+	if subs.footer != nil {
+		subs.footer.SetSessionTodoCount(0)
+	}
+}
+
 func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn func() bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) {
 	toolRegistry.Register(newGoalTool(manager, createFlagOn, autoUnblock, freshContextDefault, verifyTimeout))
 }

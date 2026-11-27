@@ -12,6 +12,7 @@ import (
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -23,6 +24,7 @@ func TestForkCommand_Filmstrip(t *testing.T) {
 	sc := newUIScenario(t, 100, 30)
 	subs := sc.app.subs
 	store, srcEvents := setupForkScenarioStore(t, sc)
+	seedForkStandaloneTodo(t, sc)
 
 	// Run /fork through the production command context on the engine loop.
 	// Event-bus dispatch (ClearChat/Flash/replay) is pumped synchronously by
@@ -92,6 +94,30 @@ func TestForkCommand_Filmstrip(t *testing.T) {
 	}
 
 	assertForkedState(t, sc, store, srcEvents)
+	assertForkStandaloneTodosCleared(t, sc)
+}
+
+func seedForkStandaloneTodo(t *testing.T, sc *uiScenario) {
+	t.Helper()
+	todo := sessionTodoTool(sc.app.subs)
+	if _, err := todo.Execute(`{"action":"add","description":"old session todo"}`); err != nil {
+		t.Fatalf("seed standalone Todo: %v", err)
+	}
+	pumpEvents(sc)
+	if got := len(todo.Items()); got != 1 {
+		t.Fatalf("standalone Todo seed = %d items, want 1", got)
+	}
+}
+
+func assertForkStandaloneTodosCleared(t *testing.T, sc *uiScenario) {
+	t.Helper()
+	if got := len(sessionTodoTool(sc.app.subs).Items()); got != 0 {
+		t.Errorf("standalone Todos survived fork: %d items", got)
+	}
+	footer := ansi.Strip(strings.Join(sc.footer.Render(100), "\n"))
+	if strings.Contains(footer, "⬩") {
+		t.Errorf("stale standalone Todo marker survived fork:\n%s", footer)
+	}
 }
 
 // assertForkedState verifies the agent history was truncated at the fork

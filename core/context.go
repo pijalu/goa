@@ -209,6 +209,12 @@ type Context struct {
 	// no-op.
 	SetEditorTextFunc func(text string)
 
+	// ResetSessionTodosFunc clears standalone, session-scoped Todo state when a
+	// saved session replaces the current one. Restore/fork call it before replay;
+	// Todo changes are footer events, not persisted agent events, so replay cannot
+	// reconstruct the source session's list. Optional; nil is a no-op.
+	ResetSessionTodosFunc func()
+
 	// ShowInputFunc is an optional callback for a single-line text prompt.
 	// The onSubmit callback is invoked with the result when the user confirms
 	// or cancels. This is async-friendly: the caller returns immediately and
@@ -593,6 +599,14 @@ func (c Context) ConfirmMulti(title, body string, options []tui.ConfirmOption, d
 func (c Context) SetEditorText(text string) {
 	if c.SetEditorTextFunc != nil {
 		c.SetEditorTextFunc(text)
+	}
+}
+
+// ResetSessionTodos clears standalone Todo state at a session-replacement
+// boundary when the host provides the callback; otherwise it is a no-op.
+func (c Context) ResetSessionTodos() {
+	if c.ResetSessionTodosFunc != nil {
+		c.ResetSessionTodosFunc()
 	}
 }
 

@@ -233,6 +233,10 @@ func forkAtTurn(
 		return nil
 	}
 
+	// A fork is a new standalone-Todo scope. Todo changes are footer events,
+	// not persisted agent events, so replay cannot restore the source list.
+	resetSessionTodosForReplay(es)
+
 	if agentMgr != nil {
 		if agent := agentMgr.CurrentAgent(); agent != nil {
 			// Rebuild conversation history from the truncated events.

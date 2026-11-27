@@ -41,6 +41,7 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 		ConfigSaver:            subs.loader,
 		DocsProvider:           &DocsProvider{},
 		EventBus:               subs.events,
+		ResetSessionTodosFunc:  func() { resetSessionTodos(subs) },
 		WorktreeManager:        subs.worktreeMgr,
 		PipelineRunner:         subs.pipelineRunner,
 		ModeRegistry:           subs.modeRegistry,
@@ -320,7 +321,7 @@ func runtimeToolBuilders(subs *subsystems) map[string]func() (agentic.Tool, bool
 			if subs.goalManager == nil {
 				return nil, false
 			}
-			return newTodoListTool(subs.goalManager, subs.events), true
+			return sessionTodoTool(subs), true
 		},
 	}
 }
@@ -390,6 +391,10 @@ func skillRegistryFor(subs *subsystems) core.SkillRegistry {
 // Issue LSP — off must mean off, including background spawns).
 func makeToolTeardown(subs *subsystems) func(name string) {
 	return func(name string) {
+		if name == "todo_list" {
+			resetSessionTodos(subs)
+			return
+		}
 		if name != "lsp" {
 			return
 		}
