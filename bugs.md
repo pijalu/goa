@@ -27,20 +27,3 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
-
-## Excessive CPU usage during streaming
-
-**Observed:** `goa` CPU usage while streaming is much higher than expected —
-over 20% of a core sustained during a response, even on small conversations.
-Usage CLIMBS once the streamed answer grows past the visible screen / buffer
-(i.e. as rows spill into scrollback) and stays high for the rest of the turn.
-**Expected:** streaming should be dominated by network wait; per-chunk render
-work should stay well under a few percent (incremental diff path, no
-full-transcript recompose per chunk).
-**Needs:** a profiling review (CPU profile during a long streaming turn,
-`GOA_PROFILING` / pprof) to identify the hotspot before changing anything. The
-"climbs past the viewport" correlation points at work proportional to transcript
-length per chunk: a full-canvas recompose / `\x1b[3J` scrollback reset per chunk
-(should be the settled-once deferred path), per-row `uniseg` width measurement
-over the whole history, or chat-viewport re-wrapping of all entries on each
-append.

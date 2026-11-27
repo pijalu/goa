@@ -47,6 +47,7 @@ type RuntimeOptions struct {
 	TraceFile        string
 	PerfLoad         bool
 	PerfLoadDuration time.Duration
+	PerfLoadGrow     bool
 	WithProfiling    bool
 	// Server is set by the `goa server` subcommand: run the interactive
 	// session against a virtual terminal and serve it over HTTP instead of a
@@ -366,6 +367,7 @@ type runtimeFlagDefs struct {
 	traceFile          *string
 	perfLoad           *bool
 	perfLoadDuration   *time.Duration
+	perfLoadGrow       *bool
 	withProfiling      *bool
 	serverAddr         *string
 	serverReadOnly     *bool
@@ -426,6 +428,7 @@ func defineRuntimeFlags(fs *flag.FlagSet) runtimeFlagDefs {
 		traceFile:          fs.String("trace", "", "Write execution trace to `file`"),
 		perfLoad:           fs.Bool("perf-load", false, "Run a synthetic TUI performance load instead of an agent turn"),
 		perfLoadDuration:   fs.Duration("perf-load-duration", 30*time.Second, "Duration of the synthetic performance load"),
+		perfLoadGrow:       fs.Bool("perf-load-grow", true, "perf-load appends to one growing assistant message (real streaming) instead of replacing the last line each tick"),
 		withProfiling:      fs.Bool("with-profiling", false, "Capture CPU, memory, and trace profiles after exit (default names unless overridden)"),
 		serverAddr:         fs.String("server-addr", "", "Listen address for 'goa server' (default 127.0.0.1:8080)"),
 		serverReadOnly:     fs.Bool("server-read-only", false, "Serve 'goa server' as a viewer: browsers see the session but cannot drive it"),
@@ -480,6 +483,7 @@ func (r *runtimeFlagDefs) collectInto(fs *flag.FlagSet) RuntimeOptions {
 		TraceFile:        *r.traceFile,
 		PerfLoad:         *r.perfLoad,
 		PerfLoadDuration: *r.perfLoadDuration,
+		PerfLoadGrow:     *r.perfLoadGrow,
 		WithProfiling:    *r.withProfiling,
 		ServerAddr:       *r.serverAddr,
 		ServerReadOnly:   *r.serverReadOnly,

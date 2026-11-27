@@ -168,6 +168,7 @@ type subsystems struct {
 	// Perf-load mode settings.
 	perfLoad         bool
 	perfLoadDuration time.Duration
+	perfLoadGrow     bool
 
 	// toolTracker owns the lifecycle of tool-call widgets for the foreground
 	// conversation stream (the single source of truth — no per-call maps).

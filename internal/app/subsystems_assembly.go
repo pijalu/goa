@@ -84,6 +84,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		MemoryBudget:      opts.MemoryBudget,
 		perfLoad:          opts.PerfLoad,
 		perfLoadDuration:  opts.PerfLoadDuration,
+		perfLoadGrow:      opts.PerfLoadGrow,
 		agentStreams:      newAgentStreamRegistry(),
 		registry:          registry,
 		bgMgr:             base.bgMgr,

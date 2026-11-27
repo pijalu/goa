@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -74,29 +75,122 @@ func MoveLeft(n int) string { return fmt.Sprintf(CSI+"%dD", n) }
 func MoveToCol(n int) string { return fmt.Sprintf(CSI+"%dG", n) }
 
 // FgRGB returns a true-color foreground ANSI sequence.
-func FgRGB(r, g, b uint8) string { return fmt.Sprintf(CSI+"38;2;%d;%d;%dm", r, g, b) }
-
-// BgRGB returns a true-color background ANSI sequence.
-func BgRGB(r, g, b uint8) string { return fmt.Sprintf(CSI+"48;2;%d;%d;%dm", r, g, b) }
-
-// HexToRGB converts a hex color string (#RGB or #RRGGBB) to RGB components.
-func HexToRGB(hex string) (r, g, b uint8) {
-	hex = strings.TrimPrefix(hex, "#")
-	if len(hex) == 3 {
-		hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
-	}
-	if len(hex) != 6 {
-		return 128, 128, 128
-	}
-	var rv, gv, bv uint8
-	fmt.Sscanf(hex, "%02x%02x%02x", &rv, &gv, &bv)
-	return rv, gv, bv
+func FgRGB(r, g, b uint8) string {
+	return rgbSequence("38", r, g, b)
 }
 
-// Fg returns the ANSI foreground color sequence for a hex color.
+// BgRGB returns a true-color background ANSI sequence.
+func BgRGB(r, g, b uint8) string {
+	return rgbSequence("48", r, g, b)
+}
+
+// rgbSequence builds CSI <layer>;2;r;g;b m without fmt: color sequences are
+// emitted for every styled span of every rendered row, so this sits on the hot
+// path of the streaming renderer.
+func rgbSequence(layer string, r, g, b uint8) string {
+	var buf [24]byte
+	n := copy(buf[:], CSI)
+	n += copy(buf[n:], layer)
+	n += copy(buf[n:], ";2;")
+	n = appendDecimal(buf[:], n, r)
+	buf[n] = ';'
+	n = appendDecimal(buf[:], n+1, g)
+	buf[n] = ';'
+	n = appendDecimal(buf[:], n+1, b)
+	buf[n] = 'm'
+	return string(buf[:n+1])
+}
+
+// appendDecimal writes v's decimal digits at buf[n:] and returns the next
+// free offset.
+func appendDecimal(buf []byte, n int, v uint8) int {
+	switch {
+	case v >= 100:
+		buf[n] = '0' + v/100
+		buf[n+1] = '0' + (v/10)%10
+		buf[n+2] = '0' + v%10
+		return n + 3
+	case v >= 10:
+		buf[n] = '0' + v/10
+		buf[n+1] = '0' + v%10
+		return n + 2
+	default:
+		buf[n] = '0' + v
+		return n + 1
+	}
+}
+
+// HexToRGB converts a hex color string (#RGB or #RRGGBB) to RGB components.
+// Malformed input yields the neutral grey (128,128,128); a partially valid
+// string keeps the components parsed before the invalid one, matching the
+// previous fmt.Sscanf-based parser.
+func HexToRGB(hex string) (r, g, b uint8) {
+	hex = strings.TrimPrefix(hex, "#")
+	switch len(hex) {
+	case 3:
+		// #RGB expands to #RRGGBB.
+		hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
+	case 6:
+	default:
+		return 128, 128, 128
+	}
+	var vals [3]uint8
+	for i := 0; i < 3; i++ {
+		hi, ok := hexDigit(hex[2*i])
+		if !ok {
+			return vals[0], vals[1], vals[2]
+		}
+		lo, ok := hexDigit(hex[2*i+1])
+		if !ok {
+			return vals[0], vals[1], vals[2]
+		}
+		vals[i] = hi<<4 | lo
+	}
+	return vals[0], vals[1], vals[2]
+}
+
+// hexDigit decodes one hexadecimal digit. Unlike strconv it reports failure
+// instead of returning an error value, keeping the colour path allocation-free.
+func hexDigit(c byte) (uint8, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
+}
+
+// hexSequences memoizes the escape sequence of every hex colour seen, keyed
+// per layer (fore/background) with no key allocation. Themes use a small fixed
+// palette, but inline markdown styling asks for the same few colours thousands
+// of times per frame, so the lookup removes both the decode and the sequence
+// build from the render hot path.
+var (
+	fgSequences sync.Map // map[string]string keyed by hex
+	bgSequences sync.Map // map[string]string keyed by hex
+)
+
+// cachedSequence returns the memoized sequence for hex from cache, building it
+// with build on first use.
+func cachedSequence(cache *sync.Map, hex string, build func(string) string) string {
+	if v, ok := cache.Load(hex); ok {
+		return v.(string)
+	}
+	seq := build(hex)
+	cache.Store(hex, seq)
+	return seq
+}
+
+// Fg returns the ANSI foreground color sequence for a hex color. Results are
+// memoized: rendered rows ask for the same theme colours on every frame.
 func Fg(hex string) string {
-	r, g, b := HexToRGB(hex)
-	return FgRGB(r, g, b)
+	return cachedSequence(&fgSequences, hex, func(h string) string {
+		r, g, b := HexToRGB(h)
+		return FgRGB(r, g, b)
+	})
 }
 
 // Hyperlink wraps text in an OSC-8 hyperlink sequence so supporting
@@ -111,10 +205,13 @@ func Hyperlink(url, text string) string {
 	return Esc + "]8;;" + url + "\x07" + text + Esc + "]8;;\x07"
 }
 
-// Bg returns the ANSI background color sequence for a hex color.
+// Bg returns the ANSI background color sequence for a hex color. Memoized for
+// the same reason as Fg.
 func Bg(hex string) string {
-	r, g, b := HexToRGB(hex)
-	return BgRGB(r, g, b)
+	return cachedSequence(&bgSequences, hex, func(h string) string {
+		r, g, b := HexToRGB(h)
+		return BgRGB(r, g, b)
+	})
 }
 
 // UnderlineColorRGB returns an ISO 8613-6 true-color underline-color sequence
@@ -169,6 +266,9 @@ var ansiRe = regexp.MustCompile(`\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-9;?]*
 
 // Strip removes ANSI escape sequences from a string.
 func Strip(s string) string {
+	if strings.IndexByte(s, 0x1b) < 0 {
+		return s // fast path: no escape sequences to strip
+	}
 	return ansiRe.ReplaceAllString(s, "")
 }
 
@@ -210,6 +310,15 @@ func Sanitize(s string) string {
 // (e.g. the ZWJ family emoji 👨‍👩‍👧 renders as 2 columns, not the 6 that a
 // naive per-rune sum would yield). Tabs expand to terminal tab stops.
 func Width(s string) int {
+	// Fast path: printable ASCII plus complete CSI/OSC escapes (the overwhelmingly
+	// common case for rendered terminal rows). Every glyph there is a single-rune
+	// grapheme cluster of width 1, so the printable byte count IS the display
+	// width — no Strip (regexp) and no grapheme segmentation needed. Tabs, other
+	// control bytes, non-ASCII runes and unknown escape forms fall through to the
+	// authoritative cluster path below, which returns the identical result.
+	if w, ok := asciiWidth(s); ok {
+		return w
+	}
 	plain := Strip(s)
 	w := 0
 	gr := uniseg.NewGraphemes(plain)
@@ -222,6 +331,88 @@ func Width(s string) int {
 		w += clusterBaseWidth(cluster)
 	}
 	return w
+}
+
+// asciiWidth reports the display width of s (and true) when s consists solely
+// of printable ASCII runes and complete CSI/OSC sequences. Every other input —
+// tabs, control bytes, DEL, non-ASCII runes (wide, combining, ZWJ, flags) or an
+// incomplete/unknown escape — returns (0, false) so the caller uses the
+// grapheme-cluster path instead.
+func asciiWidth(s string) (int, bool) {
+	w := 0
+	for i := 0; i < len(s); {
+		b := s[i]
+		if b == 0x1b {
+			end := scanAnsiLikeRegex(s, i)
+			if end == 0 {
+				return 0, false
+			}
+			i = end
+			continue
+		}
+		if b < 0x20 || b >= 0x7f {
+			return 0, false
+		}
+		w++
+		i++
+	}
+	return w, true
+}
+
+// scanAnsiLikeRegex returns the exclusive end of the escape sequence at start
+// when ansiRe — the authority used by Strip — would match there, else 0. The
+// fast path must skip EXACTLY what Strip removes: scanAnsiSequence is the
+// terminal's parser (it tolerates stray bytes inside a CSI), while Strip uses
+// the stricter regex grammar. Diverging here would let Width and Strip disagree
+// on malformed input.
+func scanAnsiLikeRegex(s string, start int) int {
+	if start+1 >= len(s) || s[start] != 0x1b {
+		return 0
+	}
+	switch s[start+1] {
+	case ']':
+		return scanOSCLikeRegex(s, start+2)
+	case '[':
+		return scanCSILikeRegex(s, start+2)
+	}
+	return 0
+}
+
+// scanOSCLikeRegex scans OSC payload from i: ESC ] [^\x07\x1b]* ( BEL | ESC \ ).
+// Returns the exclusive end, or 0 when the sequence is not terminated.
+func scanOSCLikeRegex(s string, i int) int {
+	for ; i < len(s); i++ {
+		switch s[i] {
+		case 0x07:
+			return i + 1
+		case 0x1b:
+			if i+1 < len(s) && s[i+1] == '\\' {
+				return i + 2
+			}
+			return 0
+		}
+	}
+	return 0
+}
+
+// scanCSILikeRegex scans a CSI from i: [0-9;?]* [ -/]* [@-~]. Returns the
+// exclusive end, or 0 when the sequence never reaches a final byte.
+func scanCSILikeRegex(s string, i int) int {
+	for i < len(s) && isCSIParam(s[i]) {
+		i++
+	}
+	for i < len(s) && s[i] >= ' ' && s[i] <= '/' {
+		i++
+	}
+	if i < len(s) && s[i] >= '@' && s[i] <= '~' {
+		return i + 1
+	}
+	return 0
+}
+
+// isCSIParam reports whether b is a CSI parameter byte (digits, ';' and '?').
+func isCSIParam(b byte) bool {
+	return b >= '0' && b <= '9' || b == ';' || b == '?'
 }
 
 // clusterBaseWidth returns the terminal display width of a single grapheme

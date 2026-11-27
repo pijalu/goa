@@ -124,7 +124,7 @@ var flagGroups = []flagGroup{
 	}},
 	{"Profiling & load testing", []string{
 		"cpuprofile", "memprofile", "trace", "with-profiling", "perf-load",
-		"perf-load-duration",
+		"perf-load-duration", "perf-load-grow",
 	}},
 	{"Maintenance & exports", []string{
 		"dream", "dream-apply", "check-update", "telemetry", "export-output",

@@ -36,6 +36,12 @@ type IncrementalMDRenderer struct {
 	// append of the last scanned text, the boundary scan resumes from the
 	// cached position instead of re-scanning from byte 0 (B005).
 	boundaryScan boundaryScanner
+
+	// stableLineCount is len(stableLines) after the last Render: the number of
+	// LEADING output lines that belong to the cached stable prefix and can
+	// therefore never change as more text arrives. Downstream per-line work
+	// (padding, styling) memoizes against this count.
+	stableLineCount int
 }
 
 // boundaryScanner holds the resumable state of the lastStableBoundary scan.
@@ -57,6 +63,12 @@ type boundaryScanner struct {
 	boundary int
 	// prevAbsorbsBlank at resumePos.
 	prevAbsorbsBlank bool
+	// prevStandalone reports whether the last classified complete line renders
+	// standalone (see standaloneBlockLine); the next line may then cut.
+	prevStandalone bool
+	// openSpan is true while a block that spans lines (list, quote, table,
+	// graph run) is still absorbing content; no cut is valid until it closes.
+	openSpan bool
 	// scannedLen tracks the text length from the last advance call to
 	// detect shrink/edit.
 	scannedLen int
@@ -77,6 +89,8 @@ func (bs *boundaryScanner) advance(text string) int {
 		bs.inFence = false
 		bs.boundary = 0
 		bs.prevAbsorbsBlank = false
+		bs.prevStandalone = false
+		bs.openSpan = false
 	}
 
 	suffix := text[scanFrom:]
@@ -111,22 +125,42 @@ func (bs *boundaryScanner) scanLines(suffix string, base int) {
 
 // classifyLine processes one line and updates the scanner state.
 func (bs *boundaryScanner) classifyLine(trimmed, raw string, isLast, isIncomplete bool, pos int) {
-	switch {
-	case strings.HasPrefix(trimmed, "```"):
+	if strings.HasPrefix(trimmed, "```") {
 		bs.inFence = !bs.inFence
 		bs.prevAbsorbsBlank = false
-	case !bs.inFence && trimmed == "" && raw != "" && !isLast:
-		if !bs.prevAbsorbsBlank {
+		bs.prevStandalone = false
+		bs.openSpan = false
+		return
+	}
+	if trimmed == "" {
+		if !bs.inFence && raw != "" && !isLast && !bs.prevAbsorbsBlank {
 			bs.boundary = pos + len(raw)
 		}
 		bs.prevAbsorbsBlank = false
-	case trimmed == "" && isLast && raw == "":
-		// Trailing-newline artifact.
-	default:
-		if !isIncomplete {
-			bs.prevAbsorbsBlank = lineAbsorbsBlank(trimmed)
-		}
+		bs.prevStandalone = false
+		bs.openSpan = false
+		return
 	}
+	bs.prevAbsorbsBlank = lineAbsorbsBlank(trimmed)
+	bs.noteStandaloneCut(trimmed, pos)
+}
+
+// noteStandaloneCut advances the boundary to the START of this line when both it
+// and the preceding line render standalone. Everything before that point is a
+// sequence of finished units whose rendering cannot change as more text
+// arrives — including lines inside a still-open paragraph, which is what keeps a
+// long unbroken paragraph from re-rendering in full on every streamed chunk.
+// The line itself stays in the tail: it is only stable once the NEXT line
+// completes, and the next call re-scans it anyway.
+func (bs *boundaryScanner) noteStandaloneCut(trimmed string, pos int) {
+	if spansLines(trimmed) {
+		bs.openSpan = true
+	}
+	standalone := !bs.inFence && !bs.openSpan && standaloneBlockLine(trimmed)
+	if standalone && bs.prevStandalone && pos > bs.boundary {
+		bs.boundary = pos
+	}
+	bs.prevStandalone = standalone
 }
 
 // lineAbsorbsBlank reports whether a content line belongs to a block type
@@ -163,6 +197,12 @@ func NewIncrementalMDRenderer(width int, theme *Theme) *IncrementalMDRenderer {
 	return &IncrementalMDRenderer{r: NewMDStreamRenderer(width, theme)}
 }
 
+// StableLineCount returns the number of leading lines of the last Render's
+// output that belong to the memoized stable prefix. Those lines are immutable
+// across appends (a closed markdown block cannot be re-rendered by later text),
+// so a consumer may cache its own per-line transformation of them.
+func (ir *IncrementalMDRenderer) StableLineCount() int { return ir.stableLineCount }
+
 // Render returns the rendered lines for text, reusing and extending the cached
 // stable prefix when text is a pure append of it. On any non-append change
 // (edit, shrink, or a document with no stable boundary yet) it re-renders and
@@ -170,12 +210,14 @@ func NewIncrementalMDRenderer(width int, theme *Theme) *IncrementalMDRenderer {
 func (ir *IncrementalMDRenderer) Render(text string) []string {
 	if text == "" {
 		ir.stableText, ir.stableLines = "", nil
+		ir.stableLineCount = 0
 		ir.boundaryScan = boundaryScanner{}
 		return nil
 	}
 	// If the new text is not an append of the cached stable prefix, reset.
 	if !strings.HasPrefix(text, ir.stableText) {
 		ir.stableText, ir.stableLines = "", nil
+		ir.stableLineCount = 0
 		ir.boundaryScan = boundaryScanner{}
 	}
 
@@ -198,6 +240,7 @@ func (ir *IncrementalMDRenderer) Render(text string) []string {
 	// the cached prefix slice, so a later append can't corrupt prior frames).
 	tail := text[len(ir.stableText):]
 	tailLines := ir.r.Render(tail)
+	ir.stableLineCount = len(ir.stableLines)
 	out := make([]string, 0, len(ir.stableLines)+len(tailLines))
 	out = append(out, ir.stableLines...)
 	out = append(out, tailLines...)
@@ -230,6 +273,8 @@ type boundaryState struct {
 	fence         bool
 	boundary, pos int
 	absorbs       bool
+	standalone    bool
+	openSpan      bool
 }
 
 func (s *boundaryState) consume(line string, last bool) {
@@ -237,12 +282,31 @@ func (s *boundaryState) consume(line string, last bool) {
 	if strings.HasPrefix(trimmed, "```") {
 		s.fence = !s.fence
 		s.absorbs = false
+		s.standalone = false
+		s.openSpan = false
 	} else if s.isCandidate(trimmed, line, last) {
 		s.updateCandidate(line)
+		s.standalone = false
+		s.openSpan = false
 	} else if !(trimmed == "" && last && line == "") {
 		s.absorbs = absorbsBlank(trimmed)
+		s.noteStandalone(trimmed)
 	}
 	s.pos += len(line)
+}
+
+// noteStandalone mirrors boundaryScanner.noteStandaloneCut: a line rendered
+// standalone (paragraph, heading, thematic break) whose predecessor was too is
+// itself an append-stable cut point — unless a spanning block is still open.
+func (s *boundaryState) noteStandalone(trimmed string) {
+	if spansLines(trimmed) {
+		s.openSpan = true
+	}
+	standalone := !s.fence && !s.openSpan && standaloneBlockLine(trimmed)
+	if standalone && s.standalone {
+		s.boundary = s.pos
+	}
+	s.standalone = standalone
 }
 
 func (s *boundaryState) isCandidate(trimmed, line string, last bool) bool {

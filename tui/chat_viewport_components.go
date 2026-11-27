@@ -92,6 +92,13 @@ type assistantMessage struct {
 	// when the render width changes. Nil until first render.
 	incr      *IncrementalMDRenderer
 	incrWidth int
+
+	// pads memoizes the padded (" " + line) form of the leading, stable lines
+	// returned by incr. Padding measures each line's display width, so without
+	// this every streamed chunk would re-measure the WHOLE answer — O(answer)
+	// per chunk, O(n²) per turn, the streaming CPU storm. With it, a chunk only
+	// pads the lines that just stabilized plus the open tail.
+	pads lineTransformCache
 }
 
 func newAssistantMessage(text string) *assistantMessage {
@@ -147,9 +154,12 @@ func (m *assistantMessage) renderFrame(width int) []string {
 		m.incrWidth = contentW
 	}
 	rendered := m.incr.Render(m.text)
-	for _, line := range rendered {
-		lines = append(lines, padToWidth(" "+line, width))
-	}
+	// Only the newly stabilized lines and the open tail need padding: the
+	// stable prefix was already padded on an earlier frame (same width, same
+	// lines). This is what keeps per-chunk cost independent of answer length.
+	lines = m.pads.apply(rendered, width, m.incr.StableLineCount(), func(line string) string {
+		return padToWidth(" "+line, width)
+	})
 
 	// Finish reason line (S9 spec: ── stop · N tok · Ns · think:N ─────)
 	if m.finishReason != "" {

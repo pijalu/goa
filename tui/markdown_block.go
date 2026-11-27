@@ -69,6 +69,46 @@ func isUnorderedListItem(s string) bool {
 	return trimmed[1] == ' ' || trimmed[1] == '\t'
 }
 
+// standaloneBlockLine reports whether the renderer renders this complete source
+// line ON ITS OWN: its output cannot depend on the lines that follow it.
+//
+// This is the append-stability contract the streaming path relies on
+// (MDStreamRenderer docs: "lines already rendered never re-flow when more text
+// arrives"). Paragraph lines are rendered one-by-one with hard breaks, so a
+// finished paragraph line is stable — that is what lets a long unbroken
+// paragraph cache its rendered prefix. Constructs whose rendering spans lines
+// (fences, lists, blockquotes, tables, graph-bar runs) are NOT stable mid-run.
+func standaloneBlockLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	switch {
+	case trimmed == "":
+		return false
+	case isThematicBreak(trimmed), headingLevel(line) > 0:
+		return true
+	case strings.HasPrefix(trimmed, "```"), strings.HasPrefix(trimmed, ">"):
+		return false
+	case isUnorderedListItem(line), isOrderedListItem(line):
+		return false
+	case isTableRow(line), isTableSeparator(trimmed):
+		return false
+	case startsWithBlockGlyph(line):
+		return false
+	}
+	return true
+}
+
+// spansLines reports whether line opens or continues a block whose rendering
+// covers MORE than that line (list, blockquote, table, graph-bar run). Such a
+// block keeps absorbing subsequent non-blank lines, so nothing inside it is a
+// valid incremental cut point until a blank line closes it.
+func spansLines(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, ">") ||
+		isUnorderedListItem(line) || isOrderedListItem(line) ||
+		isTableRow(line) || isTableSeparator(trimmed) ||
+		startsWithBlockGlyph(line)
+}
+
 func isOrderedListItem(s string) bool {
 	trimmed := strings.TrimLeft(s, " \t")
 	i := 0
