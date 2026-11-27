@@ -28,11 +28,11 @@ func (p *blockingCompactionProvider) Stream(_ provider.Model, _ provider.Context
 		case p.compactionStarted <- struct{}{}:
 		default:
 		}
-		go func() {
-			<-p.releaseCompaction
-			stream.Push(provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "checkpoint"})
-			stream.End(&provider.AssistantMessage{StopReason: provider.StopReasonEndTurn})
-		}()
+		// Keep Stream itself in flight until released. Returning a stream whose
+		// producer is blocked would let cancellation unwind its consumer early.
+		<-p.releaseCompaction
+		stream.Push(provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "checkpoint"})
+		stream.End(&provider.AssistantMessage{StopReason: provider.StopReasonEndTurn})
 		return stream, nil
 	}
 	p.conversationStarted <- struct{}{}
