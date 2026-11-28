@@ -624,6 +624,9 @@ func (t *TUI) buildSnapshot() *Scene {
 	// against the unclamped bottom-anchored top and lands on canvas rows the
 	// painter renders as chrome when a shrink lifted the clamp.
 	scene.ScrollTop = t.compositor.ScrollWatermark()
+	// Extract the cursor AFTER ScrollTop is stamped so overlay cursor rows
+	// use the same watermark-clamped viewportStart that compose will use.
+	extractCursorMarker(scene)
 	// Stamp the chat viewport's mutation generation so the compositor can
 	// detect when the conversation has settled (no mutation since the last
 	// frame) and re-sync a deferred scrollback exactly once.

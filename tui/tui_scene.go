@@ -81,7 +81,6 @@ func (t *TUI) buildScene(w, h int) *Scene {
 	scene.ChromeHeight = t.bottomChromeHeight(rendered)
 	scene.OverlayCapturesInput = t.buildOverlayLayers(scene, w, h)
 	scene.Blocks, scene.BlockWidth = t.exportSceneBlocks(rendered, w)
-	extractCursorMarker(scene)
 	return scene
 }
 

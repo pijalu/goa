@@ -165,6 +165,60 @@ func TestExtractCursorMarker_OverlayPreferred(t *testing.T) {
 	}
 }
 
+// TestExtractCursorMarker_OverlayWithScrollTop verifies that the overlay
+// cursor row accounts for the scrollback watermark (ScrollTop): when rows
+// have been committed to scrollback, compose clamps viewportStart to
+// ScrollTop, and the cursor extraction must use the same clamped value or
+// the cursor lands on the wrong screen row.
+func TestExtractCursorMarker_OverlayWithScrollTop(t *testing.T) {
+	scene := &Scene{
+		TerminalW: 20, TerminalH: 10,
+		ScrollTop: 15, // 15 rows already in scrollback
+		Layers: []Layer{
+			{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: 20, H: 30},
+				Content: make([]string, 30)},
+			{Name: "selector", Kind: LayerOverlay, Rect: Rect{X: 0, Y: 2, W: 20, H: 3},
+				Content: []string{"title", "───", "search> " + CURSOR_MARKER}},
+		},
+	}
+	extractCursorMarker(scene)
+	if scene.Cursor == nil {
+		t.Fatal("cursor not extracted")
+	}
+	// viewportStart = max(0, 30-10) = 20, clamped to ScrollTop=15 → 20
+	// cursor row = 20 + 2 (Rect.Y) + 2 (content index) = 24
+	wantRow := 20 + 2 + 2
+	if scene.Cursor.Row != wantRow {
+		t.Errorf("cursor row = %d, want %d (scrollTop-clamped overlay absolute row)", scene.Cursor.Row, wantRow)
+	}
+}
+
+// TestExtractCursorMarker_OverlayScrollTopAboveViewport verifies the clamp
+// when ScrollTop exceeds the natural viewportStart (the case that produced
+// the misplaced cursor).
+func TestExtractCursorMarker_OverlayScrollTopAboveViewport(t *testing.T) {
+	scene := &Scene{
+		TerminalW: 20, TerminalH: 10,
+		ScrollTop: 25, // watermark past the natural viewport start
+		Layers: []Layer{
+			{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: 20, H: 30},
+				Content: make([]string, 30)},
+			{Name: "selector", Kind: LayerOverlay, Rect: Rect{X: 0, Y: 2, W: 20, H: 3},
+				Content: []string{"title", "───", "search> " + CURSOR_MARKER}},
+		},
+	}
+	extractCursorMarker(scene)
+	if scene.Cursor == nil {
+		t.Fatal("cursor not extracted")
+	}
+	// viewportStart = max(0, 30-10) = 20, but ScrollTop=25 > 20 → clamped to 25
+	// cursor row = 25 + 2 (Rect.Y) + 2 (content index) = 29
+	wantRow := 25 + 2 + 2
+	if scene.Cursor.Row != wantRow {
+		t.Errorf("cursor row = %d, want %d (scrollTop-clamped overlay absolute row)", scene.Cursor.Row, wantRow)
+	}
+}
+
 // TestExtractCursorMarker_FallsBackToBaseLayer verifies that when no overlay
 // marker exists, the base layer marker is still used.
 func TestExtractCursorMarker_FallsBackToBaseLayer(t *testing.T) {

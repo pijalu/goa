@@ -16,6 +16,14 @@ func extractCursorMarker(scene *Scene) {
 		termH = 24
 	}
 	viewportStart := max(0, baseHeight-termH)
+	// Clamp to the scrollback watermark exactly like compose does, so the
+	// overlay cursor row is consistent with the canvas row placeOverlays
+	// computes. Without this the cursor row is too small by (ScrollTop -
+	// viewportStart) whenever the watermark has advanced past the natural
+	// bottom anchor.
+	if viewportStart < scene.ScrollTop {
+		viewportStart = scene.ScrollTop
+	}
 
 	if row, col, found := findCursorInLayers(scene.Layers, LayerOverlay, viewportStart); found {
 		scene.Cursor = &CursorPos{Row: row, Col: col}
