@@ -10,22 +10,9 @@ import (
 )
 
 func extractCursorMarker(scene *Scene) {
-	baseHeight := baseCanvasHeight(scene.Layers)
-	termH := scene.TerminalH
-	if termH < 1 {
-		termH = 24
-	}
-	viewportStart := max(0, baseHeight-termH)
-	// Clamp to the scrollback watermark exactly like compose does, so the
-	// overlay cursor row is consistent with the canvas row placeOverlays
-	// computes. Without this the cursor row is too small by (ScrollTop -
-	// viewportStart) whenever the watermark has advanced past the natural
-	// bottom anchor.
-	if viewportStart < scene.ScrollTop {
-		viewportStart = scene.ScrollTop
-	}
-
-	if row, col, found := findCursorInLayers(scene.Layers, LayerOverlay, viewportStart); found {
+	canvasHeight := max(1, baseCanvasHeight(scene.Layers))
+	canvasHeight = scene.screenPaddedHeight(canvasHeight)
+	if row, col, found := findOverlayCursor(scene.Layers, scene.mapping(canvasHeight)); found {
 		scene.Cursor = &CursorPos{Row: row, Col: col}
 		return
 	}
@@ -39,9 +26,27 @@ func extractCursorMarker(scene *Scene) {
 	}
 }
 
+// findOverlayCursor locates a cursor after applying the same clipping and
+// screen-to-canvas placement that placeOverlays uses. In particular, pinned
+// bottom chrome can move a selector upward from its requested Rect.Y.
+func findOverlayCursor(layers []Layer, m windowMapping) (int, int, bool) {
+	for li := len(layers) - 1; li >= 0; li-- {
+		l := &layers[li]
+		if l.Kind != LayerOverlay {
+			continue
+		}
+		rect := overlayCanvasRect(l.Rect, len(l.Content), m)
+		placed := *l
+		placed.Content = l.Content[:rect.H]
+		if row, col, found := findCursorInLayer(&placed, rect.Y); found {
+			return row, col, true
+		}
+	}
+	return 0, 0, false
+}
+
 // findCursorInLayers scans layers of the given kind from top to bottom and
-// returns the cursor position if a CURSOR_MARKER is found. The yOffset is added
-// to the row coordinate for overlay layers.
+// returns the cursor position if a CURSOR_MARKER is found.
 func findCursorInLayers(layers []Layer, kind LayerKind, yOffset int) (int, int, bool) {
 	for li := len(layers) - 1; li >= 0; li-- {
 		l := &layers[li]

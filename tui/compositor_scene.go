@@ -114,19 +114,30 @@ type Scene struct {
 // scrollback (ScrollTop > 0), where inserting blank rows would shift the row
 // identities the watermark refers to.
 func (s *Scene) padToScreen(canvas []string) []string {
-	termH := s.TerminalH
-	if termH < 1 || s.ScrollTop > 0 || len(canvas) >= termH {
+	paddedHeight := s.screenPaddedHeight(len(canvas))
+	if paddedHeight == len(canvas) {
 		return canvas
 	}
+	termH := s.TerminalH
 	chromeH := max(0, s.ChromeHeight)
 	chromeH = min(chromeH, termH)
 	contentEnd := max(0, len(canvas)-chromeH)
-	pad := termH - len(canvas)
+	pad := paddedHeight - len(canvas)
 	padded := make([]string, 0, termH)
 	padded = append(padded, canvas[:contentEnd]...)
 	padded = append(padded, make([]string, pad)...)
 	padded = append(padded, canvas[contentEnd:]...)
 	return padded
+}
+
+// screenPaddedHeight returns the canvas height after the overlay-only screen
+// padding, without allocating the canvas. Cursor extraction uses it to derive
+// exactly the same window mapping as compose.
+func (s *Scene) screenPaddedHeight(height int) int {
+	if s.TerminalH < 1 || s.ScrollTop > 0 || height >= s.TerminalH {
+		return height
+	}
+	return s.TerminalH
 }
 
 // This is the single place that decides pixel placement of base content.
@@ -335,37 +346,34 @@ func overlaysOf(layers []Layer) []Layer {
 // An overlay taller than the transcript phase is truncated to the rows that can
 // be shown.
 func placeOverlays(canvas []string, overlays []Layer, m windowMapping, termW int) []string {
-	transcriptRows := m.transcriptRows()
-	if transcriptRows < 1 {
-		transcriptRows = 1
-	}
 	for _, l := range overlays {
-		lines := l.Content
-		h := l.Rect.H
-		if h > len(lines) {
-			h = len(lines)
-		}
-		if h > transcriptRows {
-			h = transcriptRows
-			lines = lines[:h]
-		}
-		y := l.Rect.Y
-		if y+h > transcriptRows {
-			y = transcriptRows - h
-		}
-		if y < 0 {
-			y = 0
-		}
-		absY := m.top + y
-		for len(canvas) < absY+h {
+		placed := l
+		placed.Rect = overlayCanvasRect(l.Rect, len(l.Content), m)
+		placed.Content = l.Content[:placed.Rect.H]
+		for len(canvas) < placed.Rect.Y+placed.Rect.H {
 			canvas = append(canvas, "")
 		}
-		placed := l
-		placed.Rect = Rect{X: l.Rect.X, Y: absY, W: l.Rect.W, H: h}
-		placed.Content = lines
 		placeLayer(canvas, placed, termW, m.top, m.top+m.windowH)
 	}
 	return canvas
+}
+
+// overlayCanvasRect applies the overlay's clipping and screen-to-canvas
+// translation. Both painting and cursor extraction go through this function so
+// a selector clamped above pinned chrome cannot leave its cursor at the
+// unclamped screen row.
+func overlayCanvasRect(rect Rect, contentLen int, m windowMapping) Rect {
+	transcriptRows := max(1, m.transcriptRows())
+	h := min(rect.H, contentLen)
+	if h > transcriptRows {
+		h = transcriptRows
+	}
+	y := rect.Y
+	if y+h > transcriptRows {
+		y = transcriptRows - h
+	}
+	y = max(0, y)
+	return Rect{X: rect.X, Y: m.top + y, W: rect.W, H: h}
 }
 
 // placeLayer writes a layer's Content onto the canvas at its Rect, padding
