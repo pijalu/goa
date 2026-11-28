@@ -62,12 +62,13 @@ func releaseScreen() { screenOwnerCount.Add(-1) }
 
 // ProcessTerminal implements Terminal with raw mode and Kitty keyboard protocol.
 type ProcessTerminal struct {
-	fd       int
-	onInput  func(string)
-	onResize func()
-	restore  func()
-	running  bool
-	done     chan struct{}
+	fd        int
+	onInput   func(string)
+	onResize  func()
+	restore   func()
+	restoreCP func() // restores the console output code page (Windows only)
+	running   bool
+	done      chan struct{}
 
 	// screenClaimed records that Start acquired raw mode and claimed screen
 	// ownership, so Stop releases it exactly once (even on partial paths).
@@ -139,6 +140,11 @@ func (t *ProcessTerminal) Start(onInput func(string), onResize func()) {
 		// ANSI/VT byte stream (no-op on other platforms; silently degrades on
 		// pre-1903 conhost where VT output is unavailable).
 		enableWindowsVTOutput()
+
+		// Switch the console output code page to UTF-8 so the mascot/header
+		// art renders correctly on consoles with a legacy OEM code page.
+		// The returned restore runs in Stop (no-op seam on other platforms).
+		t.restoreCP = setWindowsUTF8OutputCP()
 
 		// Disable auto-wrap (DECAWM) for the session. The compositor positions
 		// every row by absolute CUP and truncates content to the terminal width,
@@ -566,6 +572,13 @@ func (t *ProcessTerminal) Stop() {
 	close(t.done)
 	t.running = false
 	t.protoBuf = ""
+
+	// Restore the pre-session console output code page (Windows only; the
+	// CP was switched to UTF-8 in Start so UTF-8 art renders correctly).
+	if t.restoreCP != nil {
+		t.restoreCP()
+		t.restoreCP = nil
+	}
 
 	if t.restore != nil {
 		t.restore()

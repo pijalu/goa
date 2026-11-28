@@ -27,13 +27,6 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
-## W3 — Missing UTF-8 output code page on Windows: mascot/header art renders garbled ("partially blocked")
-
-**Observed:** no `SetConsoleOutputCP(CP_UTF8)` anywhere. `enableWindowsVTOutput` (`tui/terminal_windows.go:38`) sets only `ENABLE_VIRTUAL_TERMINAL_OUTPUT`. On consoles whose output code page is not 65001 (legacy conhost defaults CP437/850), the UTF-8 mascot art (`tui/header.go:184`, `▄` block glyphs + 256-color SGR) is decoded per the OEM code page → mojibake, wrong glyph widths, broken side-by-side layout.
-
-**Expected:** UTF-8 output code page set while the TUI runs and restored on Stop; mascot renders identically on conhost and Windows Terminal.
-
-**Test approach:** unit test behind a syscall indirection asserting set-on-start / restore-on-stop. Manual validation note: cannot be fully verified without a Windows host — flag for manual QA on Windows.
 
 ## W4 — winResizeWatcher.readOne can block indefinitely; reinjection reorders keys
 
