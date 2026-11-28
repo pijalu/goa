@@ -13,7 +13,8 @@ import (
 
 // Windows console input-record event types (Win32 INPUT_RECORD.EventType,
 // wincon.h). Declared here, platform-neutral, so the record-filtering logic
-// can be unit-tested on every OS with synthetic buffers.
+// used by the Windows watcher's peek loop can be unit-tested on every OS with
+// synthetic buffers.
 const (
 	winEventKey              uint16 = 0x0001 // KEY_EVENT
 	winEventMouse            uint16 = 0x0002 // MOUSE_EVENT
@@ -37,8 +38,10 @@ func isResizeRecord(r inputRecord) bool {
 }
 
 // filterResizeRecords reports whether any record in buf signals a console
-// buffer-size change. Every other record kind belongs to other consumers of
-// the console input queue (keys, mouse, focus, menus) and is ignored.
+// buffer-size change. It drives the Windows watcher's peek loop: every other
+// record kind belongs to other consumers of the console input queue (keys,
+// mouse, focus, menus) and is left queued for them — the watcher never
+// dequeues or re-injects records.
 func filterResizeRecords(buf []inputRecord) bool {
 	for _, r := range buf {
 		if isResizeRecord(r) {

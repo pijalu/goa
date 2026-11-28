@@ -24,12 +24,13 @@ const (
 	// event can delay a resize notification (e.g. when the stdin byte reader
 	// wins the race for the record). One GetConsoleScreenBufferInfo per
 	// interval is negligible next to the old unconditional 250ms polling.
-	resizeSafetyNetInterval = time.Second
+	resizeSafetyNetInterval = 150 * time.Millisecond
 
-	// maxConsumeSpins caps the drain loop so a pathological interleaving with
-	// a concurrent reader cannot spin forever; the safety net covers anything
-	// left unconsumed.
-	maxConsumeSpins = 128
+	// peekBatchSize bounds how many head records a single peek inspects. A
+	// console resize coalesces to one event at a time, so the resize record
+	// is the queue tail whenever it is present; 32 covers pathological
+	// bursts without meaningful cost (~640 bytes on the stack).
+	peekBatchSize = 32
 )
 
 // consoleInputRecord mirrors the Win32 INPUT_RECORD layout (wincon.h): a WORD
@@ -44,7 +45,7 @@ type consoleInputRecord struct {
 }
 
 // Compile-time layout guards: any drift from the documented 20-byte ABI would
-// corrupt the record stream returned by ReadConsoleInput/WriteConsoleInput.
+// corrupt the record stream returned by PeekConsoleInput.
 var (
 	_ [20 - unsafe.Sizeof(consoleInputRecord{})]byte
 	_ [unsafe.Sizeof(consoleInputRecord{}) - 20]byte
@@ -52,10 +53,8 @@ var (
 
 // Console API entry points absent from golang.org/x/sys/windows v0.47.0.
 var (
-	kernel32DLL           = windows.NewLazySystemDLL("kernel32.dll")
-	procPeekConsoleInput  = kernel32DLL.NewProc("PeekConsoleInputW")
-	procReadConsoleInput  = kernel32DLL.NewProc("ReadConsoleInputW")
-	procWriteConsoleInput = kernel32DLL.NewProc("WriteConsoleInputW")
+	kernel32DLL          = windows.NewLazySystemDLL("kernel32.dll")
+	procPeekConsoleInput = kernel32DLL.NewProc("PeekConsoleInputW")
 )
 
 // newPlatformResizeWatcher returns the console-event watcher, or nil when
@@ -74,13 +73,13 @@ func newPlatformResizeWatcher() resizeWatcher {
 // WINDOW_BUFFER_SIZE_EVENT records instead of polling the buffer geometry.
 //
 // The TUI's stdin byte reader consumes the same console input queue via
-// ReadFile (os.Stdin.Read), so this watcher is deliberately conservative:
-// it peeks at the head record and only dequeues records it owns (buffer-size
-// events). Key/mouse/focus records are left untouched for the byte reader;
-// if a concurrent read steals our peeked record between Peek and Read, the
-// foreign record we get back is written back to the queue rather than
-// swallowed. A one-second safety-net poll bounds the damage of any missed
-// event.
+// ReadFile (os.Stdin.Read), so this watcher is strictly peek-only: it never
+// calls ReadConsoleInputW (which would block on an empty queue or dequeue a
+// foreign record) and never writes records back (which would reorder keys).
+// The handle wake-up only signals "input exists"; the watcher peeks at the
+// queued records to detect a resize event, then re-reads the console size —
+// a shared-reader race can only ever cost one 150ms safety-net interval of
+// latency, never a lost, reordered, or blocked key.
 type winResizeWatcher struct {
 	h               windows.Handle
 	restore         func() // clears only the flag we added
@@ -109,13 +108,13 @@ func (w *winResizeWatcher) watch(out chan<- struct{}, done <-chan struct{}) {
 			w.degradeToPolling(out, done)
 			return
 		case ev == windows.WAIT_OBJECT_0:
-			// Input became available: consume resize records we own, then
-			// refresh the baseline so key-event wake-ups stay cheap.
-			if !w.consumeResizeRecords(out) {
+			// Input became available. Peek-only: if a buffer-size record is
+			// queued, re-read the console size; foreign records belong to the
+			// stdin byte reader and are never dequeued.
+			if ok := w.checkResizeRecords(out); !ok {
 				w.degradeToPolling(out, done)
 				return
 			}
-			w.notifyIfResized(out)
 		default: // WAIT_TIMEOUT: idle slice
 			w.safetyNet(out)
 		}
@@ -162,61 +161,20 @@ func (w *winResizeWatcher) restoreMode() {
 	}
 }
 
-// consumeResizeRecords drains WINDOW_BUFFER_SIZE_EVENT records from the head
-// of the input queue, firing out for each. The queue is only touched while
-// its head record belongs to us; reports false on console API failure so the
-// caller can fall back to polling.
-func (w *winResizeWatcher) consumeResizeRecords(out chan<- struct{}) bool {
-	for spin := 0; spin < maxConsumeSpins; spin++ {
-		keep, resized, ok := w.drainStep()
-		if resized {
-			sendResize(out)
-		}
-		if !ok {
-			return false
-		}
-		if !keep {
-			return true
-		}
+// checkResizeRecords reports whether the console input queue currently holds
+// a buffer-size record and, when it does, refreshes the size baseline (which
+// emits a notification on change). Records are only ever peeked, never
+// dequeued; false signals a console API failure that degrades the watcher to
+// polling.
+func (w *winResizeWatcher) checkResizeRecords(out chan<- struct{}) bool {
+	seen, ok := w.peekResizeRecords()
+	if !ok {
+		return false
+	}
+	if seen {
+		w.notifyIfResized(out)
 	}
 	return true
-}
-
-// drainStep performs one consumption decision cycle. keep asks the caller to
-// continue draining (an owned record was just consumed), resized reports that
-// the consumed record was a buffer-size event, and ok=false signals a console
-// API failure that should degrade the watcher to polling.
-func (w *winResizeWatcher) drainStep() (keep, resized, ok bool) {
-	pending, ok := w.pendingCount()
-	if !ok || pending == 0 {
-		return false, false, ok
-	}
-	head, got, ok := w.peekHead()
-	if !ok {
-		return false, false, false
-	}
-	if !got || head.eventType != winEventWindowBufferSize {
-		// Queue drained concurrently, or the head belongs to another
-		// consumer (the stdin byte reader): leave it untouched.
-		return false, false, true
-	}
-	rec, got, ok := w.readOne()
-	if !ok {
-		return false, false, false
-	}
-	if !got {
-		return false, false, true // consumed concurrently between peek and read
-	}
-	if isResizeRecord(inputRecord{eventType: rec.eventType}) {
-		return true, true, true
-	}
-	// Lost the race with a concurrent reader that dequeued our peeked
-	// record. Never swallow foreign events — write it back and stop; the
-	// next handle signal re-enters the drain if more records arrive.
-	if !w.reinject(rec) {
-		return false, false, false // queue unusable: degrade to polling
-	}
-	return true, false, true
 }
 
 // notifyIfResized compares the current console size against the baseline and
@@ -240,66 +198,26 @@ func (w *winResizeWatcher) safetyNet(out chan<- struct{}) {
 	w.notifyIfResized(out)
 }
 
-// pendingCount reports how many input records are queued.
-func (w *winResizeWatcher) pendingCount() (uint32, bool) {
+// peekResizeRecords reports whether any queued input record is a
+// WINDOW_BUFFER_SIZE_EVENT. The peek never blocks: an empty (or concurrently
+// drained) queue simply reports "no resize seen". ok=false signals a console
+// API failure.
+func (w *winResizeWatcher) peekResizeRecords() (seen, ok bool) {
+	var buf [peekBatchSize]consoleInputRecord
 	var n uint32
-	if err := windows.GetNumberOfConsoleInputEvents(w.h, &n); err != nil {
-		return 0, false
-	}
-	return n, true
-}
-
-// peekHead inspects the head record without dequeuing it. ok=false signals a
-// console API failure; got=false means the queue emptied concurrently.
-func (w *winResizeWatcher) peekHead() (rec consoleInputRecord, got, ok bool) {
-	buf := make([]consoleInputRecord, 1)
-	var read uint32
 	r, _, _ := procPeekConsoleInput.Call(
 		uintptr(w.h),
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(len(buf)),
-		uintptr(unsafe.Pointer(&read)),
+		uintptr(unsafe.Pointer(&n)),
 	)
 	if r == 0 {
-		return consoleInputRecord{}, false, false
+		return false, false
 	}
-	if read == 0 {
-		return consoleInputRecord{}, false, true
+	for i := uint32(0); i < n; i++ {
+		if isResizeRecord(inputRecord{eventType: buf[i].eventType}) {
+			return true, true
+		}
 	}
-	return buf[0], true, true
-}
-
-// readOne dequeues exactly one record. ok=false signals a console API
-// failure; got=false means nothing was read (queue emptied concurrently).
-func (w *winResizeWatcher) readOne() (rec consoleInputRecord, got, ok bool) {
-	buf := make([]consoleInputRecord, 1)
-	var read uint32
-	r, _, _ := procReadConsoleInput.Call(
-		uintptr(w.h),
-		uintptr(unsafe.Pointer(&buf[0])),
-		uintptr(len(buf)),
-		uintptr(unsafe.Pointer(&read)),
-	)
-	if r == 0 {
-		return consoleInputRecord{}, false, false
-	}
-	if read == 0 {
-		return consoleInputRecord{}, false, true
-	}
-	return buf[0], true, true
-}
-
-// reinject writes a previously dequeued record back to the end of the input
-// queue so the owning consumer (stdin byte reader) still receives it. Used
-// only in the rare race where the record changed identity between Peek and
-// Read; ordering distortion under that race is accepted and bounded.
-func (w *winResizeWatcher) reinject(rec consoleInputRecord) bool {
-	var written uint32
-	r, _, _ := procWriteConsoleInput.Call(
-		uintptr(w.h),
-		uintptr(unsafe.Pointer(&rec)),
-		1,
-		uintptr(unsafe.Pointer(&written)),
-	)
-	return r != 0 && written == 1
+	return false, true
 }

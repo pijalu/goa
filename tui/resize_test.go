@@ -38,10 +38,10 @@ func TestFilterResizeRecords(t *testing.T) {
 	}
 }
 
-// TestSyntheticRecordBatchFiresChannel pins the drain-loop composition used
-// by the Windows watcher over a ReadConsoleInput batch: the channel fires
-// exactly when the synthetic INPUT_RECORD buffer contains a buffer-size
-// event; pure key/mouse/focus batches never produce a notification.
+// TestSyntheticRecordBatchFiresChannel pins the peek-loop composition used by
+// the Windows watcher: the channel fires exactly when the synthetic
+// INPUT_RECORD batch contains a buffer-size event; pure key/mouse/focus
+// batches never produce a notification.
 func TestSyntheticRecordBatchFiresChannel(t *testing.T) {
 	tests := []struct {
 		name string
@@ -63,9 +63,9 @@ func TestSyntheticRecordBatchFiresChannel(t *testing.T) {
 	}
 }
 
-// assertResizeChannelFiring pins the drain-loop notification contract:
-// sendResize must make the buffered channel deliver exactly one event when a
-// resize was signaled, and never fire when there was none.
+// assertResizeChannelFiring pins the notification contract: sendResize must
+// make the buffered channel deliver exactly one event when a resize was
+// signaled, and never fire when there was none.
 func assertResizeChannelFiring(t *testing.T, wantFired bool) {
 	t.Helper()
 	out := make(chan struct{}, 1)

@@ -28,16 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
 
-## W4 — winResizeWatcher.readOne can block indefinitely; reinjection reorders keys
-
-**Observed:** `tui/resize_windows.go:203,274-290` — after peeking a resize record, `ReadConsoleInputW` is called; if the stdin byte reader dequeues that record first, the queue is empty and `ReadConsoleInputW` BLOCKS until the next record arrives (the `!got` branch at :207 is unreachable). The watcher then dequeues a foreign key record and re-injects it at the queue END → delayed, reordered keys. Reverse race: `ReadFileW` silently discards `WINDOW_BUFFER_SIZE_EVENT` records it wins, so resize detection degrades to the 1s safety net even when healthy.
-
-**Expected:** watcher never dequeues foreign records and never blocks on an empty queue.
-
-**Fix direction:** peek-only design — on `WAIT_OBJECT_0`, just re-check size via `notifyIfResized` (no `ReadConsoleInputW`, no reinjection); shorten the safety net (~100–250ms) to keep resize responsive.
-
-**Test approach:** unit tests with synthetic record streams via existing indirections (`consoleSizeFunc`); race-free drain test. Validate: `go test -count=1 -race ./tui/ -run Resize`.
-
 ## W5 — Shutdown drain leaks a blocked stdin reader on Windows
 
 **Observed:** `tui/terminal_drain_windows.go:13-15` spawns `drainInputFallback` → `startStdinPoller` goroutine blocks in `stdinFile.Read` forever when no input arrives before `Stop` returns. On an in-process TUI restart (anticipated by `screenOwnerCount`), the leaked poller competes with the new session's readLoop and eats its keys.
