@@ -109,6 +109,10 @@ func padToWidth(line string, width int) string {
 // background code so nested styles (e.g. markdown inline code) do not leave
 // trailing padding uncolored.
 func padToWidthStyled(s string, width int, bgAnsi string) string {
+	// A logical canvas row must not contain carriage returns. Width treats CR as
+	// zero columns, but a real terminal moves to column 1: CRLF tool output then
+	// makes the right-padding overwrite the text and leaves its tail unpainted.
+	s = strings.ReplaceAll(s, "\r", "")
 	// Expand tabs to spaces early so terminal tab rendering doesn't break
 	// background color continuity (reference implementations do the same).
 	s = ansi.ExpandTabs(s, ansi.TabWidth)

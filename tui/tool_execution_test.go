@@ -248,6 +248,32 @@ func TestToolExecution_BackgroundSpansFullWidth_NoMidlineReset(t *testing.T) {
 	}
 }
 
+func TestToolExecution_CRLFOutputKeepsUniformBackground(t *testing.T) {
+	const width = 40
+	tc := NewToolExecution("windows_tool", "")
+	tc.SetOutput("alpha\r\nbeta\r\n")
+	tc.SetStatus(ToolSuccess)
+
+	rows := tc.Render(width)
+	if len(rows) != 6 {
+		t.Fatalf("got %d rows, want 6 (padding, header, three body rows, padding)", len(rows))
+	}
+	wantBg := sgrBgParams(TheTheme.ColorHex("tool_success_bg"))
+	wantPrefixes := map[int]string{2: " alpha", 3: " beta"}
+	for i, row := range rows {
+		emu := NewTermEmulator(1, width)
+		emu.Process(row)
+		for col, bg := range emu.VisibleBg(0) {
+			if bg != wantBg {
+				t.Errorf("row %d col %d background = %q, want %q (text %q)", i, col, bg, wantBg, emu.Visible(0))
+			}
+		}
+		if want := wantPrefixes[i]; !strings.HasPrefix(emu.Visible(0), want) {
+			t.Errorf("body row %d = %q, want prefix %q", i, emu.Visible(0), want)
+		}
+	}
+}
+
 func TestToolExecution_Bash_StatusBackground(t *testing.T) {
 	tc := NewToolExecution("bash", "echo hello")
 	tc.SetArgsJSON(`{"command":"echo hello"}`)

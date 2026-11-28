@@ -13,6 +13,41 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
+// TestUI_ToolWidgetCRLFOutputKeepsStatusBg drives Windows-style command output
+// through the production event path and filmstrip harness, then checks the
+// actual terminal cell grid: CR must neither erase the text nor leave a
+// default-background tail.
+func TestUI_ToolWidgetCRLFOutputKeepsStatusBg(t *testing.T) {
+	const width, height = 40, 16
+	sc := newUIScenario(t, width, height)
+	sec := newStreamColorEmu(sc.term, width, height)
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolCallID: "win1", ToolName: "bash", ToolInput: `{"command":"echo"}`})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolResult, State: agentic.StateToolResult,
+		ToolCallID: "win1", ToolName: "bash", Text: "alpha\r\nbeta\r\n"})
+
+	emu := sec.sync()
+	headerRow := rowWith(emu, "echo", height)
+	if headerRow < 1 || headerRow+3 >= height {
+		t.Fatalf("tool header not found with its full widget on screen (row %d):\n%s", headerRow, sc.filmstrip().Render())
+	}
+	for i, want := range []string{" alpha", " beta"} {
+		row := headerRow + i + 1
+		if got := emu.Visible(row); !strings.HasPrefix(got, want) {
+			t.Errorf("body row %d = %q, want prefix %q", row, got, want)
+		}
+	}
+	wantBg := bgParams(t, "tool_success_bg")
+	for row := headerRow - 1; row <= headerRow+3; row++ {
+		for col, bg := range emu.VisibleBg(row) {
+			if bg != wantBg {
+				t.Errorf("widget row %d col %d background = %q, want %q (text %q)", row, col, bg, wantBg, emu.Visible(row))
+			}
+		}
+	}
+}
+
 // TestUI_ToolWidgetRowsKeepStatusBgAfterStreamShrink is the Bug D
 // regression: two parallel reads at the bottom of a scrolled chat, flipping
 // pending → success while an assistant stream finalizes nearby (the
