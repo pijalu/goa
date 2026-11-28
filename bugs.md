@@ -27,17 +27,6 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
-
-## W2 — Escape debounce blocks readLoop on Windows; next keypress after Esc is swallowed/corrupted (menu freezing)
-
-**Observed:** `tui/terminal.go:252` calls `os.Stdin.SetReadDeadline` which returns `os.ErrNoDeadline` on Windows console handles (silently ignored). `pollEscapeDebounce`'s `os.Stdin.Read` (:255) then blocks until ANY next byte. The 40ms fallback timer dispatches the Escape, but the blocked Read later returns the user's next keypress and forwards it merged as `"\x1b"+data` (:276) even though Escape was already dispatched: printable keys become Alt+key (swallowed, `tui/escape.go`), arrows produce a ghost extra Escape. Every Esc press poisons the following keystroke — menus appear to freeze / ignore input.
-
-**Expected:** Esc dispatches exactly once; the following keypress arrives unmodified.
-
-**Fix direction:** platform-specific debounce — on Windows do not block-read for continuation bytes (VT input delivers whole sequences per Read; `StdinBuffer` already buffers incomplete sequences), and never re-merge `\x1b` after the timer already dispatched it.
-
-**Test approach:** unit test with `stdinRead` indirection simulating `ErrNoDeadline` + slow input: Esc then 'j' must produce exactly `["\x1b", "j"]`. Validate: `go test -count=1 -race ./tui/ -run Escape`.
-
 ## W3 — Missing UTF-8 output code page on Windows: mascot/header art renders garbled ("partially blocked")
 
 **Observed:** no `SetConsoleOutputCP(CP_UTF8)` anywhere. `enableWindowsVTOutput` (`tui/terminal_windows.go:38`) sets only `ENABLE_VIRTUAL_TERMINAL_OUTPUT`. On consoles whose output code page is not 65001 (legacy conhost defaults CP437/850), the UTF-8 mascot art (`tui/header.go:184`, `▄` block glyphs + 256-color SGR) is decoded per the OEM code page → mojibake, wrong glyph widths, broken side-by-side layout.

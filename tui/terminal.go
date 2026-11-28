@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -237,9 +238,11 @@ func (t *ProcessTerminal) readLoop() {
 }
 
 // pollEscapeDebounce waits for more bytes after a bare 0x1b with a
-// brief timeout. If bytes arrive, they are merged with the pending
-// escape and forwarded as a complete sequence. If the timeout fires,
-// the escape is forwarded as a standalone Escape key press.
+// brief timeout. If bytes arrive while the debounce is still pending,
+// they are merged with the pending escape and forwarded as a complete
+// sequence. If the timeout fires (or the fallback timer already
+// dispatched the Escape), the escape is forwarded as a standalone
+// Escape key press and any late bytes are forwarded unmodified.
 func (t *ProcessTerminal) pollEscapeDebounce() {
 	t.escapeMu.Lock()
 	if !t.escapePending.Load() {
@@ -248,14 +251,48 @@ func (t *ProcessTerminal) pollEscapeDebounce() {
 	}
 	t.escapeMu.Unlock()
 
+	// On Windows consoles SetReadDeadline is unsupported
+	// (os.ErrNoDeadline), so the read below would block until the NEXT
+	// keypress — stealing it and re-merging it with a stale escape after
+	// the fallback timer already dispatched Escape. Windows VT input
+	// delivers whole escape sequences per Read, and incomplete sequences
+	// are buffered by StdinBuffer, so no continuation poll is needed;
+	// the fallback timer dispatches the pending Escape.
+	if escapeDebounceNoPoll {
+		return
+	}
+
 	// Set a brief read deadline so we don't block forever.
 	_ = setStdinReadDeadline(time.Now().Add(escapeDebounceTimeout))
 
 	buf := make([]byte, 256)
-	n, err := os.Stdin.Read(buf)
+	n, err := stdinRead(buf)
 
-	// Cancel the pending debounce regardless of outcome.
+	// Clear the read deadline so subsequent reads block normally.
+	_ = setStdinReadDeadline(time.Time{})
+
+	if err != nil || n == 0 {
+		// No more data arrived — this is a real Escape key press,
+		// unless the fallback timer already dispatched it.
+		t.cancelEscapeDebounce("\x1b", "")
+		return
+	}
+
+	// More data arrived. Merge with the pending escape only if the
+	// debounce is still pending; if the fallback timer already dispatched
+	// the Escape, forward the data unmodified so the next keypress is
+	// never corrupted into a stale "\x1b"+data merge.
+	t.cancelEscapeDebounce("\x1b"+string(buf[:n]), string(buf[:n]))
+}
+
+// cancelEscapeDebounce clears the pending escape debounce atomically and
+// forwards merged when the escape was still pending; otherwise (the
+// fallback timer already dispatched Escape) it forwards late instead
+// when non-empty, so the next keypress is never re-merged with a stale
+// escape.
+func (t *ProcessTerminal) cancelEscapeDebounce(merged, late string) {
 	t.escapeMu.Lock()
+	pending := t.escapePending.Load()
 	t.escapePending.Store(false)
 	if t.escapeTimer != nil {
 		t.escapeTimer.Stop()
@@ -263,18 +300,17 @@ func (t *ProcessTerminal) pollEscapeDebounce() {
 	}
 	t.escapeMu.Unlock()
 
-	// Clear the read deadline so subsequent reads block normally.
-	_ = setStdinReadDeadline(time.Time{})
-
-	if err != nil || n == 0 {
-		// No more data arrived — this is a real Escape key press.
-		t.forwardToInput("\x1b")
-		return
+	if pending {
+		t.forwardToInput(merged)
+	} else if late != "" {
+		t.forwardToInput(late)
 	}
-
-	// More data arrived: merge with the pending escape and forward.
-	t.forwardToInput("\x1b" + string(buf[:n]))
 }
+
+// escapeDebounceNoPoll disables the block-read continuation poll in
+// pollEscapeDebounce. True on Windows (console handles do not support
+// read deadlines); overridable in tests.
+var escapeDebounceNoPoll = runtime.GOOS == "windows"
 
 // startEscapeDebounce starts (or resets) the escape debounce timer.
 func (t *ProcessTerminal) startEscapeDebounce() {
