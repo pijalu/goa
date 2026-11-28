@@ -6,11 +6,13 @@
 
 package tui
 
-// drainInputNonBlocking on Windows falls back to a blocking read in a
-// detached goroutine. Windows consoles do not support the same non-blocking
-// read model as POSIX terminals, and the goroutine exits naturally when the
-// process terminates or stdin is closed.
+// drainInputNonBlocking on Windows drains pending input synchronously via
+// the shared-poller fallback: Windows consoles do not support the POSIX
+// non-blocking read model, so the fallback's demand-driven reader is used.
+// The drain returns when the drain window ends (idle for idleMs or maxMs
+// elapsed); the shared poller then issues no further reads, so no goroutine
+// is left consuming stdin when a session restarts in-process (bug W5).
 func drainInputNonBlocking(fd, maxMs, idleMs int) {
 	_ = fd
-	go drainInputFallback(maxMs, idleMs)
+	drainInputFallback(maxMs, idleMs)
 }

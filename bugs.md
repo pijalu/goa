@@ -27,11 +27,3 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
-
-## W5 — Shutdown drain leaks a blocked stdin reader on Windows
-
-**Observed:** `tui/terminal_drain_windows.go:13-15` spawns `drainInputFallback` → `startStdinPoller` goroutine blocks in `stdinFile.Read` forever when no input arrives before `Stop` returns. On an in-process TUI restart (anticipated by `screenOwnerCount`), the leaked poller competes with the new session's readLoop and eats its keys.
-
-**Expected:** drain goroutine terminates when the drain window ends (or process exit), never outliving the session.
-
-**Test approach:** unit test asserting the poller is released after the drain timeout without input. Validate: `go test -count=1 -race ./tui/ -run Drain`.
