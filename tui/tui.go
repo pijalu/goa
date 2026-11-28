@@ -745,9 +745,13 @@ func (t *TUI) ReplaySnapshot() (canvas []string, naturalVt, contentEnd, width, h
 // Unix; console input events (WaitForSingleObject + WINDOW_BUFFER_SIZE_EVENT)
 // on Windows, with the legacy 250ms poller as automatic fallback.
 func (t *TUI) listenResize() {
+	// One watcher for the whole session: resizeEvents spawns a goroutine per
+	// call, so evaluating it per select iteration would leak a watcher (and on
+	// Windows a console-input-queue reader) per resize event.
+	events := resizeEvents(t.done)
 	for {
 		select {
-		case <-resizeEvents(t.done):
+		case <-events:
 			t.RequestRender()
 		case <-t.done:
 			return

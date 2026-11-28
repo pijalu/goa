@@ -27,3 +27,39 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # To fix
+
+## W2 — Escape debounce blocks readLoop on Windows; next keypress after Esc is swallowed/corrupted (menu freezing)
+
+**Observed:** `tui/terminal.go:252` calls `os.Stdin.SetReadDeadline` which returns `os.ErrNoDeadline` on Windows console handles (silently ignored). `pollEscapeDebounce`'s `os.Stdin.Read` (:255) then blocks until ANY next byte. The 40ms fallback timer dispatches the Escape, but the blocked Read later returns the user's next keypress and forwards it merged as `"\x1b"+data` (:276) even though Escape was already dispatched: printable keys become Alt+key (swallowed, `tui/escape.go`), arrows produce a ghost extra Escape. Every Esc press poisons the following keystroke — menus appear to freeze / ignore input.
+
+**Expected:** Esc dispatches exactly once; the following keypress arrives unmodified.
+
+**Fix direction:** platform-specific debounce — on Windows do not block-read for continuation bytes (VT input delivers whole sequences per Read; `StdinBuffer` already buffers incomplete sequences), and never re-merge `\x1b` after the timer already dispatched it.
+
+**Test approach:** unit test with `stdinRead` indirection simulating `ErrNoDeadline` + slow input: Esc then 'j' must produce exactly `["\x1b", "j"]`. Validate: `go test -count=1 -race ./tui/ -run Escape`.
+
+## W3 — Missing UTF-8 output code page on Windows: mascot/header art renders garbled ("partially blocked")
+
+**Observed:** no `SetConsoleOutputCP(CP_UTF8)` anywhere. `enableWindowsVTOutput` (`tui/terminal_windows.go:38`) sets only `ENABLE_VIRTUAL_TERMINAL_OUTPUT`. On consoles whose output code page is not 65001 (legacy conhost defaults CP437/850), the UTF-8 mascot art (`tui/header.go:184`, `▄` block glyphs + 256-color SGR) is decoded per the OEM code page → mojibake, wrong glyph widths, broken side-by-side layout.
+
+**Expected:** UTF-8 output code page set while the TUI runs and restored on Stop; mascot renders identically on conhost and Windows Terminal.
+
+**Test approach:** unit test behind a syscall indirection asserting set-on-start / restore-on-stop. Manual validation note: cannot be fully verified without a Windows host — flag for manual QA on Windows.
+
+## W4 — winResizeWatcher.readOne can block indefinitely; reinjection reorders keys
+
+**Observed:** `tui/resize_windows.go:203,274-290` — after peeking a resize record, `ReadConsoleInputW` is called; if the stdin byte reader dequeues that record first, the queue is empty and `ReadConsoleInputW` BLOCKS until the next record arrives (the `!got` branch at :207 is unreachable). The watcher then dequeues a foreign key record and re-injects it at the queue END → delayed, reordered keys. Reverse race: `ReadFileW` silently discards `WINDOW_BUFFER_SIZE_EVENT` records it wins, so resize detection degrades to the 1s safety net even when healthy.
+
+**Expected:** watcher never dequeues foreign records and never blocks on an empty queue.
+
+**Fix direction:** peek-only design — on `WAIT_OBJECT_0`, just re-check size via `notifyIfResized` (no `ReadConsoleInputW`, no reinjection); shorten the safety net (~100–250ms) to keep resize responsive.
+
+**Test approach:** unit tests with synthetic record streams via existing indirections (`consoleSizeFunc`); race-free drain test. Validate: `go test -count=1 -race ./tui/ -run Resize`.
+
+## W5 — Shutdown drain leaks a blocked stdin reader on Windows
+
+**Observed:** `tui/terminal_drain_windows.go:13-15` spawns `drainInputFallback` → `startStdinPoller` goroutine blocks in `stdinFile.Read` forever when no input arrives before `Stop` returns. On an in-process TUI restart (anticipated by `screenOwnerCount`), the leaked poller competes with the new session's readLoop and eats its keys.
+
+**Expected:** drain goroutine terminates when the drain window ends (or process exit), never outliving the session.
+
+**Test approach:** unit test asserting the poller is released after the drain timeout without input. Validate: `go test -count=1 -race ./tui/ -run Drain`.
